@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Algorithm, Archive, Error, Subject};
 
@@ -58,6 +58,20 @@ enum Command {
         #[arg(value_name = "SUBJECT")]
         subject: String,
     },
+    /// One file's bytes, back out of the archive
+    ///
+    /// The bytes come out exactly as they went in, to stdout, ready to
+    /// pipe; --output writes them to a file instead.
+    Get {
+        /// The file's name in the archive: as `sha256:…`, or the bare hex —
+        /// a beginning of it is enough while it names only one file
+        #[arg(value_name = "SUBJECT")]
+        subject: String,
+
+        /// Write the bytes to FILE instead of stdout
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -77,6 +91,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Ingest { tree } => ingest(&cli.archive, &tree),
         Command::Seal => seal(&cli.archive),
         Command::About { subject } => about(&cli.archive, &subject),
+        Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
     }
 }
 
@@ -193,6 +208,78 @@ fn about(root: &Path, subject: &str) -> Result<ExitCode> {
     } else {
         for claim in &claims {
             println!("{}", output::line(claim));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn get(root: &Path, subject: &str, output: Option<&Path>) -> Result<ExitCode> {
+    let archive = open(root)?;
+    let content = archive.content();
+
+    // The store resolves a beginning by a shard listing, the way `about`'s
+    // index resolves one by a range scan — this is the content-facing door,
+    // so the store's own answer is the one that counts.
+    let algorithm = content.algorithm().name();
+    let bare = subject
+        .strip_prefix(algorithm)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(subject);
+    if bare.contains(':') {
+        return Err(anyhow!(
+            "content here answers to {algorithm}:… — for what the log knows about {subject}, ask `ossuary about`"
+        ));
+    }
+    if !bare.bytes().all(|byte| byte.is_ascii_hexdigit()) || bare.is_empty() {
+        return Err(anyhow!(
+            "{bare:?} is not hex — a file's name is {algorithm}:… or the bare hex of it"
+        ));
+    }
+    let needed = content.min_prefix();
+    if bare.len() < needed {
+        return Err(anyhow!(
+            "{bare:?} is too short to look up — the store is filed by the first {needed} characters, give at least that many"
+        ));
+    }
+    let digest = match content.matching(bare)?.as_slice() {
+        [] => return Err(anyhow!("nothing in the store begins with {bare:?}")),
+        [one] => one.clone(),
+        many => {
+            return Err(anyhow!(
+                "{bare:?} begins {} names — give more of it to name only one",
+                many.len()
+            ));
+        }
+    };
+    let mut reader = content
+        .reader(&digest)?
+        .ok_or_else(|| anyhow!("{algorithm}:{digest}: gone between naming and reading"))?;
+
+    if let Some(path) = output {
+        let mut file =
+            std::fs::File::create(path).with_context(|| format!("{}: writing", path.display()))?;
+        let bytes = std::io::copy(&mut reader, &mut file)
+            .with_context(|| format!("{}: writing", path.display()))?;
+        println!(
+            "{}: {} byte(s) of {algorithm}:{digest}",
+            path.display(),
+            bytes
+        );
+    } else {
+        // A beginning was given; say what it named, where the bytes
+        // will not drown it out.
+        if bare.len() < digest.as_str().len() {
+            eprintln!("{algorithm}:{digest}");
+        }
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        if let Err(error) = std::io::copy(&mut reader, &mut lock) {
+            // The reader closed the pipe: it has all it wanted. That is
+            // its business going well, not this run going badly.
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(ExitCode::SUCCESS);
+            }
+            return Err(anyhow::Error::new(error).context("writing to stdout"));
         }
     }
     Ok(ExitCode::SUCCESS)

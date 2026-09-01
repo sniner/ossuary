@@ -19,11 +19,11 @@ everything else:
 
 What runs today is the walking skeleton: `ossuary-core` (claims, the log,
 ingest, and a disposable query index) and the `ossuary` command line —
-`init`, `ingest`, `seal`, `about`. Enough to take a directory tree in and
-ask what the archive knows about any file in it. Each archive carries its
-own `config.toml` — what ingest leaves out (`.DS_Store` and friends),
-whether content is compressed. Extractors, and with them the metadata that
-lives *inside* the files, come next.
+`init`, `ingest`, `seal`, `about`, `get`. Enough to take a directory tree
+in, ask what the archive knows about any file in it, and get the file back
+out. Each archive carries its own `config.toml` — what ingest leaves out
+(`.DS_Store` and friends), whether content is compressed. Extractors, and
+with them the metadata that lives *inside* the files, come next.
 
 The blob layer is [immure](https://github.com/sniner/immure), content-addressed
 storage with deduplication, zstd compression and encryption.
