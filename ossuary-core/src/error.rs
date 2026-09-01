@@ -48,6 +48,12 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] immure::Error),
 
+    /// The index said no — and an index is a cache: when it is broken
+    /// rather than merely refusing, deleting it loses nothing that a fold
+    /// does not restore.
+    #[error(transparent)]
+    Index(#[from] rusqlite::Error),
+
     /// Reading or writing the open segment failed.
     #[error("{context}: {source}")]
     Io {

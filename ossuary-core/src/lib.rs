@@ -19,8 +19,10 @@
 
 mod claim;
 mod error;
+mod index;
 mod log;
 
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 pub use error::{Error, Result};
+pub use index::{Folded, Index};
 pub use log::{GENERATION, Log, Segment};
