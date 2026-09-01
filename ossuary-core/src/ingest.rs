@@ -1,8 +1,8 @@
 //! Ingest: dumb, cheap, and never waiting to understand.
 //!
-//! A walk over a directory tree: every regular file goes into the content
-//! store, and the day-one facts — the ones any format has — go into the
-//! log. Nothing here looks *inside* a format; understanding is the
+//! A walk over a directory tree — or one file, taken at its word: every
+//! regular file goes into the content store, and the day-one facts — the
+//! ones any format has — go into the log. Nothing here looks *inside* a format; understanding is the
 //! extractors' job, later and repeatedly, and a blob carrying nothing but
 //! these claims is a queue entry, not a failure.
 //!
@@ -45,8 +45,8 @@ pub struct Ingested {
     pub failed: Vec<(PathBuf, Error)>,
 }
 
-/// Take a directory tree into the archive: blobs into `content`, day-one
-/// claims into `log`.
+/// Take a directory tree — or a single file — into the archive: blobs
+/// into `content`, day-one claims into `log`.
 ///
 /// Six facts per file, available for any format on its first day:
 /// `prov:ingest-path` (the real path: absolute, `..` and symlinks resolved —
@@ -64,7 +64,9 @@ pub struct Ingested {
 /// `excludes` is the archive's word on what never goes in — usually
 /// [`Config::excludes`](crate::Config::excludes). What they match is
 /// counted in [`Ingested::excluded`] and otherwise left in peace: an
-/// excluded directory is not even walked.
+/// excluded directory is not even walked. They speak about trees, though:
+/// a file named outright as `root` goes in regardless — naming it is more
+/// deliberate than a pattern is.
 ///
 /// # Errors
 ///
@@ -87,13 +89,15 @@ pub fn ingest(
         excluded: 0,
         failed: Vec::new(),
     };
+    // The failure list names the path beside each error, so the contexts
+    // here say only what was being done when it went wrong.
     let root = match fs::canonicalize(root.as_ref()) {
         Ok(root) => root,
         Err(error) => {
             result.failed.push((
                 root.as_ref().to_path_buf(),
                 Error::Io {
-                    context: format!("{}: resolving", root.as_ref().display()),
+                    context: "resolving".to_string(),
                     source: error,
                 },
             ));
@@ -108,7 +112,29 @@ pub fn ingest(
         failed: Vec::new(),
         excluded: 0,
     };
-    walker.walk(&root);
+    match fs::metadata(&root) {
+        Ok(metadata) if metadata.is_file() => walker.files.push(root.clone()),
+        Ok(metadata) if metadata.is_dir() => walker.walk(&root),
+        // A socket, a pipe, a device: silently passed by in a walk, but a
+        // run that was told to take one in must not look like it did.
+        Ok(_) => walker.failed.push((
+            root.clone(),
+            Error::Io {
+                context: "taking in".to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "not a file or a directory",
+                ),
+            },
+        )),
+        Err(source) => walker.failed.push((
+            root.clone(),
+            Error::Io {
+                context: "resolving".to_string(),
+                source,
+            },
+        )),
+    }
     result.excluded = walker.excluded;
     result.failed.extend(walker.failed);
     for path in walker.files {
@@ -137,7 +163,7 @@ fn take(
     source: &Source,
 ) -> Result<(Status, usize)> {
     let bytes = fs::read(path).map_err(|source| Error::Io {
-        context: format!("{}: reading", path.display()),
+        context: "reading".to_string(),
         source,
     })?;
     let modified = fs::metadata(path)
@@ -239,7 +265,7 @@ impl Walk<'_> {
     /// open is recorded and passed by rather than ending the walk.
     fn walk(&mut self, dir: &Path) {
         let trouble = |source| Error::Io {
-            context: format!("{}: walking", dir.display()),
+            context: "walking".to_string(),
             source,
         };
         let entries = match fs::read_dir(dir) {
@@ -273,7 +299,7 @@ impl Walk<'_> {
                 Err(source) => self.failed.push((
                     path.clone(),
                     Error::Io {
-                        context: format!("{}: walking", path.display()),
+                        context: "walking".to_string(),
                         source,
                     },
                 )),
@@ -493,6 +519,46 @@ mod tests {
             "build/ at the top is out, src/build/ is not it"
         );
         assert_eq!(result.excluded, 1);
+    }
+
+    #[test]
+    fn a_single_file_goes_in_with_its_facts() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let file = dir.path().join("solo.txt");
+        fs::write(&file, b"hello world").unwrap();
+
+        let result = ingest(&content, &log, &file, "atlas.example.net", &none()).unwrap();
+
+        assert_eq!(result.stored, 1, "a file is not a tree, and goes in");
+        assert_eq!(result.claims, 6);
+        assert!(result.failed.is_empty());
+        let path = log
+            .head()
+            .unwrap()
+            .iter()
+            .find(|claim| claim.attribute().as_str() == "prov:ingest-path")
+            .and_then(|claim| claim.value())
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap();
+        assert!(path.ends_with("/solo.txt"));
+    }
+
+    #[test]
+    fn a_file_named_outright_beats_the_excludes() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let file = dir.path().join(".DS_Store");
+        fs::write(&file, b"junk, but asked for").unwrap();
+        let excludes = Excludes::compile([".DS_Store"]).unwrap();
+
+        let result = ingest(&content, &log, &file, "atlas.example.net", &excludes).unwrap();
+
+        assert_eq!(
+            result.stored, 1,
+            "the excludes speak about trees; naming a file is more deliberate"
+        );
+        assert_eq!(result.excluded, 0);
     }
 
     #[test]

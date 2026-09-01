@@ -41,18 +41,18 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         algorithm: Option<String>,
     },
-    /// Take a directory tree in: its files, and their day-one facts
+    /// Take files in: a directory tree, or one file
     ///
     /// Every regular file goes in — minus what the archive's config.toml
-    /// excludes — and six facts go on the record for each: where it came
-    /// from, on which machine, with which run, how large, what kind, and
-    /// when it last changed. The tree itself is only read. Taking the same
-    /// files in again stores nothing twice — it records that they also sat
-    /// here.
+    /// excludes; a file named outright goes in regardless — and six facts
+    /// go on the record for each: where it came from, on which machine,
+    /// with which run, how large, what kind, and when it last changed.
+    /// What is taken in is only read. Taking the same files in again
+    /// stores nothing twice — it records that they also sat here.
     Ingest {
         /// What to take in
-        #[arg(value_name = "DIR")]
-        tree: PathBuf,
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
     },
     /// Close the open segment; its facts become part of the sealed log
     Seal,
@@ -93,7 +93,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
-        Command::Ingest { tree } => ingest(&cli.archive, &tree),
+        Command::Ingest { path } => ingest(&cli.archive, &path),
         Command::Seal => seal(&cli.archive),
         Command::About { subject } => about(&cli.archive, &subject),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
@@ -153,16 +153,16 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
-fn ingest(root: &Path, tree: &Path) -> Result<ExitCode> {
+fn ingest(root: &Path, path: &Path) -> Result<ExitCode> {
     let archive = open(root)?;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
     eprintln!("archive {}", archive.root().display());
-    eprintln!("taking in {}", tree.display());
+    eprintln!("taking in {}", path.display());
     let run = ossuary_core::ingest(
         archive.content(),
         archive.log(),
-        tree,
+        path,
         &host,
         archive.config().excludes(),
     )?;
