@@ -1,0 +1,19 @@
+[package]
+name = "ossuary-cli"
+description = "The command line onto an ossuary archive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.51", features = ["derive"] }
+gethostname = "1.0.2"
+ossuary-core = { path = "../ossuary-core", version = "0.1.0" }

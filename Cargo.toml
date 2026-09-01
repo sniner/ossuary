@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["ossuary-core"]
+members = ["ossuary-cli", "ossuary-core"]
 
 [workspace.package]
 version = "0.1.0"
