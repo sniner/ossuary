@@ -29,12 +29,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Begin an empty archive
+    /// Begin an empty archive — or complete one already standing
+    ///
+    /// Running init on an archive is safe: nothing standing is remade or
+    /// edited, and what is missing is added — today that is config.toml,
+    /// for archives begun before it existed.
     Init {
-        /// The hash that names everything taken in — for good. sha256 unless
-        /// this machine lacks SHA instructions; then blake3 hashes faster.
-        #[arg(long, default_value = "sha256", value_name = "NAME")]
-        algorithm: String,
+        /// The hash that names everything taken in — for good, chosen only
+        /// when the archive begins. sha256 unless this machine lacks SHA
+        /// instructions; then blake3 hashes faster
+        #[arg(long, value_name = "NAME")]
+        algorithm: Option<String>,
     },
     /// Take a directory tree in: its files, and their day-one facts
     ///
@@ -87,7 +92,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Init { algorithm } => init(&cli.archive, &algorithm),
+        Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
         Command::Ingest { tree } => ingest(&cli.archive, &tree),
         Command::Seal => seal(&cli.archive),
         Command::About { subject } => about(&cli.archive, &subject),
@@ -106,14 +111,46 @@ fn open(root: &Path) -> Result<Archive> {
     })
 }
 
-fn init(root: &Path, algorithm: &str) -> Result<ExitCode> {
-    let algorithm: Algorithm = algorithm.parse()?;
-    let archive = Archive::create(root, algorithm)?;
-    println!(
-        "{}: an empty archive — its settings stand in config.toml; take files in with `ossuary ingest DIR`",
-        archive.root().display()
-    );
-    Ok(ExitCode::SUCCESS)
+fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
+    let requested = algorithm.map(str::parse::<Algorithm>).transpose()?;
+    match Archive::create(root, requested.unwrap_or(Algorithm::Sha256)) {
+        Ok(archive) => {
+            println!(
+                "{}: an empty archive — its settings stand in config.toml; take files in with `ossuary ingest DIR`",
+                archive.root().display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        // Standing in an archive, init completes instead: what is there is
+        // never remade, what is missing appears. Only remaking would need
+        // refusing, and only choosing an algorithm anew would be remaking.
+        Err(Error::AlreadyArchive(_)) => {
+            let archive = open(root)?;
+            let standing = archive.content().algorithm();
+            if let Some(asked) = requested {
+                if asked != standing {
+                    return Err(anyhow!(
+                        "{}: named by {}, for good — an algorithm is chosen when an archive begins, not after",
+                        archive.root().display(),
+                        standing.name()
+                    ));
+                }
+            }
+            if archive.complete()? {
+                println!(
+                    "{}: already an archive — config.toml was missing and now spells the defaults",
+                    archive.root().display()
+                );
+            } else {
+                println!(
+                    "{}: already an archive, and whole — nothing to add",
+                    archive.root().display()
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn ingest(root: &Path, tree: &Path) -> Result<ExitCode> {

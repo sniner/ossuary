@@ -171,6 +171,33 @@ impl Archive {
         })
     }
 
+    /// Complete the archive: add what [`create`](Archive::create) would
+    /// have made and `root` no longer holds — the starter `config.toml`,
+    /// an empty `cache/`. What stands is left standing, whatever state it
+    /// is in: completing an archive never edits one.
+    ///
+    /// Answers whether a `config.toml` was written. The settings in hand
+    /// stay as they were read at opening time — an archive completed just
+    /// now was opened without a configuration, and runs on the defaults
+    /// until reopened.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] writing what is missing.
+    pub fn complete(&self) -> Result<bool> {
+        let io = |context: &str| {
+            let context = format!("{}: {context}", self.root.display());
+            move |source| Error::Io { context, source }
+        };
+        fs::create_dir_all(self.root.join("cache")).map_err(io("creating cache/"))?;
+        let settings = self.root.join(config::CONFIG);
+        if settings.exists() {
+            return Ok(false);
+        }
+        fs::write(&settings, config::STARTER).map_err(io("writing config.toml"))?;
+        Ok(true)
+    }
+
     /// Where the archive stands.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -316,6 +343,50 @@ mod tests {
         fs::write(root.join("config.toml"), "[content]\ncompres = true\n").unwrap();
 
         assert!(matches!(Archive::open(&root), Err(Error::BadConfig { .. })));
+    }
+
+    #[test]
+    fn completing_adds_what_is_missing_and_only_that() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+        Archive::create(&root, Algorithm::Sha256).unwrap();
+        fs::remove_file(root.join("config.toml")).unwrap();
+        fs::remove_dir(root.join("cache")).unwrap();
+
+        let archive = Archive::open(&root).unwrap();
+        assert!(
+            archive.complete().unwrap(),
+            "the missing config.toml is written"
+        );
+        assert!(root.join("cache").is_dir());
+        assert!(
+            fs::read_to_string(root.join("config.toml"))
+                .unwrap()
+                .contains(".DS_Store"),
+            "and it is the starter, defaults spelled out"
+        );
+
+        assert!(
+            !archive.complete().unwrap(),
+            "a second completion finds nothing to add"
+        );
+    }
+
+    #[test]
+    fn completing_never_edits_what_stands() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+        Archive::create(&root, Algorithm::Sha256).unwrap();
+        let own = "[content]\ncompress = true\n";
+        fs::write(root.join("config.toml"), own).unwrap();
+
+        let archive = Archive::open(&root).unwrap();
+        assert!(!archive.complete().unwrap());
+        assert_eq!(
+            fs::read_to_string(root.join("config.toml")).unwrap(),
+            own,
+            "the archive's own settings outrank the starter"
+        );
     }
 
     #[test]
