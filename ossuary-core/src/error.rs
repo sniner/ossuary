@@ -91,4 +91,24 @@ pub enum Error {
     /// an editor or `sed -n` would show for the same line.
     #[error("line {line}: {source}")]
     BadLine { line: usize, source: Box<Error> },
+
+    /// The directory is not an archive: no `FORMAT` mark stands in it.
+    #[error("{}: not an ossuary archive — no FORMAT mark", .0.display())]
+    NoArchive(std::path::PathBuf),
+
+    /// An archive already stands where one was to be created.
+    #[error("{}: an archive already stands here", .0.display())]
+    AlreadyArchive(std::path::PathBuf),
+
+    /// The `FORMAT` mark would not read back.
+    #[error("{}: the FORMAT mark did not read back — damaged, or not ossuary's", .0.display())]
+    BadMark(std::path::PathBuf),
+
+    /// The archive is written in a generation this build does not know.
+    ///
+    /// Written by a newer ossuary, and healthy: a layout this build has
+    /// never seen would look familiar in exactly the wrong way, which is
+    /// what the mark exists to prevent. A newer build reads it.
+    #[error("archive generation {0} is not one this build understands")]
+    ArchiveGeneration(u32),
 }

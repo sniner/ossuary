@@ -17,14 +17,17 @@
 
 #![forbid(unsafe_code)]
 
+mod archive;
 mod claim;
 mod error;
 mod index;
 mod ingest;
 mod log;
 
+pub use archive::Archive;
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 pub use error::{Error, Result};
+pub use immure::Algorithm;
 pub use index::{Folded, Index};
 pub use ingest::{Ingested, ingest};
 pub use log::{GENERATION, Log, Segment};

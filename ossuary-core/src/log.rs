@@ -41,6 +41,14 @@ struct Header {
     generation: u32,
 }
 
+/// The generation alone, read leniently — see [`parse_segment`] for why the
+/// strict read comes second.
+#[derive(Debug, Deserialize)]
+struct Generation {
+    #[serde(rename = "ossuary-segment")]
+    generation: u32,
+}
+
 /// The header as it stands in a file, newline included.
 fn header_line() -> String {
     let header = serde_json::to_string(&Header {
@@ -247,11 +255,16 @@ impl Log {
 fn parse_segment(text: &str) -> Result<Vec<Claim>> {
     let mut lines = text.lines().enumerate();
     let first = lines.next().map(|(_, line)| line).unwrap_or_default();
-    let header: Header =
+    // The generation is read leniently before the header is read strictly:
+    // a future generation may add members to its header, and it must be
+    // refused as what it is — newer — not reported as broken.
+    let generation: Generation =
         serde_json::from_str(first).map_err(|_| Error::SegmentHeader(first.to_string()))?;
-    if header.generation != GENERATION {
-        return Err(Error::SegmentGeneration(header.generation));
+    if generation.generation != GENERATION {
+        return Err(Error::SegmentGeneration(generation.generation));
     }
+    let _: Header =
+        serde_json::from_str(first).map_err(|_| Error::SegmentHeader(first.to_string()))?;
     let mut claims = Vec::new();
     for (index, line) in lines {
         let claim = Claim::parse_line(line).map_err(|source| Error::BadLine {
