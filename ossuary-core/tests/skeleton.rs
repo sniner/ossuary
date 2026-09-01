@@ -138,6 +138,7 @@ fn the_skeleton_walks_from_disk() {
         &tree,
         "atlas.example.net",
         &ossuary_core::Excludes::none(),
+        None,
     )
     .unwrap();
     assert_eq!(run.stored, 2);

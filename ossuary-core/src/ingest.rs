@@ -9,12 +9,17 @@
 //! Re-ingesting is harmless and useful: the same bytes dedup to the same
 //! blob, and the new provenance — another path, another host, another run —
 //! is recorded as the new facts they are. Facts accrete; sorting them out
-//! is the fold's business, at query time.
+//! is the fold's business, at query time. What keeps a repeated sweep from
+//! drowning the log in re-run provenance is the walk's [`IngestMemory`]:
+//! a file whose place, size and mtime the last run already saw is not
+//! read, not hashed, and gets no claims. The memory only ever informs the
+//! effort, never the truth — "I did not look again" is always allowed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use immure::{Status, Store};
+use rusqlite::{Connection, params};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -37,6 +42,8 @@ pub struct Ingested {
     pub known: usize,
     /// Claims appended to the log.
     pub claims: usize,
+    /// Files the memory knew unchanged — not read, nothing recorded.
+    pub unchanged: usize,
     /// Paths the excludes left out — a directory counts once, unwalked.
     pub excluded: usize,
     /// What could not be taken in, and why. A walk over a million files
@@ -73,17 +80,26 @@ pub struct Ingested {
 /// a file named outright as `root` goes in regardless — naming it is more
 /// deliberate than a pattern is.
 ///
+/// `memory` is the walk's memory of earlier runs — usually
+/// [`Archive::ingest_memory`](crate::Archive::ingest_memory). A file whose
+/// place, size and mtime it knows is counted in [`Ingested::unchanged`]
+/// and otherwise skipped whole: not read, not hashed, no claims. `None`
+/// observes everything anew, and so does a lost memory — the cost is a
+/// noisy run, never a wrong claim.
+///
 /// # Errors
 ///
-/// Whatever building the first claims can answer. Per-file trouble is not
-/// an error here, and neither is a root that will not resolve: both are
-/// collected in [`Ingested::failed`] while the walk goes on.
+/// Whatever building the first claims can answer, and the memory refusing
+/// to read or write. Per-file trouble is not an error here, and neither is
+/// a root that will not resolve: both are collected in
+/// [`Ingested::failed`] while the walk goes on.
 pub fn ingest(
     content: &Store,
     log: &Log,
     root: impl AsRef<Path>,
     host: &str,
     excludes: &Excludes,
+    memory: Option<&IngestMemory>,
 ) -> Result<Ingested> {
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
@@ -91,6 +107,7 @@ pub fn ingest(
         stored: 0,
         known: 0,
         claims: 0,
+        unchanged: 0,
         excluded: 0,
         failed: Vec::new(),
     };
@@ -142,7 +159,20 @@ pub fn ingest(
     }
     result.excluded = walker.excluded;
     result.failed.extend(walker.failed);
+    if let Some(memory) = memory {
+        memory.begin()?;
+    }
     for path in walker.files {
+        // What the memory compares is what the last run wrote into it:
+        // the size and mtime read just before the file was, so a change
+        // mid-read surfaces as a mismatch on the next sweep.
+        let seen = memory
+            .map(|memory| observe(memory, host, &path))
+            .transpose()?;
+        if let Some(Observation::Unchanged) = seen {
+            result.unchanged += 1;
+            continue;
+        }
         match take(content, log, &path, host, &result.run, &source) {
             Ok((status, claims)) => {
                 if status.is_new() {
@@ -151,11 +181,48 @@ pub fn ingest(
                     result.known += 1;
                 }
                 result.claims += claims;
+                if let (Some(memory), Some(Observation::Changed(size, mtime))) = (memory, seen) {
+                    memory.record(host, &path, size, mtime)?;
+                }
             }
             Err(error) => result.failed.push((path, error)),
         }
     }
+    if let Some(memory) = memory {
+        memory.commit()?;
+    }
     Ok(result)
+}
+
+/// What the memory has to say about a file, asked before it is read.
+#[derive(Debug, Clone, Copy)]
+enum Observation {
+    /// Same place, same size, same mtime as when a sighting last went on
+    /// the record: nothing to do.
+    Unchanged,
+    /// Worth reading — and these are the size and mtime to remember once
+    /// it was.
+    Changed(i64, i64),
+    /// No mtime to compare by: observed every time, remembered never.
+    Undated,
+}
+
+/// Ask the memory about one file.
+fn observe(memory: &IngestMemory, host: &str, path: &Path) -> Result<Observation> {
+    let Ok(metadata) = fs::metadata(path) else {
+        // Whatever is wrong surfaces when the file is read, with the
+        // failure list to hold it; the memory just has nothing to say.
+        return Ok(Observation::Undated);
+    };
+    let Some(mtime) = metadata.modified().ok().and_then(unix_nanos) else {
+        return Ok(Observation::Undated);
+    };
+    let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    if memory.unchanged(host, path, size, mtime)? {
+        Ok(Observation::Unchanged)
+    } else {
+        Ok(Observation::Changed(size, mtime))
+    }
 }
 
 /// One file: bytes into the store, facts into the log.
@@ -267,6 +334,93 @@ fn unix_seconds(time: std::time::SystemTime) -> i64 {
     }
 }
 
+/// The same moment in nanoseconds — the finest comparison the filesystem
+/// offers, so "unchanged" means as much as it can. `None` when it will not
+/// fit, which reads as "no mtime": observed every time, never wrongly
+/// skipped.
+fn unix_nanos(time: std::time::SystemTime) -> Option<i64> {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => i64::try_from(elapsed.as_nanos()).ok(),
+        Err(before) => i64::try_from(before.duration().as_nanos())
+            .ok()
+            .and_then(i64::checked_neg),
+    }
+}
+
+/// The walk's memory: which sightings past runs already put on the record.
+///
+/// One row per place — host and path — holding the size and mtime the file
+/// had when it was last taken in. A file that still matches is left in
+/// peace: not read, not hashed, no claims — which is what keeps "pour the
+/// whole directory in again" from writing thousands of re-run claims when
+/// ten files are new.
+///
+/// It lives in `cache/` and is pure economy, never truth. The log does not
+/// depend on it, no claim's content comes from it, and deleting it merely
+/// makes the next sweep observe — and possibly re-record — everything: the
+/// behaviour every run had before it existed.
+#[derive(Debug)]
+pub struct IngestMemory {
+    connection: Connection,
+}
+
+impl IngestMemory {
+    /// Open the memory at `path`, creating file and schema as needed. The
+    /// path belongs in `cache/`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] when `SQLite` cannot open or prepare it — and like
+    /// the index, a memory broken rather than merely refusing may simply
+    /// be deleted.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let connection = Connection::open(path)?;
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS seen (
+                 host  TEXT NOT NULL,
+                 path  TEXT NOT NULL,
+                 size  INTEGER NOT NULL,
+                 mtime INTEGER NOT NULL,
+                 PRIMARY KEY (host, path)
+             );",
+        )?;
+        Ok(IngestMemory { connection })
+    }
+
+    /// One transaction around a whole run: thousands of sightings, one
+    /// sync. A run that dies on the way rolls back whole, and its files
+    /// are merely observed again next time.
+    fn begin(&self) -> Result<()> {
+        self.connection.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    fn commit(&self) -> Result<()> {
+        self.connection.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    /// Whether this place was last seen with exactly this size and mtime.
+    fn unchanged(&self, host: &str, path: &Path, size: i64, mtime: i64) -> Result<bool> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT 1 FROM seen WHERE host = ?1 AND path = ?2 AND size = ?3 AND mtime = ?4",
+        )?;
+        let found = statement.exists(params![host, path.to_string_lossy(), size, mtime])?;
+        Ok(found)
+    }
+
+    /// Remember a sighting that just went on the record.
+    fn record(&self, host: &str, path: &Path, size: i64, mtime: i64) -> Result<()> {
+        let mut statement = self.connection.prepare_cached(
+            "INSERT INTO seen (host, path, size, mtime) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (host, path) DO UPDATE
+             SET size = excluded.size, mtime = excluded.mtime",
+        )?;
+        statement.execute(params![host, path.to_string_lossy(), size, mtime])?;
+        Ok(())
+    }
+}
+
 /// The walk in progress: every regular file under the root, sorted by name
 /// at every level, minus what the excludes say never goes in.
 struct Walk<'a> {
@@ -370,7 +524,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &none()).unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 2);
         assert_eq!(result.known, 0);
@@ -421,7 +575,7 @@ mod tests {
         fs::write(tree.join("first.txt"), b"hello world").unwrap();
         fs::write(tree.join("second.txt"), b"hello world").unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &none()).unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
@@ -448,7 +602,7 @@ mod tests {
         fs::write(tree.join("real.txt"), b"content").unwrap();
         std::os::unix::fs::symlink(tree.join("real.txt"), tree.join("alias.txt")).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &none()).unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "the file, not its alias");
         assert!(result.failed.is_empty());
@@ -468,6 +622,7 @@ mod tests {
             tree.join("sub").join(".."),
             "atlas.example.net",
             &none(),
+            None,
         )
         .unwrap();
 
@@ -498,7 +653,7 @@ mod tests {
         fs::write(tree.join("sub").join(".DS_Store"), b"junk below").unwrap();
         let excludes = Excludes::compile([".DS_Store"]).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes).unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes, None).unwrap();
 
         assert_eq!(result.stored, 1, "the content, not the junk");
         assert_eq!(result.excluded, 2, "at every level, and on the record");
@@ -519,7 +674,7 @@ mod tests {
         .unwrap();
         let excludes = Excludes::compile(["node_modules"]).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes).unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes, None).unwrap();
 
         assert_eq!(result.stored, 1);
         assert_eq!(
@@ -539,7 +694,7 @@ mod tests {
         fs::write(tree.join("src").join("build").join("keep"), b"source").unwrap();
         let excludes = Excludes::compile(["build/**"]).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes).unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes, None).unwrap();
 
         assert_eq!(
             result.stored, 1,
@@ -555,7 +710,7 @@ mod tests {
         let file = dir.path().join("solo.txt");
         fs::write(&file, b"hello world").unwrap();
 
-        let result = ingest(&content, &log, &file, "atlas.example.net", &none()).unwrap();
+        let result = ingest(&content, &log, &file, "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "a file is not a tree, and goes in");
         assert_eq!(result.claims, 6);
@@ -579,13 +734,122 @@ mod tests {
         fs::write(&file, b"junk, but asked for").unwrap();
         let excludes = Excludes::compile([".DS_Store"]).unwrap();
 
-        let result = ingest(&content, &log, &file, "atlas.example.net", &excludes).unwrap();
+        let result = ingest(&content, &log, &file, "atlas.example.net", &excludes, None).unwrap();
 
         assert_eq!(
             result.stored, 1,
             "the excludes speak about trees; naming a file is more deliberate"
         );
         assert_eq!(result.excluded, 0);
+    }
+
+    #[test]
+    fn a_second_sweep_leaves_unchanged_files_in_peace() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
+        let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
+
+        let first = ingest(
+            &content,
+            &log,
+            &tree,
+            "atlas.example.net",
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+        assert_eq!(first.stored, 2);
+        assert_eq!(first.unchanged, 0);
+
+        // The memory outlives its handle, like the file it is.
+        drop(memory);
+        let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
+        let second = ingest(
+            &content,
+            &log,
+            &tree,
+            "atlas.example.net",
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+
+        assert_eq!(second.unchanged, 2, "nothing changed, nothing observed");
+        assert_eq!(second.stored + second.known, 0);
+        assert_eq!(second.claims, 0, "a quiet sweep writes nothing at all");
+    }
+
+    #[test]
+    fn a_changed_file_is_observed_again() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
+        let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
+
+        ingest(
+            &content,
+            &log,
+            &tree,
+            "atlas.example.net",
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+        // A different size settles "changed" whatever the clock says.
+        fs::write(tree.join("a.txt"), b"hello world, grown").unwrap();
+
+        let second = ingest(
+            &content,
+            &log,
+            &tree,
+            "atlas.example.net",
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+
+        assert_eq!(second.stored, 1, "the new bytes go in");
+        assert_eq!(second.unchanged, 1, "the untouched neighbour does not");
+        assert_eq!(second.claims, 6, "and only the change is on the record");
+    }
+
+    #[test]
+    fn another_host_is_another_sighting() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
+
+        ingest(
+            &content,
+            &log,
+            &tree,
+            "atlas.example.net",
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+        let second = ingest(
+            &content,
+            &log,
+            &tree,
+            "rhea.example.net",
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+
+        assert_eq!(second.unchanged, 0, "what atlas saw, rhea has not");
+        assert_eq!(second.known, 1, "and rhea's sighting goes on the record");
     }
 
     #[test]
@@ -599,6 +863,7 @@ mod tests {
             dir.path().join("no-such-tree"),
             "atlas",
             &none(),
+            None,
         )
         .unwrap();
 

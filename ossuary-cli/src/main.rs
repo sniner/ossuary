@@ -47,12 +47,17 @@ enum Command {
     /// excludes; a file named outright goes in regardless — and six claims
     /// go on the record for each: where it came from, on which machine,
     /// with which run, how large, what kind, and when it last changed.
-    /// What is taken in is only read. Taking the same files in again
-    /// stores nothing twice — it records that they also sat here.
+    /// What is taken in is only read. A repeated run remembers what it
+    /// already observed and leaves unchanged files in peace, so pouring
+    /// the same directory in again costs only what is new or changed.
     Ingest {
         /// What to take in
         #[arg(value_name = "PATH")]
         path: PathBuf,
+
+        /// Look at every file anew, remembered or not
+        #[arg(long)]
+        full: bool,
     },
     /// Close the open segment; its claims become part of the sealed log
     Seal,
@@ -93,7 +98,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
-        Command::Ingest { path } => ingest(&cli.archive, &path),
+        Command::Ingest { path, full } => ingest(&cli.archive, &path, full),
         Command::Seal => seal(&cli.archive),
         Command::About { subject } => about(&cli.archive, &subject),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
@@ -153,30 +158,51 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
-fn ingest(root: &Path, path: &Path) -> Result<ExitCode> {
+fn ingest(root: &Path, path: &Path, full: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
     eprintln!("archive {}", archive.root().display());
     eprintln!("taking in {}", path.display());
+    let memory = if full {
+        None
+    } else {
+        Some(archive.ingest_memory()?)
+    };
     let run = ossuary_core::ingest(
         archive.content(),
         archive.log(),
         path,
         &host,
         archive.config().excludes(),
+        memory.as_ref(),
     )?;
 
-    let excluded = if run.excluded > 0 {
-        format!(", {} path(s) left out as config.toml asks", run.excluded)
+    let mut verdict = vec![format!("{} file(s) new to the archive", run.stored)];
+    if run.known > 0 {
+        verdict.push(format!(
+            "{} already held — every place they sat is on the record",
+            run.known
+        ));
+    }
+    if run.unchanged > 0 {
+        verdict.push(format!(
+            "{} unchanged since the last run and left in peace",
+            run.unchanged
+        ));
+    }
+    if run.excluded > 0 {
+        verdict.push(format!(
+            "{} path(s) left out as config.toml asks",
+            run.excluded
+        ));
+    }
+    let record = if run.claims > 0 {
+        format!("{} claim(s) written as run {}", run.claims, run.run)
     } else {
-        String::new()
+        "nothing new to record".to_string()
     };
-    println!(
-        "{} file(s) new to the archive, {} already held — every place they sat is on the record{excluded}; \
-         {} claim(s) written as run {}",
-        run.stored, run.known, run.claims, run.run
-    );
+    println!("{}; {record}", verdict.join(", "));
     if run.failed.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {

@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::index::Index;
+use crate::ingest::IngestMemory;
 use crate::log::{GENERATION, Log};
 
 /// The mark's name in the archive root.
@@ -230,12 +231,32 @@ impl Archive {
     ///
     /// [`Error::Io`] making `cache/`, [`Error::Index`] opening the file.
     pub fn index(&self) -> Result<Index> {
+        let cache = self.cache()?;
+        Index::open(cache.join("index.sqlite"))
+    }
+
+    /// The ingest walk's memory in `cache/`, opened — what earlier runs
+    /// already observed, so a repeated sweep leaves unchanged files in
+    /// peace. A cache like the index: deleting it costs one noisy run,
+    /// never a claim.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] making `cache/`, [`Error::Index`] opening the file.
+    pub fn ingest_memory(&self) -> Result<IngestMemory> {
+        let cache = self.cache()?;
+        IngestMemory::open(cache.join("ingest.sqlite"))
+    }
+
+    /// `cache/`, made if it is not there — it owes nothing and may vanish
+    /// between any two commands.
+    fn cache(&self) -> Result<PathBuf> {
         let cache = self.root.join("cache");
         fs::create_dir_all(&cache).map_err(|source| Error::Io {
             context: format!("{}: creating cache/", self.root.display()),
             source,
         })?;
-        Index::open(cache.join("index.sqlite"))
+        Ok(cache)
     }
 }
 

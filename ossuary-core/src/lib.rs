@@ -31,5 +31,5 @@ pub use config::{Config, Excludes};
 pub use error::{Error, Result};
 pub use immure::Algorithm;
 pub use index::{Folded, Index};
-pub use ingest::{Ingested, ingest};
+pub use ingest::{IngestMemory, Ingested, ingest};
 pub use log::{GENERATION, Log, Segment};
