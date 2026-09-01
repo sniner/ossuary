@@ -44,7 +44,7 @@ enum Command {
     /// Take files in: a directory tree, or one file
     ///
     /// Every regular file goes in — minus what the archive's config.toml
-    /// excludes; a file named outright goes in regardless — and six facts
+    /// excludes; a file named outright goes in regardless — and six claims
     /// go on the record for each: where it came from, on which machine,
     /// with which run, how large, what kind, and when it last changed.
     /// What is taken in is only read. Taking the same files in again
@@ -54,7 +54,7 @@ enum Command {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
-    /// Close the open segment; its facts become part of the sealed log
+    /// Close the open segment; its claims become part of the sealed log
     Seal,
     /// Everything on the record about one file, oldest first
     About {
@@ -174,7 +174,7 @@ fn ingest(root: &Path, path: &Path) -> Result<ExitCode> {
     };
     println!(
         "{} file(s) new to the archive, {} already held — every place they sat is on the record{excluded}; \
-         {} fact(s) written as run {}",
+         {} claim(s) written as run {}",
         run.stored, run.known, run.claims, run.run
     );
     if run.failed.is_empty() {
@@ -195,7 +195,7 @@ fn seal(root: &Path) -> Result<ExitCode> {
             "sealed as {} — the open segment starts afresh",
             segment.digest()
         ),
-        None => println!("nothing to seal — the open segment holds no facts"),
+        None => println!("nothing to seal — the open segment holds no claims"),
     }
     Ok(ExitCode::SUCCESS)
 }

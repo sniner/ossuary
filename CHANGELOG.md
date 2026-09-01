@@ -17,9 +17,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new content; what is already stored keeps its form, and reading understands both). A missing
   file means the defaults; an unknown key is refused rather than half-applied
 - **`ossuary ingest PATH`** takes a directory tree — or a single file — in: every regular file
-  into the content store, six day-one facts per file into the claim log; re-ingesting stores
+  into the content store, six day-one claims per file into the log; re-ingesting stores
   nothing twice but records every place a file sat
-- **`ossuary seal`** closes the open segment; its facts become part of the sealed log
+- **`ossuary seal`** closes the open segment; its claims become part of the sealed log
 - **`ossuary about SUBJECT`** answers everything on the record about one file, oldest first; a
   beginning of the digest is enough while it names only one file
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
