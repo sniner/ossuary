@@ -1,0 +1,7 @@
+# VIM swap files
+*.sw[a-p]
+# macOS Finder metadata
+.DS_Store
+
+/sidecar/
+/target/
