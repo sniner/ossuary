@@ -48,15 +48,20 @@ pub struct Ingested {
 /// Take a directory tree — or a single file — into the archive: blobs
 /// into `content`, day-one claims into `log`.
 ///
-/// Six facts per file, available for any format on its first day:
-/// `prov:ingest-path` (the real path: absolute, `..` and symlinks resolved —
-/// claims are forever, so they name the place, not the way it was typed),
-/// `prov:host`, `prov:ingest-run`,
+/// A blob new to the store gets the six day-one claims, available for any
+/// format on its first day: `prov:ingest-path` (the real path: absolute,
+/// `..` and symlinks resolved — claims are forever, so they name the
+/// place, not the way it was typed), `prov:host`, `prov:ingest-run`,
 /// `file:size`, `file:mime` — by magic bytes, with a UTF-8 look for plain
 /// text and `application/octet-stream` when nothing answers — and
-/// `file:modified` where the filesystem has an mtime to tell. Symlinks are
-/// not followed, hidden files are files, and the walk is sorted at every
-/// level, so the same tree ingests in the same order twice.
+/// `file:modified` where the filesystem has an mtime to tell.
+///
+/// Bytes the store already holds get their provenance and mtime only.
+/// Another place they sat is new knowledge; their size and kind describe
+/// the content, the log has them from the first sighting, and saying a
+/// deterministic thing twice adds nothing. Symlinks are not followed,
+/// hidden files are files, and the walk is sorted at every level, so the
+/// same tree ingests in the same order twice.
 ///
 /// `host` is who this machine says it is — an FQDN where there is one; the
 /// caller knows, this crate does not ask around.
@@ -171,7 +176,6 @@ fn take(
         .ok()
         .map(unix_seconds)
         .and_then(|seconds| Timestamp::from_unix(seconds).ok());
-    let mime = mime(&bytes);
 
     let (status, entry) = content.add(&bytes)?;
     let subject = Subject::parse(&format!(
@@ -191,9 +195,25 @@ fn take(
         )?,
         fact(&subject, "prov:host", json!(host), &time, source)?,
         fact(&subject, "prov:ingest-run", json!(run), &time, source)?,
-        fact(&subject, "file:size", json!(bytes.len()), &time, source)?,
-        fact(&subject, "file:mime", json!(mime), &time, source)?,
     ];
+    // Size and kind describe the content, not the sighting: the log has
+    // them from the blob's first day, and they never say anything new.
+    if status.is_new() {
+        claims.push(fact(
+            &subject,
+            "file:size",
+            json!(bytes.len()),
+            &time,
+            source,
+        )?);
+        claims.push(fact(
+            &subject,
+            "file:mime",
+            json!(mime(&bytes)),
+            &time,
+            source,
+        )?);
+    }
     if let Some(modified) = modified {
         claims.push(fact(
             &subject,
@@ -406,9 +426,16 @@ mod tests {
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
         assert_eq!(
-            result.claims, 12,
-            "and both places it sat are on the record"
+            result.claims, 10,
+            "both places it sat are on the record; size and kind only once"
         );
+        let described = log
+            .head()
+            .unwrap()
+            .iter()
+            .filter(|claim| matches!(claim.attribute().as_str(), "file:size" | "file:mime"))
+            .count();
+        assert_eq!(described, 2, "the content is described exactly once");
     }
 
     #[cfg(unix)]
