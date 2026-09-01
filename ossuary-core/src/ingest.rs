@@ -46,7 +46,9 @@ pub struct Ingested {
 /// claims into `log`.
 ///
 /// Six facts per file, available for any format on its first day:
-/// `prov:ingest-path` (absolute), `prov:host`, `prov:ingest-run`,
+/// `prov:ingest-path` (the real path: absolute, `..` and symlinks resolved —
+/// claims are forever, so they name the place, not the way it was typed),
+/// `prov:host`, `prov:ingest-run`,
 /// `file:size`, `file:mime` — by magic bytes, with a UTF-8 look for plain
 /// text and `application/octet-stream` when nothing answers — and
 /// `file:modified` where the filesystem has an mtime to tell. Symlinks are
@@ -58,14 +60,10 @@ pub struct Ingested {
 ///
 /// # Errors
 ///
-/// [`Error::Io`] when the root cannot be resolved, and whatever building
-/// the first claims can answer. Per-file trouble is not an error here: it
-/// is collected in [`Ingested::failed`] while the walk goes on.
+/// Whatever building the first claims can answer. Per-file trouble is not
+/// an error here, and neither is a root that will not resolve: both are
+/// collected in [`Ingested::failed`] while the walk goes on.
 pub fn ingest(content: &Store, log: &Log, root: impl AsRef<Path>, host: &str) -> Result<Ingested> {
-    let root = std::path::absolute(root.as_ref()).map_err(|source| Error::Io {
-        context: format!("{}: resolving", root.as_ref().display()),
-        source,
-    })?;
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
         run: Uuid::new_v4().to_string(),
@@ -73,6 +71,19 @@ pub fn ingest(content: &Store, log: &Log, root: impl AsRef<Path>, host: &str) ->
         known: 0,
         claims: 0,
         failed: Vec::new(),
+    };
+    let root = match fs::canonicalize(root.as_ref()) {
+        Ok(root) => root,
+        Err(error) => {
+            result.failed.push((
+                root.as_ref().to_path_buf(),
+                Error::Io {
+                    context: format!("{}: resolving", root.as_ref().display()),
+                    source: error,
+                },
+            ));
+            return Ok(result);
+        }
     };
 
     let mut files = Vec::new();
@@ -342,6 +353,38 @@ mod tests {
 
         assert_eq!(result.stored, 1, "the file, not its alias");
         assert!(result.failed.is_empty());
+    }
+
+    #[test]
+    fn the_recorded_path_is_the_real_one() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("sub")).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+
+        let result = ingest(
+            &content,
+            &log,
+            tree.join("sub").join(".."),
+            "atlas.example.net",
+        )
+        .unwrap();
+
+        assert_eq!(result.stored, 1);
+        let path = log
+            .head()
+            .unwrap()
+            .iter()
+            .find(|claim| claim.attribute().as_str() == "prov:ingest-path")
+            .and_then(|claim| claim.value())
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap();
+        assert!(
+            !path.contains(".."),
+            "claims are forever, and {path:?} is not the place itself"
+        );
+        assert!(path.ends_with("/tree/a.txt"));
     }
 
     #[test]
