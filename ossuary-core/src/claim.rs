@@ -14,6 +14,7 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -202,11 +203,73 @@ impl Timestamp {
         Ok(Timestamp(s.to_string()))
     }
 
+    /// The timestamp of a moment in Unix time — seconds since the epoch,
+    /// negative for the years before it.
+    ///
+    /// For clocks the filesystem hands over, an mtime above all. The result
+    /// goes back through [`parse`](Timestamp::parse) on its way out, so
+    /// parsing stays the only door in.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timestamp`] when the year falls outside 0000–9999: the
+    /// format has four digits, and an mtime from a broken clock should be
+    /// refused, not folded into the shape.
+    pub fn from_unix(seconds: i64) -> Result<Self> {
+        let days = seconds.div_euclid(86_400);
+        let rest = seconds.rem_euclid(86_400);
+        let (year, month, day) = civil_from_days(days);
+        if !(0..=9999).contains(&year) {
+            return Err(Error::Timestamp(format!("unix time {seconds}")));
+        }
+        let (hour, minute, second) = (rest / 3600, rest % 3600 / 60, rest % 60);
+        Timestamp::parse(&format!(
+            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+        ))
+    }
+
+    /// This very second, UTC.
+    ///
+    /// A system clock standing before 1970 is read as the epoch — a broken
+    /// clock should not keep facts out of the log.
+    ///
+    /// # Panics
+    ///
+    /// In the year 10000, when the four digits run out — a problem this
+    /// crate is content to leave to its successors.
+    #[must_use]
+    pub fn now() -> Self {
+        let elapsed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let seconds = i64::try_from(elapsed.as_secs()).unwrap_or(0);
+        Timestamp::from_unix(seconds).expect("the year is still four digits")
+    }
+
     /// The timestamp, exactly as it stands in the line.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// The civil date a day count since 1970-01-01 falls on — Howard Hinnant's
+/// `civil_from_days`, integer arithmetic all the way down.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (
+        year,
+        u32::try_from(month).expect("a month is 1..=12"),
+        u32::try_from(day).expect("a day is 1..=31"),
+    )
 }
 
 /// How many days `month` has in `year`.
@@ -707,6 +770,23 @@ mod tests {
         let earlier = Timestamp::parse("2026-09-01T21:14:03Z").unwrap();
         let later = Timestamp::parse("2026-09-01T21:14:04Z").unwrap();
         assert!(earlier < later);
+    }
+
+    #[test]
+    fn unix_time_becomes_the_one_shape() {
+        let stamp = |seconds| Timestamp::from_unix(seconds).unwrap();
+        assert_eq!(stamp(0).as_str(), "1970-01-01T00:00:00Z");
+        assert_eq!(stamp(-1).as_str(), "1969-12-31T23:59:59Z");
+        assert_eq!(stamp(951_782_400).as_str(), "2000-02-29T00:00:00Z");
+        assert_eq!(stamp(1_788_297_243).as_str(), "2026-09-01T21:14:03Z");
+        assert!(
+            matches!(Timestamp::from_unix(i64::MAX / 4), Err(Error::Timestamp(_))),
+            "the year has four digits"
+        );
+        assert!(
+            Timestamp::now() >= stamp(1_788_220_800),
+            "the clock stands after 2026-09-01T00:00:00Z, when this test was written"
+        );
     }
 
     #[test]

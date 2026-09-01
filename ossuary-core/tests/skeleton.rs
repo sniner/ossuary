@@ -116,3 +116,41 @@ fn the_skeleton_walks() {
         "truth and query are separate systems, and only one of them was deleted"
     );
 }
+
+#[test]
+fn the_skeleton_walks_from_disk() {
+    let dir = TempDir::new().unwrap();
+    let (log, mut index) = archive(&dir);
+    let content = Store::builder(dir.path().join("content"))
+        .suffix("")
+        .depth(2)
+        .create()
+        .unwrap();
+
+    // A tree on disk, taken in whole.
+    let tree = dir.path().join("in");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("notes.txt"), b"hello world").unwrap();
+    std::fs::write(tree.join("photo.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
+    let run = ossuary_core::ingest(&content, &log, &tree, "atlas.example.net").unwrap();
+    assert_eq!(run.stored, 2);
+
+    // Sealed, folded, asked.
+    log.seal().unwrap().unwrap();
+    index.fold(&log).unwrap();
+    let subject = Subject::parse(&format!(
+        "sha256:{}",
+        immure::Algorithm::Sha256.hash(b"hello world")
+    ))
+    .unwrap();
+    let answer = index.about(&subject).unwrap();
+    assert_eq!(answer.len(), 6, "the six day-one facts");
+
+    // And the subject leads back to the bytes: the archive holds content
+    // and everything known about it, and either finds the other.
+    let digest = immure::Digest::parse(subject.hex()).unwrap();
+    assert_eq!(
+        content.read(&digest).unwrap().as_deref(),
+        Some(&b"hello world"[..])
+    );
+}
