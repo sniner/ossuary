@@ -52,7 +52,8 @@ enum Command {
     Seal,
     /// Everything on the record about one file, oldest first
     About {
-        /// The file's name in the archive: as `sha256:…`, or the bare hex
+        /// The file's name in the archive: as `sha256:…`, or the bare hex —
+        /// a beginning of it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
     },
@@ -137,16 +138,6 @@ fn seal(root: &Path) -> Result<ExitCode> {
 
 fn about(root: &Path, subject: &str) -> Result<ExitCode> {
     let archive = open(root)?;
-    let subject = if subject.contains(':') {
-        Subject::parse(subject)?
-    } else {
-        // The bare hex is enough: the archive knows its own algorithm.
-        Subject::parse(&format!(
-            "{}:{subject}",
-            archive.content().algorithm().name()
-        ))?
-    };
-
     let mut index = archive.index()?;
     let folded = index.fold(archive.log())?;
     if folded.segments > 0 {
@@ -155,6 +146,34 @@ fn about(root: &Path, subject: &str) -> Result<ExitCode> {
             folded.segments
         );
     }
+
+    // The bare hex is enough — the archive knows its own algorithm — and so
+    // is a beginning of it: the index resolves it, like a short commit hash.
+    let algorithm = archive.content().algorithm().name();
+    let bare = subject
+        .strip_prefix(algorithm)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(subject);
+    let subject = if bare.contains(':') {
+        // Another algorithm's name in full: taken at its word.
+        Subject::parse(bare)?
+    } else if let Ok(whole) = Subject::parse(&format!("{algorithm}:{bare}")) {
+        whole
+    } else {
+        match index.matching(algorithm, bare)?.as_slice() {
+            [] => {
+                println!("nothing on the record begins with {bare:?}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            [one] => one.clone(),
+            many => {
+                return Err(anyhow!(
+                    "{bare:?} begins {} names — give more of it to name only one",
+                    many.len()
+                ));
+            }
+        }
+    };
 
     let claims = index.about(&subject)?;
     if claims.is_empty() {

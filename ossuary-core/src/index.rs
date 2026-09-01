@@ -156,6 +156,40 @@ impl Index {
         }
         Ok(claims)
     }
+
+    /// Every subject the log speaks about — as of the last
+    /// [`fold`](Index::fold), the open head included — whose digest begins
+    /// with `hex`, sorted. Case does not matter, the way [`Subject`] itself
+    /// normalises; a `hex` that is a whole digest names at most itself.
+    ///
+    /// This is where an abbreviated name is resolved, and deliberately not
+    /// in the content store: the log may speak about subjects no store
+    /// holds, and the index already has them all in one indexed range.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than sworn
+    /// away.
+    pub fn matching(&self, algorithm: &str, hex: &str) -> Result<Vec<Subject>> {
+        let low = format!("{algorithm}:{}", hex.to_ascii_lowercase());
+        // The half-open range [low, low + "g") holds every digest that
+        // begins with `low` and nothing else: 'g' is the first character
+        // past the hex digits, and a range beats LIKE here — it uses the
+        // index, and a stray '%' in the input stays a character.
+        let high = format!("{low}g");
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT subject FROM claims
+             WHERE subject >= ?1 AND subject < ?2
+             ORDER BY subject",
+        )?;
+        let rows = statement.query_map(params![low, high], |row| row.get::<_, String>(0))?;
+        let mut subjects = Vec::new();
+        for row in rows {
+            subjects.push(Subject::parse(&row?)?);
+        }
+        Ok(subjects)
+    }
 }
 
 /// One segment's claims into the table, in their order.
@@ -238,8 +272,12 @@ mod tests {
     }
 
     fn tag(tag: &str, time: &str) -> Claim {
+        tag_about(subject(), tag, time)
+    }
+
+    fn tag_about(subject: Subject, tag: &str, time: &str) -> Claim {
         Claim::assert(
-            subject(),
+            subject,
             Attribute::parse("user:tag").unwrap(),
             json!(tag),
             Timestamp::parse(time).unwrap(),
@@ -326,6 +364,39 @@ mod tests {
         assert_eq!(claims.len(), 2, "nothing is interpreted away");
         assert!(claims[1].is_retraction());
         assert_eq!(claims[1].value(), Some(&json!("holiday")));
+    }
+
+    #[test]
+    fn a_beginning_names_the_subjects_it_begins() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let near = Subject::parse(
+            "sha256:9f2ac41edd00000000000000000000000000000000000000000000000000ffff",
+        )
+        .unwrap();
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&tag_about(near.clone(), "beach", "2026-09-01T21:14:04Z"))
+            .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.matching("sha256", "9f2ac41e").unwrap(),
+            [subject(), near.clone()],
+            "sealed or still in the head, each once, sorted"
+        );
+        assert_eq!(
+            index.matching("sha256", "9F2AC41ED").unwrap(),
+            [near],
+            "case falls away, the way subjects themselves are spelled"
+        );
+        assert_eq!(index.matching("sha256", "ffff").unwrap(), Vec::new());
+        assert_eq!(
+            index.matching("sha256", "9f2ac41e%").unwrap(),
+            Vec::new(),
+            "a wildcard is a character, and no digest contains one"
+        );
     }
 
     #[test]
