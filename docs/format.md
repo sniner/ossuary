@@ -24,6 +24,7 @@ an archive must survive it.*
 ```
 archive/
     FORMAT          the mark: which generation, and the per-archive constants
+    config.toml     the archive's settings — writers obey it, readers never need it
     content/        immure store — the content blobs
     claims/         immure store — sealed claim segments, and nothing else
     head.jsonl      the one open segment
@@ -59,6 +60,18 @@ directory names, the suffixes (`content/` entries carry none, `claims/`
 entries carry `.seg`), and the claim format below. Whether entries are
 compressed or sealed is not recorded anywhere at all — each file says so
 itself, by its form suffix.
+
+## The configuration
+
+`config.toml` in the root is the archive's own settings — as of generation
+1: which paths ingest leaves out, and whether new content entries are
+compressed. It is write policy, for software putting things *in*; the
+bootstrap rule stays untouched because reading needs none of it — every
+stored file already says its own form. A reader may ignore the file
+entirely, and the file may be absent entirely: no file means nothing is
+excluded and content is stored as it came. Its keys may grow without a new
+generation, but a writer must not act on a config it only partly
+understands.
 
 ## The content store
 
@@ -200,4 +213,4 @@ are *read* — a claim field beyond the six, a different segment header, a
 changed layout — is a new generation: the mark and the segment header exist
 so that a reader refuses what it does not know instead of guessing. What may
 grow freely without a new generation: attribute vocabulary, source kinds,
-and everything under `cache/`.
+the configuration's keys, and everything under `cache/`.

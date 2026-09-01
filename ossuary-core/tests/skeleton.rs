@@ -132,7 +132,14 @@ fn the_skeleton_walks_from_disk() {
     std::fs::create_dir_all(&tree).unwrap();
     std::fs::write(tree.join("notes.txt"), b"hello world").unwrap();
     std::fs::write(tree.join("photo.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
-    let run = ossuary_core::ingest(&content, &log, &tree, "atlas.example.net").unwrap();
+    let run = ossuary_core::ingest(
+        &content,
+        &log,
+        &tree,
+        "atlas.example.net",
+        &ossuary_core::Excludes::none(),
+    )
+    .unwrap();
     assert_eq!(run.stored, 2);
 
     // Sealed, folded, asked.

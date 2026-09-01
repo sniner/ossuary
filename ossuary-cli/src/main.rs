@@ -38,11 +38,12 @@ enum Command {
     },
     /// Take a directory tree in: its files, and their day-one facts
     ///
-    /// Every regular file goes in, and six facts go on the record for each:
-    /// where it came from, on which machine, with which run, how large, what
-    /// kind, and when it last changed. The tree itself is only read. Taking
-    /// the same files in again stores nothing twice — it records that they
-    /// also sat here.
+    /// Every regular file goes in — minus what the archive's config.toml
+    /// excludes — and six facts go on the record for each: where it came
+    /// from, on which machine, with which run, how large, what kind, and
+    /// when it last changed. The tree itself is only read. Taking the same
+    /// files in again stores nothing twice — it records that they also sat
+    /// here.
     Ingest {
         /// What to take in
         #[arg(value_name = "DIR")]
@@ -94,7 +95,7 @@ fn init(root: &Path, algorithm: &str) -> Result<ExitCode> {
     let algorithm: Algorithm = algorithm.parse()?;
     let archive = Archive::create(root, algorithm)?;
     println!(
-        "{}: an empty archive — take files in with `ossuary ingest DIR`",
+        "{}: an empty archive — its settings stand in config.toml; take files in with `ossuary ingest DIR`",
         archive.root().display()
     );
     Ok(ExitCode::SUCCESS)
@@ -106,10 +107,21 @@ fn ingest(root: &Path, tree: &Path) -> Result<ExitCode> {
 
     eprintln!("archive {}", archive.root().display());
     eprintln!("taking in {}", tree.display());
-    let run = ossuary_core::ingest(archive.content(), archive.log(), tree, &host)?;
+    let run = ossuary_core::ingest(
+        archive.content(),
+        archive.log(),
+        tree,
+        &host,
+        archive.config().excludes(),
+    )?;
 
+    let excluded = if run.excluded > 0 {
+        format!(", {} path(s) left out as config.toml asks", run.excluded)
+    } else {
+        String::new()
+    };
     println!(
-        "{} file(s) new to the archive, {} already held — every place they sat is on the record; \
+        "{} file(s) new to the archive, {} already held — every place they sat is on the record{excluded}; \
          {} fact(s) written as run {}",
         run.stored, run.known, run.claims, run.run
     );

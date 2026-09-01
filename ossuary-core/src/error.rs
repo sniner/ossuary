@@ -104,6 +104,21 @@ pub enum Error {
     #[error("{}: the FORMAT mark did not read back — damaged, or not ossuary's", .0.display())]
     BadMark(std::path::PathBuf),
 
+    /// The archive's `config.toml` would not read back.
+    ///
+    /// Strictness is the point: a key this build does not know may be a
+    /// typo or a newer ossuary's knob, and either way applying half a
+    /// write policy is worse than applying none.
+    #[error("{}: not readable as the archive's settings — fix the file, or remove it to run on the defaults\n{trouble}", .path.display())]
+    BadConfig {
+        path: std::path::PathBuf,
+        trouble: String,
+    },
+
+    /// An exclude pattern would not compile into a glob.
+    #[error("not a glob pattern: {pattern:?} — {trouble}")]
+    Pattern { pattern: String, trouble: String },
+
     /// The archive is written in a generation this build does not know.
     ///
     /// Written by a newer ossuary, and healthy: a layout this build has

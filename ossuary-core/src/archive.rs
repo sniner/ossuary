@@ -5,7 +5,8 @@
 //! the constants the stores need to be opened again: the hash algorithm and
 //! the shard depths, which immure deliberately keeps no record of itself.
 //! Everything else under the root is the pieces: `content/` and `claims/`,
-//! the open head, and a `cache/` that answers questions and owes nothing.
+//! the open head, a `config.toml` of settings that reading never needs,
+//! and a `cache/` that answers questions and owes nothing.
 //!
 //! The mark is read before anything else is touched, and a generation this
 //! build does not know is refused for what it is: a layout never seen
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 use immure::{Algorithm, Store};
 use serde::{Deserialize, Serialize};
 
+use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::log::{GENERATION, Log};
@@ -51,24 +53,31 @@ struct Generation {
     generation: u32,
 }
 
-/// An archive in hand: the mark read, the stores described, the log ready.
+/// An archive in hand: the mark read, the settings loaded, the stores
+/// described, the log ready.
 #[derive(Debug)]
 pub struct Archive {
     root: PathBuf,
+    config: Config,
     content: Store,
     log: Log,
 }
 
 impl Archive {
-    /// Begin an empty archive at `root`: the mark, both stores, a `cache/`.
+    /// Begin an empty archive at `root`: the mark, a starter
+    /// `config.toml`, both stores, a `cache/`.
     ///
     /// The algorithm is the one choice that is the archive's own — every
-    /// blob in both stores will be named by it, for good.
+    /// blob in both stores will be named by it, for good. Everything the
+    /// starter configuration spells out is changeable later, by editing
+    /// it; a `config.toml` already standing at `root` is kept, not
+    /// overwritten.
     ///
     /// # Errors
     ///
     /// [`Error::AlreadyArchive`] when a mark already stands at `root`,
-    /// [`Error::Io`] writing the mark, [`Error::Store`] making the stores.
+    /// [`Error::Io`] writing the mark, [`Error::BadConfig`] when a kept
+    /// configuration will not read, [`Error::Store`] making the stores.
     ///
     /// # Panics
     ///
@@ -98,26 +107,35 @@ impl Archive {
         line.push('\n');
         fs::write(&path, line).map_err(io("writing the FORMAT mark"))?;
 
-        let content = content_store(&root, algorithm, CONTENT_DEPTH).create()?;
+        let settings = root.join(config::CONFIG);
+        if !settings.exists() {
+            fs::write(&settings, config::STARTER).map_err(io("writing config.toml"))?;
+        }
+        let config = Config::load(&root)?;
+
+        let content = content_store(&root, algorithm, CONTENT_DEPTH, config.compress()).create()?;
         let claims = claims_store(&root, algorithm, CLAIMS_DEPTH).create()?;
         Ok(Archive {
             log: Log::new(claims, root.join("head.jsonl")),
+            config,
             content,
             root,
         })
     }
 
-    /// Open the archive at `root`: read the mark, describe the stores.
+    /// Open the archive at `root`: read the mark and the settings,
+    /// describe the stores.
     ///
-    /// Touches nothing beyond the mark — describing a store is not making
-    /// one, all the way down.
+    /// Touches nothing beyond the mark and `config.toml` — describing a
+    /// store is not making one, all the way down.
     ///
     /// # Errors
     ///
     /// [`Error::NoArchive`] when there is no mark, [`Error::BadMark`] when
     /// it will not read, [`Error::ArchiveGeneration`] when a newer ossuary
-    /// wrote it, and [`Error::Store`] when the mark names an algorithm this
-    /// build does not know.
+    /// wrote it, [`Error::BadConfig`] when `config.toml` stands but will
+    /// not read, and [`Error::Store`] when the mark names an algorithm
+    /// this build does not know.
     pub fn open(root: impl Into<PathBuf>) -> Result<Archive> {
         let root = root.into();
         let text = match fs::read_to_string(root.join(MARK)) {
@@ -140,11 +158,14 @@ impl Archive {
         }
         let mark: Mark = serde_json::from_str(line).map_err(|_| Error::BadMark(root.clone()))?;
         let algorithm: Algorithm = mark.algorithm.parse()?;
+        let config = Config::load(&root)?;
 
-        let content = content_store(&root, algorithm, mark.content_depth).build()?;
+        let content =
+            content_store(&root, algorithm, mark.content_depth, config.compress()).build()?;
         let claims = claims_store(&root, algorithm, mark.claims_depth).build()?;
         Ok(Archive {
             log: Log::new(claims, root.join("head.jsonl")),
+            config,
             content,
             root,
         })
@@ -154,6 +175,13 @@ impl Archive {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The archive's settings, as `config.toml` holds them — the defaults
+    /// where there is no file to hold them.
+    #[must_use]
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// The content store: what is kept.
@@ -185,12 +213,20 @@ impl Archive {
 }
 
 /// How generation 1 lays out the content store: entries named by digest
-/// alone — what a blob is lives in the log, never in a file name.
-fn content_store(root: &Path, algorithm: Algorithm, depth: usize) -> immure::Builder {
+/// alone — what a blob is lives in the log, never in a file name. Whether
+/// new entries are compressed is the configuration's word; what is already
+/// stored keeps its form, and reading understands both.
+fn content_store(
+    root: &Path,
+    algorithm: Algorithm,
+    depth: usize,
+    compress: bool,
+) -> immure::Builder {
     Store::builder(root.join("content"))
         .suffix("")
         .depth(depth)
         .algorithm(algorithm)
+        .compress(compress)
 }
 
 /// How generation 1 lays out the claims store: only segments, compressed —
@@ -225,6 +261,61 @@ mod tests {
         assert!(root.join("claims").is_dir());
         assert!(root.join("cache").is_dir());
         assert_eq!(archive.root(), root);
+    }
+
+    #[test]
+    fn a_new_archive_spells_its_settings_out() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+
+        let archive = Archive::create(&root, Algorithm::Sha256).unwrap();
+
+        let starter = fs::read_to_string(root.join("config.toml")).unwrap();
+        assert!(starter.contains(".DS_Store"), "the defaults stand visible");
+        assert!(
+            archive.config().excludes().excluded(Path::new(".DS_Store")),
+            "and they are in force from the first ingest"
+        );
+        assert!(!archive.content().compresses());
+    }
+
+    #[test]
+    fn a_config_already_standing_is_kept() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("config.toml"), "[content]\ncompress = true\n").unwrap();
+
+        let archive = Archive::create(&root, Algorithm::Sha256).unwrap();
+
+        assert!(
+            archive.content().compresses(),
+            "init obeys the settings it found, and does not overwrite them"
+        );
+    }
+
+    #[test]
+    fn the_settings_reach_the_content_store() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+        Archive::create(&root, Algorithm::Sha256).unwrap();
+        fs::write(root.join("config.toml"), "[content]\ncompress = true\n").unwrap();
+
+        let archive = Archive::open(&root).unwrap();
+
+        assert!(archive.content().compresses());
+        let (_, entry) = archive.content().add(b"hello world").unwrap();
+        assert!(entry.is_compressed(), "new entries take the settings' form");
+    }
+
+    #[test]
+    fn a_broken_config_is_refused_with_its_name() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+        Archive::create(&root, Algorithm::Sha256).unwrap();
+        fs::write(root.join("config.toml"), "[content]\ncompres = true\n").unwrap();
+
+        assert!(matches!(Archive::open(&root), Err(Error::BadConfig { .. })));
     }
 
     #[test]

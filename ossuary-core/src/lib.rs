@@ -19,6 +19,7 @@
 
 mod archive;
 mod claim;
+mod config;
 mod error;
 mod index;
 mod ingest;
@@ -26,6 +27,7 @@ mod log;
 
 pub use archive::Archive;
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
+pub use config::{Config, Excludes};
 pub use error::{Error, Result};
 pub use immure::Algorithm;
 pub use index::{Folded, Index};

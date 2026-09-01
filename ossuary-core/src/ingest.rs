@@ -19,6 +19,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::claim::{Attribute, Claim, Source, Subject, Timestamp};
+use crate::config::Excludes;
 use crate::error::{Error, Result};
 use crate::log::Log;
 
@@ -36,6 +37,8 @@ pub struct Ingested {
     pub known: usize,
     /// Claims appended to the log.
     pub claims: usize,
+    /// Paths the excludes left out — a directory counts once, unwalked.
+    pub excluded: usize,
     /// What could not be taken in, and why. A walk over a million files
     /// does not forfeit the rest to one unreadable one; what failed is
     /// named here instead.
@@ -58,18 +61,30 @@ pub struct Ingested {
 /// `host` is who this machine says it is — an FQDN where there is one; the
 /// caller knows, this crate does not ask around.
 ///
+/// `excludes` is the archive's word on what never goes in — usually
+/// [`Config::excludes`](crate::Config::excludes). What they match is
+/// counted in [`Ingested::excluded`] and otherwise left in peace: an
+/// excluded directory is not even walked.
+///
 /// # Errors
 ///
 /// Whatever building the first claims can answer. Per-file trouble is not
 /// an error here, and neither is a root that will not resolve: both are
 /// collected in [`Ingested::failed`] while the walk goes on.
-pub fn ingest(content: &Store, log: &Log, root: impl AsRef<Path>, host: &str) -> Result<Ingested> {
+pub fn ingest(
+    content: &Store,
+    log: &Log,
+    root: impl AsRef<Path>,
+    host: &str,
+    excludes: &Excludes,
+) -> Result<Ingested> {
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
         run: Uuid::new_v4().to_string(),
         stored: 0,
         known: 0,
         claims: 0,
+        excluded: 0,
         failed: Vec::new(),
     };
     let root = match fs::canonicalize(root.as_ref()) {
@@ -86,9 +101,17 @@ pub fn ingest(content: &Store, log: &Log, root: impl AsRef<Path>, host: &str) ->
         }
     };
 
-    let mut files = Vec::new();
-    walk(&root, &mut files, &mut result.failed);
-    for path in files {
+    let mut walker = Walk {
+        root: &root,
+        excludes,
+        files: Vec::new(),
+        failed: Vec::new(),
+        excluded: 0,
+    };
+    walker.walk(&root);
+    result.excluded = walker.excluded;
+    result.failed.extend(walker.failed);
+    for path in walker.files {
         match take(content, log, &path, host, &result.run, &source) {
             Ok((status, claims)) => {
                 if status.is_new() {
@@ -198,44 +221,63 @@ fn unix_seconds(time: std::time::SystemTime) -> i64 {
     }
 }
 
-/// Every regular file under `dir`, sorted by name at every level. Symlinks
-/// are skipped, and a directory that will not open is recorded and passed
-/// by rather than ending the walk.
-fn walk(dir: &Path, files: &mut Vec<PathBuf>, failed: &mut Vec<(PathBuf, Error)>) {
-    let trouble = |source| Error::Io {
-        context: format!("{}: walking", dir.display()),
-        source,
-    };
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(source) => {
-            failed.push((dir.to_path_buf(), trouble(source)));
-            return;
+/// The walk in progress: every regular file under the root, sorted by name
+/// at every level, minus what the excludes say never goes in.
+struct Walk<'a> {
+    /// Where the walk began — what the exclude patterns' paths are
+    /// relative to.
+    root: &'a Path,
+    excludes: &'a Excludes,
+    files: Vec<PathBuf>,
+    failed: Vec<(PathBuf, Error)>,
+    excluded: usize,
+}
+
+impl Walk<'_> {
+    /// Walk `dir`. Symlinks are skipped, an excluded path is counted and
+    /// left alone — a directory unwalked — and a directory that will not
+    /// open is recorded and passed by rather than ending the walk.
+    fn walk(&mut self, dir: &Path) {
+        let trouble = |source| Error::Io {
+            context: format!("{}: walking", dir.display()),
+            source,
+        };
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(source) => {
+                self.failed.push((dir.to_path_buf(), trouble(source)));
+                return;
+            }
+        };
+        let mut children = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => children.push(entry),
+                Err(source) => self.failed.push((dir.to_path_buf(), trouble(source))),
+            }
         }
-    };
-    let mut children = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry) => children.push(entry),
-            Err(source) => failed.push((dir.to_path_buf(), trouble(source))),
-        }
-    }
-    children.sort_by_key(std::fs::DirEntry::path);
-    for child in children {
-        let path = child.path();
-        match child.file_type() {
-            Ok(kind) if kind.is_symlink() => {}
-            Ok(kind) if kind.is_dir() => walk(&path, files, failed),
-            Ok(kind) if kind.is_file() => files.push(path),
-            // Sockets, pipes, devices: not content, not an error.
-            Ok(_) => {}
-            Err(source) => failed.push((
-                path.clone(),
-                Error::Io {
-                    context: format!("{}: walking", path.display()),
-                    source,
-                },
-            )),
+        children.sort_by_key(std::fs::DirEntry::path);
+        for child in children {
+            let path = child.path();
+            let relative = path.strip_prefix(self.root).unwrap_or(&path);
+            if self.excludes.excluded(relative) {
+                self.excluded += 1;
+                continue;
+            }
+            match child.file_type() {
+                Ok(kind) if kind.is_symlink() => {}
+                Ok(kind) if kind.is_dir() => self.walk(&path),
+                Ok(kind) if kind.is_file() => self.files.push(path),
+                // Sockets, pipes, devices: not content, not an error.
+                Ok(_) => {}
+                Err(source) => self.failed.push((
+                    path.clone(),
+                    Error::Io {
+                        context: format!("{}: walking", path.display()),
+                        source,
+                    },
+                )),
+            }
         }
     }
 }
@@ -265,6 +307,10 @@ mod tests {
         format!("sha256:{}", Algorithm::Sha256.hash(b"hello world"))
     }
 
+    fn none() -> Excludes {
+        Excludes::none()
+    }
+
     #[test]
     fn a_tree_goes_in_with_its_six_facts_each() {
         let dir = TempDir::new().unwrap();
@@ -278,7 +324,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net").unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &none()).unwrap();
 
         assert_eq!(result.stored, 2);
         assert_eq!(result.known, 0);
@@ -329,7 +375,7 @@ mod tests {
         fs::write(tree.join("first.txt"), b"hello world").unwrap();
         fs::write(tree.join("second.txt"), b"hello world").unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net").unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &none()).unwrap();
 
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
@@ -349,7 +395,7 @@ mod tests {
         fs::write(tree.join("real.txt"), b"content").unwrap();
         std::os::unix::fs::symlink(tree.join("real.txt"), tree.join("alias.txt")).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net").unwrap();
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &none()).unwrap();
 
         assert_eq!(result.stored, 1, "the file, not its alias");
         assert!(result.failed.is_empty());
@@ -368,6 +414,7 @@ mod tests {
             &log,
             tree.join("sub").join(".."),
             "atlas.example.net",
+            &none(),
         )
         .unwrap();
 
@@ -388,11 +435,79 @@ mod tests {
     }
 
     #[test]
+    fn what_the_excludes_name_stays_out_and_is_counted() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("sub")).unwrap();
+        fs::write(tree.join("a.txt"), b"content").unwrap();
+        fs::write(tree.join(".DS_Store"), b"junk").unwrap();
+        fs::write(tree.join("sub").join(".DS_Store"), b"junk below").unwrap();
+        let excludes = Excludes::compile([".DS_Store"]).unwrap();
+
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes).unwrap();
+
+        assert_eq!(result.stored, 1, "the content, not the junk");
+        assert_eq!(result.excluded, 2, "at every level, and on the record");
+        assert!(result.failed.is_empty());
+    }
+
+    #[test]
+    fn an_excluded_directory_is_not_walked() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("node_modules").join("deep")).unwrap();
+        fs::write(tree.join("a.txt"), b"content").unwrap();
+        fs::write(
+            tree.join("node_modules").join("deep").join("b.txt"),
+            b"dependency",
+        )
+        .unwrap();
+        let excludes = Excludes::compile(["node_modules"]).unwrap();
+
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes).unwrap();
+
+        assert_eq!(result.stored, 1);
+        assert_eq!(
+            result.excluded, 1,
+            "the directory counts once; what is under it was never seen"
+        );
+    }
+
+    #[test]
+    fn a_path_pattern_is_relative_to_the_ingested_tree() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("build")).unwrap();
+        fs::create_dir_all(tree.join("src").join("build")).unwrap();
+        fs::write(tree.join("build").join("out"), b"artifact").unwrap();
+        fs::write(tree.join("src").join("build").join("keep"), b"source").unwrap();
+        let excludes = Excludes::compile(["build/**"]).unwrap();
+
+        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes).unwrap();
+
+        assert_eq!(
+            result.stored, 1,
+            "build/ at the top is out, src/build/ is not it"
+        );
+        assert_eq!(result.excluded, 1);
+    }
+
+    #[test]
     fn a_root_that_is_not_there_is_a_named_failure_not_a_crash() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
 
-        let result = ingest(&content, &log, dir.path().join("no-such-tree"), "atlas").unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            dir.path().join("no-such-tree"),
+            "atlas",
+            &none(),
+        )
+        .unwrap();
 
         assert_eq!(result.stored + result.known, 0);
         assert_eq!(result.failed.len(), 1);
