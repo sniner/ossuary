@@ -8,21 +8,24 @@ legal: a claim nobody understands yet is a queue entry, not an error.*
 
 ## Reading rules
 
-**Truth knows no cardinality.** In the log, every attribute is the same
-thing: a bag of standing values. An assertion puts a value in, a
-retraction takes one out, and nothing ever overwrites anything. Whether
-a reader answers with all standing values or only one is a *read rule*,
-declared here per attribute and applied at fold time:
+**Every attribute is a set.** An assertion puts a value in, a
+retraction takes exactly that value out — valueless, it empties the
+attribute — and nothing ever overwrites anything. The answer for an
+attribute is its standing values, deduplicated: what was said twice is
+in the set once. Nothing anywhere declares how many values an attribute
+may hold, because nothing has to: `user:tag` holds several values
+because several were said, and `file:size` holds one because the bytes
+have one size and every honest writer lands on the same element.
 
-- **many** — every standing value counts.
-- **one** — the newest standing value wins; log order breaks ties.
-
-The rule lives here and nowhere else, deliberately. Not in the name
-(`user:tag*`): identifiers carry meaning taxonomy, never read rules — a
-spelling in the log is forever, and a rule must be revisable without the
-log ever having been wrong. Not in a claim field either: cardinality
-depends on the attribute alone, and a fact of the attribute is stated
-once, here — not repeated on every line that uses it.
+**Narrowing is the reader's business.** A view that wants a single MIME
+type for a file picks one — the newest, say, or the best-trusted
+source — and that choice is the view's own policy, applied at query
+time, never the archive's. The set is the honest default answer;
+anything sharper is interpretation, and interpretation does not harden
+into the platform — not into attribute names, not into claim fields,
+not into this software. A question that cares who said a value — the
+extract worklist does — asks the claims themselves, source and all: the
+set is the default view of an attribute, not the only one.
 
 **Extractors speak verbatim.** An extractor is an observer: it records
 what the format says, in the format's own terms —
@@ -33,9 +36,11 @@ and the mapping stands in this document, where it can change without
 touching the log.
 
 **Upgrades re-claim, deliberately.** A new extractor version runs again
-and says again what it found, its source naming the new version. The
-fold supersedes by source prefix — "everything from `extractor:exif/`
-older than 3.0" — and the log keeps every word ever said, which is the
+and says again what it found, its source naming the new version. A
+value said again lands on the element already standing; a value newly
+found joins the set, and a reader that wants only the newest opinion
+narrows by source — "everything from `extractor:exif/` older than
+3.0" — at query time. The log keeps every word ever said, which is the
 point.
 
 **Links are values.** A relation's value is a full subject
@@ -64,7 +69,6 @@ first real need.
 - meaning: the real place a file sat when it was taken in — absolute,
   symlinks and `..` resolved
 - value: string, a path
-- cardinality: many
 - written by: ingest
 
 ### prov:host
@@ -72,7 +76,6 @@ first real need.
 - meaning: who the ingesting machine says it is; an FQDN where there is
   one
 - value: string
-- cardinality: many
 - written by: ingest
 
 ### prov:ingest-run
@@ -80,7 +83,6 @@ first real need.
 - meaning: the run a sighting arrived in — one UUID per run, so
   "arrived together" is exact
 - value: string, a UUID
-- cardinality: many
 - written by: ingest
 
 ### prov:examined
@@ -91,7 +93,6 @@ first real need.
   looked", and covers the extractor whose whole harvest was derived
   content standing elsewhere
 - value: `true` — who looked, and with what, is the claim's source
-- cardinality: many — one standing receipt per source
 - written by: the extract orchestrator (upcoming)
 
 ### file:size
@@ -99,7 +100,6 @@ first real need.
 - meaning: the content's size in bytes — a fact of the bytes, said once,
   on the blob's first day
 - value: number
-- cardinality: one
 - written by: ingest
 
 ### file:mime
@@ -107,17 +107,15 @@ first real need.
 - meaning: what the bytes are, by sniffing — magic bytes, a UTF-8 look
   for plain text, and `application/octet-stream` as the honest shrug
 - value: string, a MIME type
-- cardinality: one
 - written by: ingest; extractors may know better later
 
 ### file:modified
 
 - meaning: the mtime a sighting observed, repeated verbatim — RFC 3339
   UTC with exactly the fractional digits the filesystem told, trailing
-  zeros trimmed, no fraction on a whole second
+  zeros trimmed, no fraction on a whole second. Sightings accrete — a
+  touch, a backup restore, another place: each tells its own time
 - value: string
-- cardinality: many — sightings accrete, and different places tell
-  different times
 - written by: ingest
 
 ### derive:derived-from
@@ -125,12 +123,10 @@ first real need.
 - meaning: what this content came from — stands on the derived blob and
   points at its origin
 - value: string, a full subject
-- cardinality: many
 - written by: extractors (upcoming)
 
 ### user:tag
 
 - meaning: a label the user put on the content
 - value: string
-- cardinality: many
 - written by: user

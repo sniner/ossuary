@@ -11,8 +11,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   content and claims as [immure](https://github.com/sniner/immure) stores, an append-only claim
   log in sealed segments, disposable caches, and recovery with shell tools alone
 - **Attribute vocabulary** — [docs/vocabulary.md](docs/vocabulary.md): what each attribute means
-  and how standing claims become an answer — read rules (cardinality) live there, not in names
-  or claim fields; extractors record verbatim, interpretation stays at query time
+  and how standing claims become an answer — every attribute is a set of standing values,
+  deduplicated at fold time; narrowing to one value is the reader's own policy; extractors
+  record verbatim, interpretation stays at query time
 - **`ossuary init`** begins an archive — or completes one already standing: nothing standing is
   remade or edited, and what is missing (today: `config.toml`) is added
 - **`config.toml`** in the archive root: `[ingest] exclude` glob patterns (`.DS_Store` and
