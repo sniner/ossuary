@@ -11,10 +11,18 @@
 //! folded forever, and "what is new" is the set difference of digests. Only
 //! the open head is folded afresh each time, because only the head moves.
 //!
-//! What the fold deliberately does *not* do is interpret: retractions are
-//! rows like any other, and no supersession policy is baked in. Which claim
-//! wins is a question for query time — policies change, and a policy in the
-//! schema would make the cache authoritative in the one way that matters.
+//! The fold keeps two tables. `claims` is the history, verbatim: every
+//! claim a row, retractions included, in log order — what
+//! [`about`](Index::about) reads. `standing` is the folded answer: one row
+//! per standing (subject, attribute, value), the set semantics as a
+//! primary key — an assertion is `INSERT OR IGNORE`, a retraction a
+//! `DELETE` — and what [`find`](Index::find) reads. What stays deliberately
+//! un-baked is *narrowing*: which of several standing values a reader
+//! prefers is query-time policy, and the sets carry them all.
+//!
+//! Standing follows the log forward, the only direction a log moves; a
+//! `head.jsonl` edited backwards leaves it stale until the cache is
+//! deleted and refolded — the cure every cache here has.
 
 use std::path::Path;
 
@@ -23,6 +31,11 @@ use rusqlite::{Connection, params};
 use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::log::Log;
+
+/// The cache schema's generation, kept in `PRAGMA user_version`: bumped
+/// whenever the tables change shape, so an older file is recognised and
+/// emptied instead of half-understood.
+const SCHEMA: i64 = 2;
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +66,18 @@ impl Index {
     /// [`Error::Index`] when `SQLite` cannot open or prepare it.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open(path)?;
+        // The cache's own generation. A file from an older schema is not
+        // migrated but emptied — it is a cache, and the next fold rebuilds
+        // it from the log for the cost of one slow first answer.
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version != SCHEMA {
+            connection.execute_batch(&format!(
+                "DROP TABLE IF EXISTS claims;
+                 DROP TABLE IF EXISTS segments;
+                 DROP TABLE IF EXISTS standing;
+                 PRAGMA user_version = {SCHEMA};"
+            ))?;
+        }
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS claims (
                  subject   TEXT NOT NULL,
@@ -69,7 +94,15 @@ impl Index {
              CREATE TABLE IF NOT EXISTS segments (
                  digest TEXT PRIMARY KEY,
                  first  TEXT
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS standing (
+                 subject   TEXT NOT NULL,
+                 attribute TEXT NOT NULL,
+                 value     TEXT NOT NULL,
+                 PRIMARY KEY (subject, attribute, value)
+             );
+             CREATE INDEX IF NOT EXISTS standing_lookup
+                 ON standing (attribute, value);",
         )?;
         Ok(Index { connection })
     }
@@ -157,6 +190,99 @@ impl Index {
         Ok(claims)
     }
 
+    /// Every subject on which all `terms` stand and none of `missing` does,
+    /// sorted — as of the last [`fold`](Index::fold), the open head
+    /// included.
+    ///
+    /// A term is an attribute and a value: the value matches the standing
+    /// spelling — a string, or the bare JSON scalar for numbers and
+    /// booleans — and may carry `*` and `?`, which match within string
+    /// values only. Every term must hold. Each entry of `missing` names an
+    /// attribute the subject must lack; ending in `:` it names a whole
+    /// namespace. With no terms at all, `missing` is asked of every
+    /// subject the log speaks about.
+    ///
+    /// Only *standing* values answer: a retracted value finds nothing,
+    /// however long its claim stays in the log — this is where the set
+    /// semantics first faces a reader.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; an entry of `missing` that fits
+    /// neither the attribute grammar nor `namespace:` is refused with the
+    /// grammar's own error.
+    pub fn find(&self, terms: &[(Attribute, String)], missing: &[String]) -> Result<Vec<Subject>> {
+        if terms.is_empty() && missing.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut sql = String::new();
+        let mut params: Vec<String> = Vec::new();
+        if terms.is_empty() {
+            sql.push_str("SELECT DISTINCT subject FROM standing");
+        }
+        for (position, (attribute, pattern)) in terms.iter().enumerate() {
+            if position > 0 {
+                sql.push_str(" INTERSECT ");
+            }
+            if pattern.contains('*') || pattern.contains('?') {
+                // The stored string spelling is quoted JSON, so a pattern
+                // globbed inside quotes matches string values and nothing
+                // else — numbers were promised no wildcards.
+                sql.push_str("SELECT subject FROM standing WHERE attribute = ? AND value GLOB ?");
+                params.push(attribute.as_str().to_string());
+                params.push(format!("\"{pattern}\""));
+            } else {
+                match serde_json::from_str::<Value>(pattern) {
+                    // The bare word is a JSON scalar — a number, a
+                    // boolean: it may stand as itself or as a string, and
+                    // either spelling answers.
+                    Ok(scalar) if !scalar.is_string() => {
+                        sql.push_str(
+                            "SELECT subject FROM standing WHERE attribute = ? AND value IN (?, ?)",
+                        );
+                        params.push(attribute.as_str().to_string());
+                        params.push(scalar.to_string());
+                        params.push(Value::String(pattern.clone()).to_string());
+                    }
+                    _ => {
+                        sql.push_str(
+                            "SELECT subject FROM standing WHERE attribute = ? AND value = ?",
+                        );
+                        params.push(attribute.as_str().to_string());
+                        params.push(Value::String(pattern.clone()).to_string());
+                    }
+                }
+            }
+        }
+        for absent in missing {
+            sql.push_str(" EXCEPT SELECT subject FROM standing WHERE ");
+            if let Some(namespace) = absent.strip_suffix(':') {
+                // The grammar has one door; a prefix walks through it
+                // wearing a dummy name.
+                Attribute::parse(&format!("{namespace}:a"))?;
+                // ';' is the character after ':', and no attribute
+                // contains one: the half-open range is the namespace.
+                sql.push_str("attribute >= ? AND attribute < ?");
+                params.push(format!("{namespace}:"));
+                params.push(format!("{namespace};"));
+            } else {
+                let attribute = Attribute::parse(absent)?;
+                sql.push_str("attribute = ?");
+                params.push(attribute.as_str().to_string());
+            }
+        }
+        sql.push_str(" ORDER BY subject");
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut subjects = Vec::new();
+        for row in rows {
+            subjects.push(Subject::parse(&row?)?);
+        }
+        Ok(subjects)
+    }
+
     /// Every subject still waiting for an extractor: standing `file:mime`
     /// among `mimes`, and no [`prov:examined`](crate::EXAMINED)
     /// receipt from `source` — as of the last [`fold`](Index::fold), the
@@ -241,16 +367,27 @@ impl Index {
     }
 }
 
-/// One segment's claims into the table, in their order.
+/// One segment's claims into the tables, in their order: every claim a
+/// history row, and each one folded into `standing` — an assertion puts
+/// the value in (the primary key deduplicates), a retraction takes it
+/// out, a valueless retraction empties the attribute. All three are
+/// idempotent, which is what lets the head be applied afresh each fold.
 fn insert(transaction: &rusqlite::Transaction<'_>, segment: &str, claims: &[Claim]) -> Result<()> {
-    let mut statement = transaction.prepare(
+    let mut history = transaction.prepare(
         "INSERT INTO claims
              (subject, attribute, value, time, source, retract, segment, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
+    let mut put = transaction.prepare(
+        "INSERT OR IGNORE INTO standing (subject, attribute, value) VALUES (?1, ?2, ?3)",
+    )?;
+    let mut take = transaction
+        .prepare("DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3")?;
+    let mut empty =
+        transaction.prepare("DELETE FROM standing WHERE subject = ?1 AND attribute = ?2")?;
     for (position, claim) in claims.iter().enumerate() {
         let position = i64::try_from(position).expect("fewer claims than i64 can count");
-        statement.execute(params![
+        history.execute(params![
             claim.subject().as_str(),
             claim.attribute().as_str(),
             claim.value().map(Value::to_string),
@@ -260,6 +397,21 @@ fn insert(transaction: &rusqlite::Transaction<'_>, segment: &str, claims: &[Clai
             segment,
             position,
         ])?;
+        let subject = claim.subject().as_str();
+        let attribute = claim.attribute().as_str();
+        match (claim.value(), claim.is_retraction()) {
+            (Some(value), false) => {
+                put.execute(params![subject, attribute, value.to_string()])?;
+            }
+            (Some(value), true) => {
+                take.execute(params![subject, attribute, value.to_string()])?;
+            }
+            (None, true) => {
+                empty.execute(params![subject, attribute])?;
+            }
+            // A claim without value and without retract cannot be built.
+            (None, false) => {}
+        }
     }
     Ok(())
 }
@@ -445,6 +597,273 @@ mod tests {
             index.matching("sha256", "9f2ac41e%").unwrap(),
             Vec::new(),
             "a wildcard is a character, and no digest contains one"
+        );
+    }
+
+    fn say(subject: &Subject, attribute: &str, value: serde_json::Value, time: &str) -> Claim {
+        Claim::assert(
+            subject.clone(),
+            Attribute::parse(attribute).unwrap(),
+            value,
+            Timestamp::parse(time).unwrap(),
+            Source::parse("user").unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn term(attribute: &str, pattern: &str) -> (Attribute, String) {
+        (Attribute::parse(attribute).unwrap(), pattern.to_string())
+    }
+
+    #[test]
+    fn a_value_said_twice_stands_once() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.append(&tag("holiday", "2026-09-02T09:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
+            [subject()],
+            "the set holds it once, however often it was said"
+        );
+        assert_eq!(
+            index.about(&subject()).unwrap().len(),
+            2,
+            "while the history keeps every word"
+        );
+    }
+
+    #[test]
+    fn a_retracted_value_no_longer_answers() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.append(&tag("crete", "2026-09-01T21:14:04Z")).unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("holiday"),
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(index.find(&[term("user:tag", "holiday")], &[]).unwrap(), []);
+        assert_eq!(
+            index.find(&[term("user:tag", "crete")], &[]).unwrap(),
+            [subject()],
+            "the neighbour value stands untouched"
+        );
+    }
+
+    #[test]
+    fn a_valueless_retraction_empties_the_attribute() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.append(&tag("crete", "2026-09-01T21:14:04Z")).unwrap();
+        log.append(&Claim::retract_attribute(
+            subject(),
+            Attribute::parse("user:tag").unwrap(),
+            Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+            Source::parse("user").unwrap(),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(index.find(&[term("user:tag", "crete")], &[]).unwrap(), []);
+    }
+
+    #[test]
+    fn a_retraction_seen_once_holds_across_refolds() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        // The assertion seals; the retraction stays in the open head,
+        // which every fold applies afresh.
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("holiday"),
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        index.fold(&log).unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
+            [],
+            "the sealed assertion is folded once and must not resurface"
+        );
+    }
+
+    #[test]
+    fn find_needs_every_term_to_stand() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let other = Subject::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "file:mime",
+            json!("image/jpeg"),
+            "2026-09-01T21:14:03Z",
+        ))
+        .unwrap();
+        log.append(&tag("holiday", "2026-09-01T21:14:04Z")).unwrap();
+        log.append(&say(
+            &other,
+            "file:mime",
+            json!("image/jpeg"),
+            "2026-09-01T21:14:05Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(
+                    &[term("file:mime", "image/jpeg"), term("user:tag", "holiday")],
+                    &[]
+                )
+                .unwrap(),
+            [subject()],
+            "both terms, one subject; the untagged jpeg is not it"
+        );
+    }
+
+    #[test]
+    fn a_pattern_matches_within_string_values_only() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&say(
+            &subject(),
+            "prov:ingest-path",
+            json!("/photos/2019/crete/beach.jpg"),
+            "2026-09-01T21:14:03Z",
+        ))
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "file:size",
+            json!(2019),
+            "2026-09-01T21:14:03Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(&[term("prov:ingest-path", "*crete*")], &[])
+                .unwrap(),
+            [subject()]
+        );
+        assert_eq!(
+            index.find(&[term("file:size", "20*")], &[]).unwrap(),
+            [],
+            "numbers were promised no wildcards"
+        );
+        assert_eq!(
+            index.find(&[term("file:size", "2019")], &[]).unwrap(),
+            [subject()],
+            "while the exact number answers"
+        );
+    }
+
+    #[test]
+    fn missing_names_what_a_subject_lacks() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let bare = Subject::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "file:mime",
+            json!("image/jpeg"),
+            "2026-09-01T21:14:03Z",
+        ))
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "exif:make",
+            json!("Google"),
+            "2026-09-01T21:14:03Z",
+        ))
+        .unwrap();
+        log.append(&say(
+            &bare,
+            "file:mime",
+            json!("image/jpeg"),
+            "2026-09-01T21:14:04Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(&[term("file:mime", "image/jpeg")], &["exif:".to_string()])
+                .unwrap(),
+            std::slice::from_ref(&bare),
+            "the namespace prefix names the lack"
+        );
+        assert_eq!(
+            index.find(&[], &["exif:make".to_string()]).unwrap(),
+            [bare],
+            "with no terms, missing is asked of every subject"
+        );
+    }
+
+    #[test]
+    fn an_older_cache_is_emptied_and_refolds() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let path = {
+            let cache = dir.path().join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            cache.join("index.sqlite")
+        };
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        {
+            let mut index = Index::open(&path).unwrap();
+            index.fold(&log).unwrap();
+        }
+        // An index file from before this schema announces an older
+        // generation; opening it starts over instead of guessing.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 0")
+            .unwrap();
+
+        let mut index = Index::open(&path).unwrap();
+        let folded = index.fold(&log).unwrap();
+        assert_eq!(folded.segments, 1, "the emptied cache folds from scratch");
+        assert_eq!(
+            index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
+            [subject()]
         );
     }
 
