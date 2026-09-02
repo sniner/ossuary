@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Algorithm, Archive, Error, Subject};
 
+mod extract;
 mod output;
 
 #[derive(Parser)]
@@ -59,6 +60,21 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
+    /// Run one extractor over every file it has not yet examined
+    ///
+    /// NAME names the program: `ossuary extract exif` runs
+    /// `ossuary-extract-exif` from PATH. The extractor reads each file's
+    /// bytes and tells the archive what it found; every finding goes on
+    /// the record under the extractor's own name, and every examined
+    /// file gets a receipt — found something or not — so a repeated run
+    /// costs only what is new. Files of kinds the extractor does not
+    /// read are never touched, and a new extractor version looks at
+    /// everything again.
+    Extract {
+        /// Which extractor to run: the part after `ossuary-extract-`
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
     /// Close the open segment; its claims become part of the sealed log
     Seal,
     /// Everything on the record about one file, oldest first
@@ -99,6 +115,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
         Command::Ingest { path, full } => ingest(&cli.archive, &path, full),
+        Command::Extract { name } => extract::extract(&cli.archive, &name),
         Command::Seal => seal(&cli.archive),
         Command::About { subject } => about(&cli.archive, &subject),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
@@ -106,7 +123,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 /// The archive, or the way to one.
-fn open(root: &Path) -> Result<Archive> {
+pub(crate) fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
             "{}: not an ossuary archive — stand in one, name it with --archive, or begin one with `ossuary init`",

@@ -31,3 +31,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   beginning of the digest is enough while it names only one file
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
   digests resolve against the content store, from six characters up
+- **`ossuary extract NAME`** runs one extractor — its own program, `ossuary-extract-NAME` found
+  on PATH — over every file of a kind it reads that it has not examined yet: findings go on the
+  record under the extractor's name, and every examined file gets a receipt, found something or
+  not, so a repeated run costs only what is new and a new extractor version looks at everything
+  again. The pipe protocol, open to any language, is [docs/extractors.md](docs/extractors.md)
+- **`ossuary-extract-exif`** — the first extractor: EXIF fields verbatim, tag names kebab-cased
+  under `exif:`, values as the format stores them (`"2019:07:14 11:02:41"`, `"28/10"`)

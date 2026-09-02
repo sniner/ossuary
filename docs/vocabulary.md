@@ -55,8 +55,7 @@ in its source.
 - `file:` — the bytes as observed: the facts any format has on day one
 - `derive:` — relations between content: what came from what
 - `user:` — what the user says; the archive takes their word
-- `exif:` — verbatim EXIF fields, as the first extractor reads them
-  (upcoming)
+- `exif:` — verbatim EXIF fields, as `ossuary-extract-exif` reads them
 
 Subject prefixes other than hash algorithms stay reserved (see the
 format paper); vocabulary for subjects that are not blobs waits for the
@@ -93,7 +92,7 @@ first real need.
   looked", and covers the extractor whose whole harvest was derived
   content standing elsewhere
 - value: `true` — who looked, and with what, is the claim's source
-- written by: the extract orchestrator (upcoming)
+- written by: `ossuary extract`
 
 ### file:size
 
@@ -130,3 +129,13 @@ first real need.
 - meaning: a label the user put on the content
 - value: string
 - written by: user
+
+### exif:…
+
+- meaning: one EXIF field, verbatim — the tag name kebab-cased
+  (`exif:date-time-original`, `exif:f-number`), the value as the format
+  stores it: `"2019:07:14 11:02:41"`, `"28/10"`. Never normalized here;
+  what "the creation date" is stays a query-time mapping
+- value: text as text, numbers as numbers, rationals as
+  `numerator/denominator` — one value bare, several as a list
+- written by: ossuary-extract-exif
