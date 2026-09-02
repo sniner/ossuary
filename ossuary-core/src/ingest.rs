@@ -61,7 +61,8 @@ pub struct Ingested {
 /// place, not the way it was typed), `prov:host`, `prov:ingest-run`,
 /// `file:size`, `file:mime` — by magic bytes, with a UTF-8 look for plain
 /// text and `application/octet-stream` when nothing answers — and
-/// `file:modified` where the filesystem has an mtime to tell.
+/// `file:modified` where the filesystem has an mtime to tell — repeated at
+/// the precision it was observed, fractional seconds and all.
 ///
 /// Bytes the store already holds get their provenance and mtime only.
 /// Another place they sat is new knowledge; their size and kind describe
@@ -241,8 +242,7 @@ fn take(
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()
-        .map(unix_seconds)
-        .and_then(|seconds| Timestamp::from_unix(seconds).ok());
+        .and_then(modified_value);
 
     let (status, entry) = content.add(&bytes)?;
     let subject = Subject::parse(&format!(
@@ -285,7 +285,7 @@ fn take(
         claims.push(fact(
             &subject,
             "file:modified",
-            json!(modified.as_str()),
+            json!(modified),
             &time,
             source,
         )?);
@@ -326,12 +326,46 @@ fn mime(bytes: &[u8]) -> String {
         .unwrap_or_else(|| "application/octet-stream".to_string())
 }
 
-/// Unix time of a moment the filesystem reported, negative before 1970.
-fn unix_seconds(time: std::time::SystemTime) -> i64 {
-    match time.duration_since(std::time::UNIX_EPOCH) {
-        Ok(elapsed) => i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX),
-        Err(before) => -i64::try_from(before.duration().as_secs()).unwrap_or(i64::MAX),
+/// The moment the filesystem reported, spelled as the RFC 3339 instant it
+/// is — at the precision it was observed: every fractional digit the mtime
+/// carries, trailing zeros trimmed, no fraction at all on a whole second.
+/// APFS speaks in nanoseconds and FAT in whole seconds, and the claim
+/// repeats what was said instead of rounding it into a shape. This is what
+/// lets the walk's memory, which compares nanoseconds, be rebuilt from the
+/// log without losing a digit on the way.
+///
+/// Deliberately not a [`Timestamp`]: that type is claim time — when
+/// something was *said*, whole seconds, because sub-second wallclock
+/// across hosts is precision that does not exist. An mtime is an observed
+/// fact about a file, and observation is repeated verbatim.
+///
+/// `None` when the year falls outside 0000–9999, like
+/// [`Timestamp::from_unix`]: a clock that broken tells no mtime.
+fn modified_value(time: std::time::SystemTime) -> Option<String> {
+    let (seconds, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => (
+            i64::try_from(elapsed.as_secs()).ok()?,
+            elapsed.subsec_nanos(),
+        ),
+        Err(before) => {
+            let before = before.duration();
+            let seconds = i64::try_from(before.as_secs()).ok()?;
+            if before.subsec_nanos() == 0 {
+                (-seconds, 0)
+            } else {
+                // 0.3s before the epoch is 23:59:59.7 the second before.
+                (-seconds - 1, 1_000_000_000 - before.subsec_nanos())
+            }
+        }
+    };
+    let whole = Timestamp::from_unix(seconds).ok()?;
+    let whole = whole.as_str();
+    if nanos == 0 {
+        return Some(whole.to_string());
     }
+    let fraction = format!("{nanos:09}");
+    let fraction = fraction.trim_end_matches('0');
+    Some(format!("{}.{fraction}Z", &whole[..whole.len() - 1]))
 }
 
 /// The same moment in nanoseconds — the finest comparison the filesystem
@@ -724,6 +758,70 @@ mod tests {
             .and_then(|value| value.as_str().map(str::to_string))
             .unwrap();
         assert!(path.ends_with("/solo.txt"));
+    }
+
+    #[test]
+    fn a_modified_value_keeps_the_observed_precision() {
+        let at = |seconds, nanos| std::time::UNIX_EPOCH + std::time::Duration::new(seconds, nanos);
+        assert_eq!(
+            modified_value(at(1_700_000_000, 0)).unwrap(),
+            "2023-11-14T22:13:20Z",
+            "a whole second carries no fraction"
+        );
+        assert_eq!(
+            modified_value(at(1_700_000_000, 500_000_000)).unwrap(),
+            "2023-11-14T22:13:20.5Z",
+            "trailing zeros are trimmed, not padded"
+        );
+        assert_eq!(
+            modified_value(at(1_700_000_000, 123_456_789)).unwrap(),
+            "2023-11-14T22:13:20.123456789Z",
+            "every observed digit survives"
+        );
+    }
+
+    #[test]
+    fn a_moment_before_the_epoch_still_tells_its_fraction() {
+        let time = std::time::UNIX_EPOCH - std::time::Duration::new(0, 300_000_000);
+        assert_eq!(modified_value(time).unwrap(), "1969-12-31T23:59:59.7Z");
+    }
+
+    #[test]
+    fn a_clock_beyond_the_four_digits_tells_no_mtime() {
+        // 10000-01-01T00:00:00Z: the year the format's four digits run out.
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(253_402_300_800);
+        assert_eq!(modified_value(time), None);
+    }
+
+    #[test]
+    fn the_recorded_mtime_is_the_one_observed() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let file = dir.path().join("dated.txt");
+        fs::write(&file, b"dated content").unwrap();
+        let mtime = std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_000);
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+
+        ingest(&content, &log, &file, "atlas.example.net", &none(), None).unwrap();
+
+        let value = log
+            .head()
+            .unwrap()
+            .iter()
+            .find(|claim| claim.attribute().as_str() == "file:modified")
+            .and_then(|claim| claim.value())
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            value,
+            json!("2023-11-14T22:13:20.123456Z"),
+            "the claim repeats the filesystem verbatim"
+        );
     }
 
     #[test]

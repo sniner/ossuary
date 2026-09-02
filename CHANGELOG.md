@@ -18,7 +18,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   file means the defaults; an unknown key is refused rather than half-applied
 - **`ossuary ingest PATH`** takes a directory tree — or a single file — in: every regular file
   into the content store, six day-one claims per new blob into the log — a blob met again gets
-  its provenance only, and every place it sat goes on the record. A repeated run remembers what
+  its provenance only, and every place it sat goes on the record; the mtime is recorded at the
+  precision the filesystem observed it. A repeated run remembers what
   it already observed (in `cache/`) and leaves unchanged files in peace: not read, not hashed,
   no claims; `--full` looks at everything anew
 - **`ossuary seal`** closes the open segment; its claims become part of the sealed log
