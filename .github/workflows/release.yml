@@ -1,0 +1,228 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The workspace ships two programs; every build, strip and stage step
+  # walks this list.
+  BINARIES: ossuary ossuary-extract-exif
+
+jobs:
+  verify-version:
+    # Tag-pushes only: refuse to build a release whose git tag does not match
+    # `[workspace.package].version` in Cargo.toml. Catches the common "tagged
+    # v0.2.0 but forgot to bump Cargo.toml" mistake before any build minutes
+    # are spent.
+    name: Verify tag matches Cargo.toml version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare git tag with [workspace.package].version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(awk '
+              /^\[workspace\.package\]/ { in_pkg=1; next }
+              /^\[/                     { in_pkg=0 }
+              in_pkg && /^[[:space:]]*version[[:space:]]*=/ {
+                  gsub(/^[[:space:]]*version[[:space:]]*=[[:space:]]*"/, "")
+                  gsub(/".*$/, "")
+                  print
+                  exit
+              }
+          ' Cargo.toml)
+          echo "Git tag (stripped):  $tag"
+          echo "Cargo.toml version:  $pkg"
+          if [ "$tag" != "$pkg" ]; then
+              echo "::error::Git tag v$tag does not match [workspace.package].version $pkg — bump Cargo.toml before tagging."
+              exit 1
+          fi
+          echo "OK: tag and Cargo.toml version match."
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify-version
+    # Run when the gate passed, or when it was skipped (workflow_dispatch with no
+    # tag — useful as a manual smoke build).
+    if: ${{ always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped') }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            apt_packages: musl-tools
+            asset_suffix: x86_64-linux-musl
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            apt_packages: musl-tools
+            asset_suffix: aarch64-linux-musl
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install apt packages
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
+
+      - name: Build the workspace
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Verify static linkage
+        if: contains(matrix.target, 'musl')
+        run: |
+          for bin in $BINARIES; do
+            BIN=target/${{ matrix.target }}/release/$bin
+            file "$BIN"
+            # file(1) reports musl binaries as "statically linked" (classic) or
+            # "static-pie linked" (modern PIE). Accept both.
+            if ! file "$BIN" | grep -qE "static(ally|-pie)? linked"; then
+              echo "ERROR: $bin is not statically linked"
+              exit 1
+            fi
+            echo "OK: $(du -h "$BIN" | cut -f1) statically linked $bin"
+          done
+
+      - name: Strip release binaries
+        run: |
+          for bin in $BINARIES; do
+            strip "target/${{ matrix.target }}/release/$bin"
+          done
+
+      - name: Stage binaries with versioned names
+        run: |
+          mkdir -p dist
+          for bin in $BINARIES; do
+            cp "target/${{ matrix.target }}/release/$bin" \
+               "dist/$bin-${GITHUB_REF_NAME}-${{ matrix.asset_suffix }}"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ossuary-${{ matrix.asset_suffix }}
+          path: dist/ossuary*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    # Universal binaries: both Apple targets built on one arm64 runner, merged
+    # with lipo. Kept out of the Linux matrix — the steps (two targets, lipo,
+    # no static-linkage check) share almost nothing with the musl builds.
+    name: Build macOS universal
+    needs: verify-version
+    if: ${{ always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped') }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+
+      - name: Build the workspace (both architectures)
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Merge into universal binaries
+        run: |
+          mkdir -p dist
+          for bin in $BINARIES; do
+            lipo -create \
+              "target/aarch64-apple-darwin/release/$bin" \
+              "target/x86_64-apple-darwin/release/$bin" \
+              -output "dist/$bin-${GITHUB_REF_NAME}-macos-universal"
+            strip "dist/$bin-${GITHUB_REF_NAME}-macos-universal"
+          done
+
+      - name: Verify universal binaries
+        run: |
+          for bin in $BINARIES; do
+            BIN="dist/$bin-${GITHUB_REF_NAME}-macos-universal"
+            lipo -archs "$BIN"
+            for arch in x86_64 arm64; do
+              if ! lipo -archs "$BIN" | grep -qw "$arch"; then
+                echo "ERROR: $arch slice missing from $bin"
+                exit 1
+              fi
+            done
+            echo "OK: $(du -h "$BIN" | cut -f1) universal $bin"
+          done
+          # Smoke test: the arm64 slices run on this runner. The extractor has
+          # no --version; --identify is its way of saying who it is.
+          "dist/ossuary-${GITHUB_REF_NAME}-macos-universal" --version
+          "dist/ossuary-extract-exif-${GITHUB_REF_NAME}-macos-universal" --identify
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ossuary-macos-universal
+          path: dist/ossuary*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -la dist/
+
+      - name: Extract release notes from CHANGELOG.md
+        # Release notes = the CHANGELOG section for this version. Single source of
+        # truth: the curated changelog, not a separate release-commit body.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+              $0 ~ "^## \\[" ver "\\]" { grab=1; next }
+              grab && /^## \[/          { exit }
+              grab                      { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+              echo "::error::No CHANGELOG.md section found for [$version] — add one before tagging."
+              exit 1
+          fi
+          echo "----- release notes -----"
+          cat release-notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            dist/ossuary*
