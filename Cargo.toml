@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["ossuary-cli", "ossuary-core"]
+members = ["ossuary-cli", "ossuary-core", "ossuary-extract-exif"]
 
 [workspace.package]
 version = "0.1.0"

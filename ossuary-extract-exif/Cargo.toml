@@ -1,0 +1,17 @@
+[package]
+name = "ossuary-extract-exif"
+description = "EXIF extractor for ossuary archives, speaking the extractor protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-extract-exif"
+path = "src/main.rs"
+
+[dependencies]
+exif = { package = "kamadak-exif", version = "0.6.1" }
+serde_json = "1.0.151"
