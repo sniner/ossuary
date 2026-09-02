@@ -157,6 +157,55 @@ impl Index {
         Ok(claims)
     }
 
+    /// Every subject still waiting for an extractor: standing `file:mime`
+    /// among `mimes`, and no [`prov:examined`](crate::EXAMINED)
+    /// receipt from `source` — as of the last [`fold`](Index::fold), the
+    /// open head included. Sorted, so a run walks the same order twice.
+    ///
+    /// This is the log informing *effort*, never truth: whether a file is
+    /// offered again is decided here, what an extractor says about it never
+    /// is. Retracted claims do not count on either side of the test.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than sworn
+    /// away.
+    pub fn worklist(&self, mimes: &[String], source: &Source) -> Result<Vec<Subject>> {
+        if mimes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let holes = vec!["?"; mimes.len()].join(", ");
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT DISTINCT subject FROM claims
+             WHERE attribute = 'file:mime' AND retract = 0
+               AND value IN ({holes})
+               AND subject NOT IN (
+                   SELECT subject FROM claims
+                    WHERE attribute = 'prov:examined'
+                      AND source = ? AND retract = 0)
+             ORDER BY subject"
+        ))?;
+        // The value column holds values as JSON, so a MIME type is
+        // compared in its stored spelling: quoted.
+        let quoted: Vec<String> = mimes
+            .iter()
+            .map(|mime| Value::String(mime.clone()).to_string())
+            .collect();
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        for mime in &quoted {
+            params.push(mime);
+        }
+        let source = source.as_str().to_string();
+        params.push(&source);
+        let rows = statement.query_map(params.as_slice(), |row| row.get::<_, String>(0))?;
+        let mut subjects = Vec::new();
+        for row in rows {
+            subjects.push(Subject::parse(&row?)?);
+        }
+        Ok(subjects)
+    }
+
     /// Every subject the log speaks about — as of the last
     /// [`fold`](Index::fold), the open head included — whose digest begins
     /// with `hex`, sorted. Case does not matter, the way [`Subject`] itself
