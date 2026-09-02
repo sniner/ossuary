@@ -31,6 +31,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   beginning of the digest is enough while it names only one file
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
   digests resolve against the content store, from six characters up
+- **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
+  only read — and says whether the archive already holds it; works before an ingest as well as
+  after
 - **`ossuary extract NAME`** runs one extractor — its own program, `ossuary-extract-NAME` found
   on PATH — over every file of a kind it reads that it has not examined yet: findings go on the
   record under the extractor's name, and every examined file gets a receipt, found something or

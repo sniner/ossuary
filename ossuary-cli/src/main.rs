@@ -84,6 +84,17 @@ enum Command {
         #[arg(value_name = "SUBJECT")]
         subject: String,
     },
+    /// The name a file answers to in the archive
+    ///
+    /// Hashes the file the way the archive names content — the file is
+    /// only read, never taken in — and says whether the archive already
+    /// holds those bytes. Works before an ingest as well as after: the
+    /// name is the bytes' own, not something an ingest hands out.
+    Id {
+        /// The file to name
+        #[arg(value_name = "FILE")]
+        path: PathBuf,
+    },
     /// One file's bytes, back out of the archive
     ///
     /// The bytes come out exactly as they went in, to stdout, ready to
@@ -118,6 +129,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Extract { name } => extract::extract(&cli.archive, &name),
         Command::Seal => seal(&cli.archive),
         Command::About { subject } => about(&cli.archive, &subject),
+        Command::Id { path } => id(&cli.archive, &path),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
     }
 }
@@ -289,6 +301,22 @@ fn about(root: &Path, subject: &str) -> Result<ExitCode> {
         for claim in &claims {
             println!("{}", output::line(claim));
         }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn id(root: &Path, path: &Path) -> Result<ExitCode> {
+    let archive = open(root)?;
+    let algorithm = archive.content().algorithm();
+    let bytes = std::fs::read(path).with_context(|| format!("{}: reading", path.display()))?;
+    let digest = algorithm.hash(&bytes);
+    println!("{}:{digest}", algorithm.name());
+    // The name is the answer and stays alone on stdout; whether the
+    // archive holds the bytes is the run talking.
+    if archive.content().matching(digest.as_str())?.is_empty() {
+        eprintln!("not in the archive — `ossuary ingest` takes it in");
+    } else {
+        eprintln!("the archive holds these bytes — `ossuary about` says what is on the record");
     }
     Ok(ExitCode::SUCCESS)
 }
