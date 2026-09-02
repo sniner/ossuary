@@ -190,6 +190,36 @@ impl Index {
         Ok(claims)
     }
 
+    /// One subject's standing values for one attribute, sorted by their
+    /// stored spelling — as of the last [`fold`](Index::fold), the open
+    /// head included.
+    ///
+    /// Where [`about`](Index::about) answers with the history, this
+    /// answers with the outcome: retractions already applied, repeats
+    /// already collapsed. Which of several standing values a reader
+    /// prefers stays query-time policy, so they all come back.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; a value that does not parse back
+    /// cannot happen for rows a fold wrote, but is propagated rather than
+    /// sworn away.
+    pub fn values(&self, subject: &Subject, attribute: &Attribute) -> Result<Vec<Value>> {
+        let mut statement = self.connection.prepare(
+            "SELECT value FROM standing
+             WHERE subject = ?1 AND attribute = ?2
+             ORDER BY value",
+        )?;
+        let rows = statement.query_map(params![subject.as_str(), attribute.as_str()], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(serde_json::from_str(&row?)?);
+        }
+        Ok(values)
+    }
+
     /// Every subject on which all `terms` stand and none of `missing` does,
     /// sorted — as of the last [`fold`](Index::fold), the open head
     /// included.
@@ -767,6 +797,43 @@ mod tests {
             index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
             [],
             "the sealed assertion is folded once and must not resurface"
+        );
+    }
+
+    #[test]
+    fn values_answers_the_standing_set_and_nothing_more() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.append(&tag("crete", "2026-09-01T21:14:04Z")).unwrap();
+        log.append(&tag("crete", "2026-09-02T08:00:00Z")).unwrap();
+        log.append(&tag("beach", "2026-09-02T08:00:01Z")).unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("holiday"),
+                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let tags = Attribute::parse("user:tag").unwrap();
+        assert_eq!(
+            index.values(&subject(), &tags).unwrap(),
+            [json!("beach"), json!("crete")],
+            "said twice stands once, retracted stands not at all; sorted by spelling"
+        );
+        assert_eq!(
+            index
+                .values(&subject(), &Attribute::parse("exif:model").unwrap())
+                .unwrap(),
+            Vec::<Value>::new(),
+            "an attribute never claimed has nothing standing"
         );
     }
 
