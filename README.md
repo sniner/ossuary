@@ -30,13 +30,14 @@ everything else:
 
 What runs today is the walking skeleton: `ossuary-core` (claims, the log,
 ingest, and a disposable query index), the `ossuary` command line —
-`init`, `ingest`, `extract`, `seal`, `about`, `id`, `get` — and the first
-extractor, `ossuary-extract-exif`, recording what EXIF says in EXIF's own
-words. Enough to take a directory tree in, ask what the archive knows
-about any file in it, and get the file back out. Each archive carries its
-own `config.toml` — what ingest leaves out (`.DS_Store` and friends),
-whether content is compressed. Search — the first reader that folds
-claims into answers instead of listing them — comes next.
+`init`, `ingest`, `extract`, `seal`, `about`, `find`, `id`, `get` — and
+the first extractor, `ossuary-extract-exif`, recording what EXIF says in
+EXIF's own words. Enough to take a directory tree in, ask what the
+archive knows about any file in it, search for files by what stands on
+the record, and get any file back out. Each archive carries its own
+`config.toml` — what ingest leaves out (`.DS_Store` and friends), whether
+content is compressed. Derived content — extracted text, thumbnails, and
+with them full-text search — comes next.
 
 The blob layer is [immure](https://github.com/sniner/immure), content-addressed
 storage with deduplication, zstd compression and encryption.

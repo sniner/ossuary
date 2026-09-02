@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
-use ossuary_core::{Algorithm, Archive, Error, Subject};
+use ossuary_core::{Algorithm, Archive, Attribute, Error, Subject};
 
 mod extract;
 mod output;
@@ -83,6 +83,33 @@ enum Command {
         /// a beginning of it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
+
+        /// Only these attributes; a name ending in `:` means the whole
+        /// namespace, like `exif:`
+        #[arg(value_name = "ATTRIBUTE")]
+        attributes: Vec<String>,
+    },
+    /// Every file on which all the terms stand
+    ///
+    /// A term is attribute=value, and every term must hold: `find
+    /// file:mime=image/jpeg exif:make=Google` names the files that are
+    /// both. `*` and `?` match within text values — `find
+    /// prov:ingest-path=*crete*` answers "what came from that folder".
+    /// --missing turns the question around: files that lack an attribute
+    /// (or, ending in `:`, a whole namespace) — `find file:mime=image/jpeg
+    /// --missing exif:` is "which photos have no EXIF on record". Only
+    /// standing values answer; what was retracted no longer counts. The
+    /// matches come out as names, one per line, ready for `about` or
+    /// `get`.
+    Find {
+        /// attribute=value; repeat to demand all of them at once
+        #[arg(value_name = "TERM")]
+        terms: Vec<String>,
+
+        /// Only files lacking this attribute (with `:` at the end: this
+        /// namespace); may be repeated
+        #[arg(long, value_name = "ATTRIBUTE")]
+        missing: Vec<String>,
     },
     /// The name a file answers to in the archive
     ///
@@ -128,7 +155,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Ingest { path, full } => ingest(&cli.archive, &path, full),
         Command::Extract { name } => extract::extract(&cli.archive, &name),
         Command::Seal => seal(&cli.archive),
-        Command::About { subject } => about(&cli.archive, &subject),
+        Command::About {
+            subject,
+            attributes,
+        } => about(&cli.archive, &subject, &attributes),
+        Command::Find { terms, missing } => find(&cli.archive, &terms, &missing),
         Command::Id { path } => id(&cli.archive, &path),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
     }
@@ -255,7 +286,7 @@ fn seal(root: &Path) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn about(root: &Path, subject: &str) -> Result<ExitCode> {
+fn about(root: &Path, subject: &str, attributes: &[String]) -> Result<ExitCode> {
     let archive = open(root)?;
     let mut index = archive.index()?;
     let folded = index.fold(archive.log())?;
@@ -294,13 +325,67 @@ fn about(root: &Path, subject: &str) -> Result<ExitCode> {
         }
     };
 
-    let claims = index.about(&subject)?;
+    let mut claims = index.about(&subject)?;
     if claims.is_empty() {
         println!("nothing on the record about {subject}");
-    } else {
-        for claim in &claims {
-            println!("{}", output::line(claim));
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !attributes.is_empty() {
+        claims.retain(|claim| {
+            attributes.iter().any(|wanted| {
+                if wanted.ends_with(':') {
+                    claim.attribute().as_str().starts_with(wanted.as_str())
+                } else {
+                    claim.attribute().as_str() == wanted
+                }
+            })
+        });
+        if claims.is_empty() {
+            println!(
+                "nothing of that on the record about {subject} — plain `ossuary about` shows all of it"
+            );
+            return Ok(ExitCode::SUCCESS);
         }
+    }
+    for claim in &claims {
+        println!("{}", output::line(claim));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn find(root: &Path, terms: &[String], missing: &[String]) -> Result<ExitCode> {
+    if terms.is_empty() && missing.is_empty() {
+        return Err(anyhow!(
+            "nothing asked — name at least one TERM as attribute=value, or --missing ATTRIBUTE"
+        ));
+    }
+    let mut parsed = Vec::new();
+    for word in terms {
+        let Some((attribute, value)) = word.split_once('=') else {
+            return Err(anyhow!(
+                "{word:?} is not a term — a term is attribute=value, like user:tag=holiday"
+            ));
+        };
+        parsed.push((Attribute::parse(attribute)?, value.to_string()));
+    }
+    let archive = open(root)?;
+    let mut index = archive.index()?;
+    let folded = index.fold(archive.log())?;
+    if folded.segments > 0 {
+        eprintln!(
+            "catching the index up: {} sealed segment(s) it had not seen",
+            folded.segments
+        );
+    }
+    let subjects = index.find(&parsed, missing)?;
+    for subject in &subjects {
+        println!("{subject}");
+    }
+    // The names alone stay on stdout, ready to pipe; the count is the
+    // run's word on how it went.
+    match subjects.len() {
+        0 => eprintln!("nothing standing matches"),
+        n => eprintln!("{n} file(s)"),
     }
     Ok(ExitCode::SUCCESS)
 }
