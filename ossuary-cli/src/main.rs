@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
-use ossuary_core::{Algorithm, Archive, Attribute, Error, Subject};
+use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, Subject, Value};
 
 mod extract;
 mod output;
@@ -23,6 +23,10 @@ struct Cli {
     /// The archive to work in; standing in it is enough.
     #[arg(long, global = true, value_name = "DIR", default_value = ".")]
     archive: PathBuf,
+
+    /// Answers and errors only — the run keeps its narration to itself
+    #[arg(short, long, global = true)]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -88,6 +92,34 @@ enum Command {
         /// namespace, like `exif:`
         #[arg(value_name = "ATTRIBUTE")]
         attributes: Vec<String>,
+
+        /// Each claim as the JSON line the log holds, ready for jq
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// What stands: one attribute's current values, ready for a script
+    ///
+    /// Where `about` answers with the history — every claim, retractions
+    /// included — this answers with the outcome: the values standing after
+    /// retractions are applied and repeats collapsed, one per line,
+    /// strings bare. Several lines mean the attribute honestly holds
+    /// several values; choosing among them is the caller's business, and
+    /// with --json the values keep their JSON spelling so jq can do the
+    /// choosing. When nothing stands, nothing comes and the exit code
+    /// says 1, so a script can test for it.
+    Value {
+        /// The file's name in the archive: as `sha256:…`, or the bare hex —
+        /// a beginning of it is enough while it names only one file
+        #[arg(value_name = "SUBJECT")]
+        subject: String,
+
+        /// The attribute asked about, like exif:model
+        #[arg(value_name = "ATTRIBUTE")]
+        attribute: String,
+
+        /// Values in their JSON spelling — strings keep their quotes
+        #[arg(short, long)]
+        json: bool,
     },
     /// Every file on which all the terms stand
     ///
@@ -107,7 +139,7 @@ enum Command {
     /// namespace) — `find file:mime=image/jpeg --missing exif:` is
     /// "which photos have no EXIF on record". Only standing values
     /// answer; what was retracted no longer counts. The matches come out
-    /// as names, one per line, ready for `about` or `get`.
+    /// as names, one per line, ready for `about`, `value` or `get`.
     Find {
         /// attribute=value; repeat to demand all of them at once
         #[arg(value_name = "TERM")]
@@ -157,18 +189,25 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
+    let quiet = cli.quiet;
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
-        Command::Ingest { path, full } => ingest(&cli.archive, &path, full),
-        Command::Extract { name } => extract::extract(&cli.archive, &name),
+        Command::Ingest { path, full } => ingest(&cli.archive, &path, full, quiet),
+        Command::Extract { name } => extract::extract(&cli.archive, &name, quiet),
         Command::Seal => seal(&cli.archive),
         Command::About {
             subject,
             attributes,
-        } => about(&cli.archive, &subject, &attributes),
-        Command::Find { terms, missing } => find(&cli.archive, &terms, &missing),
-        Command::Id { path } => id(&cli.archive, &path),
-        Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref()),
+            json,
+        } => about(&cli.archive, &subject, &attributes, json, quiet),
+        Command::Value {
+            subject,
+            attribute,
+            json,
+        } => value(&cli.archive, &subject, &attribute, json, quiet),
+        Command::Find { terms, missing } => find(&cli.archive, &terms, &missing, quiet),
+        Command::Id { path } => id(&cli.archive, &path, quiet),
+        Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref(), quiet),
     }
 }
 
@@ -225,12 +264,14 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
-fn ingest(root: &Path, path: &Path, full: bool) -> Result<ExitCode> {
+fn ingest(root: &Path, path: &Path, full: bool, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
-    eprintln!("archive {}", archive.root().display());
-    eprintln!("taking in {}", path.display());
+    if !quiet {
+        eprintln!("archive {}", archive.root().display());
+        eprintln!("taking in {}", path.display());
+    }
     let memory = if full {
         None
     } else {
@@ -293,48 +334,77 @@ fn seal(root: &Path) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn about(root: &Path, subject: &str, attributes: &[String]) -> Result<ExitCode> {
-    let archive = open(root)?;
-    let mut index = archive.index()?;
+/// Fold the log in and, unless quiet, say when that was real work.
+pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Result<()> {
     let folded = index.fold(archive.log())?;
-    if folded.segments > 0 {
+    if folded.segments > 0 && !quiet {
         eprintln!(
             "catching the index up: {} sealed segment(s) it had not seen",
             folded.segments
         );
     }
+    Ok(())
+}
 
-    // The bare hex is enough — the archive knows its own algorithm — and so
-    // is a beginning of it: the index resolves it, like a short commit hash.
+/// The subject as the log spells it, from whatever the user typed: the
+/// archive's own algorithm filled in — the bare hex is enough — and a
+/// beginning resolved against the index, like a short commit hash.
+/// `None` when nothing on the record begins that way; a beginning that
+/// names several files is refused.
+fn resolve(archive: &Archive, index: &Index, given: &str) -> Result<Option<Subject>> {
     let algorithm = archive.content().algorithm().name();
-    let bare = subject
+    let bare = given
         .strip_prefix(algorithm)
         .and_then(|rest| rest.strip_prefix(':'))
-        .unwrap_or(subject);
-    let subject = if bare.contains(':') {
+        .unwrap_or(given);
+    if bare.contains(':') {
         // Another algorithm's name in full: taken at its word.
-        Subject::parse(bare)?
-    } else if let Ok(whole) = Subject::parse(&format!("{algorithm}:{bare}")) {
-        whole
-    } else {
-        match index.matching(algorithm, bare)?.as_slice() {
-            [] => {
-                println!("nothing on the record begins with {bare:?}");
-                return Ok(ExitCode::SUCCESS);
+        return Ok(Some(Subject::parse(bare)?));
+    }
+    if let Ok(whole) = Subject::parse(&format!("{algorithm}:{bare}")) {
+        return Ok(Some(whole));
+    }
+    match index.matching(algorithm, bare)?.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(one.clone())),
+        many => Err(anyhow!(
+            "{bare:?} begins {} names — give more of it to name only one",
+            many.len()
+        )),
+    }
+}
+
+fn about(
+    root: &Path,
+    subject: &str,
+    attributes: &[String],
+    json: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
+    let archive = open(root)?;
+    let mut index = archive.index()?;
+    catch_up(&mut index, &archive, quiet)?;
+
+    // Under --json, stdout is claims and nothing else; the calm zero
+    // answers move over to where the run talks.
+    let calm = |sentence: String| {
+        if json {
+            if !quiet {
+                eprintln!("{sentence}");
             }
-            [one] => one.clone(),
-            many => {
-                return Err(anyhow!(
-                    "{bare:?} begins {} names — give more of it to name only one",
-                    many.len()
-                ));
-            }
+        } else {
+            println!("{sentence}");
         }
+    };
+
+    let Some(subject) = resolve(&archive, &index, subject)? else {
+        calm(format!("nothing on the record begins with {subject:?}"));
+        return Ok(ExitCode::SUCCESS);
     };
 
     let mut claims = index.about(&subject)?;
     if claims.is_empty() {
-        println!("nothing on the record about {subject}");
+        calm(format!("nothing on the record about {subject}"));
         return Ok(ExitCode::SUCCESS);
     }
     if !attributes.is_empty() {
@@ -348,19 +418,57 @@ fn about(root: &Path, subject: &str, attributes: &[String]) -> Result<ExitCode> 
             })
         });
         if claims.is_empty() {
-            println!(
+            calm(format!(
                 "nothing of that on the record about {subject} — plain `ossuary about` shows all of it"
-            );
+            ));
             return Ok(ExitCode::SUCCESS);
         }
     }
     for claim in &claims {
-        println!("{}", output::line(claim));
+        if json {
+            println!("{}", claim.to_line());
+        } else {
+            println!("{}", output::line(claim));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn find(root: &Path, terms: &[String], missing: &[String]) -> Result<ExitCode> {
+fn value(root: &Path, subject: &str, attribute: &str, json: bool, quiet: bool) -> Result<ExitCode> {
+    let attribute = Attribute::parse(attribute)?;
+    let archive = open(root)?;
+    let mut index = archive.index()?;
+    catch_up(&mut index, &archive, quiet)?;
+
+    // Nothing standing is a testable answer, not a broken run: the exit
+    // code carries it, and the sentence is for a reader wondering why
+    // nothing came.
+    let Some(subject) = resolve(&archive, &index, subject)? else {
+        if !quiet {
+            eprintln!("nothing on the record begins with {subject:?}");
+        }
+        return Ok(ExitCode::FAILURE);
+    };
+    let standing = index.values(&subject, &attribute)?;
+    if standing.is_empty() {
+        if !quiet {
+            eprintln!(
+                "nothing stands for {} on {subject} — `ossuary about` shows what was ever said",
+                attribute.as_str()
+            );
+        }
+        return Ok(ExitCode::FAILURE);
+    }
+    for value in &standing {
+        match value {
+            Value::String(text) if !json => println!("{text}"),
+            other => println!("{other}"),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn find(root: &Path, terms: &[String], missing: &[String], quiet: bool) -> Result<ExitCode> {
     if terms.is_empty() && missing.is_empty() {
         return Err(anyhow!(
             "nothing asked — name at least one TERM as attribute=value, or --missing ATTRIBUTE"
@@ -377,27 +485,23 @@ fn find(root: &Path, terms: &[String], missing: &[String]) -> Result<ExitCode> {
     }
     let archive = open(root)?;
     let mut index = archive.index()?;
-    let folded = index.fold(archive.log())?;
-    if folded.segments > 0 {
-        eprintln!(
-            "catching the index up: {} sealed segment(s) it had not seen",
-            folded.segments
-        );
-    }
+    catch_up(&mut index, &archive, quiet)?;
     let subjects = index.find(&parsed, missing)?;
     for subject in &subjects {
         println!("{subject}");
     }
     // The names alone stay on stdout, ready to pipe; the count is the
     // run's word on how it went.
-    match subjects.len() {
-        0 => eprintln!("nothing standing matches"),
-        n => eprintln!("{n} file(s)"),
+    if !quiet {
+        match subjects.len() {
+            0 => eprintln!("nothing standing matches"),
+            n => eprintln!("{n} file(s)"),
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn id(root: &Path, path: &Path) -> Result<ExitCode> {
+fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let algorithm = archive.content().algorithm();
     let bytes = std::fs::read(path).with_context(|| format!("{}: reading", path.display()))?;
@@ -405,15 +509,17 @@ fn id(root: &Path, path: &Path) -> Result<ExitCode> {
     println!("{}:{digest}", algorithm.name());
     // The name is the answer and stays alone on stdout; whether the
     // archive holds the bytes is the run talking.
-    if archive.content().matching(digest.as_str())?.is_empty() {
-        eprintln!("not in the archive — `ossuary ingest` takes it in");
-    } else {
-        eprintln!("the archive holds these bytes — `ossuary about` says what is on the record");
+    if !quiet {
+        if archive.content().matching(digest.as_str())?.is_empty() {
+            eprintln!("not in the archive — `ossuary ingest` takes it in");
+        } else {
+            eprintln!("the archive holds these bytes — `ossuary about` says what is on the record");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn get(root: &Path, subject: &str, output: Option<&Path>) -> Result<ExitCode> {
+fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let content = archive.content();
 
@@ -468,7 +574,7 @@ fn get(root: &Path, subject: &str, output: Option<&Path>) -> Result<ExitCode> {
     } else {
         // A beginning was given; say what it named, where the bytes
         // will not drown it out.
-        if bare.len() < digest.as_str().len() {
+        if bare.len() < digest.as_str().len() && !quiet {
             eprintln!("{algorithm}:{digest}");
         }
         let stdout = std::io::stdout();

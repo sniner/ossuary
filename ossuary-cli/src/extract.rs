@@ -36,27 +36,25 @@ struct Finding {
     value: Value,
 }
 
-pub fn extract(root: &Path, name: &str) -> Result<ExitCode> {
+pub fn extract(root: &Path, name: &str, quiet: bool) -> Result<ExitCode> {
     let archive = crate::open(root)?;
     let program = format!("ossuary-extract-{name}");
     let identity = identify(&program)?;
     let source = Source::parse(&identity.source)?;
 
-    eprintln!("archive {}", archive.root().display());
-    let mut index = archive.index()?;
-    let folded = index.fold(archive.log())?;
-    if folded.segments > 0 {
-        eprintln!(
-            "catching the index up: {} sealed segment(s) it had not seen",
-            folded.segments
-        );
+    if !quiet {
+        eprintln!("archive {}", archive.root().display());
     }
+    let mut index = archive.index()?;
+    crate::catch_up(&mut index, &archive, quiet)?;
     let worklist = index.worklist(&identity.mimes, &source)?;
     if worklist.is_empty() {
         println!("nothing waiting for {source} — no file of a kind it reads stands unexamined");
         return Ok(ExitCode::SUCCESS);
     }
-    eprintln!("{} file(s) waiting for {source}", worklist.len());
+    if !quiet {
+        eprintln!("{} file(s) waiting for {source}", worklist.len());
+    }
 
     let mut examined = 0usize;
     let mut claims = 0usize;

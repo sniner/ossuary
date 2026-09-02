@@ -37,6 +37,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--missing ATTRIBUTE` (or a namespace like `exif:`) asks for what a file lacks. Only standing
   values count — a retracted value no longer answers — and the matches come out one name per
   line, ready for `about` or `get`
+- **`ossuary value SUBJECT ATTRIBUTE`** answers what currently stands for one attribute —
+  retractions applied, repeats collapsed — one value per line, strings bare, ready for a script;
+  several lines mean the attribute honestly holds several values, and choosing among them stays
+  the caller's policy. Exits 1 when nothing stands, so a script can test for it
+- **`--json`** on `about` and `value` answers in JSON lines ready for `jq`: `about --json` gives
+  each claim exactly as the log spells it, `value --json` keeps the values' JSON spelling
+- **`--quiet`** on every command keeps the run's narration off stderr — counts, progress, hints;
+  answers and errors still come
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
   digests resolve against the content store, from six characters up
 - **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
