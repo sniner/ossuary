@@ -95,12 +95,19 @@ enum Command {
     /// file:mime=image/jpeg exif:make=Google` names the files that are
     /// both. `*` and `?` match within text values — `find
     /// prov:ingest-path=*crete*` answers "what came from that folder".
-    /// --missing turns the question around: files that lack an attribute
-    /// (or, ending in `:`, a whole namespace) — `find file:mime=image/jpeg
-    /// --missing exif:` is "which photos have no EXIF on record". Only
-    /// standing values answer; what was retracted no longer counts. The
-    /// matches come out as names, one per line, ready for `about` or
-    /// `get`.
+    /// A value low..high asks for one value inside the range, either
+    /// side open: `file:modified=2026-09-01..` is "changed since
+    /// September", `file:size=..4096` "at most 4 KiB". Bounds compare in
+    /// the attribute's own spelling, a bare `..` asks only that the
+    /// attribute stands at all, and two ranged terms on one attribute
+    /// may be satisfied by two different values — one low..high term
+    /// speaks about a single one. A value wrapped in double quotes is
+    /// literal: no glob, no range. --missing turns the question around:
+    /// files that lack an attribute (or, ending in `:`, a whole
+    /// namespace) — `find file:mime=image/jpeg --missing exif:` is
+    /// "which photos have no EXIF on record". Only standing values
+    /// answer; what was retracted no longer counts. The matches come out
+    /// as names, one per line, ready for `about` or `get`.
     Find {
         /// attribute=value; repeat to demand all of them at once
         #[arg(value_name = "TERM")]

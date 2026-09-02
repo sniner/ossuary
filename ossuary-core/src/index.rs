@@ -194,13 +194,23 @@ impl Index {
     /// sorted — as of the last [`fold`](Index::fold), the open head
     /// included.
     ///
-    /// A term is an attribute and a value: the value matches the standing
-    /// spelling — a string, or the bare JSON scalar for numbers and
-    /// booleans — and may carry `*` and `?`, which match within string
-    /// values only. Every term must hold. Each entry of `missing` names an
-    /// attribute the subject must lack; ending in `:` it names a whole
-    /// namespace. With no terms at all, `missing` is asked of every
-    /// subject the log speaks about.
+    /// A term is an attribute and a value, and the value is read in this
+    /// order: wrapped in double quotes it is *literal* — exactly that
+    /// string, the way to name a value that looks like a glob or a range;
+    /// with `*` or `?` it is a glob, matching within string values only;
+    /// with `..` it is a range, `low..high` with either side open —
+    /// bounds compare in the attribute's own spelling, lexicographically
+    /// for strings and numerically for numbers, the low end inclusive,
+    /// and a bare `..` asks only that the attribute stands at all;
+    /// otherwise it is exact — a string, or the bare JSON scalar for
+    /// numbers and booleans, either spelling answering. Every term must
+    /// hold, each on *some* standing value: two ranged terms on one
+    /// attribute may be satisfied by two different values, where one
+    /// `low..high` term speaks about a single value lying between.
+    ///
+    /// Each entry of `missing` names an attribute the subject must lack;
+    /// ending in `:` it names a whole namespace. With no terms at all,
+    /// `missing` is asked of every subject the log speaks about.
     ///
     /// Only *standing* values answer: a retracted value finds nothing,
     /// however long its claim stays in the log — this is where the set
@@ -212,11 +222,23 @@ impl Index {
     /// neither the attribute grammar nor `namespace:` is refused with the
     /// grammar's own error.
     pub fn find(&self, terms: &[(Attribute, String)], missing: &[String]) -> Result<Vec<Subject>> {
+        use rusqlite::types::Value as Sql;
         if terms.is_empty() && missing.is_empty() {
             return Ok(Vec::new());
         }
+        let text = |s: &str| Sql::Text(s.to_string());
+        let quoted = |s: &str| text(&Value::String(s.to_string()).to_string());
+        // A bound spelled as a JSON number, typed so SQLite compares
+        // numerically instead of by storage class.
+        let number = |bound: &str| -> Option<Sql> {
+            let value: Value = serde_json::from_str(bound).ok()?;
+            if let Some(whole) = value.as_i64() {
+                return Some(Sql::Integer(whole));
+            }
+            value.as_f64().map(Sql::Real)
+        };
         let mut sql = String::new();
-        let mut params: Vec<String> = Vec::new();
+        let mut params: Vec<Sql> = Vec::new();
         if terms.is_empty() {
             sql.push_str("SELECT DISTINCT subject FROM standing");
         }
@@ -224,32 +246,67 @@ impl Index {
             if position > 0 {
                 sql.push_str(" INTERSECT ");
             }
-            if pattern.contains('*') || pattern.contains('?') {
+            sql.push_str("SELECT subject FROM standing WHERE attribute = ?");
+            params.push(text(attribute.as_str()));
+            if let Some(literal) = pattern
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+            {
+                // Wrapped in quotes: exactly this string, nothing read
+                // into it — the door for values that look like globs or
+                // ranges.
+                sql.push_str(" AND value = ?");
+                params.push(quoted(literal));
+            } else if pattern.contains('*') || pattern.contains('?') {
                 // The stored string spelling is quoted JSON, so a pattern
                 // globbed inside quotes matches string values and nothing
                 // else — numbers were promised no wildcards.
-                sql.push_str("SELECT subject FROM standing WHERE attribute = ? AND value GLOB ?");
-                params.push(attribute.as_str().to_string());
-                params.push(format!("\"{pattern}\""));
+                sql.push_str(" AND value GLOB ?");
+                params.push(text(&format!("\"{pattern}\"")));
+            } else if let Some((low, high)) = pattern.split_once("..") {
+                let numeric = [low, high]
+                    .iter()
+                    .filter(|bound| !bound.is_empty())
+                    .all(|bound| number(bound).is_some());
+                if low.is_empty() && high.is_empty() {
+                    // A bare "..": any standing value at all.
+                } else if numeric {
+                    sql.push_str(" AND json_type(value) IN ('integer', 'real')");
+                    if let Some(bound) = number(low) {
+                        sql.push_str(" AND json_extract(value, '$') >= ?");
+                        params.push(bound);
+                    }
+                    if let Some(bound) = number(high) {
+                        sql.push_str(" AND json_extract(value, '$') <= ?");
+                        params.push(bound);
+                    }
+                } else {
+                    // Bounds compare in the value's own spelling; the
+                    // type guard keeps numbers out, whose storage sorts
+                    // below every quoted string.
+                    sql.push_str(" AND json_type(value) = 'text'");
+                    if !low.is_empty() {
+                        sql.push_str(" AND value >= ?");
+                        params.push(quoted(low));
+                    }
+                    if !high.is_empty() {
+                        sql.push_str(" AND value <= ?");
+                        params.push(quoted(high));
+                    }
+                }
             } else {
                 match serde_json::from_str::<Value>(pattern) {
                     // The bare word is a JSON scalar — a number, a
                     // boolean: it may stand as itself or as a string, and
                     // either spelling answers.
                     Ok(scalar) if !scalar.is_string() => {
-                        sql.push_str(
-                            "SELECT subject FROM standing WHERE attribute = ? AND value IN (?, ?)",
-                        );
-                        params.push(attribute.as_str().to_string());
-                        params.push(scalar.to_string());
-                        params.push(Value::String(pattern.clone()).to_string());
+                        sql.push_str(" AND value IN (?, ?)");
+                        params.push(text(&scalar.to_string()));
+                        params.push(quoted(pattern));
                     }
                     _ => {
-                        sql.push_str(
-                            "SELECT subject FROM standing WHERE attribute = ? AND value = ?",
-                        );
-                        params.push(attribute.as_str().to_string());
-                        params.push(Value::String(pattern.clone()).to_string());
+                        sql.push_str(" AND value = ?");
+                        params.push(quoted(pattern));
                     }
                 }
             }
@@ -263,12 +320,12 @@ impl Index {
                 // ';' is the character after ':', and no attribute
                 // contains one: the half-open range is the namespace.
                 sql.push_str("attribute >= ? AND attribute < ?");
-                params.push(format!("{namespace}:"));
-                params.push(format!("{namespace};"));
+                params.push(text(&format!("{namespace}:")));
+                params.push(text(&format!("{namespace};")));
             } else {
                 let attribute = Attribute::parse(absent)?;
                 sql.push_str("attribute = ?");
-                params.push(attribute.as_str().to_string());
+                params.push(text(attribute.as_str()));
             }
         }
         sql.push_str(" ORDER BY subject");
@@ -833,6 +890,201 @@ mod tests {
             index.find(&[], &["exif:make".to_string()]).unwrap(),
             [bare],
             "with no terms, missing is asked of every subject"
+        );
+    }
+
+    #[test]
+    fn a_range_speaks_about_one_standing_value() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let august = Subject::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let december = Subject::parse(
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap();
+        let both = Subject::parse(
+            "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        )
+        .unwrap();
+        let when = "2026-09-01T00:00:00Z";
+        log.append(&say(
+            &august,
+            "file:modified",
+            json!("2026-08-15T10:00:00Z"),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &december,
+            "file:modified",
+            json!("2026-12-24T10:00:00Z"),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &both,
+            "file:modified",
+            json!("2026-08-15T10:00:00Z"),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &both,
+            "file:modified",
+            json!("2026-12-24T10:00:00Z"),
+            when,
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(&[term("file:modified", "2026-09-01..")], &[])
+                .unwrap(),
+            [december.clone(), both.clone()],
+            "since: one standing value past the bound suffices"
+        );
+        assert_eq!(
+            index
+                .find(&[term("file:modified", "2026-09-01..2026-10-01")], &[])
+                .unwrap(),
+            [],
+            "one range term wants a single value inside — nobody has one"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[
+                        term("file:modified", "2026-09-01.."),
+                        term("file:modified", "..2026-10-01"),
+                    ],
+                    &[]
+                )
+                .unwrap(),
+            [both],
+            "two terms may be satisfied by two different values"
+        );
+    }
+
+    #[test]
+    fn a_numeric_range_reads_numbers_only() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let worded = Subject::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "user:rating",
+            json!(7),
+            "2026-09-01T00:00:00Z",
+        ))
+        .unwrap();
+        log.append(&say(
+            &worded,
+            "user:rating",
+            json!("7ish"),
+            "2026-09-01T00:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.find(&[term("user:rating", "1..10")], &[]).unwrap(),
+            [subject()],
+            "numeric bounds speak about numbers; the worded rating is not seven"
+        );
+    }
+
+    #[test]
+    fn a_verbatim_spelling_ranges_in_its_own_order() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&say(
+            &subject(),
+            "exif:date-time-original",
+            json!("2026:07:25 23:09:09"),
+            "2026-09-01T00:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(
+                    &[term("exif:date-time-original", "2026:07:01..2026:08:01")],
+                    &[]
+                )
+                .unwrap(),
+            [subject()],
+            "EXIF's own spelling is fixed-width and sorts chronologically"
+        );
+        assert_eq!(
+            index
+                .find(&[term("exif:date-time-original", "2026:08:01..")], &[])
+                .unwrap(),
+            []
+        );
+    }
+
+    #[test]
+    fn quotes_take_a_value_literally() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&say(
+            &subject(),
+            "user:note",
+            json!("see 3..4"),
+            "2026-09-01T00:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(&[term("user:note", "\"see 3..4\"")], &[])
+                .unwrap(),
+            [subject()],
+            "quoted, the dots are just dots"
+        );
+        assert_eq!(
+            index.find(&[term("user:note", "\"see 3\"")], &[]).unwrap(),
+            [],
+            "and quoted means whole, not prefix"
+        );
+    }
+
+    #[test]
+    fn a_bare_range_asks_only_that_the_attribute_stands() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let bare = Subject::parse(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.append(&say(
+            &bare,
+            "file:mime",
+            json!("image/jpeg"),
+            "2026-09-01T21:14:04Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.find(&[term("user:tag", "..")], &[]).unwrap(),
+            [subject()],
+            "the presence question, --missing turned around"
         );
     }
 

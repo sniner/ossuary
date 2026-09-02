@@ -31,9 +31,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   beginning of the digest is enough while it names only one file, and naming attributes (or a
   namespace, like `exif:`) narrows the answer to them
 - **`ossuary find TERM…`** answers which files match: terms are `attribute=value` and must all
-  hold, `*` and `?` match within text values, and `--missing ATTRIBUTE` (or a namespace like
-  `exif:`) asks for what a file lacks. Only standing values count — a retracted value no longer
-  answers — and the matches come out one name per line, ready for `about` or `get`
+  hold, `*` and `?` match within text values, `low..high` asks for a value inside the range
+  (either side open — `file:modified=2026-09-01..` is "changed since September"; bounds compare
+  in the attribute's own spelling; a value in double quotes is literal), and
+  `--missing ATTRIBUTE` (or a namespace like `exif:`) asks for what a file lacks. Only standing
+  values count — a retracted value no longer answers — and the matches come out one name per
+  line, ready for `about` or `get`
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
   digests resolve against the content store, from six characters up
 - **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
