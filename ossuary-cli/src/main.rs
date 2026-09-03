@@ -49,9 +49,10 @@ enum Command {
     /// Take files in: a directory tree, or one file
     ///
     /// Every regular file goes in — minus what the archive's config.toml
-    /// excludes; a file named outright goes in regardless — and six claims
-    /// go on the record for each: where it came from, on which machine,
-    /// with which run, how large, what kind, and when it last changed.
+    /// excludes; a file named outright goes in regardless — and seven
+    /// claims go on the record for each: where it came from, what it is
+    /// called, on which machine, with which run, how large, what kind,
+    /// and when it last changed.
     /// What is taken in is only read. A repeated run remembers what it
     /// already observed and leaves unchanged files in peace, so pouring
     /// the same directory in again costs only what is new or changed.
@@ -135,7 +136,7 @@ enum Command {
     /// A term is attribute=value, and every term must hold: `find
     /// file:mime=image/jpeg exif:make=Google` names the files that are
     /// both. `*` and `?` match within text values — `find
-    /// prov:ingest-path=*crete*` answers "what came from that folder".
+    /// file:path=*crete*` answers "what came from that folder".
     /// A value low..high asks for one value inside the range, either
     /// side open: `file:modified=2026-09-01..` is "changed since
     /// September", `file:size=..4096` "at most 4 KiB". Bounds compare in

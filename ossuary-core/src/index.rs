@@ -882,7 +882,7 @@ mod tests {
         let mut index = index_in(&dir);
         log.append(&say(
             &subject(),
-            "prov:ingest-path",
+            "file:path",
             json!("/photos/2019/crete/beach.jpg"),
             "2026-09-01T21:14:03Z",
         ))
@@ -897,9 +897,7 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index
-                .find(&[term("prov:ingest-path", "*crete*")], &[])
-                .unwrap(),
+            index.find(&[term("file:path", "*crete*")], &[]).unwrap(),
             [subject()]
         );
         assert_eq!(

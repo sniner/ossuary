@@ -55,19 +55,21 @@ pub struct Ingested {
 /// Take a directory tree — or a single file — into the archive: blobs
 /// into `content`, day-one claims into `log`.
 ///
-/// A blob new to the store gets the six day-one claims, available for any
-/// format on its first day: `prov:ingest-path` (the real path: absolute,
+/// A blob new to the store gets the seven day-one claims, available for
+/// any format on its first day: `file:path` (the real place: absolute,
 /// `..` and symlinks resolved — claims are forever, so they name the
-/// place, not the way it was typed), `prov:host`, `prov:ingest-run`,
-/// `file:size`, `file:mime` — by magic bytes, with a UTF-8 look for plain
-/// text and `application/octet-stream` when nothing answers — and
-/// `file:modified` where the filesystem has an mtime to tell — repeated at
-/// the precision it was observed, fractional seconds and all.
+/// place, not the way it was typed), `file:name` (the path's last
+/// element, so a name is askable without string surgery), `prov:host`,
+/// `prov:ingest-run`, `file:size`, `file:mime` — by magic bytes, with a
+/// UTF-8 look for plain text and `application/octet-stream` when nothing
+/// answers — and `file:modified` where the filesystem has an mtime to
+/// tell — repeated at the precision it was observed, fractional seconds
+/// and all.
 ///
-/// Bytes the store already holds get their provenance and mtime only.
-/// Another place they sat is new knowledge; their size and kind describe
-/// the content, the log has them from the first sighting, and saying a
-/// deterministic thing twice adds nothing. Symlinks are not followed,
+/// Bytes the store already holds get their sighting only: place, name,
+/// host, run, mtime. Another place they sat is new knowledge; their size
+/// and kind describe the content, the log has them from the first
+/// sighting, and saying a deterministic thing twice adds nothing. Symlinks are not followed,
 /// hidden files are files, and the walk is sorted at every level, so the
 /// same tree ingests in the same order twice.
 ///
@@ -252,17 +254,32 @@ fn take(
     ))?;
     let time = Timestamp::now();
 
-    let mut claims = vec![
-        fact(
+    let mut claims = vec![fact(
+        &subject,
+        "file:path",
+        json!(path.to_string_lossy()),
+        &time,
+        source,
+    )?];
+    // A canonicalized file path always ends in a name; asking spares the
+    // unwrap, not a real case.
+    if let Some(name) = path.file_name() {
+        claims.push(fact(
             &subject,
-            "prov:ingest-path",
-            json!(path.to_string_lossy()),
+            "file:name",
+            json!(name.to_string_lossy()),
             &time,
             source,
-        )?,
-        fact(&subject, "prov:host", json!(host), &time, source)?,
-        fact(&subject, "prov:ingest-run", json!(run), &time, source)?,
-    ];
+        )?);
+    }
+    claims.push(fact(&subject, "prov:host", json!(host), &time, source)?);
+    claims.push(fact(
+        &subject,
+        "prov:ingest-run",
+        json!(run),
+        &time,
+        source,
+    )?);
     // Size and kind describe the content, not the sighting: the log has
     // them from the blob's first day, and they never say anything new.
     if status.is_new() {
@@ -546,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_goes_in_with_its_six_facts_each() {
+    fn a_tree_goes_in_with_its_seven_facts_each() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
         let tree = dir.path().join("tree");
@@ -562,16 +579,16 @@ mod tests {
 
         assert_eq!(result.stored, 2);
         assert_eq!(result.known, 0);
-        assert_eq!(result.claims, 12, "six facts per file, mtime included");
+        assert_eq!(result.claims, 14, "seven facts per file, mtime included");
         assert!(result.failed.is_empty());
 
         let head = log.head().unwrap();
-        assert_eq!(head.len(), 12);
+        assert_eq!(head.len(), 14);
         let about_a: Vec<_> = head
             .iter()
             .filter(|claim| claim.subject().as_str() == hello_subject())
             .collect();
-        assert_eq!(about_a.len(), 6);
+        assert_eq!(about_a.len(), 7);
         let value = |attribute: &str| {
             about_a
                 .iter()
@@ -581,9 +598,10 @@ mod tests {
         };
         assert_eq!(value("file:mime"), Some(json!("text/plain")));
         assert_eq!(value("file:size"), Some(json!(11)));
+        assert_eq!(value("file:name"), Some(json!("a.txt")));
         assert_eq!(value("prov:host"), Some(json!("atlas.example.net")));
         assert_eq!(value("prov:ingest-run"), Some(json!(result.run)));
-        let path = value("prov:ingest-path").unwrap();
+        let path = value("file:path").unwrap();
         assert!(path.as_str().unwrap().ends_with("/tree/a.txt"));
 
         let jpeg = head
@@ -614,7 +632,7 @@ mod tests {
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
         assert_eq!(
-            result.claims, 10,
+            result.claims, 12,
             "both places it sat are on the record; size and kind only once"
         );
         let described = log
@@ -665,7 +683,7 @@ mod tests {
             .head()
             .unwrap()
             .iter()
-            .find(|claim| claim.attribute().as_str() == "prov:ingest-path")
+            .find(|claim| claim.attribute().as_str() == "file:path")
             .and_then(|claim| claim.value())
             .and_then(|value| value.as_str().map(str::to_string))
             .unwrap();
@@ -747,13 +765,13 @@ mod tests {
         let result = ingest(&content, &log, &file, "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "a file is not a tree, and goes in");
-        assert_eq!(result.claims, 6);
+        assert_eq!(result.claims, 7);
         assert!(result.failed.is_empty());
         let path = log
             .head()
             .unwrap()
             .iter()
-            .find(|claim| claim.attribute().as_str() == "prov:ingest-path")
+            .find(|claim| claim.attribute().as_str() == "file:path")
             .and_then(|claim| claim.value())
             .and_then(|value| value.as_str().map(str::to_string))
             .unwrap();
@@ -915,7 +933,7 @@ mod tests {
 
         assert_eq!(second.stored, 1, "the new bytes go in");
         assert_eq!(second.unchanged, 1, "the untouched neighbour does not");
-        assert_eq!(second.claims, 6, "and only the change is on the record");
+        assert_eq!(second.claims, 7, "and only the change is on the record");
     }
 
     #[test]

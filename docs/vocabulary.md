@@ -51,8 +51,10 @@ in its source.
 
 ## Namespaces
 
-- `prov:` — provenance: where content was met, and what has looked at it
-- `file:` — the bytes as observed: the facts any format has on day one
+- `prov:` — provenance: the archive's own acts — who took content in,
+  in which run, and what has looked at it
+- `file:` — the file as observed: its places, names, size, kind and
+  mtimes — what any format has on day one
 - `derive:` — relations between content: what came from what
 - `user:` — what the user says; the archive takes their word
 - `exif:` — verbatim EXIF fields, as `ossuary-extract-exif` reads them
@@ -62,13 +64,6 @@ format paper); vocabulary for subjects that are not blobs waits for the
 first real need.
 
 ## Attributes
-
-### prov:ingest-path
-
-- meaning: the real place a file sat when it was taken in — absolute,
-  symlinks and `..` resolved
-- value: string, a path
-- written by: ingest
 
 ### prov:host
 
@@ -93,6 +88,26 @@ first real need.
   content standing elsewhere
 - value: `true` — who looked, and with what, is the claim's source
 - written by: `ossuary extract`
+
+### file:path
+
+- meaning: the real place a file sat when it was taken in — absolute,
+  symlinks and `..` resolved, the name included: one sighting, one
+  atomic value. Places accrete; the machine each one is on is
+  `prov:host`, said in the same breath
+- value: string, a path
+- written by: ingest
+
+### file:name
+
+- meaning: a name the content was known by — at its place in a
+  filesystem (the last element of `file:path`, said alongside it, so a
+  name is askable without string surgery) or inside another format (an
+  attachment's own file name). Names accrete like sightings do: bytes
+  met again under another name hold both
+- value: string, a bare file name
+- written by: ingest; `ossuary extract`, in the deriving extractor's
+  words
 
 ### file:size
 
@@ -119,16 +134,6 @@ first real need.
   touch, a backup restore, another place: each tells its own time
 - value: string
 - written by: ingest
-
-### file:name
-
-- meaning: a name the content was known by, said when an extractor
-  wrote it — an attachment's own file name, the label a track carried.
-  Names accrete like sightings do: bytes met again under another name
-  hold both. A file taken in by ingest carries its name inside
-  `prov:ingest-path` instead
-- value: string, a bare file name
-- written by: `ossuary extract`, in the deriving extractor's words
 
 ### derive:derived-from
 

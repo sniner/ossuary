@@ -44,7 +44,7 @@ fn the_skeleton_walks() {
 
     // Ingest day: the universal facts, then the segment is sealed.
     log.append(&claim(
-        "prov:ingest-path",
+        "file:path",
         json!("/photos/2019/crete/beach.jpg"),
         "2026-09-01T21:14:03Z",
         "ingest",
@@ -152,7 +152,7 @@ fn the_skeleton_walks_from_disk() {
     ))
     .unwrap();
     let answer = index.about(&subject).unwrap();
-    assert_eq!(answer.len(), 6, "the six day-one facts");
+    assert_eq!(answer.len(), 7, "the seven day-one facts");
 
     // And the subject leads back to the bytes: the archive holds content
     // and everything known about it, and either finds the other.

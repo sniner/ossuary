@@ -105,7 +105,7 @@ All metadata is claims: small, self-describing, append-only facts. One claim
 is one JSON object on one line — UTF-8, LF, no line breaks within a claim:
 
 ```json
-{"subject":"sha256:9f2ac41e…","attribute":"prov:ingest-path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest"}
+{"subject":"sha256:9f2ac41e…","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest"}
 {"subject":"sha256:9f2ac41e…","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}
 {"subject":"sha256:9f2ac41e…","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7"}
 {"subject":"sha256:9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}
