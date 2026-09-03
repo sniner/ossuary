@@ -30,7 +30,7 @@ pub use archive::Archive;
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 pub use config::{Config, Excludes};
 pub use error::{Error, Result};
-pub use extract::{EXAMINED, record_examination};
+pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::Algorithm;
 pub use index::{Folded, Index};
 pub use ingest::{IngestMemory, Ingested, ingest};
