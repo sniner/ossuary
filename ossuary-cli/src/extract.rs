@@ -18,7 +18,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context as _, Result, anyhow};
 use ossuary_core::{
-    Archive, Attribute, Derivation, Examined, Source, Subject, Value, record_examination,
+    Archive, Attribute, Derivation, Examined, Index, Source, Subject, Value, record_examination,
 };
 use serde::Deserialize;
 
@@ -48,7 +48,14 @@ struct Line {
     value: Option<Value>,
 }
 
-pub fn extract(root: &Path, name: &str, temp_dir: Option<&Path>, quiet: bool) -> Result<ExitCode> {
+pub fn extract(
+    root: &Path,
+    name: &str,
+    subjects: &[String],
+    full: bool,
+    temp_dir: Option<&Path>,
+    quiet: bool,
+) -> Result<ExitCode> {
     let archive = crate::open(root)?;
     let program = format!("ossuary-extract-{name}");
     let identity = identify(&program)?;
@@ -68,53 +75,51 @@ pub fn extract(root: &Path, name: &str, temp_dir: Option<&Path>, quiet: bool) ->
     }
     let mut index = archive.index()?;
     crate::catch_up(&mut index, &archive, quiet)?;
-    let worklist = index.worklist(&identity.mimes, &source)?;
-    if worklist.is_empty() {
-        println!("nothing waiting for {source} — no file of a kind it reads stands unexamined");
-        return Ok(ExitCode::SUCCESS);
-    }
-    if !quiet {
-        eprintln!("{} file(s) waiting for {source}", worklist.len());
-    }
 
-    let mut examined = 0usize;
-    let mut claims = 0usize;
-    let mut stored = 0usize;
-    let mut known = 0usize;
-    let mut quiet_files = 0usize;
+    // What this run examines: the worklist, unless files were named.
+    // Named files skip the mime dispatch — naming is more deliberate
+    // than a pattern — and, without --full, sit out when their receipt
+    // already stands.
+    let mut already = 0usize;
+    let worklist: Vec<Subject> = if subjects.is_empty() {
+        let waiting = if full {
+            index.of_kind(&identity.mimes)?
+        } else {
+            index.worklist(&identity.mimes, &source)?
+        };
+        if waiting.is_empty() {
+            if full {
+                println!("nothing of a kind {source} reads is on the record");
+            } else {
+                println!(
+                    "nothing waiting for {source} — no file of a kind it reads stands unexamined"
+                );
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        if !quiet {
+            eprintln!("{} file(s) waiting for {source}", waiting.len());
+        }
+        waiting
+    } else {
+        let examinees;
+        (examinees, already) = named(&archive, &index, subjects, &source, full)?;
+        if !quiet && !examinees.is_empty() {
+            eprintln!("{} file(s) named for {source}", examinees.len());
+        }
+        examinees
+    };
+
+    let mut tally = Tally::default();
     let mut failed: Vec<(Subject, anyhow::Error)> = Vec::new();
     for subject in worklist {
         match examine(&archive, &program, &subject, &source, scratch.as_deref()) {
-            Ok(written) => {
-                examined += 1;
-                claims += written.claims;
-                stored += written.stored;
-                known += written.known;
-                if written.claims == 1 {
-                    quiet_files += 1;
-                }
-            }
+            Ok(written) => tally.add(&written),
             Err(error) => failed.push((subject, error)),
         }
     }
 
-    let mut verdict = vec![format!(
-        "{examined} file(s) examined by {source}, {claims} claim(s) written"
-    )];
-    if stored + known > 0 {
-        let taken = stored + known;
-        verdict.push(if known > 0 {
-            format!(
-                "{taken} derived file(s) taken in, {known} of them bytes the archive already held"
-            )
-        } else {
-            format!("{taken} derived file(s) taken in")
-        });
-    }
-    if quiet_files > 0 {
-        verdict.push(format!("{quiet_files} had nothing to tell"));
-    }
-    println!("{}", verdict.join("; "));
+    println!("{}", tally.verdict(&source, already));
     if failed.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -127,6 +132,87 @@ pub fn extract(root: &Path, name: &str, temp_dir: Option<&Path>, quiet: bool) ->
         }
         Ok(ExitCode::FAILURE)
     }
+}
+
+/// What the run did, counted for the verdict.
+#[derive(Default)]
+struct Tally {
+    examined: usize,
+    claims: usize,
+    stored: usize,
+    known: usize,
+    nothing: usize,
+}
+
+impl Tally {
+    fn add(&mut self, written: &Examined) {
+        self.examined += 1;
+        self.claims += written.claims;
+        self.stored += written.stored;
+        self.known += written.known;
+        if written.claims == 1 {
+            self.nothing += 1;
+        }
+    }
+
+    /// The run's verdict, in one line: what happened, and which parts of
+    /// "nothing" are the calm kind.
+    fn verdict(&self, source: &Source, already: usize) -> String {
+        let mut verdict = vec![format!(
+            "{} file(s) examined by {source}, {} claim(s) written",
+            self.examined, self.claims
+        )];
+        let taken = self.stored + self.known;
+        if taken > 0 {
+            verdict.push(if self.known > 0 {
+                format!(
+                    "{taken} derived file(s) taken in, {} of them bytes the archive already held",
+                    self.known
+                )
+            } else {
+                format!("{taken} derived file(s) taken in")
+            });
+        }
+        if self.nothing > 0 {
+            verdict.push(format!("{} had nothing to tell", self.nothing));
+        }
+        if already > 0 {
+            verdict.push(format!(
+                "{already} already examined — --full examines them anew"
+            ));
+        }
+        verdict.join("; ")
+    }
+}
+
+/// The files a run that was handed names examines: resolved the way
+/// `about` resolves a name, deduplicated, and — without `--full` — minus
+/// those whose receipt from this source already stands. Answers the
+/// examinees and how many sat out; an unknown name refuses the whole run
+/// before any work is done.
+fn named(
+    archive: &Archive,
+    index: &Index,
+    subjects: &[String],
+    source: &Source,
+    full: bool,
+) -> Result<(Vec<Subject>, usize)> {
+    let mut examinees: Vec<Subject> = Vec::new();
+    let mut already = 0usize;
+    for given in subjects {
+        let Some(subject) = crate::resolve(archive, index, given)? else {
+            return Err(anyhow!("nothing on the record begins with {given:?}"));
+        };
+        if examinees.contains(&subject) {
+            continue;
+        }
+        if !full && index.examined(&subject, source)? {
+            already += 1;
+            continue;
+        }
+        examinees.push(subject);
+    }
+    Ok((examinees, already))
 }
 
 /// Who is this extractor, and what does it read?
@@ -144,6 +230,13 @@ fn identify(program: &str) -> Result<Identity> {
             }
         })?;
     if !output.status.success() {
+        // The extractor's stderr is its own account of what is wrong —
+        // "no pdftotext on PATH" beats "it failed".
+        let complaint = String::from_utf8_lossy(&output.stderr);
+        let complaint = complaint.trim();
+        if !complaint.is_empty() {
+            return Err(anyhow!("`{program} --identify` failed: {complaint}"));
+        }
         return Err(anyhow!(
             "`{program} --identify` failed — an extractor answers it before anything is examined"
         ));

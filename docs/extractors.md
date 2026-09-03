@@ -112,7 +112,10 @@ file:
 The receipt is the memory. What still needs examining is a fold over
 the log — every subject whose standing `file:mime` is one the extractor
 named, minus every subject already carrying its receipt — so the
-worklist survives anything a cache would not. Derived files join that
+worklist survives anything a cache would not. The mime list is
+dispatch, not a promise: a user can name a file outright, and bytes
+the extractor cannot make sense of may arrive — the graceful answer is
+an examination with nothing found. Derived files join that
 world like anything else: the log speaks about them, and an extractor
 reading their kind will find them on its worklist. The log informs the
 *effort* here, never the content of a claim: what an extractor says

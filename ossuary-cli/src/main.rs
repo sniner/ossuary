@@ -77,11 +77,24 @@ enum Command {
     /// goes into the archive as content of its own, named, typed and
     /// tied to its origin on the record. Files of kinds the extractor
     /// does not read are never touched, and a new extractor version
-    /// looks at everything again.
+    /// looks at everything again. Naming files narrows the run to them:
+    /// a named file is handed over even when its kind is not one the
+    /// extractor reads — naming is more deliberate than a pattern.
     Extract {
         /// Which extractor to run: the part after `ossuary-extract-`
         #[arg(value_name = "NAME")]
         name: String,
+
+        /// Only these files, named the way the archive names them —
+        /// sha256:… or a beginning of it — instead of everything that
+        /// waits
+        #[arg(value_name = "SUBJECT")]
+        subjects: Vec<String>,
+
+        /// Examine anew, receipted or not: the named files, or — with
+        /// none named — everything of a kind the extractor reads
+        #[arg(long)]
+        full: bool,
 
         /// Where derived files wait on their way into the archive —
         /// cache/tmp in the archive unless this names another place; a
@@ -203,9 +216,19 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
         Command::Ingest { path, full } => ingest(&cli.archive, &path, full, quiet),
-        Command::Extract { name, temp_dir } => {
-            extract::extract(&cli.archive, &name, temp_dir.as_deref(), quiet)
-        }
+        Command::Extract {
+            name,
+            subjects,
+            full,
+            temp_dir,
+        } => extract::extract(
+            &cli.archive,
+            &name,
+            &subjects,
+            full,
+            temp_dir.as_deref(),
+            quiet,
+        ),
         Command::Seal => seal(&cli.archive),
         Command::About {
             subject,
@@ -363,7 +386,7 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
 /// beginning resolved against the index, like a short commit hash.
 /// `None` when nothing on the record begins that way; a beginning that
 /// names several files is refused.
-fn resolve(archive: &Archive, index: &Index, given: &str) -> Result<Option<Subject>> {
+pub(crate) fn resolve(archive: &Archive, index: &Index, given: &str) -> Result<Option<Subject>> {
     let algorithm = archive.content().algorithm().name();
     let bare = given
         .strip_prefix(algorithm)

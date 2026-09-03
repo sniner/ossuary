@@ -58,6 +58,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   extracted text — and each goes into the archive as content of its own, named and typed in the
   extractor's words (`file:name`, `file:mime`) and tied to its origin (`derive:derived-from`);
   `--temp-dir` says where derived files wait on their way in, for when the archive sits on a
-  slow share. The pipe protocol, open to any language, is [docs/extractors.md](docs/extractors.md)
+  slow share. Naming files narrows the run to them — `extract text SUBJECT` examines one file
+  now instead of everything that waits, a beginning of the digest is enough, and a named file
+  is handed over even when its kind is not one the extractor reads. `--full` examines anew,
+  receipted or not: the named files, or everything of a kind the extractor reads — for the
+  extractor upgrade that is worth a fresh look at the archive. The pipe protocol, open to any
+  language, is [docs/extractors.md](docs/extractors.md)
 - **`ossuary-extract-exif`** — the first extractor: EXIF fields verbatim, tag names kebab-cased
   under `exif:`, values as the format stores them (`"2019:07:14 11:02:41"`, `"28/10"`)

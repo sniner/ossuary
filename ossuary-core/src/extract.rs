@@ -287,6 +287,35 @@ mod tests {
     }
 
     #[test]
+    fn of_kind_ignores_receipts_and_examined_asks_about_one_file() {
+        let dir = TempDir::new().unwrap();
+        let (content, log, mut index) = archive(&dir);
+        let jpeg = take(&content, &log, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
+        let mimes = vec!["image/jpeg".to_string()];
+
+        record_examination(&content, &log, &jpeg, &[], &[], &source()).unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.worklist(&mimes, &source()).unwrap(),
+            [],
+            "the worklist subtracts the receipt"
+        );
+        assert_eq!(
+            index.of_kind(&mimes).unwrap(),
+            std::slice::from_ref(&jpeg),
+            "of_kind does not — this is what --full examines anew"
+        );
+        assert!(index.examined(&jpeg, &source()).unwrap());
+        assert!(
+            !index
+                .examined(&jpeg, &Source::parse("extractor:text/0.1.0").unwrap())
+                .unwrap(),
+            "a receipt belongs to its source alone"
+        );
+    }
+
+    #[test]
     fn another_source_is_offered_the_same_file() {
         let dir = TempDir::new().unwrap();
         let (content, log, mut index) = archive(&dir);
