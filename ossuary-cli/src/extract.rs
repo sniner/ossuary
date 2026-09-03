@@ -50,31 +50,108 @@ struct Line {
 
 pub fn extract(
     root: &Path,
-    name: &str,
+    name: Option<&str>,
     subjects: &[String],
     full: bool,
     temp_dir: Option<&Path>,
     quiet: bool,
 ) -> Result<ExitCode> {
     let archive = crate::open(root)?;
-    let program = format!("ossuary-extract-{name}");
-    let identity = identify(&program)?;
-    let source = Source::parse(&identity.source)?;
-    if temp_dir.is_some() && !identity.derives {
+    let names: Vec<String> = match name {
+        Some(name) => vec![name.to_string()],
+        None => archive.config().extractors().to_vec(),
+    };
+    if names.is_empty() {
         return Err(anyhow!(
-            "`{program}` hands no files back — --temp-dir is where derived files would wait; run this without it"
+            "no extractors to run — name one, like `ossuary extract text`, or list this archive's own under [extract] in config.toml"
         ));
     }
-    let scratch = identity
-        .derives
-        .then(|| scratch_parent(&archive, temp_dir))
-        .transpose()?;
-
     if !quiet {
         eprintln!("archive {}", archive.root().display());
     }
+
+    // Everyone answers --identify before anyone runs. A single named
+    // extractor that cannot is this run's error; in the archive's own
+    // list, the broken one is reported and the healthy ones still run —
+    // a nightly sweep does not forfeit exif to a missing poppler.
+    let mut runs = Vec::new();
+    let mut broken = 0usize;
+    for listed in &names {
+        let program = format!("ossuary-extract-{listed}");
+        let identified = identify(&program)
+            .and_then(|identity| Ok((Source::parse(&identity.source)?, identity)));
+        match identified {
+            Ok((source, identity)) => runs.push(Run {
+                program,
+                identity,
+                source,
+            }),
+            Err(error) => {
+                if name.is_some() {
+                    return Err(error);
+                }
+                broken += 1;
+                eprintln!("skipped: {error:#}");
+            }
+        }
+    }
+    if temp_dir.is_some() && !runs.is_empty() && !runs.iter().any(|run| run.identity.derives) {
+        return Err(match runs.as_slice() {
+            [only] => anyhow!(
+                "`{}` hands no files back — --temp-dir is where derived files would wait; run this without it",
+                only.program
+            ),
+            _ => anyhow!(
+                "no files would come back from this run — --temp-dir is where derived files wait; run this without it"
+            ),
+        });
+    }
+
     let mut index = archive.index()?;
-    crate::catch_up(&mut index, &archive, quiet)?;
+    let mut troubled = broken > 0;
+    for run in &runs {
+        // Folded before every extractor, not once: what one derives, the
+        // next one's worklist already sees.
+        crate::catch_up(&mut index, &archive, quiet)?;
+        troubled |= !run_one(&archive, &index, run, subjects, full, temp_dir, quiet)?;
+    }
+    if runs.is_empty() {
+        println!("nothing ran — no extractor in the archive's list answered --identify");
+    }
+    if troubled {
+        Ok(ExitCode::FAILURE)
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// One extractor, identified and ready to run.
+struct Run {
+    program: String,
+    identity: Identity,
+    source: Source,
+}
+
+/// One extractor over its worklist — or over the named files. Answers
+/// whether the run went clean; what failed is already on stderr.
+fn run_one(
+    archive: &Archive,
+    index: &Index,
+    run: &Run,
+    subjects: &[String],
+    full: bool,
+    temp_dir: Option<&Path>,
+    quiet: bool,
+) -> Result<bool> {
+    let Run {
+        program,
+        identity,
+        source,
+    } = run;
+    let scratch = identity
+        .derives
+        .then(|| scratch_parent(archive, temp_dir))
+        .transpose()?;
 
     // What this run examines: the worklist, unless files were named.
     // Named files skip the mime dispatch — naming is more deliberate
@@ -85,7 +162,7 @@ pub fn extract(
         let waiting = if full {
             index.of_kind(&identity.mimes)?
         } else {
-            index.worklist(&identity.mimes, &source)?
+            index.worklist(&identity.mimes, source)?
         };
         if waiting.is_empty() {
             if full {
@@ -95,7 +172,7 @@ pub fn extract(
                     "nothing waiting for {source} — no file of a kind it reads stands unexamined"
                 );
             }
-            return Ok(ExitCode::SUCCESS);
+            return Ok(true);
         }
         if !quiet {
             eprintln!("{} file(s) waiting for {source}", waiting.len());
@@ -103,7 +180,7 @@ pub fn extract(
         waiting
     } else {
         let examinees;
-        (examinees, already) = named(&archive, &index, subjects, &source, full)?;
+        (examinees, already) = named(archive, index, subjects, source, full)?;
         if !quiet && !examinees.is_empty() {
             eprintln!("{} file(s) named for {source}", examinees.len());
         }
@@ -113,15 +190,15 @@ pub fn extract(
     let mut tally = Tally::default();
     let mut failed: Vec<(Subject, anyhow::Error)> = Vec::new();
     for subject in worklist {
-        match examine(&archive, &program, &subject, &source, scratch.as_deref()) {
+        match examine(archive, program, &subject, source, scratch.as_deref()) {
             Ok(written) => tally.add(&written),
             Err(error) => failed.push((subject, error)),
         }
     }
 
-    println!("{}", tally.verdict(&source, already));
+    println!("{}", tally.verdict(source, already));
     if failed.is_empty() {
-        Ok(ExitCode::SUCCESS)
+        Ok(true)
     } else {
         eprintln!(
             "{} could not be examined — offered again next run:",
@@ -130,7 +207,7 @@ pub fn extract(
         for (subject, error) in &failed {
             eprintln!("  {subject}: {error:#}");
         }
-        Ok(ExitCode::FAILURE)
+        Ok(false)
     }
 }
 

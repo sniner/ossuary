@@ -17,8 +17,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary init`** begins an archive — or completes one already standing: nothing standing is
   remade or edited, and what is missing (today: `config.toml`) is added
 - **`config.toml`** in the archive root: `[ingest] exclude` glob patterns (`.DS_Store` and
-  friends never go in; an excluded directory is not walked) and `[content] compress` (zstd for
-  new content; what is already stored keeps its form, and reading understands both). A missing
+  friends never go in; an excluded directory is not walked), `[content] compress` (zstd for
+  new content; what is already stored keeps its form, and reading understands both) and
+  `[extract] run` (the extractors a bare `ossuary extract` runs, in order). A missing
   file means the defaults; an unknown key is refused rather than half-applied
 - **`ossuary ingest PATH`** takes a directory tree — or a single file — in: every regular file
   into the content store, seven day-one claims per new blob into the log — a blob met again gets
@@ -50,8 +51,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
   only read — and says whether the archive already holds it; works before an ingest as well as
   after
-- **`ossuary extract NAME`** runs one extractor — its own program, `ossuary-extract-NAME` found
-  on PATH — over every file of a kind it reads that it has not examined yet: findings go on the
+- **`ossuary extract [NAME]`** runs one extractor — its own program, `ossuary-extract-NAME`
+  found on PATH — or, with no NAME, the archive's own list from `[extract] run`, one after the
+  other: what one derives, the next one's worklist already sees, and a listed extractor that
+  cannot answer is skipped with its reason while the healthy ones still run. Each goes over
+  every file of a kind it reads that it has not examined yet: findings go on the
   record under the extractor's name, and every examined file gets a receipt, found something or
   not, so a repeated run costs only what is new and a new extractor version looks at everything
   again. An extractor can hand back files as well as findings — an unpacked attachment,

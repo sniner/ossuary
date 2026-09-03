@@ -65,25 +65,28 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
-    /// Run one extractor over every file it has not yet examined
+    /// Run extractors over every file they have not yet examined
     ///
     /// NAME names the program: `ossuary extract exif` runs
-    /// `ossuary-extract-exif` from PATH. The extractor reads each file's
-    /// bytes and tells the archive what it found; every finding goes on
-    /// the record under the extractor's own name, and every examined
-    /// file gets a receipt — found something or not — so a repeated run
-    /// costs only what is new. An extractor may hand back files as well
-    /// as findings — an unpacked attachment, extracted text — and each
+    /// `ossuary-extract-exif` from PATH. Without a NAME, the archive's
+    /// own list runs — `[extract] run` in its config.toml — one after
+    /// the other. Each extractor reads each file's bytes and tells the
+    /// archive what it found; every finding goes on the record under
+    /// the extractor's own name, and every examined file gets a
+    /// receipt — found something or not — so a repeated run costs only
+    /// what is new. An extractor may hand back files as well as
+    /// findings — an unpacked attachment, extracted text — and each
     /// goes into the archive as content of its own, named, typed and
-    /// tied to its origin on the record. Files of kinds the extractor
+    /// tied to its origin on the record. Files of kinds an extractor
     /// does not read are never touched, and a new extractor version
     /// looks at everything again. Naming files narrows the run to them:
     /// a named file is handed over even when its kind is not one the
     /// extractor reads — naming is more deliberate than a pattern.
     Extract {
-        /// Which extractor to run: the part after `ossuary-extract-`
+        /// Which extractor to run: the part after `ossuary-extract-`.
+        /// Left out, the archive's own list runs
         #[arg(value_name = "NAME")]
-        name: String,
+        name: Option<String>,
 
         /// Only these files, named the way the archive names them —
         /// sha256:… or a beginning of it — instead of everything that
@@ -223,7 +226,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             temp_dir,
         } => extract::extract(
             &cli.archive,
-            &name,
+            name.as_deref(),
             &subjects,
             full,
             temp_dir.as_deref(),

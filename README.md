@@ -40,7 +40,7 @@ back files as well as findings — an unpacked attachment, extracted
 text — and each goes into the archive as content of its own, tied to its
 origin on the record. Each archive carries its own `config.toml` — what
 ingest leaves out (`.DS_Store` and friends), whether content is
-compressed.
+compressed, and which extractors a bare `ossuary extract` runs.
 
 The blob layer is [immure](https://github.com/sniner/immure), content-addressed
 storage with deduplication, zstd compression and encryption.

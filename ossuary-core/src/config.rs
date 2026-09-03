@@ -40,6 +40,12 @@ exclude = [".DS_Store", "._*", "Thumbs.db", "desktop.ini"]
 # either way, and reading understands both. Claim segments are always
 # compressed - that is the format's choice, not this file's.
 compress = false
+
+[extract]
+# What a bare `ossuary extract` runs, in order - each a program
+# `ossuary-extract-<name>` found on PATH, like ["exif", "text"].
+# Empty means: nothing runs unless named outright.
+run = []
 "#;
 
 /// `config.toml` as it lies in the file, every part optional.
@@ -50,6 +56,8 @@ struct File {
     ingest: Ingest,
     #[serde(default)]
     content: Content,
+    #[serde(default)]
+    extract: Extract,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -66,11 +74,19 @@ struct Content {
     compress: bool,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Extract {
+    #[serde(default)]
+    run: Vec<String>,
+}
+
 /// The archive's settings, read and ready to ask.
 #[derive(Debug, Default)]
 pub struct Config {
     excludes: Excludes,
     compress: bool,
+    extractors: Vec<String>,
 }
 
 impl Config {
@@ -108,6 +124,7 @@ impl Config {
         Ok(Config {
             excludes,
             compress: file.content.compress,
+            extractors: file.extract.run,
         })
     }
 
@@ -121,6 +138,13 @@ impl Config {
     #[must_use]
     pub fn compress(&self) -> bool {
         self.compress
+    }
+
+    /// The extractors a bare `ossuary extract` runs, in the archive's
+    /// own order — empty when the archive names none.
+    #[must_use]
+    pub fn extractors(&self) -> &[String] {
+        &self.extractors
     }
 }
 
@@ -264,6 +288,20 @@ mod tests {
 
         assert!(!config.compress(), "the starter spells the default out");
         assert!(config.excludes().excluded(Path::new("a/b/.DS_Store")));
+        assert!(
+            config.extractors().is_empty(),
+            "an empty run list is the spelled-out default too"
+        );
+    }
+
+    #[test]
+    fn the_run_list_comes_back_in_its_own_order() {
+        let dir = TempDir::new().unwrap();
+        write(&dir, "[extract]\nrun = [\"text\", \"exif\"]\n");
+
+        let config = Config::load(dir.path()).unwrap();
+
+        assert_eq!(config.extractors(), ["text", "exif"]);
     }
 
     #[test]
