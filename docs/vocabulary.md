@@ -58,6 +58,8 @@ in its source.
 - `derive:` — relations between content: what came from what
 - `user:` — what the user says; the archive takes their word
 - `exif:` — verbatim EXIF fields, as `ossuary-extract-exif` reads them
+- `pdf:` — verbatim PDF document information, as `ossuary-extract-text`
+  reads it
 
 Subject prefixes other than hash algorithms stay reserved (see the
 format paper); vocabulary for subjects that are not blobs waits for the
@@ -157,3 +159,14 @@ first real need.
 - value: text as text, numbers as numbers, rationals as
   `numerator/denominator` — one value bare, several as a list
 - written by: ossuary-extract-exif
+
+### pdf:…
+
+- meaning: one entry of a PDF's document information dictionary,
+  verbatim — the key kebab-cased (`pdf:title`, `pdf:creation-date`),
+  the value as the document spells it: a date stays
+  `"D:20190714110241+02'00'"`. The extracted text itself is not an
+  attribute but a derived file, `text/plain`, tied to the document by
+  `derive:derived-from`
+- value: string
+- written by: ossuary-extract-text

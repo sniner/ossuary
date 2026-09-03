@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   # The workspace ships two programs; every build, strip and stage step
   # walks this list.
-  BINARIES: ossuary ossuary-extract-exif
+  BINARIES: ossuary ossuary-extract-exif ossuary-extract-text
 
 jobs:
   verify-version:
@@ -169,10 +169,14 @@ jobs:
             done
             echo "OK: $(du -h "$BIN" | cut -f1) universal $bin"
           done
-          # Smoke test: the arm64 slices run on this runner. The extractor has
-          # no --version; --identify is its way of saying who it is.
+          # Smoke test: the arm64 slices run on this runner. Extractors have
+          # no --version; --identify is their way of saying who they are. The
+          # text extractor answers it only with poppler present — which also
+          # smokes its engine check.
+          brew install --quiet poppler
           "dist/ossuary-${GITHUB_REF_NAME}-macos-universal" --version
           "dist/ossuary-extract-exif-${GITHUB_REF_NAME}-macos-universal" --identify
+          "dist/ossuary-extract-text-${GITHUB_REF_NAME}-macos-universal" --identify
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

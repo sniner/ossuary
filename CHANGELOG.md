@@ -66,3 +66,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   language, is [docs/extractors.md](docs/extractors.md)
 - **`ossuary-extract-exif`** — the first extractor: EXIF fields verbatim, tag names kebab-cased
   under `exif:`, values as the format stores them (`"2019:07:14 11:02:41"`, `"28/10"`)
+- **`ossuary-extract-text`** — the first deriving extractor: a PDF's plain text, extracted
+  through poppler's `pdftotext` (which must be on PATH), goes into the archive as a `text/plain`
+  file of its own beside the document information verbatim under `pdf:` (`pdf:title`,
+  `pdf:creation-date` — dates as the document spells them). A document with no text to give —
+  scanned pages, an unreadable file — is examined all the same, with nothing found

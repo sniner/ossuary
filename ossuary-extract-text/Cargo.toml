@@ -1,0 +1,17 @@
+[package]
+name = "ossuary-extract-text"
+description = "Text extractor for ossuary archives, deriving plain text from PDFs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-extract-text"
+path = "src/main.rs"
+
+[dependencies]
+lopdf = "0.38"
+serde_json = "1.0.151"
