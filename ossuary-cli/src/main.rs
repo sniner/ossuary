@@ -71,13 +71,22 @@ enum Command {
     /// bytes and tells the archive what it found; every finding goes on
     /// the record under the extractor's own name, and every examined
     /// file gets a receipt — found something or not — so a repeated run
-    /// costs only what is new. Files of kinds the extractor does not
-    /// read are never touched, and a new extractor version looks at
-    /// everything again.
+    /// costs only what is new. An extractor may hand back files as well
+    /// as findings — an unpacked attachment, extracted text — and each
+    /// goes into the archive as content of its own, named, typed and
+    /// tied to its origin on the record. Files of kinds the extractor
+    /// does not read are never touched, and a new extractor version
+    /// looks at everything again.
     Extract {
         /// Which extractor to run: the part after `ossuary-extract-`
         #[arg(value_name = "NAME")]
         name: String,
+
+        /// Where derived files wait on their way into the archive —
+        /// cache/tmp in the archive unless this names another place; a
+        /// fast local disk pays off when the archive sits on a share
+        #[arg(long, value_name = "DIR")]
+        temp_dir: Option<PathBuf>,
     },
     /// Close the open segment; its claims become part of the sealed log
     Seal,
@@ -193,7 +202,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
         Command::Ingest { path, full } => ingest(&cli.archive, &path, full, quiet),
-        Command::Extract { name } => extract::extract(&cli.archive, &name, quiet),
+        Command::Extract { name, temp_dir } => {
+            extract::extract(&cli.archive, &name, temp_dir.as_deref(), quiet)
+        }
         Command::Seal => seal(&cli.archive),
         Command::About {
             subject,

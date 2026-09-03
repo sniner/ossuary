@@ -54,6 +54,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on PATH — over every file of a kind it reads that it has not examined yet: findings go on the
   record under the extractor's name, and every examined file gets a receipt, found something or
   not, so a repeated run costs only what is new and a new extractor version looks at everything
-  again. The pipe protocol, open to any language, is [docs/extractors.md](docs/extractors.md)
+  again. An extractor can hand back files as well as findings — an unpacked attachment,
+  extracted text — and each goes into the archive as content of its own, named and typed in the
+  extractor's words (`file:name`, `file:mime`) and tied to its origin (`derive:derived-from`);
+  `--temp-dir` says where derived files wait on their way in, for when the archive sits on a
+  slow share. The pipe protocol, open to any language, is [docs/extractors.md](docs/extractors.md)
 - **`ossuary-extract-exif`** — the first extractor: EXIF fields verbatim, tag names kebab-cased
   under `exif:`, values as the format stores them (`"2019:07:14 11:02:41"`, `"28/10"`)

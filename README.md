@@ -34,10 +34,12 @@ ingest, and a disposable query index), the `ossuary` command line —
 the first extractor, `ossuary-extract-exif`, recording what EXIF says in
 EXIF's own words. Enough to take a directory tree in, ask what the
 archive knows about any file in it, search for files by what stands on
-the record, and get any file back out. Each archive carries its own
-`config.toml` — what ingest leaves out (`.DS_Store` and friends), whether
-content is compressed. Derived content — extracted text, thumbnails, and
-with them full-text search — comes next.
+the record, and get any file back out. An extractor can hand
+back files as well as findings — an unpacked attachment, extracted
+text — and each goes into the archive as content of its own, tied to its
+origin on the record. Each archive carries its own `config.toml` — what
+ingest leaves out (`.DS_Store` and friends), whether content is
+compressed.
 
 The blob layer is [immure](https://github.com/sniner/immure), content-addressed
 storage with deduplication, zstd compression and encryption.

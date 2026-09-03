@@ -522,6 +522,7 @@ dependencies = [
  "ossuary-core",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

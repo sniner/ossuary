@@ -103,10 +103,13 @@ first real need.
 
 ### file:mime
 
-- meaning: what the bytes are, by sniffing — magic bytes, a UTF-8 look
-  for plain text, and `application/octet-stream` as the honest shrug
+- meaning: what the bytes are. Ingest sniffs — magic bytes, a UTF-8
+  look for plain text, and `application/octet-stream` as the honest
+  shrug; a derived file's kind is announced by the extractor that wrote
+  the bytes, and needs no guessing. Both words stand in the set
 - value: string, a MIME type
-- written by: ingest; extractors may know better later
+- written by: ingest; `ossuary extract`, in the deriving extractor's
+  words
 
 ### file:modified
 
@@ -117,12 +120,22 @@ first real need.
 - value: string
 - written by: ingest
 
+### file:name
+
+- meaning: a name the content was known by, said when an extractor
+  wrote it — an attachment's own file name, the label a track carried.
+  Names accrete like sightings do: bytes met again under another name
+  hold both. A file taken in by ingest carries its name inside
+  `prov:ingest-path` instead
+- value: string, a bare file name
+- written by: `ossuary extract`, in the deriving extractor's words
+
 ### derive:derived-from
 
 - meaning: what this content came from — stands on the derived blob and
-  points at its origin
+  points at its origin. Who made the derivation is the claim's source
 - value: string, a full subject
-- written by: extractors (upcoming)
+- written by: `ossuary extract`, when it takes a derived file in
 
 ### user:tag
 
