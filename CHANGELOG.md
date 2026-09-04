@@ -28,6 +28,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it already observed (in `cache/`) and leaves unchanged files in peace: not read, not hashed,
   no claims; `--full` looks at everything anew
 - **`ossuary seal`** closes the open segment; its claims become part of the sealed log
+- **Per-segment manifests** in `cache/manifests/` — one small memo per sealed segment (claim
+  count, time range, namespaces, a bloom filter over the subjects), filed at sealing time and
+  rebuilt in passing when missing: commands that walk the log no longer read every sealed
+  segment just to put them in order. Like every cache, deletable at any time — the next walk
+  refills it
 - **`ossuary about SUBJECT`** answers everything on the record about one file, oldest first; a
   beginning of the digest is enough while it names only one file, and naming attributes (or a
   namespace, like `exif:`) narrows the answer to them

@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claim::{Claim, Timestamp};
 use crate::error::{Error, Result};
+use crate::manifest::{Manifest, Manifests};
 
 /// The format generation this build writes, and the only one it reads.
 ///
@@ -95,6 +96,7 @@ impl Segment {
 pub struct Log {
     store: Store,
     head: PathBuf,
+    manifests: Option<Manifests>,
 }
 
 impl Log {
@@ -104,7 +106,20 @@ impl Log {
         Log {
             store,
             head: head.into(),
+            manifests: None,
         }
+    }
+
+    /// The same log, keeping a manifest drawer at `dir`.
+    ///
+    /// With a drawer, sealing files each fresh segment's manifest in
+    /// passing and [`segments`](Log::segments) answers from manifests
+    /// instead of opening every segment. Without one — a bare `Log` — the
+    /// walk reads segments whole, as a cacheless reader must.
+    #[must_use]
+    pub fn with_manifests(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.manifests = Some(Manifests::new(dir));
+        self
     }
 
     /// Append one claim to the open segment.
@@ -163,7 +178,9 @@ impl Log {
     /// claims. The whole head is validated first, so nothing broken is ever
     /// immured; and because the store is content-addressed, a run that was
     /// interrupted between storing and starting the fresh head simply seals
-    /// the same bytes again as a no-op.
+    /// the same bytes again as a no-op. With a manifest drawer, the fresh
+    /// segment's manifest is filed in passing — best effort, and never a
+    /// reason for a seal that succeeded to say otherwise.
     ///
     /// # Errors
     ///
@@ -199,6 +216,14 @@ impl Log {
         fs::write(&tmp, header_line()).map_err(io("beginning the fresh head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
 
+        if let Some(manifests) = &self.manifests {
+            // Filed in passing, best effort: the seal has already
+            // succeeded, and cache trouble never outranks the truth
+            // operation it decorates — a manifest that could not be
+            // written is merely absent, and segments() rebuilds it.
+            let _ = manifests.store(&Manifest::of(entry.digest(), &claims));
+        }
+
         Ok(Some(Segment {
             digest: entry.digest().clone(),
             first: claims.first().map(|claim| claim.time().clone()),
@@ -209,10 +234,12 @@ impl Log {
     /// claims, ties broken by digest.
     ///
     /// The order is needed only to break same-second ties *across* segments
-    /// — within one, the order of lines rules. Every segment is read whole
-    /// to answer this; the manifest tier will spare that cost one day, and
-    /// a walk that validates the entire log on the way is not the worst
-    /// interim.
+    /// — within one, the order of lines rules. With a manifest drawer the
+    /// manifests answer, and a segment whose manifest is missing or will
+    /// not read is read whole once and its manifest filed in passing —
+    /// self-healing, so deleting the drawer costs one such walk. A bare
+    /// `Log` reads every segment whole, which at least validates the
+    /// entire log on the way.
     ///
     /// # Errors
     ///
@@ -222,10 +249,22 @@ impl Log {
         let mut segments = Vec::new();
         for entry in self.store.entries() {
             let entry = entry?;
-            let claims = self.read(entry.digest())?;
+            let drawer = self.manifests.as_ref();
+            let manifest = if let Some(manifest) = drawer.and_then(|m| m.load(entry.digest())) {
+                manifest
+            } else {
+                let claims = self.read(entry.digest())?;
+                let manifest = Manifest::of(entry.digest(), &claims);
+                if let Some(manifests) = drawer {
+                    // Best effort, as at sealing time: an unwritable
+                    // drawer merely keeps the walk expensive.
+                    let _ = manifests.store(&manifest);
+                }
+                manifest
+            };
             segments.push(Segment {
                 digest: entry.digest().clone(),
-                first: claims.first().map(|claim| claim.time().clone()),
+                first: manifest.first_claim_at().cloned(),
             });
         }
         segments.sort_by(|a, b| a.first.cmp(&b.first).then_with(|| a.digest.cmp(&b.digest)));
@@ -404,6 +443,81 @@ mod tests {
             segments.iter().map(Segment::digest).collect::<Vec<_>>(),
             [earlier.digest(), later.digest()],
             "log order is the claims' order, not the sealing order"
+        );
+    }
+
+    fn manifested_log_in(dir: &TempDir) -> Log {
+        Log::new(store_in(dir), dir.path().join("head.jsonl"))
+            .with_manifests(dir.path().join("manifests"))
+    }
+
+    fn manifest_path(dir: &TempDir, segment: &Segment) -> std::path::PathBuf {
+        dir.path()
+            .join("manifests")
+            .join(format!("{}.json", segment.digest()))
+    }
+
+    #[test]
+    fn sealing_files_a_manifest_in_passing() {
+        let dir = TempDir::new().unwrap();
+        let log = manifested_log_in(&dir);
+        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
+            .unwrap();
+
+        let segment = log.seal().unwrap().unwrap();
+
+        let filed = fs::read_to_string(manifest_path(&dir, &segment)).unwrap();
+        assert!(
+            filed.starts_with("{\"ossuary-manifest\":1,"),
+            "the drawer holds the fresh segment's manifest"
+        );
+    }
+
+    #[test]
+    fn segments_answer_from_the_drawer_without_opening_segments() {
+        let dir = TempDir::new().unwrap();
+        let log = manifested_log_in(&dir);
+        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
+            .unwrap();
+        let segment = log.seal().unwrap().unwrap();
+
+        // A manifest planted over the filed one, answering with a different
+        // first claim: segments() repeating it proves the segment stayed
+        // shut — cheekily, but a cache that is asked is a cache that works.
+        let planted = Manifest::of(
+            segment.digest(),
+            &[claim("planted", "2001-01-01T00:00:00Z")],
+        );
+        Manifests::new(dir.path().join("manifests"))
+            .store(&planted)
+            .unwrap();
+
+        let segments = log.segments().unwrap();
+        assert_eq!(
+            segments[0].first_claim_at().unwrap().as_str(),
+            "2001-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn a_missing_manifest_is_rebuilt_in_passing() {
+        let dir = TempDir::new().unwrap();
+        let log = manifested_log_in(&dir);
+        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
+            .unwrap();
+        let segment = log.seal().unwrap().unwrap();
+        fs::remove_file(manifest_path(&dir, &segment)).unwrap();
+
+        let segments = log.segments().unwrap();
+
+        assert_eq!(
+            segments[0].first_claim_at().unwrap().as_str(),
+            "2026-09-01T21:14:03Z",
+            "the walk fell back to the segment itself"
+        );
+        assert!(
+            manifest_path(&dir, &segment).exists(),
+            "and refilled the drawer on the way — deleting it costs one walk"
         );
     }
 

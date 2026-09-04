@@ -117,7 +117,7 @@ impl Archive {
         let content = content_store(&root, algorithm, CONTENT_DEPTH, config.compress()).create()?;
         let claims = claims_store(&root, algorithm, CLAIMS_DEPTH).create()?;
         Ok(Archive {
-            log: Log::new(claims, root.join("head.jsonl")),
+            log: log_in(claims, &root),
             config,
             content,
             root,
@@ -165,7 +165,7 @@ impl Archive {
             content_store(&root, algorithm, mark.content_depth, config.compress()).build()?;
         let claims = claims_store(&root, algorithm, mark.claims_depth).build()?;
         Ok(Archive {
-            log: Log::new(claims, root.join("head.jsonl")),
+            log: log_in(claims, &root),
             config,
             content,
             root,
@@ -258,6 +258,13 @@ impl Archive {
         })?;
         Ok(cache)
     }
+}
+
+/// The archive's log: the claims store, the open head, and the manifest
+/// drawer in `cache/` — which, like every cache, may vanish between any
+/// two commands and is refilled in passing.
+fn log_in(claims: Store, root: &Path) -> Log {
+    Log::new(claims, root.join("head.jsonl")).with_manifests(root.join("cache").join("manifests"))
 }
 
 /// How generation 1 lays out the content store: entries named by digest
@@ -407,6 +414,34 @@ mod tests {
             fs::read_to_string(root.join("config.toml")).unwrap(),
             own,
             "the archive's own settings outrank the starter"
+        );
+    }
+
+    #[test]
+    fn sealing_through_the_archive_files_a_manifest() {
+        use crate::claim::{Attribute, Claim, Source, Subject, Timestamp};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("archive");
+        let archive = Archive::create(&root, Algorithm::Sha256).unwrap();
+        let claim = Claim::assert(
+            Subject::parse(&format!("sha256:{}", "9f".repeat(32))).unwrap(),
+            Attribute::parse("user:tag").unwrap(),
+            serde_json::json!("holiday"),
+            Timestamp::parse("2026-09-04T12:00:00Z").unwrap(),
+            Source::parse("user").unwrap(),
+        )
+        .unwrap();
+        archive.log().append(&claim).unwrap();
+
+        let segment = archive.log().seal().unwrap().unwrap();
+
+        assert!(
+            root.join("cache")
+                .join("manifests")
+                .join(format!("{}.json", segment.digest()))
+                .is_file(),
+            "the archive's log keeps its manifest drawer in cache/"
         );
     }
 
