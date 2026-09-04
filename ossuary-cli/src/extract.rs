@@ -109,11 +109,24 @@ pub fn extract(
 
     let mut index = archive.index()?;
     let mut troubled = broken > 0;
-    for run in &runs {
-        // Folded before every extractor, not once: what one derives, the
-        // next one's worklist already sees.
-        crate::catch_up(&mut index, &archive, quiet)?;
-        troubled |= !run_one(&archive, &index, run, subjects, full, temp_dir, quiet)?;
+    let mut invocation = Invocation {
+        archive: &archive,
+        run_id: ossuary_core::run_id(),
+        full,
+        temp_dir,
+        quiet,
+        examined: HashSet::new(),
+    };
+
+    if subjects.is_empty() {
+        troubled |= settle(&mut invocation, &mut index, &runs)?;
+    } else {
+        // Named files are the surgical grip: one pass, no rounds.
+        for run in &runs {
+            crate::catch_up(&mut index, &archive, quiet)?;
+            let outcome = run_one(&mut invocation, &index, run, subjects, true)?;
+            troubled |= !outcome.clean;
+        }
     }
     if runs.is_empty() {
         println!("nothing ran — no extractor in the archive's list answered --identify");
@@ -125,6 +138,59 @@ pub fn extract(
     }
 }
 
+/// Rounds over the list until a full round examines nothing — the
+/// fixpoint. The "queue" is the worklist itself, refolded from log and
+/// receipts before every extractor: Ctrl-C in round three loses
+/// nothing, the next call carries on where the receipts end. List
+/// order is only a performance hint — an extractor listed before its
+/// feeder costs one more round, never a second command. Answers
+/// whether any pass ran troubled.
+fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Result<bool> {
+    let archive = invocation.archive;
+    let quiet = invocation.quiet;
+    let mut troubled = false;
+    let mut round = 0usize;
+    let mut total = 0usize;
+    loop {
+        round += 1;
+        if round > 1 && !quiet {
+            eprintln!("round {round}: what the last round derived gets its turn");
+        }
+        let mut examined = 0usize;
+        let mut busy: Vec<String> = Vec::new();
+        for run in runs {
+            crate::catch_up(index, archive, quiet)?;
+            let outcome = run_one(invocation, index, run, &[], round == 1)?;
+            troubled |= !outcome.clean;
+            if outcome.examined > 0 {
+                examined += outcome.examined;
+                busy.push(run.source.to_string());
+            }
+        }
+        if examined == 0 {
+            break;
+        }
+        total += examined;
+        if round == MAX_ROUNDS {
+            return Err(anyhow!(
+                "round {MAX_ROUNDS} still examined files — {} never runs dry; an extractor whose output bytes differ every round cannot settle. What is recorded so far stands; fix the extractor, then run this again",
+                busy.join(", ")
+            ));
+        }
+    }
+    if round > 1 && !quiet {
+        eprintln!("settled after {round} round(s): {total} examination(s) in all");
+    }
+    Ok(troubled)
+}
+
+/// The lid on the fixpoint loop. Honest extractors settle in a handful
+/// of rounds — content nests mails-in-mails deep, not thirty-two deep —
+/// so a loop still busy here is an extractor minting fresh bytes every
+/// round, and the verdict names it. A constant, not a knob, until a
+/// real archive proves the need.
+const MAX_ROUNDS: usize = 32;
+
 /// One extractor, identified and ready to run.
 struct Run {
     program: String,
@@ -132,47 +198,93 @@ struct Run {
     source: Source,
 }
 
+/// What one `ossuary extract` call carries through all its rounds.
+struct Invocation<'a> {
+    archive: &'a Archive,
+    /// The run anchor: stamped as `prov:run` on every derived file this
+    /// call takes in, rounds included — they are the call's insides.
+    run_id: String,
+    full: bool,
+    temp_dir: Option<&'a Path>,
+    quiet: bool,
+    /// Who examined what within THIS call. Under --full, receipts from
+    /// before the call are ignored and this memo stands in for them —
+    /// otherwise every round would offer everything anew and the loop
+    /// could never settle. A private, disposable note of the call's own
+    /// writes: a crash loses it and costs at most a few double
+    /// examinations, which dedup in the set.
+    examined: HashSet<String>,
+}
+
+/// How one extractor's pass went: whether it ran clean, and how many
+/// files it examined — the loop's fixpoint question.
+struct Outcome {
+    clean: bool,
+    examined: usize,
+}
+
+/// The memo's spelling of "this source examined this file".
+fn memo_key(subject: &Subject, source: &Source) -> String {
+    format!("{}|{}", source.as_str(), subject.as_str())
+}
+
 /// One extractor over its worklist — or over the named files. Answers
-/// whether the run went clean; what failed is already on stderr.
+/// whether the pass went clean and how many files it examined; what
+/// failed is already on stderr.
+///
+/// `announce_idle` is true on the first round and for named files: an
+/// empty worklist is an answer there. In later rounds it is only the
+/// fixpoint being reached, and saying so per extractor per round would
+/// bury the run's real news.
 fn run_one(
-    archive: &Archive,
+    invocation: &mut Invocation,
     index: &Index,
     run: &Run,
     subjects: &[String],
-    full: bool,
-    temp_dir: Option<&Path>,
-    quiet: bool,
-) -> Result<bool> {
+    announce_idle: bool,
+) -> Result<Outcome> {
     let Run {
         program,
         identity,
         source,
     } = run;
+    let archive = invocation.archive;
+    let quiet = invocation.quiet;
     let scratch = identity
         .derives
-        .then(|| scratch_parent(archive, temp_dir))
+        .then(|| scratch_parent(archive, invocation.temp_dir))
         .transpose()?;
 
-    // What this run examines: the worklist, unless files were named.
+    // What this pass examines: the worklist, unless files were named.
     // Named files skip the mime dispatch — naming is more deliberate
     // than a pattern — and, without --full, sit out when their receipt
-    // already stands.
+    // already stands. Under --full the receipts of earlier calls are
+    // ignored and the invocation's own memo takes their place.
     let mut already = 0usize;
     let worklist: Vec<Subject> = if subjects.is_empty() {
-        let waiting = if full {
-            index.of_kind(&identity.mimes)?
+        let waiting: Vec<Subject> = if invocation.full {
+            index
+                .of_kind(&identity.mimes)?
+                .into_iter()
+                .filter(|subject| !invocation.examined.contains(&memo_key(subject, source)))
+                .collect()
         } else {
             index.worklist(&identity.mimes, source)?
         };
         if waiting.is_empty() {
-            if full {
-                println!("nothing of a kind {source} reads is on the record");
-            } else {
-                println!(
-                    "nothing waiting for {source} — no file of a kind it reads stands unexamined"
-                );
+            if announce_idle {
+                if invocation.full {
+                    println!("nothing of a kind {source} reads is on the record");
+                } else {
+                    println!(
+                        "nothing waiting for {source} — no file of a kind it reads stands unexamined"
+                    );
+                }
             }
-            return Ok(true);
+            return Ok(Outcome {
+                clean: true,
+                examined: 0,
+            });
         }
         if !quiet {
             eprintln!("{} file(s) waiting for {source}", waiting.len());
@@ -180,7 +292,7 @@ fn run_one(
         waiting
     } else {
         let examinees;
-        (examinees, already) = named(archive, index, subjects, source, full)?;
+        (examinees, already) = named(archive, index, subjects, source, invocation.full)?;
         if !quiet && !examinees.is_empty() {
             eprintln!("{} file(s) named for {source}", examinees.len());
         }
@@ -190,16 +302,25 @@ fn run_one(
     let mut tally = Tally::default();
     let mut failed: Vec<(Subject, anyhow::Error)> = Vec::new();
     for subject in worklist {
-        match examine(archive, program, &subject, source, scratch.as_deref()) {
-            Ok(written) => tally.add(&written),
+        match examine(
+            archive,
+            program,
+            &subject,
+            source,
+            &invocation.run_id,
+            scratch.as_deref(),
+        ) {
+            Ok(written) => {
+                tally.add(&written);
+                invocation.examined.insert(memo_key(&subject, source));
+            }
             Err(error) => failed.push((subject, error)),
         }
     }
 
     println!("{}", tally.verdict(source, already));
-    if failed.is_empty() {
-        Ok(true)
-    } else {
+    let clean = failed.is_empty();
+    if !clean {
         eprintln!(
             "{} could not be examined — offered again next run:",
             failed.len()
@@ -207,8 +328,11 @@ fn run_one(
         for (subject, error) in &failed {
             eprintln!("  {subject}: {error:#}");
         }
-        Ok(false)
     }
+    Ok(Outcome {
+        clean,
+        examined: tally.examined,
+    })
 }
 
 /// What the run did, counted for the verdict.
@@ -357,6 +481,7 @@ fn examine(
     program: &str,
     subject: &Subject,
     source: &Source,
+    run_id: &str,
     scratch_parent: Option<&Path>,
 ) -> Result<Examined> {
     let content = archive.content();
@@ -433,13 +558,7 @@ fn examine(
         scratch.as_ref().map(tempfile::TempDir::path),
     )?;
     Ok(record_examination(
-        content,
-        archive.derived(),
-        archive.log(),
-        subject,
-        &findings,
-        &derived,
-        source,
+        archive, subject, &findings, &derived, source, run_id,
     )?)
 }
 

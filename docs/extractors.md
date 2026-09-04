@@ -121,7 +121,9 @@ dispatch, not a promise: a user can name a file outright, and bytes
 the extractor cannot make sense of may arrive — the graceful answer is
 an examination with nothing found. Derived files join that
 world like anything else: the log speaks about them, and an extractor
-reading their kind will find them on its worklist. The log informs the
+reading their kind will find them on its worklist — within the same
+`ossuary extract` call already, which runs in rounds until a whole
+round examines nothing new. The log informs the
 *effort* here, never the content of a claim: what an extractor says
 comes from the bytes alone — it knows neither the archive nor the
 record, and a decision that would need them is the orchestrator's to

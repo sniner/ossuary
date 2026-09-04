@@ -76,11 +76,13 @@ first real need.
 
 ### prov:run
 
-- meaning: the run a sighting arrived in — one UUID per run, so
-  "arrived together" is exact. What kind of run it was is the claim's
+- meaning: the run a record arrived in — one UUID per invocation, so
+  "arrived together" is exact: ingest stamps it on every sighting,
+  `ossuary extract` on every derived file it takes in, all rounds of
+  one call under one id. What kind of run it was is the claim's
   source, like everything about who was acting
 - value: string, a UUID
-- written by: ingest
+- written by: ingest; `ossuary extract`, on derived files
 
 ### prov:examined
 

@@ -62,13 +62,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only read — and says whether the archive already holds it; works before an ingest as well as
   after
 - **`ossuary extract [NAME]`** runs one extractor — its own program, `ossuary-extract-NAME`
-  found on PATH — or, with no NAME, the archive's own list from `[extract] run`, one after the
-  other: what one derives, the next one's worklist already sees, and a listed extractor that
-  cannot answer is skipped with its reason while the healthy ones still run. Each goes over
-  every file of a kind it reads that it has not examined yet: findings go on the
-  record under the extractor's name, and every examined file gets a receipt, found something or
-  not, so a repeated run costs only what is new and a new extractor version looks at everything
-  again. An extractor can hand back files as well as findings — an unpacked attachment,
+  found on PATH — or, with no NAME, the archive's own list from `[extract] run`, in rounds
+  until a whole round finds nothing left to examine: what one extractor hands back, the next
+  round offers to whichever extractor reads it, so a single call drives a chain like
+  mail → attachment → text to its end (list order costs at most an extra round, and a call cut
+  short continues next time — the worklist is refolded from log and receipts, not queued). A
+  listed extractor that cannot answer `--identify` is skipped with its reason while the healthy
+  ones still run. Each goes over every file of a kind it reads that it has not examined yet:
+  findings go on the record under the extractor's name, and every examined file gets a receipt,
+  found something or not, so a repeated run costs only what is new and a new extractor version
+  looks at everything again. Every derived file taken in is stamped `prov:run` with the call's
+  own run id — the same anchor an ingest run leaves — so "won together" stays an askable fact. An extractor can hand back files as well as findings — an unpacked attachment,
   extracted text — and each goes into the archive's derived store as content of its own, named
   and typed in the extractor's words (`file:name`, `file:mime`) and tied to its origin
   (`derive:derived-from`) — apart from the originals, so nothing that ever tidies derived

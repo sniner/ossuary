@@ -69,19 +69,25 @@ enum Command {
     ///
     /// NAME names the program: `ossuary extract exif` runs
     /// `ossuary-extract-exif` from PATH. Without a NAME, the archive's
-    /// own list runs — `[extract] run` in its config.toml — one after
-    /// the other. Each extractor reads each file's bytes and tells the
+    /// own list runs — `[extract] run` in its config.toml — in rounds,
+    /// until a whole round finds nothing left: what one extractor
+    /// hands back, the next round offers to whichever extractor reads
+    /// it, so one call drives a chain like mail, attachment, text to
+    /// its end. Each extractor reads each file's bytes and tells the
     /// archive what it found; every finding goes on the record under
     /// the extractor's own name, and every examined file gets a
     /// receipt — found something or not — so a repeated run costs only
-    /// what is new. An extractor may hand back files as well as
-    /// findings — an unpacked attachment, extracted text — and each
-    /// goes into the archive as content of its own, named, typed and
-    /// tied to its origin on the record. Files of kinds an extractor
-    /// does not read are never touched, and a new extractor version
-    /// looks at everything again. Naming files narrows the run to them:
-    /// a named file is handed over even when its kind is not one the
-    /// extractor reads — naming is more deliberate than a pattern.
+    /// what is new, and a call cut short simply continues next time.
+    /// An extractor may hand back files as well as findings — an
+    /// unpacked attachment, extracted text — and each goes into the
+    /// archive as content of its own, named, typed, tied to its origin
+    /// and stamped with this call's run id on the record. Files of
+    /// kinds an extractor does not read are never touched, and a new
+    /// extractor version looks at everything again. A NAME alone still
+    /// runs rounds, over that one extractor; naming files runs none —
+    /// the named files are examined once, now, and a named file is
+    /// handed over even when its kind is not one the extractor reads,
+    /// because naming is more deliberate than a pattern.
     Extract {
         /// Which extractor to run: the part after `ossuary-extract-`.
         /// Left out, the archive's own list runs
