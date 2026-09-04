@@ -467,6 +467,32 @@ mod tests {
     }
 
     #[test]
+    fn the_borrowed_algorithms_match_their_published_vectors() {
+        // FNV-1a 64, values from the reference test suite.
+        assert_eq!(fnv1a(b"", FNV_OFFSET), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(b"a", FNV_OFFSET), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(b"foobar", FNV_OFFSET), 0x8594_4171_f739_67e8);
+        // splitmix64, seed 0: the published sequence's first word is the
+        // mixer run over the golden gamma.
+        assert_eq!(mixed(0x9e37_79b9_7f4a_7c15), 0xe220_a839_7b1d_cdaf);
+    }
+
+    #[test]
+    fn the_filter_bits_are_frozen() {
+        // Manifests persist, so the whole probe pipeline — bases, mixer,
+        // stride, sizing — must stay byte-identical forever: bits already
+        // on disk are probed by future builds, and a drifted pipeline
+        // would mis-probe every manifest already filed, silently. This
+        // hex was computed by an independent implementation; change it
+        // only together with VERSION.
+        let line = manifest().to_line();
+        assert!(
+            line.contains("\"bits\":\"1000880044082384\""),
+            "the probe pipeline drifted: {line}"
+        );
+    }
+
+    #[test]
     fn a_manifest_reads_back_from_its_line() {
         let manifest = manifest();
 
