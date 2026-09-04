@@ -74,10 +74,11 @@ first real need.
 - value: string
 - written by: ingest
 
-### prov:ingest-run
+### prov:run
 
 - meaning: the run a sighting arrived in — one UUID per run, so
-  "arrived together" is exact
+  "arrived together" is exact. What kind of run it was is the claim's
+  source, like everything about who was acting
 - value: string, a UUID
 - written by: ingest
 

@@ -31,7 +31,7 @@ use crate::log::Log;
 /// What one ingest run did.
 #[derive(Debug)]
 pub struct Ingested {
-    /// The run's id, as it stands in every `prov:ingest-run` claim: what
+    /// The run's id, as it stands in every `prov:run` claim: what
     /// "arrived together" means, made exact.
     pub run: String,
     /// Blobs this run added to the store.
@@ -60,7 +60,7 @@ pub struct Ingested {
 /// `..` and symlinks resolved — claims are forever, so they name the
 /// place, not the way it was typed), `file:name` (the path's last
 /// element, so a name is askable without string surgery), `prov:host`,
-/// `prov:ingest-run`, `file:size`, `file:mime` — by magic bytes, with a
+/// `prov:run`, `file:size`, `file:mime` — by magic bytes, with a
 /// UTF-8 look for plain text and `application/octet-stream` when nothing
 /// answers — and `file:modified` where the filesystem has an mtime to
 /// tell — repeated at the precision it was observed, fractional seconds
@@ -273,13 +273,7 @@ fn take(
         )?);
     }
     claims.push(fact(&subject, "prov:host", json!(host), &time, source)?);
-    claims.push(fact(
-        &subject,
-        "prov:ingest-run",
-        json!(run),
-        &time,
-        source,
-    )?);
+    claims.push(fact(&subject, "prov:run", json!(run), &time, source)?);
     // Size and kind describe the content, not the sighting: the log has
     // them from the blob's first day, and they never say anything new.
     if status.is_new() {
@@ -600,7 +594,7 @@ mod tests {
         assert_eq!(value("file:size"), Some(json!(11)));
         assert_eq!(value("file:name"), Some(json!("a.txt")));
         assert_eq!(value("prov:host"), Some(json!("atlas.example.net")));
-        assert_eq!(value("prov:ingest-run"), Some(json!(result.run)));
+        assert_eq!(value("prov:run"), Some(json!(result.run)));
         let path = value("file:path").unwrap();
         assert!(path.as_str().unwrap().ends_with("/tree/a.txt"));
 
