@@ -433,6 +433,7 @@ fn examine(
         scratch.as_ref().map(tempfile::TempDir::path),
     )?;
     Ok(record_examination(
+        content,
         archive.derived(),
         archive.log(),
         subject,

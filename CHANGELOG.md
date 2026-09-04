@@ -72,7 +72,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   extracted text — and each goes into the archive's derived store as content of its own, named
   and typed in the extractor's words (`file:name`, `file:mime`) and tied to its origin
   (`derive:derived-from`) — apart from the originals, so nothing that ever tidies derived
-  content can reach what was taken in;
+  content can reach what was taken in. Bytes the archive already holds as an ingested
+  original — the attachment that was also saved as a file — are recorded without a second
+  copy: a digest is store-agnostic, and the bytes answer from the content store;
   `--temp-dir` says where derived files wait on their way in, for when the archive sits on a
   slow share. Naming files narrows the run to them — `extract text SUBJECT` examines one file
   now instead of everything that waits, a beginning of the digest is enough, and a named file

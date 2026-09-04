@@ -97,7 +97,11 @@ know that name, since it is the bytes' own. Each announced file goes
 into the archive's derived store, content with a record like any other,
 and onto that record what is known: `file:mime` and `file:name` as announced,
 `derive:derived-from` naming the examined file, and — for bytes the
-store meets for the first time — `file:size`.
+store meets for the first time — `file:size`. Bytes the content store
+already holds — an attachment that was also saved and taken in as a
+file — get no copy in the derived store: the record grows all the
+same, and a subject names content wherever it lies, so the bytes
+answer from `content/`.
 
 The whole file is refused when any line does not parse, names a file
 never announced or never written, announces one twice, or puts a path
