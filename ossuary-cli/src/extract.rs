@@ -124,7 +124,7 @@ pub fn extract(
         // Named files are the surgical grip: one pass, no rounds.
         for run in &runs {
             crate::catch_up(&mut index, &archive, quiet)?;
-            let outcome = run_one(&mut invocation, &index, run, subjects, true)?;
+            let outcome = run_one(&mut invocation, &index, run, subjects, 1)?;
             troubled |= !outcome.clean;
         }
     }
@@ -153,14 +153,11 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
     let mut total = 0usize;
     loop {
         round += 1;
-        if round > 1 && !quiet {
-            eprintln!("round {round}: what the last round derived gets its turn");
-        }
         let mut examined = 0usize;
         let mut busy: Vec<String> = Vec::new();
         for run in runs {
             crate::catch_up(index, archive, quiet)?;
-            let outcome = run_one(invocation, index, run, &[], round == 1)?;
+            let outcome = run_one(invocation, index, run, &[], round)?;
             troubled |= !outcome.clean;
             if outcome.examined > 0 {
                 examined += outcome.examined;
@@ -178,8 +175,14 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
             ));
         }
     }
-    if round > 1 && !quiet {
-        eprintln!("settled after {round} round(s): {total} examination(s) in all");
+    // The last round is the measuring stick — it only confirmed there
+    // was nothing left — so it is not counted as work, and a single
+    // working round says nothing: that is every ordinary run, and the
+    // extractor verdicts have already told it. Only a real cascade is
+    // news.
+    let worked = round - 1;
+    if worked > 1 && !quiet {
+        eprintln!("settled after {worked} rounds: {total} examinations in all");
     }
     Ok(troubled)
 }
@@ -232,16 +235,18 @@ fn memo_key(subject: &Subject, source: &Source) -> String {
 /// whether the pass went clean and how many files it examined; what
 /// failed is already on stderr.
 ///
-/// `announce_idle` is true on the first round and for named files: an
-/// empty worklist is an answer there. In later rounds it is only the
-/// fixpoint being reached, and saying so per extractor per round would
-/// bury the run's real news.
+/// `round` is 1 on the first round and for named files. There an empty
+/// worklist is an answer worth a sentence; in later rounds it is only
+/// the fixpoint being reached, and saying so per extractor per round
+/// would bury the run's real news. Work in a later round names its
+/// round instead — that is the sentence saying why an extractor that
+/// just had nothing suddenly has something.
 fn run_one(
     invocation: &mut Invocation,
     index: &Index,
     run: &Run,
     subjects: &[String],
-    announce_idle: bool,
+    round: usize,
 ) -> Result<Outcome> {
     let Run {
         program,
@@ -272,7 +277,7 @@ fn run_one(
             index.worklist(&identity.mimes, source)?
         };
         if waiting.is_empty() {
-            if announce_idle {
+            if round == 1 {
                 if invocation.full {
                     println!("nothing of a kind {source} reads is on the record");
                 } else {
@@ -287,7 +292,14 @@ fn run_one(
             });
         }
         if !quiet {
-            eprintln!("{} file(s) waiting for {source}", waiting.len());
+            if round > 1 {
+                eprintln!(
+                    "round {round}: {} file(s) waiting for {source}",
+                    waiting.len()
+                );
+            } else {
+                eprintln!("{} file(s) waiting for {source}", waiting.len());
+            }
         }
         waiting
     } else {
