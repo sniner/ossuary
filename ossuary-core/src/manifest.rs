@@ -43,7 +43,11 @@ const BITS_PER_SUBJECT: usize = 10;
 const PROBES: u32 = 7;
 const FEWEST_BITS: usize = 64;
 
-/// FNV-1a, 64 bit — boring, documented everywhere, and dependency-free.
+/// FNV-1a, 64 bit — Fowler, Noll and Vo's hash, begun 1991 as review
+/// comments to the POSIX committee. The 1a variant, these constants and
+/// the test vectors the tests below assert are specified in the IETF
+/// draft `draft-eastlake-fnv`. Boring, documented everywhere, and
+/// dependency-free.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -68,6 +72,12 @@ fn fnv1a(bytes: &[u8], basis: u64) -> u64 {
 /// across the whole word, so the mask sees all of the hash, not its
 /// weakest corner. Found by this module's own tests, whose fixture
 /// subjects differ in just such a compensating way.
+///
+/// Borrowed whole, shifts and multipliers alike: `MurmurHash3`'s 64-bit
+/// finalizer as improved by David Stafford ("Better Bit Mixing", 2011 —
+/// these are his Mix13 constants), adopted by splitmix64 and Java's
+/// `SplittableRandom` (Steele, Lea and Flood, "Fast Splittable
+/// Pseudorandom Number Generators", 2014).
 fn mixed(mut hash: u64) -> u64 {
     hash ^= hash >> 30;
     hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -79,6 +89,11 @@ fn mixed(mut hash: u64) -> u64 {
 
 /// The probe positions for one subject: double hashing, stride forced odd
 /// so every probe sequence walks the whole power-of-two table.
+///
+/// That two hashes may simulate all seven — probe `i` at `h1 + i·h2` —
+/// without hurting the false-positive rate is Kirsch and Mitzenmacher,
+/// "Less Hashing, Same Performance: Building a Better Bloom Filter"
+/// (2006); the trick is textbook, not this module's invention.
 fn positions(probes: u32, bits: usize, subject: &str) -> impl Iterator<Item = usize> {
     let one = mixed(fnv1a(subject.as_bytes(), FNV_OFFSET));
     let two = mixed(fnv1a(subject.as_bytes(), FNV_OFFSET ^ SECOND_BASIS)) | 1;
@@ -468,12 +483,13 @@ mod tests {
 
     #[test]
     fn the_borrowed_algorithms_match_their_published_vectors() {
-        // FNV-1a 64, values from the reference test suite.
+        // FNV-1a 64, values from the test vectors of the IETF draft
+        // `draft-eastlake-fnv`.
         assert_eq!(fnv1a(b"", FNV_OFFSET), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"a", FNV_OFFSET), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(fnv1a(b"foobar", FNV_OFFSET), 0x8594_4171_f739_67e8);
-        // splitmix64, seed 0: the published sequence's first word is the
-        // mixer run over the golden gamma.
+        // splitmix64, seed 0: the reference implementation's first output
+        // is the mixer run over the golden gamma.
         assert_eq!(mixed(0x9e37_79b9_7f4a_7c15), 0xe220_a839_7b1d_cdaf);
     }
 
