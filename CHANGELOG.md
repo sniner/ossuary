@@ -27,7 +27,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   recorded at the precision the filesystem observed it. A repeated run remembers what
   it already observed (in `cache/`) and leaves unchanged files in peace: not read, not hashed,
   no claims; `--full` looks at everything anew
-- **`ossuary seal`** closes the open segment; its claims become part of the sealed log
+- **`ossuary seal`** closes the open segment; its claims become part of the sealed log. The open
+  segment also closes itself once it grows to 1 MiB — a few thousand claims — no matter which
+  command was writing; the command remains for sealing on demand, before a backup or right away
 - **Per-segment manifests** in `cache/manifests/` — one small memo per sealed segment (claim
   count, time range, namespaces, a bloom filter over the subjects), filed at sealing time and
   rebuilt in passing when missing: commands that walk the log no longer read every sealed

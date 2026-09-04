@@ -6,7 +6,9 @@
 //! begins. Nothing is reformatted on the way — what was appended is what is
 //! sealed — and a sealed segment is never compacted, merged or rewritten:
 //! superseded and retracted claims stay where they were written, which for
-//! an archive is not a limitation but the point.
+//! an archive is not a limitation but the point. The head seals itself
+//! once it grows to [`SEAL_AT`]; sealing by hand remains for closing it
+//! on demand.
 //!
 //! The head belongs to one writer at a time; concurrency lives in the store,
 //! not here. An append does not fsync — the open segment's tail is the one
@@ -31,6 +33,18 @@ use crate::manifest::{Manifest, Manifests};
 /// Generation 1 is `docs/format.md`. A segment declaring any other is
 /// refused as [`Error::SegmentGeneration`] rather than guessed at.
 pub const GENERATION: u32 = 1;
+
+/// The open segment seals itself once an append grows it to this size.
+///
+/// A mebibyte of head is a few thousand claims — the granularity the
+/// concept asks of a segment — and seals into a store entry of one or two
+/// hundred compressed kilobytes: a comfortable unit to read whole, to
+/// replicate, and for a bloom filter to answer for without going blunt.
+/// When to seal is the software's business (`docs/format.md` says so in
+/// words), so this is a constant, not a knob; [`seal`](Log::seal) stays
+/// alongside as the on-demand grip, and a head below the threshold simply
+/// waits.
+const SEAL_AT: u64 = 1024 * 1024;
 
 /// The first line of every segment, open or sealed: a segment names its own
 /// format before anything else, so that a stray file found alone in fifty
@@ -128,9 +142,17 @@ impl Log {
     /// claim go out in one write, and nothing is fsynced — see the module
     /// notes on what a crash may cost and what it may not.
     ///
+    /// An append that grows the head to [`SEAL_AT`] seals it in the same
+    /// breath, so no writer needs a sealing policy of its own. The claim
+    /// is on the record before the seal begins — trouble sealing is still
+    /// reported, but the head stands with everything in it, and a later
+    /// append crosses the threshold again.
+    ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the file cannot be opened or written.
+    /// [`Error::Io`] when the file cannot be opened or written, and
+    /// everything [`seal`](Log::seal) can answer when this append crossed
+    /// the threshold.
     pub fn append(&self, claim: &Claim) -> Result<()> {
         let io = |source| Error::Io {
             context: format!("{}: appending", self.head.display()),
@@ -148,7 +170,11 @@ impl Log {
         }
         lines.push_str(&claim.to_line());
         lines.push('\n');
-        file.write_all(lines.as_bytes()).map_err(io)
+        file.write_all(lines.as_bytes()).map_err(io)?;
+        if file.metadata().map_err(io)?.len() >= SEAL_AT {
+            self.seal()?;
+        }
+        Ok(())
     }
 
     /// The claims of the open segment, in the order they were appended.
@@ -455,6 +481,39 @@ mod tests {
         dir.path()
             .join("manifests")
             .join(format!("{}.json", segment.digest()))
+    }
+
+    #[test]
+    fn an_append_that_fills_the_head_seals_it_by_itself() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        // A claim of three hundred thousand bytes: three of them leave the
+        // head below the mebibyte, the fourth crosses it.
+        let heavy = claim(&"x".repeat(300_000), "2026-09-05T12:00:00Z");
+
+        for _ in 0..3 {
+            log.append(&heavy).unwrap();
+        }
+        assert_eq!(
+            log.segments().unwrap().len(),
+            0,
+            "below the threshold the head waits"
+        );
+
+        log.append(&heavy).unwrap();
+
+        let segments = log.segments().unwrap();
+        assert_eq!(segments.len(), 1, "the fourth append sealed in passing");
+        assert_eq!(
+            log.read(segments[0].digest()).unwrap().len(),
+            4,
+            "with everything appended so far inside"
+        );
+        assert_eq!(
+            log.head().unwrap(),
+            Vec::new(),
+            "and a fresh head stands ready"
+        );
     }
 
     #[test]
