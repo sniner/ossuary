@@ -8,8 +8,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **Archive format, generation 1** — the reading contract in [docs/format.md](docs/format.md):
-  content and claims as [immure](https://github.com/sniner/immure) stores, an append-only claim
-  log in sealed segments, disposable caches, and recovery with shell tools alone
+  content, derived content and claims as three [immure](https://github.com/sniner/immure) stores
+  ranked by what losing them costs — what was taken in and what tools made of it never mingle —
+  an append-only claim log in sealed segments, disposable caches, and recovery with shell
+  tools alone
 - **Attribute vocabulary** — [docs/vocabulary.md](docs/vocabulary.md): what each attribute means
   and how standing claims become an answer — every attribute is a set of standing values,
   deduplicated at fold time; narrowing to one value is the reader's own policy; extractors
@@ -17,8 +19,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary init`** begins an archive — or completes one already standing: nothing standing is
   remade or edited, and what is missing (today: `config.toml`) is added
 - **`config.toml`** in the archive root: `[ingest] exclude` glob patterns (`.DS_Store` and
-  friends never go in; an excluded directory is not walked), `[content] compress` (zstd for
-  new content; what is already stored keeps its form, and reading understands both) and
+  friends never go in; an excluded directory is not walked), `[store] compress` (zstd for new
+  entries, in the content and derived stores alike — what one holds is as sensitive as the
+  other; what is already stored keeps its form, and reading understands both) and
   `[extract] run` (the extractors a bare `ossuary extract` runs, in order). A missing
   file means the defaults; an unknown key is refused rather than half-applied
 - **`ossuary ingest PATH`** takes a directory tree — or a single file — in: every regular file
@@ -54,7 +57,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`--quiet`** on every command keeps the run's narration off stderr — counts, progress, hints;
   answers and errors still come
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
-  digests resolve against the content store, from six characters up
+  digests resolve against the content and derived stores, from six characters up
 - **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
   only read — and says whether the archive already holds it; works before an ingest as well as
   after
@@ -66,8 +69,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   record under the extractor's name, and every examined file gets a receipt, found something or
   not, so a repeated run costs only what is new and a new extractor version looks at everything
   again. An extractor can hand back files as well as findings — an unpacked attachment,
-  extracted text — and each goes into the archive as content of its own, named and typed in the
-  extractor's words (`file:name`, `file:mime`) and tied to its origin (`derive:derived-from`);
+  extracted text — and each goes into the archive's derived store as content of its own, named
+  and typed in the extractor's words (`file:name`, `file:mime`) and tied to its origin
+  (`derive:derived-from`) — apart from the originals, so nothing that ever tidies derived
+  content can reach what was taken in;
   `--temp-dir` says where derived files wait on their way in, for when the archive sits on a
   slow share. Naming files narrows the run to them — `extract text SUBJECT` examines one file
   now instead of everything that waits, a beginning of the digest is enough, and a named file

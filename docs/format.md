@@ -25,16 +25,25 @@ an archive must survive it.*
 archive/
     FORMAT          the mark: which generation, and the per-archive constants
     config.toml     the archive's settings — writers obey it, readers never need it
-    content/        immure store — the content blobs
+    content/        immure store — what was taken in
+    derived/        immure store — what extractors made of the content
     claims/         immure store — sealed claim segments, and nothing else
     head.jsonl      the one open segment
-    cache/          derived and disposable, safe to delete at any time
+    cache/          disposable, safe to delete at any time
 ```
 
-`content/` and `claims/` are ordinary [immure](https://github.com/sniner/immure)
-stores; everything immure promises about entries — naming, sharding, the
-`.zst` and `.zst.enc` forms, the sealed frame — holds here and is documented
-there, not repeated here.
+`content/`, `derived/` and `claims/` are ordinary
+[immure](https://github.com/sniner/immure) stores; everything immure
+promises about entries — naming, sharding, the `.zst` and `.zst.enc`
+forms, the sealed frame — holds here and is documented there, not
+repeated here.
+
+The three directories rank by what losing them costs. `content/` and
+`claims/` *are* the archive: irreplaceable, replicated first. `derived/`
+is regrettable to lose but not fatal — today's tools can harvest it
+again, though what older tool generations once saw would be gone.
+`cache/` costs only the time to rebuild it. The ladder is also a backup
+policy.
 
 ## The FORMAT mark
 
@@ -42,18 +51,18 @@ One line of JSON in the archive root, so that `cat` answers "what is this,
 and may this build touch it?" before anything is opened:
 
 ```json
-{"ossuary-archive": 1, "algorithm": "sha256", "content-depth": 2, "claims-depth": 1}
+{"ossuary-archive": 1, "algorithm": "sha256", "content-depth": 2, "derived-depth": 2, "claims-depth": 1}
 ```
 
 - `ossuary-archive` — the format generation this archive is written in. A
   reader that does not know the number stops; recognising a layout by its
   structure only ever identifies the layouts that existed when the reader was
   written.
-- `algorithm` — the hash that names every blob in both stores: `sha256`
+- `algorithm` — the hash that names every blob in every store: `sha256`
   (default), `sha384`, `sha512` or `blake3`. immure deliberately keeps no
   configuration of its own, so the archive carries what the stores need to be
   opened.
-- `content-depth`, `claims-depth` — the stores' shard depths.
+- `content-depth`, `derived-depth`, `claims-depth` — the stores' shard depths.
 
 What is *not* in the mark is everything generation 1 already fixes: the
 directory names, the suffixes (`content/` entries carry none, `claims/`
@@ -64,8 +73,8 @@ itself, by its form suffix.
 ## The configuration
 
 `config.toml` in the root is the archive's own settings — as of generation
-1: which paths ingest leaves out, and whether new content entries are
-compressed. It is write policy, for software putting things *in*; the
+1: which paths ingest leaves out, and whether new entries in the content
+and derived stores are compressed. It is write policy, for software putting things *in*; the
 bootstrap rule stays untouched because reading needs none of it — every
 stored file already says its own form. A reader may ignore the file
 entirely, and the file may be absent entirely: no file means nothing is
@@ -73,17 +82,24 @@ excluded and content is stored as it came. Its keys may grow without a new
 generation, but a writer must not act on a config it only partly
 understands.
 
-## The content store
+## The content stores
 
-`content/` holds the content: originals, and derived content standing beside
-them — extracted text, thumbnails, transcripts are content too, linked to
-their origin by `derive:` claims.
+`content/` holds what was taken in: the originals. `derived/` holds what
+tools made of them — extracted text, unpacked attachments — content too,
+linked to its origin by `derive:` claims. The split is a rank, and the
+directory boundary enforces it: what was taken in and what a tool made
+do not mingle, so nothing that ever maintains `derived/` can reach the
+originals. The same bytes may lawfully stand in both stores — an invoice
+taken in as a file and won again as an attachment — and a subject names
+content wherever it lies; the log neither knows nor cares which store
+answers.
 
-Entries carry no suffix, because there is nothing truthful to write: the
-store is heterogeneous by design, and what a blob *is* lives in the claim
-log (`file:mime`), never in a file name. A raw entry is byte-identical with
-its content — `sha256sum <file>` answers to the file's own name — and what a
-bare hex name would collide with, the store simply must not contain.
+Entries in both stores carry no suffix, because there is nothing truthful
+to write: the stores are heterogeneous by design, and what a blob *is*
+lives in the claim log (`file:mime`), never in a file name. A raw entry is
+byte-identical with its content — `sha256sum <file>` answers to the file's
+own name — and what a bare hex name would collide with, a store simply
+must not contain.
 
 ## Subjects
 
@@ -198,8 +214,8 @@ The whole archive, from the tree and (if sealed) the key:
 2. Walk `claims/`, decompress (`zstd -dc`) and unseal each entry, check the
    first line says `ossuary-segment`, order the segments as above.
 3. Concatenate, append `head.jsonl`: this is the complete claim log.
-4. Walk `content/` the same way for the content itself; every byte answers
-   to its name via the algorithm's checksum tool.
+4. Walk `content/` and `derived/` the same way for the content itself;
+   every byte answers to its name via the algorithm's checksum tool.
 5. Fold the log into whatever index answers today's questions.
 
 Nothing above needs this project — a shell, `zstd`, `jq` and the coreutils

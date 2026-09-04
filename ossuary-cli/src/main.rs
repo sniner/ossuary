@@ -546,12 +546,15 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
     let digest = algorithm.hash(&bytes);
     println!("{}:{digest}", algorithm.name());
     // The name is the answer and stays alone on stdout; whether the
-    // archive holds the bytes is the run talking.
+    // archive holds the bytes is the run talking. Held means held —
+    // taken in or derived, either store counts.
     if !quiet {
-        if archive.content().matching(digest.as_str())?.is_empty() {
-            eprintln!("not in the archive — `ossuary ingest` takes it in");
-        } else {
+        let held = !archive.content().matching(digest.as_str())?.is_empty()
+            || !archive.derived().matching(digest.as_str())?.is_empty();
+        if held {
             eprintln!("the archive holds these bytes — `ossuary about` says what is on the record");
+        } else {
+            eprintln!("not in the archive — `ossuary ingest` takes it in");
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -560,10 +563,13 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
 fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let content = archive.content();
+    let derived = archive.derived();
 
-    // The store resolves a beginning by a shard listing, the way `about`'s
-    // index resolves one by a range scan — this is the content-facing door,
-    // so the store's own answer is the one that counts.
+    // The stores resolve a beginning by a shard listing, the way `about`'s
+    // index resolves one by a range scan — this is the content-facing
+    // door, so the stores' own answer is the one that counts. content/
+    // and derived/ share one name space: the same bytes may sit in both,
+    // so a beginning must be unique across their union, not in each.
     let algorithm = content.algorithm().name();
     let bare = subject
         .strip_prefix(algorithm)
@@ -579,14 +585,20 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
             "{bare:?} is not hex — a file's name is {algorithm}:… or the bare hex of it"
         ));
     }
-    let needed = content.min_prefix();
+    let needed = content.min_prefix().max(derived.min_prefix());
     if bare.len() < needed {
         return Err(anyhow!(
-            "{bare:?} is too short to look up — the store is filed by the first {needed} characters, give at least that many"
+            "{bare:?} is too short to look up — the stores are filed by the first {needed} characters, give at least that many"
         ));
     }
-    let digest = match content.matching(bare)?.as_slice() {
-        [] => return Err(anyhow!("nothing in the store begins with {bare:?}")),
+    let mut candidates = content.matching(bare)?;
+    for extra in derived.matching(bare)? {
+        if !candidates.iter().any(|held| held == &extra) {
+            candidates.push(extra);
+        }
+    }
+    let digest = match candidates.as_slice() {
+        [] => return Err(anyhow!("the archive holds nothing beginning with {bare:?}")),
         [one] => one.clone(),
         many => {
             return Err(anyhow!(
@@ -595,9 +607,12 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
             ));
         }
     };
-    let mut reader = content
-        .reader(&digest)?
-        .ok_or_else(|| anyhow!("{algorithm}:{digest}: gone between naming and reading"))?;
+    let mut reader = match content.reader(&digest)? {
+        Some(reader) => reader,
+        None => derived
+            .reader(&digest)?
+            .ok_or_else(|| anyhow!("{algorithm}:{digest}: gone between naming and reading"))?,
+    };
 
     if let Some(path) = output {
         let mut file =

@@ -4,9 +4,9 @@
 //! one line of JSON — names the generation the archive is written in and
 //! the constants the stores need to be opened again: the hash algorithm and
 //! the shard depths, which immure deliberately keeps no record of itself.
-//! Everything else under the root is the pieces: `content/` and `claims/`,
-//! the open head, a `config.toml` of settings that reading never needs,
-//! and a `cache/` that answers questions and owes nothing.
+//! Everything else under the root is the pieces: `content/`, `derived/`
+//! and `claims/`, the open head, a `config.toml` of settings that reading
+//! never needs, and a `cache/` that answers questions and owes nothing.
 //!
 //! The mark is read before anything else is touched, and a generation this
 //! build does not know is refused for what it is: a layout never seen
@@ -30,6 +30,7 @@ const MARK: &str = "FORMAT";
 
 /// What generation 1 fixes without asking the mark.
 const CONTENT_DEPTH: usize = 2;
+const DERIVED_DEPTH: usize = 2;
 const CLAIMS_DEPTH: usize = 1;
 
 /// The one line of the mark, as `docs/format.md` draws it.
@@ -41,6 +42,8 @@ struct Mark {
     algorithm: String,
     #[serde(rename = "content-depth")]
     content_depth: usize,
+    #[serde(rename = "derived-depth")]
+    derived_depth: usize,
     #[serde(rename = "claims-depth")]
     claims_depth: usize,
 }
@@ -61,15 +64,16 @@ pub struct Archive {
     root: PathBuf,
     config: Config,
     content: Store,
+    derived: Store,
     log: Log,
 }
 
 impl Archive {
     /// Begin an empty archive at `root`: the mark, a starter
-    /// `config.toml`, both stores, a `cache/`.
+    /// `config.toml`, the stores, a `cache/`.
     ///
     /// The algorithm is the one choice that is the archive's own — every
-    /// blob in both stores will be named by it, for good. Everything the
+    /// blob in every store will be named by it, for good. Everything the
     /// starter configuration spells out is changeable later, by editing
     /// it; a `config.toml` already standing at `root` is kept, not
     /// overwritten.
@@ -101,6 +105,7 @@ impl Archive {
             generation: GENERATION,
             algorithm: algorithm.name().to_string(),
             content_depth: CONTENT_DEPTH,
+            derived_depth: DERIVED_DEPTH,
             claims_depth: CLAIMS_DEPTH,
         };
         // A struct of numbers and a string serialises; see `Claim::to_line`.
@@ -114,12 +119,28 @@ impl Archive {
         }
         let config = Config::load(&root)?;
 
-        let content = content_store(&root, algorithm, CONTENT_DEPTH, config.compress()).create()?;
+        let content = blob_store(
+            &root,
+            "content",
+            algorithm,
+            CONTENT_DEPTH,
+            config.compress(),
+        )
+        .create()?;
+        let derived = blob_store(
+            &root,
+            "derived",
+            algorithm,
+            DERIVED_DEPTH,
+            config.compress(),
+        )
+        .create()?;
         let claims = claims_store(&root, algorithm, CLAIMS_DEPTH).create()?;
         Ok(Archive {
             log: log_in(claims, &root),
             config,
             content,
+            derived,
             root,
         })
     }
@@ -161,13 +182,28 @@ impl Archive {
         let algorithm: Algorithm = mark.algorithm.parse()?;
         let config = Config::load(&root)?;
 
-        let content =
-            content_store(&root, algorithm, mark.content_depth, config.compress()).build()?;
+        let content = blob_store(
+            &root,
+            "content",
+            algorithm,
+            mark.content_depth,
+            config.compress(),
+        )
+        .build()?;
+        let derived = blob_store(
+            &root,
+            "derived",
+            algorithm,
+            mark.derived_depth,
+            config.compress(),
+        )
+        .build()?;
         let claims = claims_store(&root, algorithm, mark.claims_depth).build()?;
         Ok(Archive {
             log: log_in(claims, &root),
             config,
             content,
+            derived,
             root,
         })
     }
@@ -212,10 +248,18 @@ impl Archive {
         &self.config
     }
 
-    /// The content store: what is kept.
+    /// The content store: what was taken in, kept for good.
     #[must_use]
     pub fn content(&self) -> &Store {
         &self.content
+    }
+
+    /// The derived store: what extractors made of the content. Content
+    /// of second rank — losing it loses what older tool generations saw,
+    /// not the archive — and the only store a future collector may touch.
+    #[must_use]
+    pub fn derived(&self) -> &Store {
+        &self.derived
     }
 
     /// The claim log: what is known about it.
@@ -267,17 +311,19 @@ fn log_in(claims: Store, root: &Path) -> Log {
     Log::new(claims, root.join("head.jsonl")).with_manifests(root.join("cache").join("manifests"))
 }
 
-/// How generation 1 lays out the content store: entries named by digest
-/// alone — what a blob is lives in the log, never in a file name. Whether
-/// new entries are compressed is the configuration's word; what is already
-/// stored keeps its form, and reading understands both.
-fn content_store(
+/// How generation 1 lays out the content and derived stores: entries named
+/// by digest alone — what a blob is lives in the log, never in a file
+/// name. Whether new entries are compressed is the configuration's word,
+/// one word for both stores; what is already stored keeps its form, and
+/// reading understands both.
+fn blob_store(
     root: &Path,
+    place: &str,
     algorithm: Algorithm,
     depth: usize,
     compress: bool,
 ) -> immure::Builder {
-    Store::builder(root.join("content"))
+    Store::builder(root.join(place))
         .suffix("")
         .depth(depth)
         .algorithm(algorithm)
@@ -309,10 +355,11 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(root.join("FORMAT")).unwrap(),
-            "{\"ossuary-archive\":1,\"algorithm\":\"sha256\",\"content-depth\":2,\"claims-depth\":1}\n",
+            "{\"ossuary-archive\":1,\"algorithm\":\"sha256\",\"content-depth\":2,\"derived-depth\":2,\"claims-depth\":1}\n",
             "one line, and cat answers what this directory is"
         );
         assert!(root.join("content").is_dir());
+        assert!(root.join("derived").is_dir());
         assert!(root.join("claims").is_dir());
         assert!(root.join("cache").is_dir());
         assert_eq!(archive.root(), root);
@@ -339,7 +386,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("archive");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("config.toml"), "[content]\ncompress = true\n").unwrap();
+        fs::write(root.join("config.toml"), "[store]\ncompress = true\n").unwrap();
 
         let archive = Archive::create(&root, Algorithm::Sha256).unwrap();
 
@@ -350,15 +397,19 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_reach_the_content_store() {
+    fn the_settings_reach_both_blob_stores() {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("archive");
         Archive::create(&root, Algorithm::Sha256).unwrap();
-        fs::write(root.join("config.toml"), "[content]\ncompress = true\n").unwrap();
+        fs::write(root.join("config.toml"), "[store]\ncompress = true\n").unwrap();
 
         let archive = Archive::open(&root).unwrap();
 
         assert!(archive.content().compresses());
+        assert!(
+            archive.derived().compresses(),
+            "one word for both — what one holds is as sensitive as the other"
+        );
         let (_, entry) = archive.content().add(b"hello world").unwrap();
         assert!(entry.is_compressed(), "new entries take the settings' form");
     }
@@ -368,7 +419,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("archive");
         Archive::create(&root, Algorithm::Sha256).unwrap();
-        fs::write(root.join("config.toml"), "[content]\ncompres = true\n").unwrap();
+        fs::write(root.join("config.toml"), "[store]\ncompres = true\n").unwrap();
 
         assert!(matches!(Archive::open(&root), Err(Error::BadConfig { .. })));
     }
@@ -405,7 +456,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join("archive");
         Archive::create(&root, Algorithm::Sha256).unwrap();
-        let own = "[content]\ncompress = true\n";
+        let own = "[store]\ncompress = true\n";
         fs::write(root.join("config.toml"), own).unwrap();
 
         let archive = Archive::open(&root).unwrap();

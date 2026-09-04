@@ -366,20 +366,25 @@ fn examine(
         .expect("a subject carries its algorithm");
     if algorithm != content.algorithm().name() {
         return Err(anyhow!(
-            "named by {algorithm}, the content store answers to {} — nothing to hand over",
+            "named by {algorithm}, this archive answers to {} — nothing to hand over",
             content.algorithm().name()
         ));
     }
-    let digest = match content.matching(hex)?.as_slice() {
-        [one] => one.clone(),
-        _ => {
-            return Err(anyhow!(
-                "not in the content store — the log speaks of it, the store does not hold it"
-            ));
-        }
+    // The examinee may be an original or itself derived — the PDF out of
+    // a mail: content/ is asked first, derived/ second.
+    let (store, digest) = match content.matching(hex)?.as_slice() {
+        [one] => (content, one.clone()),
+        _ => match archive.derived().matching(hex)?.as_slice() {
+            [one] => (archive.derived(), one.clone()),
+            _ => {
+                return Err(anyhow!(
+                    "not held — the log speaks of it, neither store holds its bytes"
+                ));
+            }
+        },
     };
     let mut bytes = Vec::new();
-    content
+    store
         .reader(&digest)?
         .ok_or_else(|| anyhow!("gone between naming and reading"))?
         .read_to_end(&mut bytes)
@@ -428,7 +433,7 @@ fn examine(
         scratch.as_ref().map(tempfile::TempDir::path),
     )?;
     Ok(record_examination(
-        content,
+        archive.derived(),
         archive.log(),
         subject,
         &findings,

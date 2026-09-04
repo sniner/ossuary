@@ -94,8 +94,8 @@ grammar: it stamps each finding with the moment and the identify line's
 source, findings without `file` with the examined file's subject, and
 findings with `file` with the derived file's — the extractor cannot
 know that name, since it is the bytes' own. Each announced file goes
-into the content store, content like any other, and onto the record
-with it what is known: `file:mime` and `file:name` as announced,
+into the archive's derived store, content with a record like any other,
+and onto that record what is known: `file:mime` and `file:name` as announced,
 `derive:derived-from` naming the examined file, and — for bytes the
 store meets for the first time — `file:size`.
 

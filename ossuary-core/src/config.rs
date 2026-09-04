@@ -2,7 +2,7 @@
 //!
 //! Where the `FORMAT` mark holds the constants an archive cannot be *read*
 //! without, `config.toml` holds the policy it is *written* by: what ingest
-//! leaves out, whether new content is compressed. Losing it loses no data,
+//! leaves out, whether new store entries are compressed. Losing it loses no data,
 //! only preferences — which is why it may live outside the stores, be
 //! edited freely, and be absent altogether: no file means the defaults.
 //!
@@ -35,10 +35,11 @@ pub(crate) const STARTER: &str = r#"# This archive's own settings: what goes in,
 # crosses levels). A directory left out is not walked at all.
 exclude = [".DS_Store", "._*", "Thumbs.db", "desktop.ini"]
 
-[content]
-# Compress new content with zstd. What is already stored keeps its form
-# either way, and reading understands both. Claim segments are always
-# compressed - that is the format's choice, not this file's.
+[store]
+# Compress new entries with zstd - in content/ and derived/ alike, one
+# word for both. What is already stored keeps its form either way, and
+# reading understands both. Claim segments are always compressed - that
+# is the format's choice, not this file's.
 compress = false
 
 [extract]
@@ -55,7 +56,7 @@ struct File {
     #[serde(default)]
     ingest: Ingest,
     #[serde(default)]
-    content: Content,
+    store: StoreSection,
     #[serde(default)]
     extract: Extract,
 }
@@ -67,9 +68,12 @@ struct Ingest {
     exclude: Vec<String>,
 }
 
+/// The `[store]` section — one word for `content/` and `derived/` both:
+/// what one holds is as sensitive as the other, so they are written the
+/// same way.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Content {
+struct StoreSection {
     #[serde(default)]
     compress: bool,
 }
@@ -123,7 +127,7 @@ impl Config {
         })?;
         Ok(Config {
             excludes,
-            compress: file.content.compress,
+            compress: file.store.compress,
             extractors: file.extract.run,
         })
     }
@@ -134,7 +138,8 @@ impl Config {
         &self.excludes
     }
 
-    /// Whether new content entries are compressed.
+    /// Whether new store entries are compressed — content and derived
+    /// alike.
     #[must_use]
     pub fn compress(&self) -> bool {
         self.compress
@@ -271,7 +276,7 @@ mod tests {
     #[test]
     fn a_partial_file_fills_in_the_rest() {
         let dir = TempDir::new().unwrap();
-        write(&dir, "[content]\ncompress = true\n");
+        write(&dir, "[store]\ncompress = true\n");
 
         let config = Config::load(dir.path()).unwrap();
 
@@ -307,7 +312,7 @@ mod tests {
     #[test]
     fn an_unknown_key_is_refused_not_skipped() {
         let dir = TempDir::new().unwrap();
-        write(&dir, "[content]\ncompres = true\n");
+        write(&dir, "[store]\ncompres = true\n");
 
         assert!(
             matches!(Config::load(dir.path()), Err(Error::BadConfig { .. })),

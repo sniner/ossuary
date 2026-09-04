@@ -10,9 +10,12 @@
 //!
 //! Derived files come through here too: an extractor that wrote files
 //! hands them over as [`Derivation`]s, and each becomes content of its
-//! own — bytes into the store, and onto the record what is known about
-//! them: their kind and name in the extractor's words, their origin, and
-//! on the bytes' first day their size.
+//! own — bytes into the derived store, and onto the record what is known
+//! about them: their kind and name in the extractor's words, their
+//! origin, and on the bytes' first day their size. The derived store,
+//! not the content store: what was taken in and what a tool made of it
+//! do not share a rank, and keeping them apart keeps every future
+//! cleanup out of the originals by topology, not by care.
 //!
 //! The receipt goes last: a run that dies halfway leaves findings without
 //! one, and the file is simply offered again — re-added bytes dedup in
@@ -53,7 +56,7 @@ pub struct Derivation {
 pub struct Examined {
     /// Claims appended to the log, the receipt included.
     pub claims: usize,
-    /// Derived files whose bytes were new to the content store.
+    /// Derived files whose bytes were new to the derived store.
     pub stored: usize,
     /// Derived files whose bytes the store already held. Their origin and
     /// name went on the record all the same — another mail carrying the
@@ -62,17 +65,18 @@ pub struct Examined {
 }
 
 /// One file's examination onto the record: every finding as a claim, each
-/// derived file into the content store with what is known about it, then
+/// derived file into the derived store with what is known about it, then
 /// the receipt.
 ///
-/// A derived file is content like any other, and the log says so: its
-/// `file:mime` and `file:name` in the extractor's words, its origin as
-/// `derive:derived-from`, and — for bytes new to the store — its
+/// A derived file is content with a record like any other, and the log
+/// says so: its `file:mime` and `file:name` in the extractor's words, its
+/// origin as `derive:derived-from`, and — for bytes new to the store — its
 /// `file:size`, the way ingest says it: a fact of the content, once.
 /// Findings the extractor made about a derived file stand on it, not on
 /// the examined one. All claims of one examination carry one moment and
 /// one source; the caller vouches for the findings being what the
-/// extractor said.
+/// extractor said. `store` is the archive's derived store — what a tool
+/// made never lands beside the originals.
 ///
 /// # Errors
 ///
@@ -81,7 +85,7 @@ pub struct Examined {
 /// will not read. Nothing is rolled back: claims accrete, and without the
 /// receipt the file is examined again.
 pub fn record_examination(
-    content: &Store,
+    store: &Store,
     log: &Log,
     subject: &Subject,
     findings: &[(Attribute, Value)],
@@ -100,7 +104,7 @@ pub fn record_examination(
     }
     for derivation in derived {
         take(
-            content,
+            store,
             log,
             subject,
             derivation,
@@ -121,10 +125,10 @@ pub fn record_examination(
     Ok(examined)
 }
 
-/// One derived file: bytes into the store, what is known about it into
-/// the log.
+/// One derived file: bytes into the derived store, what is known about
+/// it into the log.
 fn take(
-    content: &Store,
+    store: &Store,
     log: &Log,
     origin: &Subject,
     derivation: &Derivation,
@@ -136,12 +140,8 @@ fn take(
         context: format!("{}: reading the derived file", derivation.name),
         source: io,
     })?;
-    let (status, entry) = content.add(&bytes)?;
-    let subject = Subject::parse(&format!(
-        "{}:{}",
-        content.algorithm().name(),
-        entry.digest()
-    ))?;
+    let (status, entry) = store.add(&bytes)?;
+    let subject = Subject::parse(&format!("{}:{}", store.algorithm().name(), entry.digest()))?;
     // The size describes the content and is said on the bytes' first day,
     // the way ingest says it. Kind, name and origin belong to this
     // derivation: another extractor, another mail may know the same bytes
@@ -205,8 +205,13 @@ mod tests {
     use super::*;
     use crate::index::Index;
 
-    fn archive(dir: &TempDir) -> (Store, Log, Index) {
+    fn archive(dir: &TempDir) -> (Store, Store, Log, Index) {
         let content = Store::builder(dir.path().join("content"))
+            .suffix("")
+            .depth(2)
+            .create()
+            .unwrap();
+        let derived = Store::builder(dir.path().join("derived"))
             .suffix("")
             .depth(2)
             .create()
@@ -220,7 +225,7 @@ mod tests {
         let cache = dir.path().join("cache");
         std::fs::create_dir_all(&cache).unwrap();
         let index = Index::open(cache.join("index.sqlite")).unwrap();
-        (content, log, index)
+        (content, derived, log, index)
     }
 
     fn take(content: &Store, log: &Log, dir: &TempDir, name: &str, bytes: &[u8]) -> Subject {
@@ -263,7 +268,7 @@ mod tests {
     #[test]
     fn the_worklist_offers_matching_files_until_their_receipt() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         // A JPEG by its magic bytes, and a text file the mimes exclude.
         let jpeg = take(&content, &log, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         take(&content, &log, &dir, "b.txt", b"plain words");
@@ -276,7 +281,7 @@ mod tests {
             "the jpeg waits, the text was never its business"
         );
 
-        let written = record_examination(&content, &log, &jpeg, &[], &[], &source()).unwrap();
+        let written = record_examination(&derived, &log, &jpeg, &[], &[], &source()).unwrap();
         assert_eq!(written.claims, 1, "nothing found is still one receipt");
         index.fold(&log).unwrap();
         assert_eq!(
@@ -289,11 +294,11 @@ mod tests {
     #[test]
     fn of_kind_ignores_receipts_and_examined_asks_about_one_file() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         let jpeg = take(&content, &log, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
 
-        record_examination(&content, &log, &jpeg, &[], &[], &source()).unwrap();
+        record_examination(&derived, &log, &jpeg, &[], &[], &source()).unwrap();
         index.fold(&log).unwrap();
 
         assert_eq!(
@@ -318,11 +323,11 @@ mod tests {
     #[test]
     fn another_source_is_offered_the_same_file() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         let jpeg = take(&content, &log, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
 
-        record_examination(&content, &log, &jpeg, &[], &[], &source()).unwrap();
+        record_examination(&derived, &log, &jpeg, &[], &[], &source()).unwrap();
         index.fold(&log).unwrap();
 
         let newer = Source::parse("extractor:exif/3.0").unwrap();
@@ -336,14 +341,14 @@ mod tests {
     #[test]
     fn findings_go_in_with_the_receipt_and_one_moment() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         let jpeg = take(&content, &log, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
 
         let findings = vec![(
             Attribute::parse("exif:date-time-original").unwrap(),
             serde_json::json!("2019:07:14 11:02:41"),
         )];
-        let written = record_examination(&content, &log, &jpeg, &findings, &[], &source()).unwrap();
+        let written = record_examination(&derived, &log, &jpeg, &findings, &[], &source()).unwrap();
         assert_eq!(written.claims, 2);
 
         index.fold(&log).unwrap();
@@ -368,7 +373,7 @@ mod tests {
     #[test]
     fn a_derived_file_becomes_content_with_its_own_record() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         let mail = take(&content, &log, &dir, "letter", b"From: a@example.com");
         let scratch = TempDir::new().unwrap();
         let mut attachment = derivation(&scratch, "report.pdf", "application/pdf", b"%PDF-1.7");
@@ -378,7 +383,7 @@ mod tests {
         ));
 
         let written =
-            record_examination(&content, &log, &mail, &[], &[attachment], &source()).unwrap();
+            record_examination(&derived, &log, &mail, &[], &[attachment], &source()).unwrap();
         assert_eq!(written.stored, 1, "the bytes were new to the store");
         assert_eq!(written.known, 0);
         assert_eq!(
@@ -386,21 +391,25 @@ mod tests {
             "size, kind, name, origin and the finding on the derived file, then the receipt"
         );
 
-        let derived = Subject::parse(&format!(
+        let pdf = Subject::parse(&format!(
             "{}:{}",
-            content.algorithm().name(),
-            content.algorithm().hash(b"%PDF-1.7")
+            derived.algorithm().name(),
+            derived.algorithm().hash(b"%PDF-1.7")
         ))
         .unwrap();
         assert_eq!(
-            content.matching(derived.hex()).unwrap().len(),
+            derived.matching(pdf.hex()).unwrap().len(),
             1,
-            "the bytes stand in the content store"
+            "the bytes stand in the derived store"
+        );
+        assert!(
+            content.matching(pdf.hex()).unwrap().is_empty(),
+            "and never beside the originals — that is the topology's promise"
         );
         index.fold(&log).unwrap();
         let value = |attribute: &str| {
             index
-                .values(&derived, &Attribute::parse(attribute).unwrap())
+                .values(&pdf, &Attribute::parse(attribute).unwrap())
                 .unwrap()
         };
         assert_eq!(value("file:size"), [serde_json::json!(8)]);
@@ -425,7 +434,7 @@ mod tests {
         );
         assert!(
             index
-                .values(&derived, &Attribute::parse(EXAMINED).unwrap())
+                .values(&pdf, &Attribute::parse(EXAMINED).unwrap())
                 .unwrap()
                 .is_empty(),
             "the derived file was not examined, only made"
@@ -435,7 +444,7 @@ mod tests {
     #[test]
     fn known_bytes_derived_again_get_no_second_size() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         let first = take(&content, &log, &dir, "one", b"first letter");
         let second = take(&content, &log, &dir, "two", b"second letter");
         let scratch = TempDir::new().unwrap();
@@ -443,7 +452,7 @@ mod tests {
         // The same attachment falls out of two different mails, under two
         // different names.
         let written = record_examination(
-            &content,
+            &derived,
             &log,
             &first,
             &[],
@@ -458,7 +467,7 @@ mod tests {
         .unwrap();
         assert_eq!(written.stored, 1);
         let written = record_examination(
-            &content,
+            &derived,
             &log,
             &second,
             &[],
@@ -478,23 +487,23 @@ mod tests {
             "kind, name and origin again — the size is a fact of the content, said once"
         );
 
-        let derived = Subject::parse(&format!(
+        let pdf = Subject::parse(&format!(
             "{}:{}",
-            content.algorithm().name(),
-            content.algorithm().hash(b"%PDF")
+            derived.algorithm().name(),
+            derived.algorithm().hash(b"%PDF")
         ))
         .unwrap();
         index.fold(&log).unwrap();
         let names = index
-            .values(&derived, &Attribute::parse("file:name").unwrap())
+            .values(&pdf, &Attribute::parse("file:name").unwrap())
             .unwrap();
         assert_eq!(names.len(), 2, "both names stand in the set");
         let origins = index
-            .values(&derived, &Attribute::parse("derive:derived-from").unwrap())
+            .values(&pdf, &Attribute::parse("derive:derived-from").unwrap())
             .unwrap();
         assert_eq!(origins.len(), 2, "and both origins");
         let sizes = index
-            .about(&derived)
+            .about(&pdf)
             .unwrap()
             .iter()
             .filter(|claim| claim.attribute().as_str() == "file:size")
@@ -505,7 +514,7 @@ mod tests {
     #[test]
     fn a_derived_file_that_will_not_read_is_an_error_before_the_receipt() {
         let dir = TempDir::new().unwrap();
-        let (content, log, mut index) = archive(&dir);
+        let (content, derived, log, mut index) = archive(&dir);
         let mail = take(&content, &log, &dir, "letter", b"From: b@example.com");
         let gone = Derivation {
             name: "missing.pdf".to_string(),
@@ -514,7 +523,7 @@ mod tests {
             findings: Vec::new(),
         };
 
-        let result = record_examination(&content, &log, &mail, &[], &[gone], &source());
+        let result = record_examination(&derived, &log, &mail, &[], &[gone], &source());
         assert!(result.is_err());
 
         index.fold(&log).unwrap();

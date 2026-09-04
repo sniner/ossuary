@@ -37,8 +37,8 @@ EXIF's own words, and `ossuary-extract-text`, deriving a PDF's plain text
 archive knows about any file in it, search for files by what stands on
 the record, and get any file back out. An extractor can hand
 back files as well as findings — an unpacked attachment, extracted
-text — and each goes into the archive as content of its own, tied to its
-origin on the record. Each archive carries its own `config.toml` — what
+text — and each goes into the archive as content of its own, kept in a
+store apart from the originals and tied to its origin on the record. Each archive carries its own `config.toml` — what
 ingest leaves out (`.DS_Store` and friends), whether content is
 compressed, and which extractors a bare `ossuary extract` runs.
 
