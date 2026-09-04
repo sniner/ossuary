@@ -46,20 +46,22 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         algorithm: Option<String>,
     },
-    /// Take files in: a directory tree, or one file
+    /// Take files in: directory trees and single files, any mix
     ///
     /// Every regular file goes in — minus what the archive's config.toml
     /// excludes; a file named outright goes in regardless — and seven
     /// claims go on the record for each: where it came from, what it is
     /// called, on which machine, with which run, how large, what kind,
-    /// and when it last changed.
+    /// and when it last changed. Everything of one call arrives in one
+    /// run — `ossuary ingest *.pdf` keeps what a glob matched together,
+    /// and "arrived together" stays an askable fact.
     /// What is taken in is only read. A repeated run remembers what it
     /// already observed and leaves unchanged files in peace, so pouring
     /// the same directory in again costs only what is new or changed.
     Ingest {
-        /// What to take in
-        #[arg(value_name = "PATH")]
-        path: PathBuf,
+        /// What to take in; several may be named
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<PathBuf>,
 
         /// Look at every file anew, remembered or not
         #[arg(long)]
@@ -224,7 +226,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let quiet = cli.quiet;
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
-        Command::Ingest { path, full } => ingest(&cli.archive, &path, full, quiet),
+        Command::Ingest { paths, full } => ingest(&cli.archive, &paths, full, quiet),
         Command::Extract {
             name,
             subjects,
@@ -308,13 +310,18 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
-fn ingest(root: &Path, path: &Path, full: bool, quiet: bool) -> Result<ExitCode> {
+fn ingest(root: &Path, paths: &[PathBuf], full: bool, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
     if !quiet {
         eprintln!("archive {}", archive.root().display());
-        eprintln!("taking in {}", path.display());
+        // One path is named; many — a glob's expansion — are counted,
+        // the verdict tells how they fared.
+        match paths {
+            [one] => eprintln!("taking in {}", one.display()),
+            many => eprintln!("taking in {} paths", many.len()),
+        }
     }
     let memory = if full {
         None
@@ -324,7 +331,7 @@ fn ingest(root: &Path, path: &Path, full: bool, quiet: bool) -> Result<ExitCode>
     let run = ossuary_core::ingest(
         archive.content(),
         archive.log(),
-        path,
+        paths,
         &host,
         archive.config().excludes(),
         memory.as_ref(),

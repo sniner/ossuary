@@ -24,7 +24,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other; what is already stored keeps its form, and reading understands both) and
   `[extract] run` (the extractors a bare `ossuary extract` runs, in order). A missing
   file means the defaults; an unknown key is refused rather than half-applied
-- **`ossuary ingest PATH`** takes a directory tree — or a single file — in: every regular file
+- **`ossuary ingest PATH…`** takes directory trees and single files in, any mix, several per
+  call — a glob's expansion included — all under one run id, so "arrived together" stays an
+  askable fact; a path that will not resolve is named in the verdict and costs only itself.
+  Every regular file goes
   into the content store, seven day-one claims per new blob into the log — a blob met again gets
   its sighting only, and every place and name it sat under goes on the record; the mtime is
   recorded at the precision the filesystem observed it. A repeated run remembers what

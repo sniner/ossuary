@@ -267,7 +267,7 @@ mod tests {
         crate::ingest(
             archive.content(),
             archive.log(),
-            &file,
+            [&file],
             "atlas.example.net",
             &crate::Excludes::none(),
             None,

@@ -135,7 +135,7 @@ fn the_skeleton_walks_from_disk() {
     let run = ossuary_core::ingest(
         &content,
         &log,
-        &tree,
+        [&tree],
         "atlas.example.net",
         &ossuary_core::Excludes::none(),
         None,

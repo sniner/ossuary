@@ -1,6 +1,6 @@
 //! Ingest: dumb, cheap, and never waiting to understand.
 //!
-//! A walk over a directory tree — or one file, taken at its word: every
+//! A walk over directory trees and single files, taken at their word: every
 //! regular file goes into the content store, and the day-one facts — the
 //! ones any format has — go into the log. Nothing here looks *inside* a format; understanding is the
 //! extractors' job, later and repeatedly, and a blob carrying nothing but
@@ -52,8 +52,12 @@ pub struct Ingested {
     pub failed: Vec<(PathBuf, Error)>,
 }
 
-/// Take a directory tree — or a single file — into the archive: blobs
-/// into `content`, day-one claims into `log`.
+/// Take directory trees and single files — as many roots as named, in
+/// one run — into the archive: blobs into `content`, day-one claims
+/// into `log`. Every sighting of the call shares the one run id, so
+/// "arrived together" spans all of it; roots that overlap or repeat
+/// are harmless — a fact said again lands on the set element already
+/// standing, and the memory skips what it just recorded.
 ///
 /// A blob new to the store gets the seven day-one claims, available for
 /// any format on its first day: `file:path` (the real place: absolute,
@@ -80,7 +84,7 @@ pub struct Ingested {
 /// [`Config::excludes`](crate::Config::excludes). What they match is
 /// counted in [`Ingested::excluded`] and otherwise left in peace: an
 /// excluded directory is not even walked. They speak about trees, though:
-/// a file named outright as `root` goes in regardless — naming it is more
+/// a file named outright as a root goes in regardless — naming it is more
 /// deliberate than a pattern is.
 ///
 /// `memory` is the walk's memory of earlier runs — usually
@@ -96,14 +100,18 @@ pub struct Ingested {
 /// to read or write. Per-file trouble is not an error here, and neither is
 /// a root that will not resolve: both are collected in
 /// [`Ingested::failed`] while the walk goes on.
-pub fn ingest(
+pub fn ingest<I>(
     content: &Store,
     log: &Log,
-    root: impl AsRef<Path>,
+    roots: I,
     host: &str,
     excludes: &Excludes,
     memory: Option<&IngestMemory>,
-) -> Result<Ingested> {
+) -> Result<Ingested>
+where
+    I: IntoIterator,
+    I::Item: AsRef<Path>,
+{
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
         run: Uuid::new_v4().to_string(),
@@ -114,58 +122,63 @@ pub fn ingest(
         excluded: 0,
         failed: Vec::new(),
     };
-    // The failure list names the path beside each error, so the contexts
+    // Every root is gathered before anything is read: one run, one
+    // sweep, and a root that will not resolve costs only itself. The
+    // failure list names the path beside each error, so the contexts
     // here say only what was being done when it went wrong.
-    let root = match fs::canonicalize(root.as_ref()) {
-        Ok(root) => root,
-        Err(error) => {
-            result.failed.push((
-                root.as_ref().to_path_buf(),
+    let mut files: Vec<PathBuf> = Vec::new();
+    for given in roots {
+        let root = match fs::canonicalize(given.as_ref()) {
+            Ok(root) => root,
+            Err(error) => {
+                result.failed.push((
+                    given.as_ref().to_path_buf(),
+                    Error::Io {
+                        context: "resolving".to_string(),
+                        source: error,
+                    },
+                ));
+                continue;
+            }
+        };
+        let mut walker = Walk {
+            root: &root,
+            excludes,
+            files: Vec::new(),
+            failed: Vec::new(),
+            excluded: 0,
+        };
+        match fs::metadata(&root) {
+            Ok(metadata) if metadata.is_file() => walker.files.push(root.clone()),
+            Ok(metadata) if metadata.is_dir() => walker.walk(&root),
+            // A socket, a pipe, a device: silently passed by in a walk, but a
+            // run that was told to take one in must not look like it did.
+            Ok(_) => walker.failed.push((
+                root.clone(),
+                Error::Io {
+                    context: "taking in".to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "not a file or a directory",
+                    ),
+                },
+            )),
+            Err(source) => walker.failed.push((
+                root.clone(),
                 Error::Io {
                     context: "resolving".to_string(),
-                    source: error,
+                    source,
                 },
-            ));
-            return Ok(result);
+            )),
         }
-    };
-
-    let mut walker = Walk {
-        root: &root,
-        excludes,
-        files: Vec::new(),
-        failed: Vec::new(),
-        excluded: 0,
-    };
-    match fs::metadata(&root) {
-        Ok(metadata) if metadata.is_file() => walker.files.push(root.clone()),
-        Ok(metadata) if metadata.is_dir() => walker.walk(&root),
-        // A socket, a pipe, a device: silently passed by in a walk, but a
-        // run that was told to take one in must not look like it did.
-        Ok(_) => walker.failed.push((
-            root.clone(),
-            Error::Io {
-                context: "taking in".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "not a file or a directory",
-                ),
-            },
-        )),
-        Err(source) => walker.failed.push((
-            root.clone(),
-            Error::Io {
-                context: "resolving".to_string(),
-                source,
-            },
-        )),
+        result.excluded += walker.excluded;
+        result.failed.extend(walker.failed);
+        files.extend(walker.files);
     }
-    result.excluded = walker.excluded;
-    result.failed.extend(walker.failed);
     if let Some(memory) = memory {
         memory.begin()?;
     }
-    for path in walker.files {
+    for path in files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
         // mid-read surfaces as a mismatch on the next sweep.
@@ -569,7 +582,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(&content, &log, [&tree], "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 2);
         assert_eq!(result.known, 0);
@@ -621,7 +634,7 @@ mod tests {
         fs::write(tree.join("first.txt"), b"hello world").unwrap();
         fs::write(tree.join("second.txt"), b"hello world").unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(&content, &log, [&tree], "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
@@ -648,7 +661,7 @@ mod tests {
         fs::write(tree.join("real.txt"), b"content").unwrap();
         std::os::unix::fs::symlink(tree.join("real.txt"), tree.join("alias.txt")).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(&content, &log, [&tree], "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "the file, not its alias");
         assert!(result.failed.is_empty());
@@ -665,7 +678,7 @@ mod tests {
         let result = ingest(
             &content,
             &log,
-            tree.join("sub").join(".."),
+            [tree.join("sub").join("..")],
             "atlas.example.net",
             &none(),
             None,
@@ -699,7 +712,15 @@ mod tests {
         fs::write(tree.join("sub").join(".DS_Store"), b"junk below").unwrap();
         let excludes = Excludes::compile([".DS_Store"]).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes, None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &excludes,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.stored, 1, "the content, not the junk");
         assert_eq!(result.excluded, 2, "at every level, and on the record");
@@ -720,7 +741,15 @@ mod tests {
         .unwrap();
         let excludes = Excludes::compile(["node_modules"]).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes, None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &excludes,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.stored, 1);
         assert_eq!(
@@ -740,7 +769,15 @@ mod tests {
         fs::write(tree.join("src").join("build").join("keep"), b"source").unwrap();
         let excludes = Excludes::compile(["build/**"]).unwrap();
 
-        let result = ingest(&content, &log, &tree, "atlas.example.net", &excludes, None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &excludes,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             result.stored, 1,
@@ -756,7 +793,7 @@ mod tests {
         let file = dir.path().join("solo.txt");
         fs::write(&file, b"hello world").unwrap();
 
-        let result = ingest(&content, &log, &file, "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(&content, &log, [&file], "atlas.example.net", &none(), None).unwrap();
 
         assert_eq!(result.stored, 1, "a file is not a tree, and goes in");
         assert_eq!(result.claims, 7);
@@ -819,7 +856,7 @@ mod tests {
             .set_modified(mtime)
             .unwrap();
 
-        ingest(&content, &log, &file, "atlas.example.net", &none(), None).unwrap();
+        ingest(&content, &log, [&file], "atlas.example.net", &none(), None).unwrap();
 
         let value = log
             .head()
@@ -844,7 +881,15 @@ mod tests {
         fs::write(&file, b"junk, but asked for").unwrap();
         let excludes = Excludes::compile([".DS_Store"]).unwrap();
 
-        let result = ingest(&content, &log, &file, "atlas.example.net", &excludes, None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&file],
+            "atlas.example.net",
+            &excludes,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             result.stored, 1,
@@ -866,7 +911,7 @@ mod tests {
         let first = ingest(
             &content,
             &log,
-            &tree,
+            [&tree],
             "atlas.example.net",
             &none(),
             Some(&memory),
@@ -881,7 +926,7 @@ mod tests {
         let second = ingest(
             &content,
             &log,
-            &tree,
+            [&tree],
             "atlas.example.net",
             &none(),
             Some(&memory),
@@ -906,7 +951,7 @@ mod tests {
         ingest(
             &content,
             &log,
-            &tree,
+            [&tree],
             "atlas.example.net",
             &none(),
             Some(&memory),
@@ -918,7 +963,7 @@ mod tests {
         let second = ingest(
             &content,
             &log,
-            &tree,
+            [&tree],
             "atlas.example.net",
             &none(),
             Some(&memory),
@@ -942,7 +987,7 @@ mod tests {
         ingest(
             &content,
             &log,
-            &tree,
+            [&tree],
             "atlas.example.net",
             &none(),
             Some(&memory),
@@ -951,7 +996,7 @@ mod tests {
         let second = ingest(
             &content,
             &log,
-            &tree,
+            [&tree],
             "rhea.example.net",
             &none(),
             Some(&memory),
@@ -963,6 +1008,48 @@ mod tests {
     }
 
     #[test]
+    fn several_roots_arrive_in_one_run() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"first").unwrap();
+        let single = dir.path().join("single.txt");
+        fs::write(&single, b"second").unwrap();
+        let gone = dir.path().join("no-such-place");
+
+        let result = ingest(
+            &content,
+            &log,
+            [&tree, &single, &gone],
+            "atlas.example.net",
+            &none(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result.stored, 2, "both healthy roots went in");
+        assert_eq!(
+            result.failed.len(),
+            1,
+            "the root that is not there is named, and costs only itself"
+        );
+        let runs: std::collections::HashSet<String> = log
+            .head()
+            .unwrap()
+            .iter()
+            .filter(|claim| claim.attribute().as_str() == "prov:run")
+            .filter_map(|claim| claim.value().and_then(|value| value.as_str()))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            runs,
+            std::collections::HashSet::from([result.run.clone()]),
+            "everything of one call arrived in one run"
+        );
+    }
+
+    #[test]
     fn a_root_that_is_not_there_is_a_named_failure_not_a_crash() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
@@ -970,7 +1057,7 @@ mod tests {
         let result = ingest(
             &content,
             &log,
-            dir.path().join("no-such-tree"),
+            [dir.path().join("no-such-tree")],
             "atlas",
             &none(),
             None,
