@@ -1,0 +1,20 @@
+[package]
+name = "ossuary-extract-mail"
+description = "Mail extractor for ossuary archives, reading message headers and unpacking what a mail carries"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-extract-mail"
+path = "src/main.rs"
+
+[dependencies]
+mail-parser = "0.11.8"
+serde_json = "1.0.151"
+
+[dev-dependencies]
+tempfile = "3"

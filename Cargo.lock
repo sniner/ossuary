@@ -620,6 +620,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashify"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd1246c0e5493286aeb2dde35b1f4eb9c4ce00e628641210a5e553fc001a1f26"
+dependencies = [
+ "indexmap",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "hashlink"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -866,6 +878,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail-parser"
+version = "0.11.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b3a9080c1fb8190e232df37a10aa1b3d6b08be084e537069913f025e0ce86c5"
+dependencies = [
+ "hashify",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -979,6 +1000,15 @@ version = "0.1.0"
 dependencies = [
  "kamadak-exif",
  "serde_json",
+]
+
+[[package]]
+name = "ossuary-extract-mail"
+version = "0.1.0"
+dependencies = [
+ "mail-parser",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

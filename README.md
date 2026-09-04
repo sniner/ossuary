@@ -32,8 +32,11 @@ What runs today is the walking skeleton: `ossuary-core` (claims, the log,
 ingest, and a disposable query index), the `ossuary` command line —
 `init`, `ingest`, `extract`, `seal`, `about`, `find`, `id`, `get` — and
 the first extractors: `ossuary-extract-exif`, recording what EXIF says in
-EXIF's own words, and `ossuary-extract-text`, deriving a PDF's plain text
-(through poppler's `pdftotext`) beside the document's own metadata. Enough to take a directory tree in, ask what the
+EXIF's own words, `ossuary-extract-text`, deriving a PDF's plain text
+(through poppler's `pdftotext`) beside the document's own metadata, and
+`ossuary-extract-mail`, recording a message's own headers and handing
+over what it carries — attachments and nested messages become content of
+their own. Enough to take a directory tree in, ask what the
 archive knows about any file in it, search for files by what stands on
 the record, and get any file back out. An extractor can hand
 back files as well as findings — an unpacked attachment, extracted

@@ -60,6 +60,9 @@ in its source.
 - `exif:` — verbatim EXIF fields, as `ossuary-extract-exif` reads them
 - `pdf:` — verbatim PDF document information, as `ossuary-extract-text`
   reads it
+- `mail:` — a message's own voice, verbatim, as `ossuary-extract-mail`
+  reads it — its headers standing on the mail, a part's identity on the
+  part
 
 Subject prefixes other than hash algorithms stay reserved (see the
 format paper); vocabulary for subjects that are not blobs waits for the
@@ -126,10 +129,12 @@ first real need.
 - meaning: what the bytes are. Ingest sniffs — magic bytes, a UTF-8
   look for plain text, and `application/octet-stream` as the honest
   shrug; a derived file's kind is announced by the extractor that wrote
-  the bytes, and needs no guessing. Both words stand in the set
+  the bytes, and needs no guessing; an extractor that recognizes a
+  format from the inside says the sharper word — a mail sniffed as
+  `text/plain` gains `message/rfc822`. All the words stand in the set
 - value: string, a MIME type
 - written by: ingest; `ossuary extract`, in the deriving extractor's
-  words
+  words; ossuary-extract-mail, on what it recognized
 
 ### file:modified
 
@@ -173,3 +178,21 @@ first real need.
   `derive:derived-from`
 - value: string
 - written by: ossuary-extract-text
+
+### mail:…
+
+- meaning: one header of a message's own voice, verbatim — `mail:` plus
+  the header's name, lowercased: from, sender, reply-to, to, cc, bcc,
+  subject, date, message-id, in-reply-to and references, each claimed as
+  often as it stands. The value is unfolded and its RFC 2047 encoded
+  words are decoded — conversion, not tidying — and otherwise spelled as
+  the mail spells it: the date keeps its own calendar
+  (`"Thu, 4 Sep 2026 12:34:56 +0200"`), addresses their display names,
+  commas and angle brackets. The transport's trail — received,
+  return-path, the x- families — describes the journey, not the message,
+  and stays untold. What the mail carries — named attachments, nested
+  messages — is not an attribute but derived files, tied to the mail by
+  `derive:derived-from`; on such a part stands `mail:content-id`, the
+  part's identity as the mail spelled it (`"<part2@example.com>"`)
+- value: string
+- written by: ossuary-extract-mail

@@ -96,3 +96,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   file of its own beside the document information verbatim under `pdf:` (`pdf:title`,
   `pdf:creation-date` — dates as the document spells them). A document with no text to give —
   scanned pages, an unreadable file — is examined all the same, with nothing found
+- **`ossuary-extract-mail`** — the mail extractor: a message's own headers verbatim under
+  `mail:` (`mail:from`, `mail:subject`, `mail:date` — unfolded and their encoded words decoded,
+  otherwise as the mail spells them; the transport's trail stays untold), and what the mail
+  carries handed over as content of its own — named attachments and nested messages, each typed
+  as the mail declared it, an attachment's content-id on its record. It reads `text/plain`
+  deliberately, because a mail on disk sniffs as plain text: bytes that are no message are
+  examined with nothing found, and a recognized mail gains the sharper `file:mime` of
+  `message/rfc822` beside the sniffed word. An mbox is a mailbox, not a message, and stays
+  untouched
