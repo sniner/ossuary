@@ -3,7 +3,6 @@
 //! Thin on purpose: parsing, wording and exit codes live here, and nothing
 //! else does — every decision about the archive itself is `ossuary-core`'s.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -295,6 +294,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+/// One answer line onto stdout. `Ok(true)` means written; `Ok(false)`
+/// means the reader closed the pipe — it has all it wanted, so the
+/// answer ends there and the run counts as a success, the way `get`
+/// has always read it. Any other write trouble is real.
+fn say(out: &mut impl std::io::Write, line: &str) -> Result<bool> {
+    match writeln!(out, "{line}") {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
+        Err(error) => Err(anyhow::Error::new(error).context("writing to stdout")),
+    }
+}
+
 /// The archive, or the way to one.
 pub(crate) fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
@@ -513,11 +524,16 @@ fn about(
             return Ok(ExitCode::SUCCESS);
         }
     }
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     for claim in &claims {
-        if json {
-            println!("{}", claim.to_line());
+        let line = if json {
+            claim.to_line()
         } else {
-            println!("{}", output::line(claim));
+            output::line(claim)
+        };
+        if !say(&mut out, &line)? {
+            break;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -548,10 +564,15 @@ fn value(root: &Path, subject: &str, attribute: &str, json: bool, quiet: bool) -
         }
         return Ok(ExitCode::FAILURE);
     }
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     for value in &standing {
-        match value {
-            Value::String(text) if !json => println!("{text}"),
-            other => println!("{other}"),
+        let line = match value {
+            Value::String(text) if !json => text.clone(),
+            other => other.to_string(),
+        };
+        if !say(&mut out, &line)? {
+            break;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -645,13 +666,8 @@ fn find(
                 output::match_line(&shorten(&archive, &index, subject)?, &shown)
             }
         };
-        if let Err(error) = writeln!(out, "{line}") {
-            // The reader closed the pipe: it has all it wanted. That is
-            // its business going well, not this run going badly.
-            if error.kind() == std::io::ErrorKind::BrokenPipe {
-                return Ok(ExitCode::SUCCESS);
-            }
-            return Err(anyhow::Error::new(error).context("writing to stdout"));
+        if !say(&mut out, &line)? {
+            return Ok(ExitCode::SUCCESS);
         }
     }
     // The matches alone stay on stdout, ready to pipe; the count is the
@@ -833,4 +849,31 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reader that left: every write answers with a closed pipe.
+    struct Gone;
+    impl std::io::Write for Gone {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_the_answer_instead_of_the_run() {
+        let mut held = Vec::new();
+        assert!(say(&mut held, "an answer").unwrap(), "written and told so");
+        assert_eq!(held, b"an answer\n");
+        assert!(
+            !say(&mut Gone, "unwanted").unwrap(),
+            "the reader gone is a calm false, not an error"
+        );
+    }
 }
