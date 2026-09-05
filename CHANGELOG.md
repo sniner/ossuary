@@ -24,7 +24,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other; what is already stored keeps its form, and reading understands both) and
   `[extract] run` (the extractors a bare `ossuary extract` runs, in order). A missing
   file means the defaults; an unknown key is refused rather than half-applied
-- **`ossuary ingest PATH…`** takes directory trees and single files in, any mix, several per
+- **`ossuary ingest PATH…`** (callable as `add` — what `get` hands out, `add` takes in) takes
+  directory trees and single files in, any mix, several per
   call — a glob's expansion included — all under one run id, so "arrived together" stays an
   askable fact; a path that will not resolve is named in the verdict and costs only itself.
   Every regular file goes
@@ -49,8 +50,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (either side open — `file:modified=2026-09-01..` is "changed since September"; bounds compare
   in the attribute's own spelling; a value in double quotes is literal), and
   `--missing ATTRIBUTE` (or a namespace like `exif:`) asks for what a file lacks. Only standing
-  values count — a retracted value no longer answers — and the matches come out one name per
-  line, ready for `about` or `get`
+  values count — a retracted value no longer answers. The question is also the projection: each
+  match comes out as one line holding the file's name (shortened like a git hash, growing as the
+  archive does) and every attribute the query named, spelled as the `attribute=value` pairs a
+  query would use — a line pastes back into a refined query, quotes and all, and every standing
+  value is shown. A bare attribute among the terms is shown without filtering
+  (`find file:name=*.pdf file:modified`), a namespace like `exif:` shows all of it, and with
+  only bare attributes every file on the record answers. `--id` answers with the full names
+  alone, one per line, ready to pipe; `--json` answers one JSON object per match with the
+  values as lists
 - **`ossuary value SUBJECT ATTRIBUTE`** answers what currently stands for one attribute —
   retractions applied, repeats collapsed — one value per line, strings bare, ready for a script;
   several lines mean the attribute honestly holds several values, and choosing among them stays

@@ -3,6 +3,7 @@
 //! Thin on purpose: parsing, wording and exit codes live here, and nothing
 //! else does — every decision about the archive itself is `ossuary-core`'s.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -48,6 +49,7 @@ enum Command {
     },
     /// Take files in: directory trees and single files, any mix
     ///
+    /// Callable as `add` too — what `get` hands out, `add` takes in.
     /// Every regular file goes in — minus what the archive's config.toml
     /// excludes; a file named outright goes in regardless — and seven
     /// claims go on the record for each: where it came from, what it is
@@ -58,6 +60,7 @@ enum Command {
     /// What is taken in is only read. A repeated run remembers what it
     /// already observed and leaves unchanged files in peace, so pouring
     /// the same directory in again costs only what is new or changed.
+    #[command(visible_alias = "add")]
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
@@ -161,7 +164,8 @@ enum Command {
         #[arg(short, long)]
         json: bool,
     },
-    /// Every file on which all the terms stand
+    /// Every file on which all the terms stand — shown with the fields
+    /// the question named
     ///
     /// A term is attribute=value, and every term must hold: `find
     /// file:mime=image/jpeg exif:make=Google` names the files that are
@@ -178,10 +182,24 @@ enum Command {
     /// files that lack an attribute (or, ending in `:`, a whole
     /// namespace) — `find file:mime=image/jpeg --missing exif:` is
     /// "which photos have no EXIF on record". Only standing values
-    /// answer; what was retracted no longer counts. The matches come out
-    /// as names, one per line, ready for `about`, `value` or `get`.
+    /// answer; what was retracted no longer counts.
+    ///
+    /// Each match comes out as one line: the file's name, shortened the
+    /// way git shortens a hash, then every attribute the question
+    /// named, as the attribute=value pairs a query would spell — so a
+    /// line pastes back into a refined query, quotes and all. A bare
+    /// attribute among the terms is shown without asking anything of
+    /// it (`find file:name=*.pdf file:modified` shows when the PDFs
+    /// changed), a namespace like `exif:` shows all of it, and asking
+    /// for it to stand remains `attribute=..`. With only bare
+    /// attributes, every file on the record answers. Every standing
+    /// value is shown — several pairs mean the attribute honestly
+    /// holds several. --id answers with the full names alone, one per
+    /// line, ready to pipe into `about`, `value` or `get`; --json
+    /// answers one JSON object per match, the values as lists.
     Find {
-        /// attribute=value; repeat to demand all of them at once
+        /// attribute=value; repeat to demand all of them at once. A bare
+        /// attribute (or namespace:) only asks to be shown
         #[arg(value_name = "TERM")]
         terms: Vec<String>,
 
@@ -189,6 +207,15 @@ enum Command {
         /// namespace); may be repeated
         #[arg(long, value_name = "ATTRIBUTE")]
         missing: Vec<String>,
+
+        /// The full names alone, one per line — the scripting answer
+        #[arg(long)]
+        id: bool,
+
+        /// One JSON object per match: the full name, each shown
+        /// attribute's values as a list
+        #[arg(short, long)]
+        json: bool,
     },
     /// The name a file answers to in the archive
     ///
@@ -257,7 +284,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             attribute,
             json,
         } => value(&cli.archive, &subject, &attribute, json, quiet),
-        Command::Find { terms, missing } => find(&cli.archive, &terms, &missing, quiet),
+        Command::Find {
+            terms,
+            missing,
+            id,
+            json,
+        } => find(&cli.archive, &terms, &missing, id, json, quiet),
         Command::Id { path } => id(&cli.archive, &path, quiet),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref(), quiet),
     }
@@ -525,29 +557,104 @@ fn value(root: &Path, subject: &str, attribute: &str, json: bool, quiet: bool) -
     Ok(ExitCode::SUCCESS)
 }
 
-fn find(root: &Path, terms: &[String], missing: &[String], quiet: bool) -> Result<ExitCode> {
-    if terms.is_empty() && missing.is_empty() {
+/// One thing a `find` match shows: an attribute, or a whole namespace.
+/// The question is the projection — a term that filters also shows its
+/// attribute, and a bare attribute among the terms only shows.
+#[derive(PartialEq)]
+enum Projection {
+    Attribute(Attribute),
+    Namespace(String),
+}
+
+fn find(
+    root: &Path,
+    terms: &[String],
+    missing: &[String],
+    id_only: bool,
+    json: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
+    if id_only && json {
         return Err(anyhow!(
-            "nothing asked — name at least one TERM as attribute=value, or --missing ATTRIBUTE"
+            "--id answers with the names alone — --json would say no more; drop one of them"
         ));
     }
-    let mut parsed = Vec::new();
+    let mut filters = Vec::new();
+    let mut projections: Vec<Projection> = Vec::new();
+    let remember = |projection: Projection, projections: &mut Vec<Projection>| {
+        if !projections.contains(&projection) {
+            projections.push(projection);
+        }
+    };
     for word in terms {
-        let Some((attribute, value)) = word.split_once('=') else {
+        if let Some((attribute, value)) = word.split_once('=') {
+            let attribute = Attribute::parse(attribute)?;
+            remember(Projection::Attribute(attribute.clone()), &mut projections);
+            filters.push((attribute, value.to_string()));
+        } else if let Some(namespace) = word.strip_suffix(':') {
+            // The grammar has one door; a prefix walks through it
+            // wearing a dummy name.
+            Attribute::parse(&format!("{namespace}:a"))?;
+            if id_only {
+                return Err(anyhow!(
+                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
+                ));
+            }
+            remember(
+                Projection::Namespace(namespace.to_string()),
+                &mut projections,
+            );
+        } else if word.contains(':') {
+            let attribute = Attribute::parse(word)?;
+            if id_only {
+                return Err(anyhow!(
+                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
+                ));
+            }
+            remember(Projection::Attribute(attribute), &mut projections);
+        } else {
             return Err(anyhow!(
-                "{word:?} is not a term — a term is attribute=value, like user:tag=holiday"
+                "{word:?} is not a term — attribute=value asks for it, a bare attribute (or a namespace, like exif:) is shown on each match"
             ));
-        };
-        parsed.push((Attribute::parse(attribute)?, value.to_string()));
+        }
+    }
+    if filters.is_empty() && missing.is_empty() && projections.is_empty() {
+        return Err(anyhow!(
+            "nothing asked — name a TERM as attribute=value, an attribute to show, or --missing ATTRIBUTE"
+        ));
     }
     let archive = open(root)?;
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
-    let subjects = index.find(&parsed, missing)?;
+    // Only bare attributes asked: nothing narrows, every file answers.
+    let subjects = if filters.is_empty() && missing.is_empty() {
+        index.subjects()?
+    } else {
+        index.find(&filters, missing)?
+    };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     for subject in &subjects {
-        println!("{subject}");
+        let line = if id_only {
+            subject.as_str().to_string()
+        } else {
+            let shown = gather(&index, subject, &projections)?;
+            if json {
+                output::json_line(subject.as_str(), &shown)
+            } else {
+                output::match_line(&shorten(&archive, &index, subject)?, &shown)
+            }
+        };
+        if let Err(error) = writeln!(out, "{line}") {
+            // The reader closed the pipe: it has all it wanted. That is
+            // its business going well, not this run going badly.
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(ExitCode::SUCCESS);
+            }
+            return Err(anyhow::Error::new(error).context("writing to stdout"));
+        }
     }
-    // The names alone stay on stdout, ready to pipe; the count is the
+    // The matches alone stay on stdout, ready to pipe; the count is the
     // run's word on how it went.
     if !quiet {
         match subjects.len() {
@@ -556,6 +663,71 @@ fn find(root: &Path, terms: &[String], missing: &[String], quiet: bool) -> Resul
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What one match shows: the projected attributes with their standing
+/// values, in the question's order, each attribute once and only when
+/// something stands.
+fn gather(
+    index: &Index,
+    subject: &Subject,
+    projections: &[Projection],
+) -> Result<Vec<(Attribute, Vec<ossuary_core::Value>)>> {
+    let mut shown: Vec<(Attribute, Vec<ossuary_core::Value>)> = Vec::new();
+    for projection in projections {
+        match projection {
+            Projection::Attribute(attribute) => {
+                if shown.iter().any(|(known, _)| known == attribute) {
+                    continue;
+                }
+                let values = index.values(subject, attribute)?;
+                if !values.is_empty() {
+                    shown.push((attribute.clone(), values));
+                }
+            }
+            Projection::Namespace(namespace) => {
+                // An attribute an earlier projection already shows would
+                // repeat its whole set — its namespace rows are skipped.
+                let already: Vec<Attribute> =
+                    shown.iter().map(|(known, _)| known.clone()).collect();
+                for (attribute, value) in index.values_in(subject, namespace)? {
+                    if already.contains(&attribute) {
+                        continue;
+                    }
+                    match shown.iter_mut().find(|(known, _)| *known == attribute) {
+                        Some((_, values)) => values.push(value),
+                        None => shown.push((attribute, vec![value])),
+                    }
+                }
+            }
+        }
+    }
+    Ok(shown)
+}
+
+/// The name shortened the way git shortens a hash: the shortest prefix,
+/// eight characters at least, that names only this file on the record —
+/// it grows by itself as the archive does, and resolves wherever a
+/// SUBJECT is taken. A name in another algorithm's grammar stays whole.
+fn shorten(archive: &Archive, index: &Index, subject: &Subject) -> Result<String> {
+    let algorithm = archive.content().algorithm().name();
+    let Some(hex) = subject
+        .as_str()
+        .strip_prefix(algorithm)
+        .and_then(|rest| rest.strip_prefix(':'))
+    else {
+        return Ok(subject.as_str().to_string());
+    };
+    let mut length = 8;
+    while length < hex.len() {
+        // The prefix matches at least this subject itself; matching only
+        // one name means naming it alone.
+        if index.matching(algorithm, &hex[..length])?.len() == 1 {
+            return Ok(hex[..length].to_string());
+        }
+        length += 1;
+    }
+    Ok(hex.to_string())
 }
 
 fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {

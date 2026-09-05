@@ -220,6 +220,63 @@ impl Index {
         Ok(values)
     }
 
+    /// What currently stands on one subject across a whole namespace:
+    /// every standing `(attribute, value)` whose attribute begins
+    /// `namespace:`, ordered by attribute and value — as of the last
+    /// [`fold`](Index::fold), the open head included. The namespace comes
+    /// bare, without its colon.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; a row that does not parse back
+    /// cannot happen for rows a fold wrote, but is propagated rather than
+    /// sworn away.
+    pub fn values_in(&self, subject: &Subject, namespace: &str) -> Result<Vec<(Attribute, Value)>> {
+        let mut statement = self.connection.prepare(
+            // ';' is the character after ':', and no attribute contains
+            // one: the half-open range is the namespace.
+            "SELECT attribute, value FROM standing
+             WHERE subject = ?1 AND attribute >= ?2 AND attribute < ?3
+             ORDER BY attribute, value",
+        )?;
+        let rows = statement.query_map(
+            params![
+                subject.as_str(),
+                format!("{namespace}:"),
+                format!("{namespace};")
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut standing = Vec::new();
+        for row in rows {
+            let (attribute, value) = row?;
+            standing.push((Attribute::parse(&attribute)?, serde_json::from_str(&value)?));
+        }
+        Ok(standing)
+    }
+
+    /// Every subject the record speaks about, sorted — as of the last
+    /// [`fold`](Index::fold), the open head included. The answer to a
+    /// question that names no terms at all: show me something about
+    /// every file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than
+    /// sworn away.
+    pub fn subjects(&self) -> Result<Vec<Subject>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT subject FROM standing ORDER BY subject")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut subjects = Vec::new();
+        for row in rows {
+            subjects.push(Subject::parse(&row?)?);
+        }
+        Ok(subjects)
+    }
+
     /// Every subject on which all `terms` stand and none of `missing` does,
     /// sorted — as of the last [`fold`](Index::fold), the open head
     /// included.
@@ -965,6 +1022,46 @@ mod tests {
             index.find(&[term("file:size", "2019")], &[]).unwrap(),
             [subject()],
             "while the exact number answers"
+        );
+    }
+
+    #[test]
+    fn a_namespace_answers_whole_and_the_record_names_its_subjects() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let when = "2026-09-01T21:14:03Z";
+        log.append(&say(&subject(), "exif:model", json!("Pixel 7"), when))
+            .unwrap();
+        log.append(&say(&subject(), "exif:make", json!("Google"), when))
+            .unwrap();
+        log.append(&say(&subject(), "file:size", json!(2019), when))
+            .unwrap();
+        index.fold(&log).unwrap();
+
+        let spelled: Vec<(String, Value)> = index
+            .values_in(&subject(), "exif")
+            .unwrap()
+            .into_iter()
+            .map(|(attribute, value)| (attribute.as_str().to_string(), value))
+            .collect();
+        assert_eq!(
+            spelled,
+            [
+                ("exif:make".to_string(), json!("Google")),
+                ("exif:model".to_string(), json!("Pixel 7")),
+            ],
+            "the namespace whole, ordered by attribute"
+        );
+        assert_eq!(
+            index.values_in(&subject(), "user").unwrap(),
+            [],
+            "a namespace nothing stands in answers empty"
+        );
+        assert_eq!(
+            index.subjects().unwrap(),
+            [subject()],
+            "the record names every subject it speaks about"
         );
     }
 
