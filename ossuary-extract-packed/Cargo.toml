@@ -1,0 +1,21 @@
+[package]
+name = "ossuary-extract-packed"
+description = "Archive extractor for ossuary archives, listing what a zip holds and unpacking it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-extract-packed"
+path = "src/main.rs"
+
+[dependencies]
+infer = "0.22.0"
+serde_json = "1.0.151"
+zip = "6.0.0"
+
+[dev-dependencies]
+tempfile = "3"

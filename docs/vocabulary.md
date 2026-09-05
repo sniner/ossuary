@@ -63,6 +63,9 @@ in its source.
 - `mail:` — a message's own voice, verbatim, as `ossuary-extract-mail`
   reads it — its headers standing on the mail, a part's identity on the
   part
+- `zip:` — what a zip archive says about itself, verbatim, as
+  `ossuary-extract-packed` reads it — the inventory standing on the
+  archive, an entry's place on the unpacked file
 
 Subject prefixes other than hash algorithms stay reserved (see the
 format paper); vocabulary for subjects that are not blobs waits for the
@@ -131,10 +134,13 @@ first real need.
   shrug; a derived file's kind is announced by the extractor that wrote
   the bytes, and needs no guessing; an extractor that recognizes a
   format from the inside says the sharper word — a mail sniffed as
-  `text/plain` gains `message/rfc822`. All the words stand in the set
+  `text/plain` gains `message/rfc822`, a zip that is really an epub or
+  an Office document gains its declared kind. All the words stand in
+  the set
 - value: string, a MIME type
 - written by: ingest; `ossuary extract`, in the deriving extractor's
-  words; ossuary-extract-mail, on what it recognized
+  words; ossuary-extract-mail and ossuary-extract-packed, on what they
+  recognized
 
 ### file:modified
 
@@ -196,3 +202,21 @@ first real need.
   part's identity as the mail spelled it (`"<part2@example.com>"`)
 - value: string
 - written by: ossuary-extract-mail
+
+### zip:entry
+
+- meaning: one entry a zip archive holds, spelled as the archive spells
+  it, inner path included — the inventory, standing on the archive
+  itself whether or not anything was unpacked, so "which zip holds a
+  file so named" is a question the record answers. Directories are
+  structure, not content, and stay untold
+- value: string, the entry's path inside the archive
+- written by: ossuary-extract-packed, under its `list` contract
+
+### zip:path
+
+- meaning: where an unpacked file sat inside its zip — the full entry
+  path, standing on the derived file, whose bare name is `file:name`
+  and whose origin is `derive:derived-from`
+- value: string, the entry's path inside the archive
+- written by: ossuary-extract-packed, under its `unpack` contract

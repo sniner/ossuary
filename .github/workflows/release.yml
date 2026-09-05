@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   # The programs the workspace ships; every build, strip and stage step
   # walks this list.
-  BINARIES: ossuary ossuary-extract-exif ossuary-extract-mail ossuary-extract-text
+  BINARIES: ossuary ossuary-extract-exif ossuary-extract-mail ossuary-extract-packed ossuary-extract-text
 
 jobs:
   verify-version:
@@ -177,6 +177,7 @@ jobs:
           "dist/ossuary-${GITHUB_REF_NAME}-macos-universal" --version
           "dist/ossuary-extract-exif-${GITHUB_REF_NAME}-macos-universal" --identify
           "dist/ossuary-extract-mail-${GITHUB_REF_NAME}-macos-universal" --identify
+          "dist/ossuary-extract-packed-${GITHUB_REF_NAME}-macos-universal" --identify
           "dist/ossuary-extract-text-${GITHUB_REF_NAME}-macos-universal" --identify
 
       - name: Upload artifact

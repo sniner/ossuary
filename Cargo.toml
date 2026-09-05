@@ -5,6 +5,7 @@ members = [
     "ossuary-core",
     "ossuary-extract-exif",
     "ossuary-extract-mail",
+    "ossuary-extract-packed",
     "ossuary-extract-text",
 ]
 

@@ -36,7 +36,10 @@ EXIF's own words, `ossuary-extract-text`, deriving a PDF's plain text
 (through poppler's `pdftotext`) beside the document's own metadata, and
 `ossuary-extract-mail`, recording a message's own headers and handing
 over what it carries — attachments and nested messages become content of
-their own. Enough to take a directory tree in, ask what the
+their own — and `ossuary-extract-packed`, carrying two contracts in one
+program: `list` inventories a zip without unpacking a byte, `unpack`
+hands its entries over, and a zip that is really an epub or an Office
+document is recognized and left shut. Enough to take a directory tree in, ask what the
 archive knows about any file in it, search for files by what stands on
 the record, and get any file back out. An extractor can hand
 back files as well as findings — an unpacked attachment, extracted

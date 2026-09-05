@@ -89,6 +89,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   receipted or not: the named files, or everything of a kind the extractor reads — for the
   extractor upgrade that is worth a fresh look at the archive. The pipe protocol, open to any
   language, is [docs/extractors.md](docs/extractors.md)
+- **Extractor contracts** — one program may carry several separately receipted capabilities:
+  `--identify` answers one JSON line per contract, each with its own name, source, MIME list and
+  `derives` flag, and each runs over its own worklist onto its own receipts. `ossuary extract
+  NAME` runs every contract the program offers; `ossuary extract NAME:CONTRACT` runs one, and
+  the same spelling holds in `[extract] run` — so "inventory the archives, never unpack them"
+  can stand in `config.toml` as `"packed:list"`. Single-contract extractors are untouched: one
+  identify line, spoken to exactly as before
 - **`ossuary-extract-exif`** — the first extractor: EXIF fields verbatim, tag names kebab-cased
   under `exif:`, values as the format stores them (`"2019:07:14 11:02:41"`, `"28/10"`)
 - **`ossuary-extract-text`** — the first deriving extractor: a PDF's plain text, extracted
@@ -105,3 +112,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   examined with nothing found, and a recognized mail gains the sharper `file:mime` of
   `message/rfc822` beside the sniffed word. An mbox is a mailbox, not a message, and stays
   untouched
+- **`ossuary-extract-packed`** — the archive extractor, and the first program of two contracts:
+  `list` inventories a zip without unpacking a byte — one `zip:entry` claim per entry, standing
+  on the archive itself, so "which zip holds a file so named" becomes a question the record
+  answers — and `unpack` hands every entry over as content of its own, flattened to its bare
+  name (colliding names yield to a counter, the spelled name kept as `file:name`), its place
+  inside the zip on the record as `zip:path`, its kind sniffed the way ingest sniffs, since a
+  zip declares none. A zip that is really a document wearing zip as its envelope — epub and the
+  OpenDocument family by their `mimetype` first entry, Word, Excel and PowerPoint by their type
+  manifest — is recognized from the bytes, left shut, and gains its sharper `file:mime` instead;
+  a jar promises nothing about its insides and is treated as the archive it is. Encrypted or
+  damaged entries stay inside with a note — there is no password to offer — and bytes that do
+  not read as a zip are examined with nothing found
