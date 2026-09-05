@@ -127,6 +127,31 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         temp_dir: Option<PathBuf>,
     },
+    /// Put the user's own word on files already on the record
+    ///
+    /// Each --comment and --tag becomes a claim on every named file —
+    /// user:comment, user:tag — under the source user: the human
+    /// asserts, the archive takes their word. Words accrete: a second
+    /// comment stands beside the first, and `about` answers who said
+    /// what when. Every name is resolved before anything is written,
+    /// so a mistyped name refuses the whole call with nothing
+    /// half-annotated. Tags at arrival are `ingest --tag`'s business;
+    /// this is the door for later — one file, or a found set:
+    /// `ossuary find --id … | xargs ossuary annotate --tag …`
+    Annotate {
+        /// The files to annotate: as `sha256:…`, or a beginning of it —
+        /// enough of it to name only one file; several may be named
+        #[arg(value_name = "SUBJECT", required = true)]
+        subjects: Vec<String>,
+
+        /// A remark in the user's own words; may be repeated
+        #[arg(long = "comment", value_name = "TEXT")]
+        comments: Vec<String>,
+
+        /// A label, as user:tag; may be repeated
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+    },
     /// Close the open segment; its claims become part of the sealed log
     Seal,
     /// Everything on the record about one file, oldest first
@@ -278,6 +303,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             temp_dir.as_deref(),
             quiet,
         ),
+        Command::Annotate {
+            subjects,
+            comments,
+            tags,
+        } => annotate(&cli.archive, &subjects, &comments, &tags, quiet),
         Command::Seal => seal(&cli.archive),
         Command::About {
             subject,
@@ -447,6 +477,53 @@ fn ingest(
         }
         Ok(ExitCode::FAILURE)
     }
+}
+
+fn annotate(
+    root: &Path,
+    given: &[String],
+    comments: &[String],
+    tags: &[String],
+    quiet: bool,
+) -> Result<ExitCode> {
+    if comments.is_empty() && tags.is_empty() {
+        return Err(anyhow!(
+            "nothing to say — give --comment TEXT, --tag TAG, or both"
+        ));
+    }
+    if comments.iter().any(|text| text.trim().is_empty()) {
+        return Err(anyhow!(
+            "an empty comment says nothing — give it words or leave it off"
+        ));
+    }
+    if let Some(empty) = tags.iter().find(|tag| tag.trim().is_empty()) {
+        return Err(anyhow!(
+            "{empty:?} is not a tag — a tag says something; give it a word or leave it off"
+        ));
+    }
+    let archive = open(root)?;
+    let mut index = archive.index()?;
+    catch_up(&mut index, &archive, quiet)?;
+
+    // Every name resolves before anything is written: a mistake in the
+    // third of five must not leave the first two half-annotated.
+    let mut subjects: Vec<Subject> = Vec::new();
+    for name in given {
+        let Some(subject) = resolve(&archive, &index, name)? else {
+            return Err(anyhow!(
+                "nothing on the record begins with {name:?} — nothing was written"
+            ));
+        };
+        if !subjects.contains(&subject) {
+            subjects.push(subject);
+        }
+    }
+    let written = ossuary_core::annotate(archive.log(), &subjects, comments, tags)?;
+    println!(
+        "{} file(s) annotated, {written} claim(s) written",
+        subjects.len()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn seal(root: &Path) -> Result<ExitCode> {

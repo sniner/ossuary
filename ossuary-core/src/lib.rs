@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+mod annotate;
 mod archive;
 mod claim;
 mod config;
@@ -27,6 +28,7 @@ mod ingest;
 mod log;
 mod manifest;
 
+pub use annotate::annotate;
 pub use archive::Archive;
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 pub use config::{Config, Excludes};

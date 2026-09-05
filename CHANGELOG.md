@@ -61,6 +61,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only bare attributes every file on the record answers. `--id` answers with the full names
   alone, one per line, ready to pipe; `--json` answers one JSON object per match with the
   values as lists
+- **`ossuary annotate SUBJECT… --comment TEXT --tag TAG`** puts the user's own word on files
+  already on the record: each comment and tag becomes a claim (`user:comment`, `user:tag`)
+  under the source `user`, on every named file — beside what `ingest --tag` said at arrival.
+  Both options repeat, several files go in one call, and every name is resolved before
+  anything is written, so a mistyped name refuses the whole call.
+  `ossuary find --id … | xargs ossuary annotate --tag …` is the after-the-fact batch tagging
 - **`ossuary value SUBJECT ATTRIBUTE`** answers what currently stands for one attribute —
   retractions applied, repeats collapsed — one value per line, strings bare, ready for a script;
   several lines mean the attribute honestly holds several values, and choosing among them stays

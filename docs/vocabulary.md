@@ -163,9 +163,18 @@ first real need.
 - meaning: a label the user put on the content — their own word, not
   derivable from the bytes, so no extractor will ever re-say it
 - value: string
-- written by: user, today through `ingest --tag` — said at arrival, on
-  every file the run records; the claim's source is `user`, because
-  the human asserts and the walk is only the pen
+- written by: user, through `ingest --tag` — said at arrival, on every
+  file the run records — and `annotate --tag`, said later on named
+  files; the claim's source is `user` either way, because the human
+  asserts and the command is only the pen
+
+### user:comment
+
+- meaning: a remark the user attached to the content, in their own
+  words. Remarks accrete — a second one stands beside the first, and
+  who said what when is the claim history's answer
+- value: string
+- written by: user, through `annotate --comment`
 
 ### exif:…
 
