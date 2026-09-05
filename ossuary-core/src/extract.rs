@@ -269,6 +269,7 @@ mod tests {
             archive.log(),
             [&file],
             "atlas.example.net",
+            &[],
             &crate::Excludes::none(),
             None,
         )

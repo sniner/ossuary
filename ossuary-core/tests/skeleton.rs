@@ -137,6 +137,7 @@ fn the_skeleton_walks_from_disk() {
         &log,
         [&tree],
         "atlas.example.net",
+        &[],
         &ossuary_core::Excludes::none(),
         None,
     )

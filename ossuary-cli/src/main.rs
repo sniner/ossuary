@@ -65,6 +65,12 @@ enum Command {
         #[arg(value_name = "PATH", required = true)]
         paths: Vec<PathBuf>,
 
+        /// The user's own word on the batch, as a user:tag claim on
+        /// every file this run records; may be repeated. Files an
+        /// earlier run already recorded sit out — --full reaches them
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+
         /// Look at every file anew, remembered or not
         #[arg(long)]
         full: bool,
@@ -258,7 +264,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let quiet = cli.quiet;
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
-        Command::Ingest { paths, full } => ingest(&cli.archive, &paths, full, quiet),
+        Command::Ingest { paths, tags, full } => ingest(&cli.archive, &paths, &tags, full, quiet),
         Command::Extract {
             name,
             subjects,
@@ -359,7 +365,18 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
-fn ingest(root: &Path, paths: &[PathBuf], full: bool, quiet: bool) -> Result<ExitCode> {
+fn ingest(
+    root: &Path,
+    paths: &[PathBuf],
+    tags: &[String],
+    full: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
+    if let Some(empty) = tags.iter().find(|tag| tag.trim().is_empty()) {
+        return Err(anyhow!(
+            "{empty:?} is not a tag — a tag says something; give it a word or leave it off"
+        ));
+    }
     let archive = open(root)?;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
@@ -382,6 +399,7 @@ fn ingest(root: &Path, paths: &[PathBuf], full: bool, quiet: bool) -> Result<Exi
         archive.log(),
         paths,
         &host,
+        tags,
         archive.config().excludes(),
         memory.as_ref(),
     )?;
@@ -394,10 +412,19 @@ fn ingest(root: &Path, paths: &[PathBuf], full: bool, quiet: bool) -> Result<Exi
         ));
     }
     if run.unchanged > 0 {
-        verdict.push(format!(
-            "{} unchanged since the last run and left in peace",
-            run.unchanged
-        ));
+        verdict.push(if tags.is_empty() {
+            format!(
+                "{} unchanged since the last run and left in peace",
+                run.unchanged
+            )
+        } else {
+            // A tag rides only on what the run records; saying so here
+            // beats a tree that looks tagged and is not.
+            format!(
+                "{} unchanged since the last run and left in peace, untagged — --full tags them too",
+                run.unchanged
+            )
+        });
     }
     if run.excluded > 0 {
         verdict.push(format!(

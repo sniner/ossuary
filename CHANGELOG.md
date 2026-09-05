@@ -31,9 +31,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Every regular file goes
   into the content store, seven day-one claims per new blob into the log — a blob met again gets
   its sighting only, and every place and name it sat under goes on the record; the mtime is
-  recorded at the precision the filesystem observed it. A repeated run remembers what
+  recorded at the precision the filesystem observed it. `--tag TAG` (repeatable) says the
+  user's own word at arrival: a `user:tag` claim under the source `user` on every file the run
+  records. A repeated run remembers what
   it already observed (in `cache/`) and leaves unchanged files in peace: not read, not hashed,
-  no claims; `--full` looks at everything anew
+  no claims — tags among them, and the verdict says so; `--full` looks at everything anew
 - **`ossuary seal`** closes the open segment; its claims become part of the sealed log. The open
   segment also closes itself once it grows to 1 MiB — a few thousand claims — no matter which
   command was writing; the command remains for sealing on demand, before a backup or right away

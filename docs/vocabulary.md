@@ -160,9 +160,12 @@ first real need.
 
 ### user:tag
 
-- meaning: a label the user put on the content
+- meaning: a label the user put on the content — their own word, not
+  derivable from the bytes, so no extractor will ever re-say it
 - value: string
-- written by: user
+- written by: user, today through `ingest --tag` — said at arrival, on
+  every file the run records; the claim's source is `user`, because
+  the human asserts and the walk is only the pen
 
 ### exif:…
 

@@ -80,6 +80,14 @@ pub struct Ingested {
 /// `host` is who this machine says it is — an FQDN where there is one; the
 /// caller knows, this crate does not ask around.
 ///
+/// `tags` are the caller's own word on the batch: each becomes a
+/// `user:tag` claim under the source `user` — the human asserts, the
+/// walk is only the pen — on every file this run records, sightings of
+/// known bytes included. A file the memory skips gets no claims at all,
+/// tags among them: the memory knows no digest, and a claim never comes
+/// from a cache. Tagging what an earlier run already recorded means
+/// observing anew — `memory: None`.
+///
 /// `excludes` is the archive's word on what never goes in — usually
 /// [`Config::excludes`](crate::Config::excludes). What they match is
 /// counted in [`Ingested::excluded`] and otherwise left in peace: an
@@ -105,6 +113,7 @@ pub fn ingest<I>(
     log: &Log,
     roots: I,
     host: &str,
+    tags: &[String],
     excludes: &Excludes,
     memory: Option<&IngestMemory>,
 ) -> Result<Ingested>
@@ -113,6 +122,7 @@ where
     I::Item: AsRef<Path>,
 {
     let source = Source::parse("ingest")?;
+    let word = Source::parse("user")?;
     let mut result = Ingested {
         run: Uuid::new_v4().to_string(),
         stored: 0,
@@ -189,7 +199,7 @@ where
             result.unchanged += 1;
             continue;
         }
-        match take(content, log, &path, host, &result.run, &source) {
+        match take(content, log, &path, host, &result.run, &source, tags, &word) {
             Ok((status, claims)) => {
                 if status.is_new() {
                     result.stored += 1;
@@ -241,7 +251,12 @@ fn observe(memory: &IngestMemory, host: &str, path: &Path) -> Result<Observation
     }
 }
 
-/// One file: bytes into the store, facts into the log.
+/// One file: bytes into the store, facts into the log — and the
+/// caller's tags beside them, under their own source.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one run's context, spelled out — a context struct would only rename the eight"
+)]
 fn take(
     content: &Store,
     log: &Log,
@@ -249,6 +264,8 @@ fn take(
     host: &str,
     run: &str,
     source: &Source,
+    tags: &[String],
+    word: &Source,
 ) -> Result<(Status, usize)> {
     let bytes = fs::read(path).map_err(|source| Error::Io {
         context: "reading".to_string(),
@@ -287,6 +304,11 @@ fn take(
     }
     claims.push(fact(&subject, "prov:host", json!(host), &time, source)?);
     claims.push(fact(&subject, "prov:run", json!(run), &time, source)?);
+    // The user's word rides along on the sighting, under the user's own
+    // source — the walk is only the pen.
+    for tag in tags {
+        claims.push(fact(&subject, "user:tag", json!(tag), &time, word)?);
+    }
     // Size and kind describe the content, not the sighting: the log has
     // them from the blob's first day, and they never say anything new.
     if status.is_new() {
@@ -582,7 +604,16 @@ mod tests {
         )
         .unwrap();
 
-        let result = ingest(&content, &log, [&tree], "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.stored, 2);
         assert_eq!(result.known, 0);
@@ -626,6 +657,80 @@ mod tests {
     }
 
     #[test]
+    fn tags_ride_on_what_the_run_records_and_only_that() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("photo.jpg"), b"hello world").unwrap();
+        let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
+        let tags = ["holiday".to_string(), "beach".to_string()];
+
+        ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &tags,
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+
+        let tagged: Vec<Claim> = log
+            .head()
+            .unwrap()
+            .into_iter()
+            .filter(|claim| claim.attribute().as_str() == "user:tag")
+            .collect();
+        assert_eq!(tagged.len(), 2, "one claim per tag");
+        assert!(
+            tagged.iter().all(|claim| claim.source().as_str() == "user"),
+            "the human asserts, the walk is only the pen"
+        );
+
+        // The same tree again: the memory skips it whole, tags included.
+        let again = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &["latergreat".to_string()],
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+        assert_eq!(again.unchanged, 1);
+        assert_eq!(
+            again.claims, 0,
+            "a skipped file gets no claims, tags among them"
+        );
+
+        // Known bytes at a new place: the sighting is recorded, and the
+        // tag rides on it.
+        fs::write(tree.join("copy.jpg"), b"hello world").unwrap();
+        ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &["copies".to_string()],
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+        let copies = log
+            .head()
+            .unwrap()
+            .iter()
+            .filter(|claim| {
+                claim.attribute().as_str() == "user:tag" && claim.value() == Some(&json!("copies"))
+            })
+            .count();
+        assert_eq!(copies, 1, "a sighting of known bytes carries the tag");
+    }
+
+    #[test]
     fn known_bytes_still_get_their_provenance() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
@@ -634,7 +739,16 @@ mod tests {
         fs::write(tree.join("first.txt"), b"hello world").unwrap();
         fs::write(tree.join("second.txt"), b"hello world").unwrap();
 
-        let result = ingest(&content, &log, [&tree], "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
@@ -661,7 +775,16 @@ mod tests {
         fs::write(tree.join("real.txt"), b"content").unwrap();
         std::os::unix::fs::symlink(tree.join("real.txt"), tree.join("alias.txt")).unwrap();
 
-        let result = ingest(&content, &log, [&tree], "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.stored, 1, "the file, not its alias");
         assert!(result.failed.is_empty());
@@ -680,6 +803,7 @@ mod tests {
             &log,
             [tree.join("sub").join("..")],
             "atlas.example.net",
+            &[],
             &none(),
             None,
         )
@@ -717,6 +841,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &excludes,
             None,
         )
@@ -746,6 +871,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &excludes,
             None,
         )
@@ -774,6 +900,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &excludes,
             None,
         )
@@ -793,7 +920,16 @@ mod tests {
         let file = dir.path().join("solo.txt");
         fs::write(&file, b"hello world").unwrap();
 
-        let result = ingest(&content, &log, [&file], "atlas.example.net", &none(), None).unwrap();
+        let result = ingest(
+            &content,
+            &log,
+            [&file],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(result.stored, 1, "a file is not a tree, and goes in");
         assert_eq!(result.claims, 7);
@@ -856,7 +992,16 @@ mod tests {
             .set_modified(mtime)
             .unwrap();
 
-        ingest(&content, &log, [&file], "atlas.example.net", &none(), None).unwrap();
+        ingest(
+            &content,
+            &log,
+            [&file],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
 
         let value = log
             .head()
@@ -886,6 +1031,7 @@ mod tests {
             &log,
             [&file],
             "atlas.example.net",
+            &[],
             &excludes,
             None,
         )
@@ -913,6 +1059,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &none(),
             Some(&memory),
         )
@@ -928,6 +1075,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &none(),
             Some(&memory),
         )
@@ -953,6 +1101,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &none(),
             Some(&memory),
         )
@@ -965,6 +1114,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &none(),
             Some(&memory),
         )
@@ -989,6 +1139,7 @@ mod tests {
             &log,
             [&tree],
             "atlas.example.net",
+            &[],
             &none(),
             Some(&memory),
         )
@@ -998,6 +1149,7 @@ mod tests {
             &log,
             [&tree],
             "rhea.example.net",
+            &[],
             &none(),
             Some(&memory),
         )
@@ -1023,6 +1175,7 @@ mod tests {
             &log,
             [&tree, &single, &gone],
             "atlas.example.net",
+            &[],
             &none(),
             None,
         )
@@ -1059,6 +1212,7 @@ mod tests {
             &log,
             [dir.path().join("no-such-tree")],
             "atlas",
+            &[],
             &none(),
             None,
         )
