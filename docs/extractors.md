@@ -24,37 +24,66 @@ small programs, each reading one family of formats. An extractor:
 
 ## Identify
 
-Called as `ossuary-extract-<name> --identify`, an extractor answers
-with one line of JSON on stdout and exits 0:
+Called as `ossuary-extract-<name> --identify`, an extractor answers on
+stdout and exits 0 — one line of JSON per contract it offers, most
+programs offering exactly one:
 
 ```json
 {"ossuary-extractor": 1, "source": "extractor:mail/0.1.0", "mimes": ["message/rfc822"], "derives": true}
 ```
 
-- `ossuary-extractor` — the protocol version this extractor speaks. A
-  reader that does not know the number refuses instead of guessing.
-- `source` — the extractor's identity, in the claim format's source
+A program may carry several contracts — separately named, separately
+versioned, separately receipted capabilities, like an archive reader
+that can inventory and can unpack:
+
+```json
+{"ossuary-extractor": 1, "contract": "list", "source": "extractor:packed-list/0.1.0", "mimes": ["application/zip"]}
+{"ossuary-extractor": 1, "contract": "unpack", "source": "extractor:packed-unpack/0.1.0", "mimes": ["application/zip"], "derives": true}
+```
+
+- `ossuary-extractor` — the protocol version this extractor speaks,
+  said on every line. A reader that does not know the number refuses
+  instead of guessing.
+- `contract` — the contract's name, in the same grammar as the part
+  after `ossuary-extract-`: lowercase `a-z`, `0-9`, `-`. A single-line
+  answer may leave it out — the program of one trade, spoken to
+  exactly as an extractor always was. Several lines must each name
+  theirs, no name twice.
+- `source` — the contract's identity, in the claim format's source
   grammar: `extractor:name/version`. Every claim it causes carries this
   source, and the receipt under it is what keeps a file from being
   examined twice — so a new version, being a new source, examines
-  everything again. That is intended: a new version may see more.
-- `mimes` — the exact MIME types it reads, as `file:mime` spells them.
-  No patterns; name each one.
-- `derives` — `true` when the extractor writes derived files — an
+  everything again. That is intended: a new version may see more. Each
+  contract has a source of its own: to the worklist and the record,
+  that several live in one binary is invisible.
+- `mimes` — the exact MIME types this contract reads, as `file:mime`
+  spells them. No patterns; name each one.
+- `derives` — `true` when this contract writes derived files — an
   unpacked attachment, extracted text, a thumbnail — and so needs a
-  directory to put them in. Left out, it means `false`: spoken to
-  exactly as an extractor always was, no directory involved.
+  directory to put them in. Left out, it means `false`.
+
+A contract is cut by what is receipted together, not by format count:
+one text contract reading three kinds of document is one contract, and
+a new format there is a version bump, not a new contract.
 
 ## Examination
 
 For each file, the extractor is called with the file's bytes on
-stdin — the content itself, whatever form the store keeps it in — and,
-when its identify line said `derives`, with one argument: the path of a
-fresh, empty directory for the files it makes. Where that directory
-lies is the orchestrator's business; the extractor uses the path it was
-given and nothing else. It reads stdin to its end *before* writing
-anything, then answers with zero or more lines, one JSON object each,
-in three shapes:
+stdin — the content itself, whatever form the store keeps it in. A
+contract that was announced by name is named back: the contract's name
+comes as the first argument, so the program knows which of its trades
+is meant. When the contract's identify line said `derives`, the next
+argument is the path of a fresh, empty directory for the files it
+makes; where that directory lies is the orchestrator's business, and
+the extractor uses the path it was given and nothing else. Both stay
+testable by hand:
+
+    ossuary-extract-exif < photo.jpg
+    ossuary-extract-packed unpack /tmp/out < bundle.zip
+
+The extractor reads stdin to its end *before* writing anything, then
+answers with zero or more lines, one JSON object each, in three
+shapes:
 
 ```json
 {"attribute": "mail:subject", "value": "Re: the plan"}
@@ -89,8 +118,12 @@ whatever was written to the directory is thrown away, nothing taken in.
 
 ## What the orchestrator does with it
 
-`ossuary extract <name>` funnels everything through the archive's own
-grammar: it stamps each finding with the moment and the identify line's
+`ossuary extract <name>` runs every contract the program announces,
+one after the other, each over its own worklist and onto its own
+receipts; `ossuary extract <name>:<contract>` runs one of them, and
+the same spelling holds in the archive's own list in config.toml —
+which is how "inventory the archives, never unpack them" stands as
+policy. Everything is funneled through the archive's own grammar: it stamps each finding with the moment and the identify line's
 source, findings without `file` with the examined file's subject, and
 findings with `file` with the derived file's — the extractor cannot
 know that name, since it is the bytes' own. Each announced file goes

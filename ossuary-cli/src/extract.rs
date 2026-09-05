@@ -10,6 +10,12 @@
 //! files do not add up, fails whole — nothing half-recorded, no
 //! receipt, offered again next run. The directory is the orchestrator's
 //! to make and to sweep, announced files and workspace leavings alike.
+//!
+//! One program may carry several contracts — separately named,
+//! separately sourced, separately receipted capabilities, announced as
+//! one identify line each. Downstream nothing changes: the worklist and
+//! the record see only sources. `extract NAME` runs every contract the
+//! program announces; `extract NAME:CONTRACT` runs one.
 
 use std::collections::HashSet;
 use std::io::{Read, Write as _};
@@ -22,13 +28,18 @@ use ossuary_core::{
 };
 use serde::Deserialize;
 
-/// The answer to `--identify`. Unknown keys are tolerated on purpose:
-/// the protocol number is the gate, and it is checked before anything
-/// else is believed.
+/// One line of the answer to `--identify` — one contract. Unknown keys
+/// are tolerated on purpose: the protocol number is the gate, and it is
+/// checked before anything else is believed.
 #[derive(Deserialize)]
 struct Identity {
     #[serde(rename = "ossuary-extractor")]
     protocol: u32,
+    /// The contract's name, when the program carries several — passed
+    /// back as the first argument so the program knows which of its
+    /// trades is meant. A single-line answer may leave it out.
+    #[serde(default)]
+    contract: Option<String>,
     source: String,
     mimes: Vec<String>,
     #[serde(default)]
@@ -77,15 +88,8 @@ pub fn extract(
     let mut runs = Vec::new();
     let mut broken = 0usize;
     for listed in &names {
-        let program = format!("ossuary-extract-{listed}");
-        let identified = identify(&program)
-            .and_then(|identity| Ok((Source::parse(&identity.source)?, identity)));
-        match identified {
-            Ok((source, identity)) => runs.push(Run {
-                program,
-                identity,
-                source,
-            }),
+        match prepare(listed) {
+            Ok(mut prepared) => runs.append(&mut prepared),
             Err(error) => {
                 if name.is_some() {
                     return Err(error);
@@ -97,10 +101,16 @@ pub fn extract(
     }
     if temp_dir.is_some() && !runs.is_empty() && !runs.iter().any(|run| run.identity.derives) {
         return Err(match runs.as_slice() {
-            [only] => anyhow!(
-                "`{}` hands no files back — --temp-dir is where derived files would wait; run this without it",
-                only.program
-            ),
+            [only] => match &only.identity.contract {
+                Some(contract) => anyhow!(
+                    "`{}` hands no files back under its {contract} contract — --temp-dir is where derived files would wait; run this without it",
+                    only.program
+                ),
+                None => anyhow!(
+                    "`{}` hands no files back — --temp-dir is where derived files would wait; run this without it",
+                    only.program
+                ),
+            },
             _ => anyhow!(
                 "no files would come back from this run — --temp-dir is where derived files wait; run this without it"
             ),
@@ -194,11 +204,82 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
 /// real archive proves the need.
 const MAX_ROUNDS: usize = 32;
 
-/// One extractor, identified and ready to run.
+/// One extractor's contract, identified and ready to run.
 struct Run {
     program: String,
     identity: Identity,
     source: Source,
+}
+
+/// A listed entry, taken at its word: `NAME` is the program — every
+/// contract it announces runs — and `NAME:CONTRACT` is one contract of
+/// it. The same spelling serves the command line and the archive's own
+/// list, so "inventory the archives, never unpack them" can stand in
+/// config.toml as `"packed:list"`.
+fn parse_listed(listed: &str) -> Result<(&str, Option<&str>)> {
+    let (name, contract) = match listed.split_once(':') {
+        Some((name, contract)) => (name, Some(contract)),
+        None => (listed, None),
+    };
+    if !well_formed(name) || contract.is_some_and(|contract| !well_formed(contract)) {
+        return Err(anyhow!(
+            "{listed:?} does not name an extractor — the form is NAME or NAME:CONTRACT, lowercase letters, digits and dashes"
+        ));
+    }
+    Ok((name, contract))
+}
+
+/// The grammar an extractor's name and a contract's name share: what
+/// fits after `ossuary-extract-` fits behind the colon.
+fn well_formed(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// One listed entry into its runs: the program identified, its
+/// contracts selected — all of them, or the one named after the colon.
+fn prepare(listed: &str) -> Result<Vec<Run>> {
+    let (name, wanted) = parse_listed(listed)?;
+    let program = format!("ossuary-extract-{name}");
+    let identities = identify(&program)?;
+    let selected = match wanted {
+        None => identities,
+        Some(wanted) => {
+            let offered: Vec<String> = identities
+                .iter()
+                .filter_map(|identity| identity.contract.clone())
+                .collect();
+            match identities
+                .into_iter()
+                .find(|identity| identity.contract.as_deref() == Some(wanted))
+            {
+                Some(identity) => vec![identity],
+                None if offered.is_empty() => {
+                    return Err(anyhow!(
+                        "`{program}` names no contracts — run it whole, as `ossuary extract {name}`"
+                    ));
+                }
+                None => {
+                    return Err(anyhow!(
+                        "`{program}` offers no contract named {wanted:?} — it offers {}",
+                        offered.join(", ")
+                    ));
+                }
+            }
+        }
+    };
+    selected
+        .into_iter()
+        .map(|identity| {
+            Ok(Run {
+                program: program.clone(),
+                source: Source::parse(&identity.source)?,
+                identity,
+            })
+        })
+        .collect()
 }
 
 /// What one `ossuary extract` call carries through all its rounds.
@@ -317,6 +398,7 @@ fn run_one(
         match examine(
             archive,
             program,
+            identity.contract.as_deref(),
             &subject,
             source,
             &invocation.run_id,
@@ -428,8 +510,11 @@ fn named(
     Ok((examinees, already))
 }
 
-/// Who is this extractor, and what does it read?
-fn identify(program: &str) -> Result<Identity> {
+/// Who is this extractor, and what does it read? One line per
+/// contract: a single line may leave the contract unnamed — the
+/// program of one trade, spoken to as it always was — while several
+/// lines must each name theirs, no name twice.
+fn identify(program: &str) -> Result<Vec<Identity>> {
     let output = Command::new(program)
         .arg("--identify")
         .output()
@@ -454,17 +539,54 @@ fn identify(program: &str) -> Result<Identity> {
             "`{program} --identify` failed — an extractor answers it before anything is examined"
         ));
     }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let identity: Identity = serde_json::from_str(line.trim()).with_context(|| {
-        format!("`{program} --identify` did not answer in the extractor protocol")
-    })?;
-    if identity.protocol != 1 {
+    read_identities(program, &String::from_utf8_lossy(&output.stdout))
+}
+
+/// The identify answer read whole and held to its rules — apart from
+/// running the program, the whole of `identify`.
+fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
+    let mut identities = Vec::new();
+    for line in answer.lines().filter(|line| !line.trim().is_empty()) {
+        let identity: Identity = serde_json::from_str(line.trim()).with_context(|| {
+            format!("`{program} --identify` did not answer in the extractor protocol")
+        })?;
+        if identity.protocol != 1 {
+            return Err(anyhow!(
+                "`{program}` speaks extractor protocol {}, this build speaks 1 — upgrade ossuary",
+                identity.protocol
+            ));
+        }
+        if let Some(contract) = &identity.contract
+            && !well_formed(contract)
+        {
+            return Err(anyhow!(
+                "`{program}` announces a contract named {contract:?} — a contract's name is lowercase letters, digits and dashes"
+            ));
+        }
+        identities.push(identity);
+    }
+    if identities.is_empty() {
         return Err(anyhow!(
-            "`{program}` speaks extractor protocol {}, this build speaks 1 — upgrade ossuary",
-            identity.protocol
+            "`{program} --identify` answered nothing — an extractor announces itself in at least one line"
         ));
     }
-    Ok(identity)
+    if identities.len() > 1 {
+        let mut seen = HashSet::new();
+        for identity in &identities {
+            let Some(contract) = &identity.contract else {
+                return Err(anyhow!(
+                    "`{program}` announces {} contracts and one line names none — with several, every line says which it is",
+                    identities.len()
+                ));
+            };
+            if !seen.insert(contract.as_str()) {
+                return Err(anyhow!(
+                    "`{program}` announces the contract {contract:?} twice"
+                ));
+            }
+        }
+    }
+    Ok(identities)
 }
 
 /// Where the per-file scratch directories go: what --temp-dir named, or
@@ -487,10 +609,13 @@ fn scratch_parent(archive: &Archive, temp_dir: Option<&Path>) -> Result<PathBuf>
     })
 }
 
-/// One file through the extractor and onto the record.
+/// One file through the extractor and onto the record. A contract that
+/// was announced by name is named back: first argument the contract,
+/// then — when this contract derives — the directory.
 fn examine(
     archive: &Archive,
     program: &str,
+    contract: Option<&str>,
     subject: &Subject,
     source: &Source,
     run_id: &str,
@@ -538,6 +663,9 @@ fn examine(
         })
         .transpose()?;
     let mut command = Command::new(program);
+    if let Some(contract) = contract {
+        command.arg(contract);
+    }
     if let Some(scratch) = &scratch {
         command.arg(scratch.path());
     }
@@ -732,5 +860,64 @@ mod tests {
     #[test]
     fn without_a_directory_an_announcement_is_a_breach() {
         assert!(harvest("x", "{\"file\":\"a.txt\",\"mime\":\"text/plain\"}", None).is_err());
+    }
+
+    #[test]
+    fn a_listed_entry_splits_into_program_and_contract() {
+        assert_eq!(parse_listed("packed").unwrap(), ("packed", None));
+        assert_eq!(
+            parse_listed("packed:list").unwrap(),
+            ("packed", Some("list"))
+        );
+        for wrong in ["", ":", "packed:", ":list", "Packed:list", "a:b:c", "a b"] {
+            assert!(parse_listed(wrong).is_err(), "{wrong:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn one_identify_line_may_stay_nameless_but_several_may_not() {
+        let single =
+            r#"{"ossuary-extractor":1,"source":"extractor:exif/0.1.0","mimes":["image/jpeg"]}"#;
+        let read = read_identities("x", single).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].contract, None);
+
+        let pair = concat!(
+            r#"{"ossuary-extractor":1,"contract":"list","source":"extractor:packed-list/0.1.0","mimes":["application/zip"]}"#,
+            "\n",
+            r#"{"ossuary-extractor":1,"contract":"unpack","source":"extractor:packed-unpack/0.1.0","mimes":["application/zip"],"derives":true}"#,
+            "\n",
+        );
+        let read = read_identities("x", pair).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].contract.as_deref(), Some("list"));
+        assert!(read[1].derives);
+
+        let refused = [
+            // Nothing at all.
+            "",
+            // Two lines, one nameless.
+            concat!(
+                r#"{"ossuary-extractor":1,"contract":"list","source":"extractor:a/1","mimes":[]}"#,
+                "\n",
+                r#"{"ossuary-extractor":1,"source":"extractor:b/1","mimes":[]}"#,
+            ),
+            // The same contract twice.
+            concat!(
+                r#"{"ossuary-extractor":1,"contract":"list","source":"extractor:a/1","mimes":[]}"#,
+                "\n",
+                r#"{"ossuary-extractor":1,"contract":"list","source":"extractor:b/1","mimes":[]}"#,
+            ),
+            // A contract outside the name grammar.
+            r#"{"ossuary-extractor":1,"contract":"List","source":"extractor:a/1","mimes":[]}"#,
+            // A protocol this build does not speak.
+            r#"{"ossuary-extractor":2,"contract":"list","source":"extractor:a/1","mimes":[]}"#,
+        ];
+        for answer in refused {
+            assert!(
+                read_identities("x", answer).is_err(),
+                "{answer:?} should be refused"
+            );
+        }
     }
 }

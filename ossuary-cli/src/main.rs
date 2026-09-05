@@ -70,8 +70,13 @@ enum Command {
     /// Run extractors over every file they have not yet examined
     ///
     /// NAME names the program: `ossuary extract exif` runs
-    /// `ossuary-extract-exif` from PATH. Without a NAME, the archive's
-    /// own list runs — `[extract] run` in its config.toml — in rounds,
+    /// `ossuary-extract-exif` from PATH, and every contract it offers —
+    /// some programs carry several, each examined and receipted on its
+    /// own. NAME:CONTRACT runs one of them: `ossuary extract
+    /// packed:list` inventories archives without unpacking them, and
+    /// the same spelling holds in the config's list. Without a NAME,
+    /// the archive's own list runs — `[extract] run` in its
+    /// config.toml — in rounds,
     /// until a whole round finds nothing left: what one extractor
     /// hands back, the next round offers to whichever extractor reads
     /// it, so one call drives a chain like mail, attachment, text to
@@ -91,8 +96,9 @@ enum Command {
     /// handed over even when its kind is not one the extractor reads,
     /// because naming is more deliberate than a pattern.
     Extract {
-        /// Which extractor to run: the part after `ossuary-extract-`.
-        /// Left out, the archive's own list runs
+        /// Which extractor to run: the part after `ossuary-extract-`,
+        /// with `:CONTRACT` picking one contract of a program that
+        /// offers several. Left out, the archive's own list runs
         #[arg(value_name = "NAME")]
         name: Option<String>,
 
