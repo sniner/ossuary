@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, Subject, Value};
 
+mod export;
 mod extract;
 mod output;
 
@@ -278,6 +279,40 @@ enum Command {
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// Files back out of the archive, laid down as they arrived
+    ///
+    /// Each ID is one file — the hex name that find, id and get speak,
+    /// or a beginning of it — or a whole run: the id an ingest or
+    /// extract verdict names, spelled out whole; both kinds mix in one
+    /// call. A run brings every file it recorded, each under the path
+    /// the run saw it at, kept relative: the folders all the exported
+    /// files share are trimmed away, and what lay side by side lands
+    /// side by side. When one export reaches into unrelated places,
+    /// each place becomes its own folder under PATH, named after the
+    /// deepest folder its files shared. A file named alone lands under
+    /// the name of its newest recorded path; a derived file, which
+    /// never sat anywhere, under its recorded name. The same bytes
+    /// recorded at several places come out as several files, the way
+    /// they stood. Nothing standing at PATH is ever overwritten: a
+    /// file already there with the same bytes counts as done, one with
+    /// different bytes is a named failure and stays untouched.
+    /// --dry-run answers what would land where and writes nothing.
+    /// `ossuary find --id … | xargs ossuary export PATH` exports a
+    /// found set.
+    Export {
+        /// The directory the files land in; made if it is not there
+        #[arg(value_name = "PATH")]
+        destination: PathBuf,
+
+        /// A file — by hex name or a beginning of it — or a whole run,
+        /// by its dashed id; several may be named, mixed freely
+        #[arg(value_name = "ID", required = true)]
+        ids: Vec<String>,
+
+        /// Say what would land where, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -333,6 +368,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => find(&cli.archive, &terms, &missing, id, json, quiet),
         Command::Id { path } => id(&cli.archive, &path, quiet),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref(), quiet),
+        Command::Export {
+            destination,
+            ids,
+            dry_run,
+        } => export::export(&cli.archive, &destination, &ids, dry_run, quiet),
     }
 }
 
@@ -340,7 +380,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 /// means the reader closed the pipe — it has all it wanted, so the
 /// answer ends there and the run counts as a success, the way `get`
 /// has always read it. Any other write trouble is real.
-fn say(out: &mut impl std::io::Write, line: &str) -> Result<bool> {
+pub(crate) fn say(out: &mut impl std::io::Write, line: &str) -> Result<bool> {
     match writeln!(out, "{line}") {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
@@ -825,7 +865,7 @@ fn gather(
 /// eight characters at least, that names only this file on the record —
 /// it grows by itself as the archive does, and resolves wherever a
 /// SUBJECT is taken.
-fn shorten(index: &Index, subject: &Subject) -> Result<String> {
+pub(crate) fn shorten(index: &Index, subject: &Subject) -> Result<String> {
     let hex = subject.as_str();
     let mut length = 8;
     while length < hex.len() {

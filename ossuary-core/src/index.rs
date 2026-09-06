@@ -30,6 +30,7 @@ use rusqlite::{Connection, params};
 
 use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
+use crate::export::Placement;
 use crate::log::Log;
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
@@ -529,6 +530,131 @@ impl Index {
         )?;
         let found = statement.exists(rusqlite::params![subject.as_str(), source.as_str()])?;
         Ok(found)
+    }
+
+    /// Every sighting one run put on the record, with where it saw the
+    /// file: one pair per place, the same content seen at two places in
+    /// one run answering twice. An ingest sighting answers with its
+    /// `file:path`; a sighting without one — a derived file never sat
+    /// anywhere — answers with its `file:name`, every name the sighting
+    /// spelled.
+    ///
+    /// This asks the history, not the standing set: which place belongs
+    /// to which run is told by the claims written together — a sighting
+    /// speaks with one moment and one source — and a run's record stays
+    /// its record, later retractions notwithstanding.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than
+    /// sworn away.
+    pub fn run_sightings(&self, run: &str) -> Result<Vec<(Subject, Placement)>> {
+        let quoted = Value::String(run.to_string()).to_string();
+        let mut statement = self.connection.prepare(
+            "SELECT subject, attribute, value, time, source FROM claims
+             WHERE retract = 0
+               AND attribute IN ('prov:run', 'file:path', 'file:name')
+               AND subject IN (SELECT subject FROM claims
+                                WHERE attribute = 'prov:run' AND value = ?1
+                                  AND retract = 0)
+             ORDER BY subject, time, source",
+        )?;
+        let rows = statement.query_map(params![quoted], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut claims = Vec::new();
+        for row in rows {
+            claims.push(row?);
+        }
+        let mut sightings: Vec<(Subject, Placement)> = Vec::new();
+        let mut start = 0;
+        while start < claims.len() {
+            // One sighting: the rows sharing subject, moment and source.
+            let key = |row: &(String, String, String, String, String)| {
+                (row.0.clone(), row.3.clone(), row.4.clone())
+            };
+            let opening = key(&claims[start]);
+            let mut end = start;
+            while end < claims.len() && key(&claims[end]) == opening {
+                end += 1;
+            }
+            let group = &claims[start..end];
+            start = end;
+            if !group
+                .iter()
+                .any(|(_, attribute, value, _, _)| attribute == "prov:run" && *value == quoted)
+            {
+                continue;
+            }
+            let subject = Subject::parse(&group[0].0)?;
+            let spelled = |wanted: &str| -> Vec<String> {
+                group
+                    .iter()
+                    .filter(|(_, attribute, _, _, _)| attribute == wanted)
+                    .filter_map(|(_, _, value, _, _)| {
+                        serde_json::from_str::<Value>(value)
+                            .ok()
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect()
+            };
+            let paths = spelled("file:path");
+            if paths.is_empty() {
+                for name in spelled("file:name") {
+                    sightings.push((subject.clone(), Placement::Name(name)));
+                }
+            } else {
+                for path in paths {
+                    sightings.push((subject.clone(), Placement::Path(path)));
+                }
+            }
+        }
+        Ok(sightings)
+    }
+
+    /// The newest standing value of one attribute on one subject: the
+    /// standing set, narrowed to the value asserted last in log order.
+    /// One reader policy among the possible ones, offered where a single
+    /// value is wanted; the set itself, and [`values`](Index::values),
+    /// remain the answer of record.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; a value that does not parse back
+    /// cannot happen for rows a fold wrote, but is propagated rather
+    /// than sworn away.
+    pub fn newest(&self, subject: &Subject, attribute: &Attribute) -> Result<Option<Value>> {
+        let mut statement = self.connection.prepare(
+            // The about ordering, reversed whole: the last word among
+            // the claims whose value still stands.
+            "SELECT c.value FROM claims c LEFT JOIN segments s ON c.segment = s.digest
+             WHERE c.subject = ?1 AND c.attribute = ?2 AND c.retract = 0
+               AND c.value IN (SELECT value FROM standing
+                                WHERE subject = ?1 AND attribute = ?2)
+             ORDER BY c.time DESC,
+                      c.segment = 'head' DESC,
+                      s.first DESC,
+                      s.digest DESC,
+                      c.position DESC
+             LIMIT 1",
+        )?;
+        let mut rows = statement.query(params![subject.as_str(), attribute.as_str()])?;
+        match rows.next()? {
+            Some(row) => {
+                let value: String = row.get(0)?;
+                Ok(Some(serde_json::from_str(&value)?))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Every subject the log speaks about — as of the last
@@ -1293,6 +1419,196 @@ mod tests {
             index.find(&[term("user:tag", "..")], &[]).unwrap(),
             [subject()],
             "the presence question, --missing turned around"
+        );
+    }
+
+    /// One sighting the way ingest writes one: place, name and run
+    /// with one moment and one source.
+    fn sight(log: &Log, subject: &Subject, run: &str, path: &str, time: &str) {
+        let time = Timestamp::parse(time).unwrap();
+        let source = Source::parse("ingest").unwrap();
+        let name = path.rsplit('/').next().unwrap();
+        for (attribute, value) in [
+            ("file:path", json!(path)),
+            ("file:name", json!(name)),
+            ("prov:run", json!(run)),
+        ] {
+            log.append(
+                &Claim::assert(
+                    subject.clone(),
+                    Attribute::parse(attribute).unwrap(),
+                    value,
+                    time.clone(),
+                    source.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn run_sightings_answer_with_the_runs_own_places() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let moved =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        sight(
+            &log,
+            &subject(),
+            "run-a",
+            "/home/s/a.txt",
+            "2026-09-01T10:00:00Z",
+        );
+        sight(
+            &log,
+            &moved,
+            "run-a",
+            "/home/s/b.txt",
+            "2026-09-01T10:00:01Z",
+        );
+        // The same content, met again by a later run somewhere else: its
+        // path belongs to that run, not to run-a.
+        sight(
+            &log,
+            &subject(),
+            "run-b",
+            "/mnt/nas/a.txt",
+            "2026-09-02T10:00:00Z",
+        );
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.run_sightings("run-a").unwrap(),
+            [
+                (moved, Placement::Path("/home/s/b.txt".to_string())),
+                (subject(), Placement::Path("/home/s/a.txt".to_string())),
+            ],
+            "each run answers with the places it recorded itself, by subject"
+        );
+        assert_eq!(
+            index.run_sightings("run-b").unwrap(),
+            [(subject(), Placement::Path("/mnt/nas/a.txt".to_string()))]
+        );
+        assert_eq!(index.run_sightings("run-c").unwrap(), []);
+    }
+
+    #[test]
+    fn one_run_seeing_two_places_answers_twice() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        sight(
+            &log,
+            &subject(),
+            "run-a",
+            "/home/s/a.txt",
+            "2026-09-01T10:00:00Z",
+        );
+        sight(
+            &log,
+            &subject(),
+            "run-a",
+            "/home/s/copy/a.txt",
+            "2026-09-01T10:00:02Z",
+        );
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.run_sightings("run-a").unwrap(),
+            [
+                (subject(), Placement::Path("/home/s/a.txt".to_string())),
+                (subject(), Placement::Path("/home/s/copy/a.txt".to_string())),
+            ],
+            "the run's reality had two, and the record says so"
+        );
+    }
+
+    #[test]
+    fn a_sighting_without_a_path_answers_with_its_names() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let time = Timestamp::parse("2026-09-01T10:00:00Z").unwrap();
+        let source = Source::parse("extractor:mail/0.1.0").unwrap();
+        for (attribute, value) in [
+            ("file:name", json!("invoice.pdf")),
+            ("prov:run", json!("run-x")),
+        ] {
+            log.append(
+                &Claim::assert(
+                    subject(),
+                    Attribute::parse(attribute).unwrap(),
+                    value,
+                    time.clone(),
+                    source.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.run_sightings("run-x").unwrap(),
+            [(subject(), Placement::Name("invoice.pdf".to_string()))],
+            "a derived file never sat anywhere, so its name answers"
+        );
+    }
+
+    #[test]
+    fn newest_narrows_the_standing_set_to_the_last_word() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let paths = Attribute::parse("file:path").unwrap();
+        sight(
+            &log,
+            &subject(),
+            "run-a",
+            "/old/place/a.txt",
+            "2026-09-01T10:00:00Z",
+        );
+        log.seal().unwrap().unwrap();
+        sight(
+            &log,
+            &subject(),
+            "run-b",
+            "/new/place/a.txt",
+            "2026-09-02T10:00:00Z",
+        );
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.newest(&subject(), &paths).unwrap(),
+            Some(json!("/new/place/a.txt")),
+            "the value asserted last, sealed or not"
+        );
+
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                paths.clone(),
+                json!("/new/place/a.txt"),
+                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.newest(&subject(), &paths).unwrap(),
+            Some(json!("/old/place/a.txt")),
+            "a retracted value no longer counts, however lately it was said"
+        );
+        assert_eq!(
+            index
+                .newest(&subject(), &Attribute::parse("exif:model").unwrap())
+                .unwrap(),
+            None
         );
     }
 

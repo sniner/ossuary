@@ -80,6 +80,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   answers and errors still come
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short
   digests resolve against the content and derived stores, from six characters up
+- **`ossuary export PATH ID…`** lays files back out of the archive, as they arrived: each ID is
+  one file (its hex name, or a beginning) or a whole run — the id an ingest or extract verdict
+  names, spelled out whole — and both kinds mix in one call. A run's files land under the paths
+  that run recorded, kept relative: the folders all the exported files share are trimmed away,
+  unrelated places become sibling folders under PATH, and what lay side by side lands side by
+  side. A file named alone lands under the name of its newest recorded path; a derived file,
+  which never sat anywhere, flat under its recorded name; the same bytes recorded at two places
+  come out as two files, the way they stood. Nothing standing at PATH is ever overwritten — a
+  file already there with the same bytes counts as done, different bytes are a named failure —
+  and `--dry-run` answers what would land where without writing anything.
+  `ossuary find --id … | xargs ossuary export DIR` exports a found set
 - **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
   only read — and says whether the archive already holds it; works before an ingest as well as
   after
