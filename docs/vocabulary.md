@@ -43,8 +43,8 @@ narrows by source — "everything from `extractor:exif/` older than
 3.0" — at query time. The log keeps every word ever said, which is the
 point.
 
-**Links are values.** A relation's value is a full subject
-(`sha256:…`). There is no `link:` namespace — namespaces sort by meaning
+**Links are values.** A relation's value is a full subject — the bare
+hex, full length. There is no `link:` namespace — namespaces sort by meaning
 domain, and a value's type is vocabulary metadata, declared here. There
 is no `derive:generated-by` either: every claim already names its maker,
 in its source.
@@ -67,9 +67,8 @@ in its source.
   `ossuary-extract-packed` reads it — the inventory standing on the
   archive, an entry's place on the unpacked file
 
-Subject prefixes other than hash algorithms stay reserved (see the
-format paper); vocabulary for subjects that are not blobs waits for the
-first real need.
+Vocabulary for subjects that are not blobs waits for the first real
+need.
 
 ## Attributes
 

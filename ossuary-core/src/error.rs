@@ -8,7 +8,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// The subject is not `<algorithm>:<hex>` with a full-length digest.
+    /// The subject is not a full-length digest in hex.
     #[error("not a subject: {0:?}")]
     Subject(String),
 

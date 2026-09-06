@@ -404,7 +404,7 @@ mod tests {
     }
 
     fn subject(fill: &str) -> Subject {
-        Subject::parse(&format!("sha256:{}", fill.repeat(32))).unwrap()
+        Subject::parse(&fill.repeat(32)).unwrap()
     }
 
     fn claim(fill: &str, attribute: &str, time: &str) -> Claim {
@@ -503,7 +503,7 @@ mod tests {
         // only together with VERSION.
         let line = manifest().to_line();
         assert!(
-            line.contains("\"bits\":\"1000880044082384\""),
+            line.contains("\"bits\":\"00003842082784c0\""),
             "the probe pipeline drifted: {line}"
         );
     }

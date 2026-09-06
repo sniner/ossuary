@@ -80,7 +80,7 @@ mod tests {
     }
 
     fn subject(fill: char) -> Subject {
-        Subject::parse(&format!("sha256:{}", String::from(fill).repeat(64))).unwrap()
+        Subject::parse(&String::from(fill).repeat(64)).unwrap()
     }
 
     #[test]

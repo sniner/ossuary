@@ -110,8 +110,8 @@ enum Command {
         #[arg(value_name = "NAME")]
         name: Option<String>,
 
-        /// Only these files, named the way the archive names them —
-        /// sha256:… or a beginning of it — instead of everything that
+        /// Only these files, named the way the archive names them — the
+        /// hex name or a beginning of it — instead of everything that
         /// waits
         #[arg(value_name = "SUBJECT")]
         subjects: Vec<String>,
@@ -139,7 +139,7 @@ enum Command {
     /// this is the door for later — one file, or a found set:
     /// `ossuary find --id … | xargs ossuary annotate --tag …`
     Annotate {
-        /// The files to annotate: as `sha256:…`, or a beginning of it —
+        /// The files to annotate: by hex name, or a beginning of it —
         /// enough of it to name only one file; several may be named
         #[arg(value_name = "SUBJECT", required = true)]
         subjects: Vec<String>,
@@ -156,8 +156,8 @@ enum Command {
     Seal,
     /// Everything on the record about one file, oldest first
     About {
-        /// The file's name in the archive: as `sha256:…`, or the bare hex —
-        /// a beginning of it is enough while it names only one file
+        /// The file's name in the archive: its hex digest — a beginning
+        /// of it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
@@ -181,8 +181,8 @@ enum Command {
     /// choosing. When nothing stands, nothing comes and the exit code
     /// says 1, so a script can test for it.
     Value {
-        /// The file's name in the archive: as `sha256:…`, or the bare hex —
-        /// a beginning of it is enough while it names only one file
+        /// The file's name in the archive: its hex digest — a beginning
+        /// of it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
@@ -263,8 +263,8 @@ enum Command {
     /// The bytes come out exactly as they went in, to stdout, ready to
     /// pipe; --output writes them to a file instead.
     Get {
-        /// The file's name in the archive: as `sha256:…`, or the bare hex —
-        /// a beginning of it is enough while it names only one file
+        /// The file's name in the archive: its hex digest — a beginning
+        /// of it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
@@ -509,7 +509,7 @@ fn annotate(
     // third of five must not leave the first two half-annotated.
     let mut subjects: Vec<Subject> = Vec::new();
     for name in given {
-        let Some(subject) = resolve(&archive, &index, name)? else {
+        let Some(subject) = resolve(&index, name)? else {
             return Err(anyhow!(
                 "nothing on the record begins with {name:?} — nothing was written"
             ));
@@ -550,29 +550,19 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
     Ok(())
 }
 
-/// The subject as the log spells it, from whatever the user typed: the
-/// archive's own algorithm filled in — the bare hex is enough — and a
-/// beginning resolved against the index, like a short commit hash.
-/// `None` when nothing on the record begins that way; a beginning that
-/// names several files is refused.
-pub(crate) fn resolve(archive: &Archive, index: &Index, given: &str) -> Result<Option<Subject>> {
-    let algorithm = archive.content().algorithm().name();
-    let bare = given
-        .strip_prefix(algorithm)
-        .and_then(|rest| rest.strip_prefix(':'))
-        .unwrap_or(given);
-    if bare.contains(':') {
-        // Another algorithm's name in full: taken at its word.
-        return Ok(Some(Subject::parse(bare)?));
-    }
-    if let Ok(whole) = Subject::parse(&format!("{algorithm}:{bare}")) {
+/// The subject as the log spells it, from whatever the user typed: a whole
+/// name taken as it is, a beginning resolved against the index, like a
+/// short commit hash. `None` when nothing on the record begins that way; a
+/// beginning that names several files is refused.
+pub(crate) fn resolve(index: &Index, given: &str) -> Result<Option<Subject>> {
+    if let Ok(whole) = Subject::parse(given) {
         return Ok(Some(whole));
     }
-    match index.matching(algorithm, bare)?.as_slice() {
+    match index.matching(given)?.as_slice() {
         [] => Ok(None),
         [one] => Ok(Some(one.clone())),
         many => Err(anyhow!(
-            "{bare:?} begins {} names — give more of it to name only one",
+            "{given:?} begins {} names — give more of it to name only one",
             many.len()
         )),
     }
@@ -601,7 +591,7 @@ fn about(
         }
     };
 
-    let Some(subject) = resolve(&archive, &index, subject)? else {
+    let Some(subject) = resolve(&index, subject)? else {
         calm(format!("nothing on the record begins with {subject:?}"));
         return Ok(ExitCode::SUCCESS);
     };
@@ -652,7 +642,7 @@ fn value(root: &Path, subject: &str, attribute: &str, json: bool, quiet: bool) -
     // Nothing standing is a testable answer, not a broken run: the exit
     // code carries it, and the sentence is for a reader wondering why
     // nothing came.
-    let Some(subject) = resolve(&archive, &index, subject)? else {
+    let Some(subject) = resolve(&index, subject)? else {
         if !quiet {
             eprintln!("nothing on the record begins with {subject:?}");
         }
@@ -767,7 +757,7 @@ fn find(
             if json {
                 output::json_line(subject.as_str(), &shown)
             } else {
-                output::match_line(&shorten(&archive, &index, subject)?, &shown)
+                output::match_line(&shorten(&index, subject)?, &shown)
             }
         };
         if !say(&mut out, &line)? {
@@ -828,21 +818,14 @@ fn gather(
 /// The name shortened the way git shortens a hash: the shortest prefix,
 /// eight characters at least, that names only this file on the record —
 /// it grows by itself as the archive does, and resolves wherever a
-/// SUBJECT is taken. A name in another algorithm's grammar stays whole.
-fn shorten(archive: &Archive, index: &Index, subject: &Subject) -> Result<String> {
-    let algorithm = archive.content().algorithm().name();
-    let Some(hex) = subject
-        .as_str()
-        .strip_prefix(algorithm)
-        .and_then(|rest| rest.strip_prefix(':'))
-    else {
-        return Ok(subject.as_str().to_string());
-    };
+/// SUBJECT is taken.
+fn shorten(index: &Index, subject: &Subject) -> Result<String> {
+    let hex = subject.as_str();
     let mut length = 8;
     while length < hex.len() {
         // The prefix matches at least this subject itself; matching only
         // one name means naming it alone.
-        if index.matching(algorithm, &hex[..length])?.len() == 1 {
+        if index.matching(&hex[..length])?.len() == 1 {
             return Ok(hex[..length].to_string());
         }
         length += 1;
@@ -855,7 +838,7 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
     let algorithm = archive.content().algorithm();
     let bytes = std::fs::read(path).with_context(|| format!("{}: reading", path.display()))?;
     let digest = algorithm.hash(&bytes);
-    println!("{}:{digest}", algorithm.name());
+    println!("{digest}");
     // The name is the answer and stays alone on stdout; whether the
     // archive holds the bytes is the run talking. Held means held —
     // taken in or derived, either store counts.
@@ -881,19 +864,10 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
     // door, so the stores' own answer is the one that counts. content/
     // and derived/ share one name space: the same bytes may sit in both,
     // so a beginning must be unique across their union, not in each.
-    let algorithm = content.algorithm().name();
-    let bare = subject
-        .strip_prefix(algorithm)
-        .and_then(|rest| rest.strip_prefix(':'))
-        .unwrap_or(subject);
-    if bare.contains(':') {
-        return Err(anyhow!(
-            "content here answers to {algorithm}:… — for what the log knows about {subject}, ask `ossuary about`"
-        ));
-    }
+    let bare = subject;
     if !bare.bytes().all(|byte| byte.is_ascii_hexdigit()) || bare.is_empty() {
         return Err(anyhow!(
-            "{bare:?} is not hex — a file's name is {algorithm}:… or the bare hex of it"
+            "{bare:?} is not hex — a file's name is the hex of its digest, the way `ossuary find` shows it"
         ));
     }
     let needed = content.min_prefix().max(derived.min_prefix());
@@ -922,7 +896,7 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
         Some(reader) => reader,
         None => derived
             .reader(&digest)?
-            .ok_or_else(|| anyhow!("{algorithm}:{digest}: gone between naming and reading"))?,
+            .ok_or_else(|| anyhow!("{digest}: gone between naming and reading"))?,
     };
 
     if let Some(path) = output {
@@ -930,16 +904,12 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
             std::fs::File::create(path).with_context(|| format!("{}: writing", path.display()))?;
         let bytes = std::io::copy(&mut reader, &mut file)
             .with_context(|| format!("{}: writing", path.display()))?;
-        println!(
-            "{}: {} byte(s) of {algorithm}:{digest}",
-            path.display(),
-            bytes
-        );
+        println!("{}: {} byte(s) of {digest}", path.display(), bytes);
     } else {
         // A beginning was given; say what it named, where the bytes
         // will not drown it out.
         if bare.len() < digest.as_str().len() && !quiet {
-            eprintln!("{algorithm}:{digest}");
+            eprintln!("{digest}");
         }
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();

@@ -277,11 +277,7 @@ fn take(
         .and_then(modified_value);
 
     let (status, entry) = content.add(&bytes)?;
-    let subject = Subject::parse(&format!(
-        "{}:{}",
-        content.algorithm().name(),
-        entry.digest()
-    ))?;
+    let subject = Subject::parse(entry.digest().as_str())?;
     let time = Timestamp::now();
 
     let mut claims = vec![fact(
@@ -584,7 +580,7 @@ mod tests {
     }
 
     fn hello_subject() -> String {
-        format!("sha256:{}", Algorithm::Sha256.hash(b"hello world"))
+        Algorithm::Sha256.hash(b"hello world").to_string()
     }
 
     fn none() -> Excludes {

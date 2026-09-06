@@ -115,12 +115,9 @@ mod tests {
     fn a_json_line_carries_the_whole_sets() {
         let shown = vec![(attribute("file:name"), vec![json!("a.pdf"), json!("b.pdf")])];
         assert_eq!(
-            json_line("sha256:9f2a", &shown),
-            "{\"subject\":\"sha256:9f2a\",\"file:name\":[\"a.pdf\",\"b.pdf\"]}"
+            json_line("9f2a", &shown),
+            "{\"subject\":\"9f2a\",\"file:name\":[\"a.pdf\",\"b.pdf\"]}"
         );
-        assert_eq!(
-            json_line("sha256:9f2a", &[]),
-            "{\"subject\":\"sha256:9f2a\"}"
-        );
+        assert_eq!(json_line("9f2a", &[]), "{\"subject\":\"9f2a\"}");
     }
 }

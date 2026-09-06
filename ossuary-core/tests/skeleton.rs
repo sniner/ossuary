@@ -33,8 +33,7 @@ fn claim(attribute: &str, value: Value, time: &str, source: &str) -> Claim {
 }
 
 fn photo() -> Subject {
-    Subject::parse("sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
-        .unwrap()
+    Subject::parse("9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e").unwrap()
 }
 
 #[test]
@@ -147,17 +146,13 @@ fn the_skeleton_walks_from_disk() {
     // Sealed, folded, asked.
     log.seal().unwrap().unwrap();
     index.fold(&log).unwrap();
-    let subject = Subject::parse(&format!(
-        "sha256:{}",
-        immure::Algorithm::Sha256.hash(b"hello world")
-    ))
-    .unwrap();
+    let subject = Subject::parse(immure::Algorithm::Sha256.hash(b"hello world").as_str()).unwrap();
     let answer = index.about(&subject).unwrap();
     assert_eq!(answer.len(), 7, "the seven day-one facts");
 
     // And the subject leads back to the bytes: the archive holds content
     // and everything known about it, and either finds the other.
-    let digest = immure::Digest::parse(subject.hex()).unwrap();
+    let digest = immure::Digest::parse(subject.as_str()).unwrap();
     assert_eq!(
         content.read(&digest).unwrap().as_deref(),
         Some(&b"hello world"[..])

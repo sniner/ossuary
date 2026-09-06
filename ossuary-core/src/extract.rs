@@ -175,7 +175,7 @@ fn take(
         source: io,
     })?;
     let digest = derived.algorithm().hash(&bytes);
-    let subject = Subject::parse(&format!("{}:{}", derived.algorithm().name(), digest))?;
+    let subject = Subject::parse(digest.as_str())?;
     // The digest does not say which store it belongs to — so the writer
     // may choose, and content/ wins: bytes once taken in need no
     // second-class copy, the claims below stand either way. This asks
@@ -274,12 +274,7 @@ mod tests {
             None,
         )
         .unwrap();
-        Subject::parse(&format!(
-            "{}:{}",
-            archive.content().algorithm().name(),
-            archive.content().algorithm().hash(bytes)
-        ))
-        .unwrap()
+        Subject::parse(archive.content().algorithm().hash(bytes).as_str()).unwrap()
     }
 
     fn source() -> Source {
@@ -425,19 +420,14 @@ mod tests {
             "size, kind, name, origin, run and the finding on the derived file, then the receipt"
         );
 
-        let pdf = Subject::parse(&format!(
-            "{}:{}",
-            archive.content().algorithm().name(),
-            archive.content().algorithm().hash(b"%PDF-1.7")
-        ))
-        .unwrap();
+        let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF-1.7").as_str()).unwrap();
         assert_eq!(
-            archive.derived().matching(pdf.hex()).unwrap().len(),
+            archive.derived().matching(pdf.as_str()).unwrap().len(),
             1,
             "the bytes stand in the derived store"
         );
         assert!(
-            archive.content().matching(pdf.hex()).unwrap().is_empty(),
+            archive.content().matching(pdf.as_str()).unwrap().is_empty(),
             "and never beside the originals — that is the topology's promise"
         );
         index.fold(archive.log()).unwrap();
@@ -526,12 +516,7 @@ mod tests {
             "kind, name, origin and run again — the size is a fact of the content, said once"
         );
 
-        let pdf = Subject::parse(&format!(
-            "{}:{}",
-            archive.content().algorithm().name(),
-            archive.content().algorithm().hash(b"%PDF")
-        ))
-        .unwrap();
+        let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF").as_str()).unwrap();
         index.fold(archive.log()).unwrap();
         let names = index
             .values(&pdf, &Attribute::parse("file:name").unwrap())
@@ -581,7 +566,11 @@ mod tests {
             "the archive held these bytes — as an original"
         );
         assert!(
-            archive.derived().matching(saved.hex()).unwrap().is_empty(),
+            archive
+                .derived()
+                .matching(saved.as_str())
+                .unwrap()
+                .is_empty(),
             "an original needs no second-class copy"
         );
         index.fold(archive.log()).unwrap();

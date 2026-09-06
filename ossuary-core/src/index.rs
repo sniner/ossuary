@@ -32,10 +32,9 @@ use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::log::Log;
 
-/// The cache schema's generation, kept in `PRAGMA user_version`: bumped
-/// whenever the tables change shape, so an older file is recognised and
-/// emptied instead of half-understood.
-const SCHEMA: i64 = 2;
+/// The cache schema's generation, kept in `PRAGMA user_version`: a file
+/// carrying any other number is emptied instead of half-understood.
+const SCHEMA: i64 = 1;
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -546,8 +545,8 @@ impl Index {
     /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
     /// happen for rows a fold wrote, but are propagated rather than sworn
     /// away.
-    pub fn matching(&self, algorithm: &str, hex: &str) -> Result<Vec<Subject>> {
-        let low = format!("{algorithm}:{}", hex.to_ascii_lowercase());
+    pub fn matching(&self, hex: &str) -> Result<Vec<Subject>> {
+        let low = hex.to_ascii_lowercase();
         // The half-open range [low, low + "g") holds every digest that
         // begins with `low` and nothing else: 'g' is the first character
         // past the hex digits, and a range beats LIKE here — it uses the
@@ -668,8 +667,7 @@ mod tests {
     }
 
     fn subject() -> Subject {
-        Subject::parse("sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
-            .unwrap()
+        Subject::parse("9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e").unwrap()
     }
 
     fn tag(tag: &str, time: &str) -> Claim {
@@ -772,10 +770,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        let near = Subject::parse(
-            "sha256:9f2ac41edd00000000000000000000000000000000000000000000000000ffff",
-        )
-        .unwrap();
+        let near =
+            Subject::parse("9f2ac41edd00000000000000000000000000000000000000000000000000ffff")
+                .unwrap();
         log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
         log.seal().unwrap().unwrap();
         log.append(&tag_about(near.clone(), "beach", "2026-09-01T21:14:04Z"))
@@ -783,18 +780,18 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.matching("sha256", "9f2ac41e").unwrap(),
+            index.matching("9f2ac41e").unwrap(),
             [subject(), near.clone()],
             "sealed or still in the head, each once, sorted"
         );
         assert_eq!(
-            index.matching("sha256", "9F2AC41ED").unwrap(),
+            index.matching("9F2AC41ED").unwrap(),
             [near],
             "case falls away, the way subjects themselves are spelled"
         );
-        assert_eq!(index.matching("sha256", "ffff").unwrap(), Vec::new());
+        assert_eq!(index.matching("ffff").unwrap(), Vec::new());
         assert_eq!(
-            index.matching("sha256", "9f2ac41e%").unwrap(),
+            index.matching("9f2ac41e%").unwrap(),
             Vec::new(),
             "a wildcard is a character, and no digest contains one"
         );
@@ -955,10 +952,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        let other = Subject::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+        let other =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         log.append(&say(
             &subject(),
             "file:mime",
@@ -1070,10 +1066,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        let bare = Subject::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+        let bare =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         log.append(&say(
             &subject(),
             "file:mime",
@@ -1116,18 +1111,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        let august = Subject::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let december = Subject::parse(
-            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-        )
-        .unwrap();
-        let both = Subject::parse(
-            "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        )
-        .unwrap();
+        let august =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let december =
+            Subject::parse("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
+        let both =
+            Subject::parse("3333333333333333333333333333333333333333333333333333333333333333")
+                .unwrap();
         let when = "2026-09-01T00:00:00Z";
         log.append(&say(
             &august,
@@ -1193,10 +1185,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        let worded = Subject::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+        let worded =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         log.append(&say(
             &subject(),
             "user:rating",
@@ -1285,10 +1276,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        let bare = Subject::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+        let bare =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
         log.append(&say(
             &bare,
@@ -1344,10 +1334,9 @@ mod tests {
         let mut index = index_in(&dir);
         index.fold(&log).unwrap();
 
-        let unknown = Subject::parse(
-            "sha256:00000000000000000000000000000000000000000000000000000000000000ff",
-        )
-        .unwrap();
+        let unknown =
+            Subject::parse("00000000000000000000000000000000000000000000000000000000000000ff")
+                .unwrap();
         assert_eq!(index.about(&unknown).unwrap(), Vec::new());
     }
 }

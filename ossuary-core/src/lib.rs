@@ -7,7 +7,7 @@
 //! ```
 //! use ossuary_core::Claim;
 //!
-//! let line = r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}"#;
+//! let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}"#;
 //! let claim = Claim::parse_line(line)?;
 //!
 //! assert_eq!(claim.attribute().as_str(), "user:tag");

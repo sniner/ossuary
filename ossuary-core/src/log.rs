@@ -365,10 +365,8 @@ mod tests {
 
     fn claim(tag: &str, time: &str) -> Claim {
         Claim::assert(
-            Subject::parse(
-                "sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e",
-            )
-            .unwrap(),
+            Subject::parse("9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
+                .unwrap(),
             Attribute::parse("user:tag").unwrap(),
             json!(tag),
             Timestamp::parse(time).unwrap(),

@@ -26,31 +26,24 @@ use crate::error::{Error, Result};
 /// they already have, `serde_json::json!` included.
 pub use serde_json::Value;
 
-/// The hash algorithms a subject may name, with the length of their digests
-/// in hex characters. The list mirrors immure's; the prefix in the subject is
-/// what lets digests of several algorithms stand in one log.
-const ALGORITHMS: [(&str, usize); 4] = [
-    ("sha256", 64),
-    ("sha384", 96),
-    ("sha512", 128),
-    ("blake3", 64),
-];
+/// The digest lengths a subject may have, in hex characters — those of the
+/// algorithms immure speaks: 32, 48 or 64 bytes.
+const DIGEST_LENGTHS: [usize; 3] = [64, 96, 128];
 
-/// What a claim is about: `<algorithm>:<hex>`, a blob named by its content
-/// with the algorithm that made the name spelled out in front.
+/// What a claim is about: a blob, named by its content — the digest as bare
+/// lowercase hex, nothing around it.
 ///
-/// The prefix is what survives a hash migration — subjects of several
-/// algorithms stand in one log without a rule outside the line — and it
-/// reserves the namespace: prefixes that are not hash algorithms are held
-/// back for subjects that are not blobs.
+/// Which algorithm made the name is never the line's business: an archive
+/// names all content with the one algorithm its `FORMAT` mark declares, for
+/// good. The path in the store is this same hex, sharded.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct Subject(String);
 
 impl Subject {
-    /// Validate `<algorithm>:<hex>`.
+    /// Validate a bare digest.
     ///
-    /// The digest must be full length for its algorithm — a subject names one
+    /// The hex must be the full length of a digest — a subject names one
     /// blob, not the beginning of one. Uppercase hex is normalised to
     /// lowercase, the way blobs are named on disk.
     ///
@@ -58,36 +51,16 @@ impl Subject {
     ///
     /// [`Error::Subject`] for anything else.
     pub fn parse(s: &str) -> Result<Self> {
-        let error = || Error::Subject(s.to_string());
-        let (algorithm, hex) = s.split_once(':').ok_or_else(error)?;
-        let (_, len) = ALGORITHMS
-            .iter()
-            .find(|(name, _)| *name == algorithm)
-            .ok_or_else(error)?;
-        if hex.len() != *len || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(error());
+        if !DIGEST_LENGTHS.contains(&s.len()) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Subject(s.to_string()));
         }
-        Ok(Subject(format!("{algorithm}:{}", hex.to_ascii_lowercase())))
+        Ok(Subject(s.to_ascii_lowercase()))
     }
 
-    /// The whole subject, prefix included.
+    /// The digest as lowercase hex — the whole name.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// The algorithm prefix, without the colon.
-    #[must_use]
-    pub fn algorithm(&self) -> &str {
-        self.0
-            .split_once(':')
-            .map_or("", |(algorithm, _)| algorithm)
-    }
-
-    /// The digest as lowercase hex, without the prefix.
-    #[must_use]
-    pub fn hex(&self) -> &str {
-        self.0.split_once(':').map_or("", |(_, hex)| hex)
     }
 }
 
@@ -570,8 +543,7 @@ mod tests {
     use super::*;
 
     fn subject() -> Subject {
-        Subject::parse("sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
-            .unwrap()
+        Subject::parse("9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e").unwrap()
     }
 
     fn time() -> Timestamp {
@@ -591,7 +563,7 @@ mod tests {
 
         assert_eq!(
             claim.to_line(),
-            r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
             "a number is a number, and an assertion carries no retract key"
         );
     }
@@ -600,11 +572,11 @@ mod tests {
     fn the_example_lines_of_the_format_document_round_trip() {
         // The examples from docs/format.md, with the digest at full length.
         let lines = [
-            r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
-            r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
-            r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7"}"#,
-            r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}"#,
-            r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","retract":true}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","retract":true}"#,
         ];
         for line in lines {
             let claim = Claim::parse_line(line).unwrap();
@@ -659,24 +631,24 @@ mod tests {
             Err(Error::NullValue)
         ));
 
-        let line = r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user"}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user"}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::NullValue)));
 
         // `"value": null` on a retraction is not the same line as no value
         // key: it must be refused, not read as a whole-attribute retraction.
-        let line = r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user","retract":true}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user","retract":true}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::NullValue)));
     }
 
     #[test]
     fn an_assertion_without_a_value_says_nothing() {
-        let line = r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","time":"2026-09-01T21:14:03Z","source":"user"}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","time":"2026-09-01T21:14:03Z","source":"user"}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::ValueRequired)));
     }
 
     #[test]
     fn the_field_set_is_closed() {
-        let line = r#"{"subject":"sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-09-01T21:14:03Z","source":"user","confidence":0.9}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-09-01T21:14:03Z","source":"user","confidence":0.9}"#;
         assert!(
             matches!(Claim::parse_line(line), Err(Error::Line(_))),
             "a seventh field is a new generation, not an extension point"
@@ -684,23 +656,24 @@ mod tests {
     }
 
     #[test]
-    fn subjects_carry_their_algorithm_and_normalise_their_hex() {
-        let subject = Subject::parse(
-            "sha256:9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E",
-        )
-        .unwrap();
-        assert_eq!(subject.algorithm(), "sha256");
+    fn subjects_are_bare_full_length_digests_in_lowercase() {
+        let subject =
+            Subject::parse("9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E9F2AC41E")
+                .unwrap();
         assert_eq!(
-            subject.hex(),
+            subject.as_str(),
             "9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e"
+        );
+        assert!(
+            Subject::parse(&"9f".repeat(48)).is_ok() && Subject::parse(&"9f".repeat(64)).is_ok(),
+            "the longer digests immure speaks are names too"
         );
 
         for wrong in [
-            "9f2ac41e",                                                                  // no prefix
-            "md5:9f2ac41e",    // not an algorithm of the family
-            "sha256:9f2ac41e", // not full length
-            "sha256:9z2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e", // not hex
-            "blake3:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e00", // too long
+            "9f2ac41e",                                                           // not full length
+            "9z2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e",   // not hex
+            "9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e00", // not a digest's length
+            "sha256:9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e", // an algorithm's name is no part of a subject
         ] {
             assert!(
                 matches!(Subject::parse(wrong), Err(Error::Subject(_))),

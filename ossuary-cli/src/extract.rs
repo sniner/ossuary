@@ -385,7 +385,7 @@ fn run_one(
         waiting
     } else {
         let examinees;
-        (examinees, already) = named(archive, index, subjects, source, invocation.full)?;
+        (examinees, already) = named(index, subjects, source, invocation.full)?;
         if !quiet && !examinees.is_empty() {
             eprintln!("{} file(s) named for {source}", examinees.len());
         }
@@ -486,7 +486,6 @@ impl Tally {
 /// examinees and how many sat out; an unknown name refuses the whole run
 /// before any work is done.
 fn named(
-    archive: &Archive,
     index: &Index,
     subjects: &[String],
     source: &Source,
@@ -495,7 +494,7 @@ fn named(
     let mut examinees: Vec<Subject> = Vec::new();
     let mut already = 0usize;
     for given in subjects {
-        let Some(subject) = crate::resolve(archive, index, given)? else {
+        let Some(subject) = crate::resolve(index, given)? else {
             return Err(anyhow!("nothing on the record begins with {given:?}"));
         };
         if examinees.contains(&subject) {
@@ -622,21 +621,11 @@ fn examine(
     scratch_parent: Option<&Path>,
 ) -> Result<Examined> {
     let content = archive.content();
-    let (algorithm, hex) = subject
-        .as_str()
-        .split_once(':')
-        .expect("a subject carries its algorithm");
-    if algorithm != content.algorithm().name() {
-        return Err(anyhow!(
-            "named by {algorithm}, this archive answers to {} — nothing to hand over",
-            content.algorithm().name()
-        ));
-    }
     // The examinee may be an original or itself derived — the PDF out of
     // a mail: content/ is asked first, derived/ second.
-    let (store, digest) = match content.matching(hex)?.as_slice() {
+    let (store, digest) = match content.matching(subject.as_str())?.as_slice() {
         [one] => (content, one.clone()),
-        _ => match archive.derived().matching(hex)?.as_slice() {
+        _ => match archive.derived().matching(subject.as_str())?.as_slice() {
             [one] => (archive.derived(), one.clone()),
             _ => {
                 return Err(anyhow!(

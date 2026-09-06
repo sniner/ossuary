@@ -476,7 +476,7 @@ mod tests {
         let root = dir.path().join("archive");
         let archive = Archive::create(&root, Algorithm::Sha256).unwrap();
         let claim = Claim::assert(
-            Subject::parse(&format!("sha256:{}", "9f".repeat(32))).unwrap(),
+            Subject::parse(&"9f".repeat(32)).unwrap(),
             Attribute::parse("user:tag").unwrap(),
             serde_json::json!("holiday"),
             Timestamp::parse("2026-09-04T12:00:00Z").unwrap(),

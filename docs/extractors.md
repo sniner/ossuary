@@ -143,7 +143,7 @@ again. After everything else it writes one receipt, on the examined
 file:
 
 ```json
-{"subject": "sha256:9f2a…", "attribute": "prov:examined", "value": true, "time": "…", "source": "extractor:mail/0.1.0"}
+{"subject": "9f2a…", "attribute": "prov:examined", "value": true, "time": "…", "source": "extractor:mail/0.1.0"}
 ```
 
 The receipt is the memory. What still needs examining is a fold over
