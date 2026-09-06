@@ -1055,9 +1055,7 @@ dependencies = [
  "clap",
  "gethostname",
  "ossuary-core",
- "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]

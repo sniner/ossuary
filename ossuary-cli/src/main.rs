@@ -631,22 +631,11 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
     Ok(())
 }
 
-/// The subject as the log spells it, from whatever the user typed: a whole
-/// name taken as it is, a beginning resolved against the index, like a
-/// short commit hash. `None` when nothing on the record begins that way; a
-/// beginning that names several files is refused.
+/// The subject as the log spells it, from whatever the user typed —
+/// [`Index::resolve`], with a refused beginning worded by core. `None`
+/// when nothing on the record begins that way.
 pub(crate) fn resolve(index: &Index, given: &str) -> Result<Option<Subject>> {
-    if let Ok(whole) = Subject::parse(given) {
-        return Ok(Some(whole));
-    }
-    match index.matching(given)?.as_slice() {
-        [] => Ok(None),
-        [one] => Ok(Some(one.clone())),
-        many => Err(anyhow!(
-            "{given:?} begins {} names — give more of it to name only one",
-            many.len()
-        )),
-    }
+    Ok(index.resolve(given)?)
 }
 
 fn about(

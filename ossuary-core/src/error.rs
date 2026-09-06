@@ -126,4 +126,20 @@ pub enum Error {
     /// what the mark exists to prevent. A newer build reads it.
     #[error("archive generation {0} is not one this build understands")]
     ArchiveGeneration(u32),
+
+    /// A beginning that names several subjects names none of them.
+    #[error("{given:?} begins {count} names — give more of it to name only one")]
+    Ambiguous { given: String, count: usize },
+
+    /// A given name, whole or begun, that the record does not know.
+    #[error("nothing on the record begins with {0:?}")]
+    Unknown(String),
+
+    /// The extract orchestration refused: a name outside the extractor
+    /// grammar, an identify answer outside the protocol, an examination
+    /// answer that does not add up, a loop that never runs dry. The
+    /// sentence names the state and the move; no caller tells the cases
+    /// apart, so one variant carries them all.
+    #[error("{0}")]
+    Extract(String),
 }

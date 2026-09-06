@@ -654,6 +654,30 @@ impl Index {
         }
         Ok(subjects)
     }
+
+    /// The subject as the log spells it, from whatever the caller was
+    /// given: a whole name taken as it is, a beginning resolved against
+    /// [`matching`](Index::matching), like a short commit hash. `None`
+    /// when nothing on the record begins that way — whether that is calm
+    /// or a refusal is the caller's question.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Ambiguous`] on a beginning that starts several names, and
+    /// whatever [`matching`](Index::matching) can answer.
+    pub fn resolve(&self, given: &str) -> Result<Option<Subject>> {
+        if let Ok(whole) = Subject::parse(given) {
+            return Ok(Some(whole));
+        }
+        match self.matching(given)?.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(one.clone())),
+            many => Err(Error::Ambiguous {
+                given: given.to_string(),
+                count: many.len(),
+            }),
+        }
+    }
 }
 
 /// One segment's claims into the tables, in their order: every claim a

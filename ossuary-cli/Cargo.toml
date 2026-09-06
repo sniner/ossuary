@@ -17,6 +17,4 @@ anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 gethostname = "1.0.2"
 ossuary-core = { path = "../ossuary-core", version = "0.1.0" }
-serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tempfile = "3.27.0"
