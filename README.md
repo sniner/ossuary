@@ -164,7 +164,11 @@ shown on each match:
 
 ```console
 $ ossuary find file:mime=message/rfc822 mail:subject mail:from
-e9ed6104  file:mime=message/rfc822  file:mime=text/plain  mail:subject="Quarterly figures"  mail:from="Erika Muster <erika@example.org>"
+e9ed6104
+  file:mime=message/rfc822
+  file:mime=text/plain
+  mail:subject="Quarterly figures"
+  mail:from="Erika Muster <erika@example.org>"
 1 file(s)
 ```
 
@@ -176,7 +180,9 @@ is found like any other file, with its origin one term away:
 
 ```console
 $ ossuary find 'file:name=*.pdf' derive:derived-from
-b5743276  file:name=figures-q1.pdf  derive:derived-from=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
+b5743276
+  file:name=figures-q1.pdf
+  derive:derived-from=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
 1 file(s)
 ```
 
@@ -194,7 +200,9 @@ the source `user` — and a found set pipes straight into it:
 $ ossuary annotate e9ed6104 --tag taxes --comment "the missing form was in here after all"
 1 file(s) annotated, 2 claim(s) written
 $ ossuary find user:tag=taxes file:name
-e9ed6104  user:tag=taxes  file:name=2026-03-10-quarterly.eml
+e9ed6104
+  user:tag=taxes
+  file:name=2026-03-10-quarterly.eml
 1 file(s)
 $ ossuary find --id 'file:name=*.jpg' | xargs ossuary annotate --tag holiday
 ```

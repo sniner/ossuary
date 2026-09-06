@@ -53,10 +53,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in the attribute's own spelling; a value in double quotes is literal), and
   `--missing ATTRIBUTE` (or a namespace like `exif:`) asks for what a file lacks. Only standing
   values count — a retracted value no longer answers. The question is also the projection: each
-  match comes out as one line holding the file's name (shortened like a git hash, growing as the
-  archive does) and every attribute the query named, spelled as the `attribute=value` pairs a
-  query would use — a line pastes back into a refined query, quotes and all, and every standing
-  value is shown. A bare attribute among the terms is shown without filtering
+  match answers as a block — the file's name (shortened like a git hash, growing as the archive
+  does) on a line of its own, every attribute the query named indented beneath it as the
+  `attribute=value` pairs a query would use — a pair pastes back into a refined query, quotes
+  and all, and every standing value is shown. A bare attribute among the terms is shown without filtering
   (`find file:name=*.pdf file:modified`), a namespace like `exif:` shows all of it, and with
   only bare attributes every file on the record answers. `--id` answers with the full names
   alone, one per line, ready to pipe; `--json` answers one JSON object per match with the

@@ -17,23 +17,24 @@ pub fn line(claim: &Claim) -> String {
     }
 }
 
-/// One `find` match as one line: the file's short name, then every shown
-/// attribute as the `attribute=value` pair a query would spell — the
-/// answer speaks the question's own language, so a line reads back as
-/// terms. A string that could be misread — several words, a glob or
-/// range character, a quote — wears the double quotes that mean
-/// *literal* in a query, and a pasted pair finds exactly this file
-/// again. Several standing values repeat the attribute: the set, not a
-/// choice. Other types keep their JSON spelling.
-pub fn match_line(name: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
-    let mut line = name.to_string();
+/// One `find` match as one block: the file's short name on a line of
+/// its own, then every shown attribute indented beneath it, one
+/// `attribute=value` pair per line, spelled the way a query would —
+/// the answer speaks the question's own language, so a pair reads
+/// back as a term. A string that could be misread — several words, a
+/// glob or range character, a quote — wears the double quotes that
+/// mean *literal* in a query, and a pasted pair finds exactly this
+/// file again. Several standing values repeat the attribute: the set,
+/// not a choice. Other types keep their JSON spelling.
+pub fn match_block(name: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
+    let mut block = name.to_string();
     for (attribute, values) in shown {
         for value in values {
-            line.push_str("  ");
-            line.push_str(&pair(attribute, value));
+            block.push_str("\n  ");
+            block.push_str(&pair(attribute, value));
         }
     }
-    line
+    block
 }
 
 /// One `find` match as one JSON object: the full subject, then each
@@ -81,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn a_match_line_speaks_the_query_language() {
+    fn a_match_block_speaks_the_query_language() {
         let shown = vec![
             (attribute("file:mime"), vec![json!("application/pdf")]),
             (
@@ -91,12 +92,12 @@ mod tests {
             (attribute("file:size"), vec![json!(54597)]),
         ];
         assert_eq!(
-            match_line("1f95c2ab", &shown),
-            "1f95c2ab  file:mime=application/pdf  file:name=\"Rechnung 07.pdf\"  file:name=scan.pdf  file:size=54597",
-            "a plain value stands bare, one with a space wears literal quotes, a number keeps its spelling"
+            match_block("1f95c2ab", &shown),
+            "1f95c2ab\n  file:mime=application/pdf\n  file:name=\"Rechnung 07.pdf\"\n  file:name=scan.pdf\n  file:size=54597",
+            "the name a line of its own, each pair beneath it: bare when plain, literal quotes on a space, numbers as spelled"
         );
         assert_eq!(
-            match_line("1f95c2ab", &[]),
+            match_block("1f95c2ab", &[]),
             "1f95c2ab",
             "nothing shown is the name alone"
         );

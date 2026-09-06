@@ -221,10 +221,11 @@ enum Command {
     /// "which photos have no EXIF on record". Only standing values
     /// answer; what was retracted no longer counts.
     ///
-    /// Each match comes out as one line: the file's name, shortened the
-    /// way git shortens a hash, then every attribute the question
-    /// named, as the attribute=value pairs a query would spell — so a
-    /// line pastes back into a refined query, quotes and all. A bare
+    /// Each match answers as a block: the file's name on a line of its
+    /// own, shortened the way git shortens a hash, and every attribute
+    /// the question named indented beneath it, one attribute=value
+    /// pair per line, spelled the way a query would — so a pair pastes
+    /// back into a refined query, quotes and all. A bare
     /// attribute among the terms is shown without asking anything of
     /// it (`find file:name=*.pdf file:modified` shows when the PDFs
     /// changed), a namespace like `exif:` shows all of it, and asking
@@ -803,7 +804,7 @@ fn find(
             if json {
                 output::json_line(subject.as_str(), &shown)
             } else {
-                output::match_line(&shorten(&index, subject)?, &shown)
+                output::match_block(&shorten(&index, subject)?, &shown)
             }
         };
         if !say(&mut out, &line)? {
