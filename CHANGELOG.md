@@ -92,6 +92,18 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   file already there with the same bytes counts as done, different bytes are a named failure —
   and `--dry-run` answers what would land where without writing anything.
   `ossuary find --id … | xargs ossuary export DIR` exports a found set
+- **`ossuary audit`** proves the archive intact from its own files alone — the cache plays no
+  part. Every file in the content and derived stores is read back whole and its bytes re-hashed
+  against its name; every sealed segment and the open head must read back claim by claim; and
+  every file the claims speak of — as a claim's subject, or named as what a derived file came
+  from — must be held by a store, because nothing is ever deliberately removed from an archive.
+  Files held that no claim speaks of are noted, not counted as findings: an interrupted run
+  leaves such files, and the next arrival records them. The answer counts what it finds, up to a
+  handful of names spelled out right there; `--json` answers one object per finding, ready for a
+  script, and a sound archive answers an empty stream. Exits 0 when the archive is sound, 1 when
+  findings stand
+- **`--verbose`** on every command: answers in full, every name spelled out where a count would
+  stand — today `audit` is the one command with more to say
 - **`ossuary id FILE`** names a file the way the archive would — hashed from its bytes, the file
   only read — and says whether the archive already holds it; works before an ingest as well as
   after

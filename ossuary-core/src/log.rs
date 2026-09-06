@@ -297,6 +297,12 @@ impl Log {
         Ok(segments)
     }
 
+    /// The claims store itself — the audit's door to walking every
+    /// sealed segment as the store holds it, manifests left out of it.
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
     /// Read one sealed segment back: its claims, in the order recorded.
     ///
     /// # Errors

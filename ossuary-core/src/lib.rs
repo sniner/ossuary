@@ -19,6 +19,7 @@
 
 mod annotate;
 mod archive;
+mod audit;
 mod claim;
 mod config;
 mod error;
@@ -31,6 +32,7 @@ mod manifest;
 
 pub use annotate::annotate;
 pub use archive::Archive;
+pub use audit::{Audit, LogAudit, StoreAudit, audit_log, audit_store};
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 pub use config::{Config, Excludes};
 pub use error::{Error, Result};

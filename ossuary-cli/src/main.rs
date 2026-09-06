@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, Subject, Value};
 
+mod audit;
 mod export;
 mod extract;
 mod output;
@@ -34,6 +35,11 @@ struct Cli {
     /// Answers and errors only — the run keeps its narration to itself
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// Answers in full: every name spelled out where a count would
+    /// stand — audit lists what it only counted
+    #[arg(short, long, global = true)]
+    verbose: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -316,6 +322,31 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Prove the archive intact: every byte against its name, the
+    /// record against the stores
+    ///
+    /// The audit trusts nothing it cannot prove, so the cache plays no
+    /// part — every answer is derived from the archive's own files.
+    /// Three checks, run whole: every file in content/ and derived/ is
+    /// read and its bytes re-hashed, because a name must still be true
+    /// of its bytes; every sealed segment and the open head must read
+    /// back claim by claim; and every file the claims speak of — as
+    /// their subject, or named as what a derived file came from — must
+    /// be held by a store, because nothing is ever deliberately removed
+    /// from an archive and absence has no innocent reading. Files held
+    /// that no claim speaks of are noted, not counted as findings: an
+    /// interrupted run leaves such files, and the next arrival records
+    /// them. The answer counts what it finds; up to a handful of names
+    /// stands right there, --verbose spells out every one, and --json
+    /// answers one object per finding for a script. Reading the whole
+    /// archive takes the time it takes — that is the point. Exits 0
+    /// when the archive is sound, 1 when findings stand.
+    Audit {
+        /// One JSON object per finding, ready for jq — a sound archive
+        /// answers an empty stream
+        #[arg(short, long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -376,6 +407,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             ids,
             dry_run,
         } => export::export(&cli.archive, &destination, &ids, dry_run, quiet),
+        Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
     }
 }
 
