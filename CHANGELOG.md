@@ -73,6 +73,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the caller's policy. Exits 1 when nothing stands, so a script can test for it
 - **`--json`** on `about` and `value` answers in JSON lines ready for `jq`: `about --json` gives
   each claim exactly as the log spells it, `value --json` keeps the values' JSON spelling
+- **`--archive DIR`** on every command names the archive to work in; standing in it is enough,
+  and so is the environment — `OSSUARY_ARCHIVE` holds the name for a whole shell session, the
+  flag still outranking it
 - **`--quiet`** on every command keeps the run's narration off stderr — counts, progress, hints;
   answers and errors still come
 - **`ossuary get SUBJECT`** hands a file's bytes back, to stdout or `--output FILE`; short

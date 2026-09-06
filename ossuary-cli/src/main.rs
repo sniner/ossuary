@@ -20,8 +20,14 @@ mod output;
     about = "A personal archive: files kept for good, with everything known about them"
 )]
 struct Cli {
-    /// The archive to work in; standing in it is enough.
-    #[arg(long, global = true, value_name = "DIR", default_value = ".")]
+    /// The archive to work in; standing in it is enough
+    #[arg(
+        long,
+        global = true,
+        value_name = "DIR",
+        env = "OSSUARY_ARCHIVE",
+        default_value = "."
+    )]
     archive: PathBuf,
 
     /// Answers and errors only — the run keeps its narration to itself

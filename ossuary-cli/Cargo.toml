@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
-clap = { version = "4.5.51", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive", "env"] }
 gethostname = "1.0.2"
 ossuary-core = { path = "../ossuary-core", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
