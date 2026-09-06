@@ -40,10 +40,12 @@ pub(crate) fn export(
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         for placed in &plan {
+            // The name first: it holds one width, so the ragged paths
+            // share a calm left edge — the order every answer speaks.
             let line = format!(
                 "{}  {}",
-                placed.target.display(),
-                shorten(&index, &placed.subject)?
+                shorten(&index, &placed.subject)?,
+                placed.target.display()
             );
             if !say(&mut out, &line)? {
                 break;

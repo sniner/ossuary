@@ -216,11 +216,11 @@ at, kept relative — what lay side by side lands side by side:
 
 ```console
 $ ossuary export /home/john/refile --dry-run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-docs/backup.zip  e176bedf
-docs/notes.txt  719aac93
-mail/2026-03-10-quarterly.eml  e9ed6104
-photos/DSC_1042.jpg  bd84e795
-photos/DSC_1043.jpg  6ca81e7a
+e176bedf  docs/backup.zip
+719aac93  docs/notes.txt
+e9ed6104  mail/2026-03-10-quarterly.eml
+bd84e795  photos/DSC_1042.jpg
+6ca81e7a  photos/DSC_1043.jpg
 would export 5 file(s) into /home/john/refile — nothing written
 ```
 
