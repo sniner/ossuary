@@ -85,9 +85,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   names, spelled out whole — and both kinds mix in one call. A run's files land under the paths
   that run recorded, kept relative: the folders all the exported files share are trimmed away,
   unrelated places become sibling folders under PATH, and what lay side by side lands side by
-  side. A file named alone lands under the name of its newest recorded path; a derived file,
-  which never sat anywhere, flat under its recorded name; the same bytes recorded at two places
-  come out as two files, the way they stood. Nothing standing at PATH is ever overwritten — a
+  side. A file named alone lands at every place still standing on its record — no place is
+  preferred over another, and a retracted one no longer counts; a derived file, which never sat
+  anywhere, flat under its recorded names; the same bytes standing at two places come out as two
+  files, the way they stand. Nothing standing at PATH is ever overwritten — a
   file already there with the same bytes counts as done, different bytes are a named failure —
   and `--dry-run` answers what would land where without writing anything.
   `ossuary find --id … | xargs ossuary export DIR` exports a found set

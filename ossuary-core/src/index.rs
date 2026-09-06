@@ -621,42 +621,6 @@ impl Index {
         Ok(sightings)
     }
 
-    /// The newest standing value of one attribute on one subject: the
-    /// standing set, narrowed to the value asserted last in log order.
-    /// One reader policy among the possible ones, offered where a single
-    /// value is wanted; the set itself, and [`values`](Index::values),
-    /// remain the answer of record.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Index`] from `SQLite`; a value that does not parse back
-    /// cannot happen for rows a fold wrote, but is propagated rather
-    /// than sworn away.
-    pub fn newest(&self, subject: &Subject, attribute: &Attribute) -> Result<Option<Value>> {
-        let mut statement = self.connection.prepare(
-            // The about ordering, reversed whole: the last word among
-            // the claims whose value still stands.
-            "SELECT c.value FROM claims c LEFT JOIN segments s ON c.segment = s.digest
-             WHERE c.subject = ?1 AND c.attribute = ?2 AND c.retract = 0
-               AND c.value IN (SELECT value FROM standing
-                                WHERE subject = ?1 AND attribute = ?2)
-             ORDER BY c.time DESC,
-                      c.segment = 'head' DESC,
-                      s.first DESC,
-                      s.digest DESC,
-                      c.position DESC
-             LIMIT 1",
-        )?;
-        let mut rows = statement.query(params![subject.as_str(), attribute.as_str()])?;
-        match rows.next()? {
-            Some(row) => {
-                let value: String = row.get(0)?;
-                Ok(Some(serde_json::from_str(&value)?))
-            }
-            None => Ok(None),
-        }
-    }
-
     /// Every subject the log speaks about — as of the last
     /// [`fold`](Index::fold), the open head included — whose digest begins
     /// with `hex`, sorted. Case does not matter, the way [`Subject`] itself
@@ -1555,60 +1519,6 @@ mod tests {
             index.run_sightings("run-x").unwrap(),
             [(subject(), Placement::Name("invoice.pdf".to_string()))],
             "a derived file never sat anywhere, so its name answers"
-        );
-    }
-
-    #[test]
-    fn newest_narrows_the_standing_set_to_the_last_word() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        let mut index = index_in(&dir);
-        let paths = Attribute::parse("file:path").unwrap();
-        sight(
-            &log,
-            &subject(),
-            "run-a",
-            "/old/place/a.txt",
-            "2026-09-01T10:00:00Z",
-        );
-        log.seal().unwrap().unwrap();
-        sight(
-            &log,
-            &subject(),
-            "run-b",
-            "/new/place/a.txt",
-            "2026-09-02T10:00:00Z",
-        );
-        index.fold(&log).unwrap();
-
-        assert_eq!(
-            index.newest(&subject(), &paths).unwrap(),
-            Some(json!("/new/place/a.txt")),
-            "the value asserted last, sealed or not"
-        );
-
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                paths.clone(),
-                json!("/new/place/a.txt"),
-                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        index.fold(&log).unwrap();
-        assert_eq!(
-            index.newest(&subject(), &paths).unwrap(),
-            Some(json!("/old/place/a.txt")),
-            "a retracted value no longer counts, however lately it was said"
-        );
-        assert_eq!(
-            index
-                .newest(&subject(), &Attribute::parse("exif:model").unwrap())
-                .unwrap(),
-            None
         );
     }
 

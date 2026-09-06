@@ -2,8 +2,8 @@
 //! places under one destination.
 //!
 //! The archive keeps custody; an export is a copy out. *Which* files go
-//! is the caller's question — a run's sightings, one subject's newest
-//! place — and this module owes the laying out: relative targets that
+//! is the caller's question — a run's sightings, one subject's standing
+//! places — and this module owes the laying out: relative targets that
 //! keep what the recorded paths shared, without the folders above their
 //! common ground. Two files that lay side by side land side by side;
 //! the way from `/` down to them comes along only where it told them

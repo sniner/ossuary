@@ -225,10 +225,12 @@ would export 5 file(s) into /home/john/refile — nothing written
 ```
 
 Without `--dry-run` that writes the five files. File names and run ids
-mix freely in one call, `ossuary find --id … | xargs ossuary export
-DIR` exports a found set, and nothing standing at the destination is
-ever overwritten — a file already there with the same bytes counts as
-done, one with different bytes is a named failure and stays untouched.
+mix freely in one call, and `ossuary find --id … | xargs ossuary
+export DIR` exports a found set — each file landing at *every* place
+still standing on its record, so nothing the question matched goes
+missing. Nothing standing at the destination is ever overwritten — a
+file already there with the same bytes counts as done, one with
+different bytes is a named failure and stays untouched.
 
 ## The design, in three sentences
 

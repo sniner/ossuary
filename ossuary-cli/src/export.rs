@@ -123,12 +123,13 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
                     "nothing on the record begins with {id:?} — nothing was exported"
                 ));
             };
-            let Some(placement) = place(index, &subject, &file_path, &file_name)? else {
+            let standing = places(index, &subject, &file_path, &file_name)?;
+            if standing.is_empty() {
                 return Err(anyhow!(
                     "no path and no name stands on the record for {subject} — `ossuary get` still hands the bytes out, to a name of yours; nothing was exported"
                 ));
-            };
-            pairs.push((subject, placement));
+            }
+            pairs.extend(standing.into_iter().map(|place| (subject.clone(), place)));
         }
     }
     Ok(pairs)
@@ -210,26 +211,32 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
     delivery
 }
 
-/// The newest place the record gives one subject: its `file:path` where
-/// one stands, its `file:name` otherwise — the same fallback a run's
-/// sightings make, asked of one file's whole record.
-fn place(
+/// Every place still standing on one subject's record: all its
+/// standing `file:path` values — or, where none stands, all its
+/// standing `file:name`s, the fallback a run's sightings make too.
+/// Deliberately *all* of them, not a chosen one: which of several
+/// standing values matters is the reader's policy, and an export that
+/// silently preferred the newest place would leave a hole in the tree
+/// the caller actually asked about. A retracted place no longer
+/// stands, and no longer lands.
+fn places(
     index: &Index,
     subject: &Subject,
     file_path: &Attribute,
     file_name: &Attribute,
-) -> Result<Option<Placement>> {
-    if let Some(path) = index.newest(subject, file_path)? {
-        if let Some(path) = path.as_str() {
-            return Ok(Some(Placement::Path(path.to_string())));
-        }
+) -> Result<Vec<Placement>> {
+    let spelled = |values: Vec<ossuary_core::Value>| -> Vec<String> {
+        values
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_string))
+            .collect()
+    };
+    let paths = spelled(index.values(subject, file_path)?);
+    if !paths.is_empty() {
+        return Ok(paths.into_iter().map(Placement::Path).collect());
     }
-    if let Some(name) = index.newest(subject, file_name)? {
-        if let Some(name) = name.as_str() {
-            return Ok(Some(Placement::Name(name.to_string())));
-        }
-    }
-    Ok(None)
+    let names = spelled(index.values(subject, file_name)?);
+    Ok(names.into_iter().map(Placement::Name).collect())
 }
 
 /// Two different files may want one target: two groups sharing a folder

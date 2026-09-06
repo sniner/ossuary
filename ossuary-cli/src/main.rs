@@ -290,11 +290,13 @@ enum Command {
     /// files share are trimmed away, and what lay side by side lands
     /// side by side. When one export reaches into unrelated places,
     /// each place becomes its own folder under PATH, named after the
-    /// deepest folder its files shared. A file named alone lands under
-    /// the name of its newest recorded path; a derived file, which
-    /// never sat anywhere, under its recorded name. The same bytes
-    /// recorded at several places come out as several files, the way
-    /// they stood. Nothing standing at PATH is ever overwritten: a
+    /// deepest folder its files shared. A file named alone lands at
+    /// every place still standing on its record — no place is
+    /// preferred over another, and a retracted one no longer counts;
+    /// a derived file, which never sat anywhere, lands under its
+    /// recorded names. The same bytes standing at several places come
+    /// out as several files, the way they stand. Nothing at PATH is
+    /// ever overwritten: a
     /// file already there with the same bytes counts as done, one with
     /// different bytes is a named failure and stays untouched.
     /// --dry-run answers what would land where and writes nothing.
