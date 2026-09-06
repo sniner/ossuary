@@ -110,6 +110,13 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
                 ));
             }
             pairs.extend(sightings);
+        } else if id.contains('=') {
+            // An attribute=value pair is find's rendered answer, not a
+            // name — the likeliest way one lands here is a pipe that
+            // forgot --id.
+            return Err(anyhow!(
+                "{id:?} is not a file's name — it reads like find's rendered answer; `ossuary find --id …` hands over bare names, ready to pipe; nothing was exported"
+            ));
         } else {
             let Some(subject) = resolve(index, id)? else {
                 return Err(anyhow!(
