@@ -554,7 +554,7 @@ fn ingest(
     } else {
         eprintln!("{} could not be taken in:", run.failed.len());
         for (path, error) in &run.failed {
-            eprintln!("  {}: {error}", path.display());
+            eprintln!("  {}: {}", path.display(), error.spelled());
         }
         Ok(ExitCode::FAILURE)
     }

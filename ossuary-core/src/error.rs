@@ -41,7 +41,7 @@ pub enum Error {
     ValueRequired,
 
     /// The line is not JSON, or not the JSON of a claim.
-    #[error("not a claim: {0}")]
+    #[error("not a claim")]
     Line(#[from] serde_json::Error),
 
     /// The store underneath said no.
@@ -55,7 +55,7 @@ pub enum Error {
     Index(#[from] rusqlite::Error),
 
     /// Reading or writing the open segment failed.
-    #[error("{context}: {source}")]
+    #[error("{context}")]
     Io {
         context: String,
         source: std::io::Error,
@@ -89,7 +89,7 @@ pub enum Error {
     ///
     /// The line number is 1-based and counts the header, so it is the number
     /// an editor or `sed -n` would show for the same line.
-    #[error("line {line}: {source}")]
+    #[error("line {line}")]
     BadLine { line: usize, source: Box<Error> },
 
     /// The directory is not an archive: no `FORMAT` mark stands in it.
@@ -142,4 +142,45 @@ pub enum Error {
     /// apart, so one variant carries them all.
     #[error("{0}")]
     Extract(String),
+}
+
+impl Error {
+    /// The whole story in one sentence: the error, then every cause on
+    /// its chain, joined the way `anyhow` joins them under `{:#}`.
+    /// `Display` names only the error's own step — the cause lives on
+    /// [`source`](std::error::Error::source), said once, and a printer
+    /// showing a bare error to a reader spells it with this instead.
+    #[must_use]
+    pub fn spelled(&self) -> String {
+        use std::error::Error as _;
+        let mut sentence = self.to_string();
+        let mut cause = self.source();
+        while let Some(error) = cause {
+            sentence.push_str(": ");
+            sentence.push_str(&error.to_string());
+            cause = error.source();
+        }
+        sentence
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spelled_says_the_cause_once_and_display_not_at_all() {
+        let error = Error::Io {
+            context: "reading the findings".to_string(),
+            source: std::io::Error::other("pipe folded"),
+        };
+        assert_eq!(error.to_string(), "reading the findings");
+        assert_eq!(error.spelled(), "reading the findings: pipe folded");
+
+        let broken = Error::BadLine {
+            line: 2,
+            source: Box::new(Error::NullValue),
+        };
+        assert_eq!(broken.spelled(), "line 2: null is not a value");
+    }
 }

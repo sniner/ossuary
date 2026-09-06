@@ -147,7 +147,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
                     reference(claim, &mut report.referenced);
                 }
             }
-            Err(error) => report.broken.push((name, error.to_string())),
+            Err(error) => report.broken.push((name, error.spelled())),
         }
     }
     match log.head() {
@@ -157,7 +157,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
                 reference(claim, &mut report.referenced);
             }
         }
-        Err(error) => report.head_broken = Some(error.to_string()),
+        Err(error) => report.head_broken = Some(error.spelled()),
     }
     Ok(report)
 }

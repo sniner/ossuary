@@ -55,7 +55,7 @@ fn render(event: &Event<'_>, quiet: bool) {
                 eprintln!("catching the index up: {segments} sealed segment(s) it had not seen");
             }
         }
-        Event::Skipped { trouble, .. } => eprintln!("skipped: {trouble}"),
+        Event::Skipped { trouble, .. } => eprintln!("skipped: {}", trouble.spelled()),
         Event::Idle { source, full } => {
             if *full {
                 println!("nothing of a kind {source} reads is on the record");
@@ -96,7 +96,7 @@ fn render(event: &Event<'_>, quiet: bool) {
                     failures.len()
                 );
                 for (subject, error) in *failures {
-                    eprintln!("  {subject}: {error}");
+                    eprintln!("  {subject}: {}", error.spelled());
                 }
             }
         }
