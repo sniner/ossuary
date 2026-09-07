@@ -110,7 +110,8 @@ need.
   narrower attribute needed
 - value: string, one sentence in the examiner's own words
 - written by: extractors, as an ordinary finding — today
-  ossuary-extract-pdf
+  ossuary-extract-pdf and ossuary-extract-packed, on entries its
+  unpacking could not bring out
 
 ### file:path
 
@@ -146,9 +147,9 @@ need.
   shrug; a derived file's kind is announced by the extractor that wrote
   the bytes, and needs no guessing; an extractor that recognizes a
   format from the inside says the sharper word — a mail sniffed as
-  `text/plain` gains `message/rfc822`, a zip that is really an epub or
-  an Office document gains its declared kind. All the words stand in
-  the set
+  `text/plain` gains `message/rfc822`, a mailbox `application/mbox`, a
+  zip that is really an epub or an Office document gains its declared
+  kind. All the words stand in the set
 - value: string, a MIME type
 - written by: ingest; `ossuary extract`, in the deriving extractor's
   words; ossuary-extract-mail and ossuary-extract-packed, on what they

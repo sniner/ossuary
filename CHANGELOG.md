@@ -157,8 +157,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as the mail declared it, an attachment's content-id on its record. It reads `text/plain`
   deliberately, because a mail on disk sniffs as plain text: bytes that are no message are
   examined with nothing found, and a recognized mail gains the sharper `file:mime` of
-  `message/rfc822` beside the sniffed word. An mbox is a mailbox, not a message, and stays
-  untouched
+  `message/rfc822` beside the sniffed word. An mbox is a mailbox, not a message: it stays
+  shut, but gains its own kind, `application/mbox`, the same way
 - **`ossuary-extract-packed`** — the archive extractor, and the first program of two contracts:
   `list` inventories a zip without unpacking a byte — one `zip:entry` claim per entry, standing
   on the archive itself, so "which zip holds a file so named" becomes a question the record
@@ -169,5 +169,6 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenDocument family by their `mimetype` first entry, Word, Excel and PowerPoint by their type
   manifest — is recognized from the bytes, left shut, and gains its sharper `file:mime` instead;
   a jar promises nothing about its insides and is treated as the archive it is. Encrypted or
-  damaged entries stay inside with a note — there is no password to offer — and bytes that do
-  not read as a zip are examined with nothing found
+  damaged entries stay inside — there is no password to offer — and each says why as a
+  `prov:note` on the record, so a zip that unpacked incompletely never reads like one that
+  unpacked whole; bytes that do not read as a zip are examined with nothing found

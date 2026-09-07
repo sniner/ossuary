@@ -16,9 +16,11 @@
 //! exit 0, no output, and the receipt keeps them from being offered
 //! again. Bytes that are a message also get a sharper `file:mime` said
 //! onto the record, `message/rfc822` beside the sniffed word — the set
-//! holds both. An mbox — bytes opening with the `From ` separator
-//! line — is a mailbox, not a message: nothing found, another format's
-//! business.
+//! holds both. An mbox — the `From ` separator line with a message
+//! behind it — is a mailbox, not a message: no headers spoken, nothing
+//! unpacked, another format's business — but the recognized kind goes
+//! on the record the same way, `application/mbox`, so a future mailbox
+//! reader finds its work waiting.
 //!
 //! Header values are unfolded and their RFC 2047 encoded words decoded —
 //! conversion, not tidying, the way the text extractor reads a PDF's
@@ -92,6 +94,13 @@ fn examine(directory: &Path) -> ExitCode {
 /// way. The protocol reads the answer whole, so the order of lines is
 /// convenience, not contract.
 fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Value>> {
+    if looks_like_mbox(bytes) {
+        // A mailbox is not a message and stays shut — but the bytes have
+        // told their kind, and the sharper word goes on the record.
+        return Ok(vec![
+            json!({ "attribute": "file:mime", "value": "application/mbox" }),
+        ]);
+    }
     if !looks_like_mail(bytes) {
         return Ok(Vec::new());
     }
@@ -241,6 +250,20 @@ fn looks_like_mail(bytes: &[u8]) -> bool {
         fields += 1;
     }
     known.len() >= 2
+}
+
+/// Whether these bytes open as an mbox: the `From ` separator line
+/// first, and behind it a message by the same yardstick the mail gate
+/// uses. `From ` alone is any prose's opening word — a message behind
+/// it is a mailbox.
+fn looks_like_mbox(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"From ") {
+        return false;
+    }
+    bytes
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .is_some_and(|end| looks_like_mail(&bytes[end + 1..]))
 }
 
 /// One header's raw value in the claim's spelling: unfolded — the
@@ -397,6 +420,44 @@ mod tests {
         assert_eq!(uniquify("image.png".to_string(), &mut taken), "image-3.png");
         assert_eq!(uniquify("noext".to_string(), &mut taken), "noext");
         assert_eq!(uniquify("noext".to_string(), &mut taken), "noext-2");
+    }
+
+    #[test]
+    fn an_mbox_is_told_by_the_message_behind_its_separator() {
+        assert!(looks_like_mbox(
+            b"From alice@example.com Thu Sep  4 12:34:56 2026\nFrom: alice\nTo: bob\n\nbody\n"
+        ));
+        assert!(
+            !looks_like_mbox(b"From here on, everything changed.\nIt was a quiet morning.\n"),
+            "prose opening with the word From declares nothing"
+        );
+        assert!(!looks_like_mbox(b"From "));
+        assert!(
+            !looks_like_mbox(b"From: alice\nTo: bob\n\nbody\n"),
+            "a message is no mailbox"
+        );
+    }
+
+    #[test]
+    fn a_recognized_mbox_gains_its_kind_and_stays_shut() {
+        let dir = TempDir::new().unwrap();
+        let mbox = concat!(
+            "From alice@example.com Thu Sep  4 12:34:56 2026\n",
+            "From: alice@example.com\n",
+            "To: bob@example.org\n",
+            "Subject: first of many\n",
+            "\n",
+            "body\n",
+        );
+
+        let lines = harvest(mbox.as_bytes(), dir.path()).unwrap();
+
+        assert_eq!(
+            lines,
+            vec![json!({ "attribute": "file:mime", "value": "application/mbox" })],
+            "the kind alone — no headers spoken, nothing unpacked"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

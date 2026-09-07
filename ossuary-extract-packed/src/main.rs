@@ -26,10 +26,13 @@
 //! the record as `file:name`, and every file's full entry path as
 //! `zip:path`. A zip declares no kinds, so each announcement carries
 //! the same magic-bytes-then-UTF-8 look ingest would take. An entry
-//! that will not come out — encrypted, damaged, or a symlink, whose
-//! bytes are a name rather than content — stays inside with a line on
-//! stderr; there is no password to offer, and a receipt beats being
-//! offered the same locked door every run.
+//! that will not come out — encrypted, damaged, a spelling with no file
+//! name in it — stays inside, and the reason goes on the record as a
+//! `prov:note` finding beside a line on stderr: a zip that unpacked
+//! incompletely must not read like one that unpacked whole. There is no
+//! password to offer, and a receipt beats being offered the same locked
+//! door every run. A symlink stays inside silently — its bytes are a
+//! name rather than content, and nothing is lost.
 
 use std::collections::HashSet;
 use std::io::{Cursor, Read, Seek};
@@ -221,8 +224,8 @@ fn list<R: Read + Seek>(archive: &ZipArchive<R>) -> Vec<serde_json::Value> {
 
 /// Every entry out as a file of its own: flattened to its bare name,
 /// yielded to a counter on collision, announced with the kind its own
-/// bytes answer to. What will not come out stays inside with a word on
-/// stderr and costs no other entry its examination.
+/// bytes answer to. What will not come out stays inside and says why —
+/// see [`stays_inside`] — and costs no other entry its examination.
 fn unpack<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     directory: &Path,
@@ -230,10 +233,26 @@ fn unpack<R: Read + Seek>(
     let mut lines = Vec::new();
     let mut taken = HashSet::new();
     for index in 0..archive.len() {
+        // Name and lock are read raw up front: a failed open below still
+        // pins the archive, so the refusal could not go asking for them
+        // then.
+        let (spelled_raw, locked) = archive.by_index_raw(index).map_or_else(
+            |_| (format!("{index}"), false),
+            |raw| (raw.name().to_string(), raw.encrypted()),
+        );
         let mut file = match archive.by_index(index) {
             Ok(file) => file,
             Err(error) => {
-                eprintln!("ossuary-extract-packed: entry {index}: {error} — stays inside");
+                // The library's word for why, except for the locked door,
+                // where the entry's own flag beats guessing from error
+                // texts — and where the honest reason is this program's
+                // to say.
+                let reason = if locked {
+                    "encrypted, and there is no password to offer".to_string()
+                } else {
+                    error.to_string()
+                };
+                lines.push(stays_inside(&spelled_raw, &reason));
                 continue;
             }
         };
@@ -250,11 +269,11 @@ fn unpack<R: Read + Seek>(
         let spelled = file.name().to_string();
         let mut bytes = Vec::new();
         if let Err(error) = file.read_to_end(&mut bytes) {
-            eprintln!("ossuary-extract-packed: {spelled}: {error} — stays inside");
+            lines.push(stays_inside(&spelled, &error.to_string()));
             continue;
         }
         let Some(name) = basename(&spelled) else {
-            eprintln!("ossuary-extract-packed: {spelled:?}: no file name in it — stays inside");
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
             continue;
         };
         let announced = uniquify(name.clone(), &mut taken);
@@ -270,6 +289,16 @@ fn unpack<R: Read + Seek>(
         lines.push(json!({ "file": &announced, "attribute": "zip:path", "value": spelled }));
     }
     Ok(lines)
+}
+
+/// An entry the examination could not bring out, said twice from one
+/// wording: onto the record as a `prov:note` finding — a zip that
+/// unpacked incompletely must not read like one that unpacked whole —
+/// and onto stderr for whoever watches the run.
+fn stays_inside(spelled: &str, reason: &str) -> serde_json::Value {
+    let sentence = format!("entry {spelled} stayed inside: {reason}");
+    eprintln!("ossuary-extract-packed: {sentence}");
+    json!({ "attribute": "prov:note", "value": sentence })
 }
 
 /// What the bytes say they are — a zip declares no kinds, so this is
@@ -501,6 +530,75 @@ mod tests {
             "a nested zip comes out as itself, ready for the next round"
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn an_encrypted_entry_stays_inside_and_the_reason_goes_on_the_record() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        writer.start_file("open.txt", stored).unwrap();
+        writer.write_all(b"readable").unwrap();
+        writer
+            .start_file(
+                "secret.txt",
+                SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, "hidden"),
+            )
+            .unwrap();
+        writer.write_all(b"locked away").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        let lines = harvest(&bytes, Contract::Unpack, Some(dir.path())).unwrap();
+
+        assert!(
+            lines.contains(&json!({
+                "attribute": "prov:note",
+                "value": "entry secret.txt stayed inside: encrypted, and there is no password to offer",
+            })),
+            "got {lines:#?}"
+        );
+        assert!(
+            lines.contains(&json!({ "file": "open.txt", "mime": "text/plain" })),
+            "the locked door costs no other entry its examination; got {lines:#?}"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let inventory = harvest(&bytes, Contract::List, None).unwrap();
+        assert!(
+            inventory
+                .iter()
+                .all(|line| line["attribute"] != "prov:note"),
+            "the inventory reads without unpacking — nothing stayed inside; got {inventory:#?}"
+        );
+        assert_eq!(inventory.len(), 2, "both entries are listed all the same");
+    }
+
+    #[test]
+    fn a_damaged_entry_stays_inside_and_the_reason_goes_on_the_record() {
+        let dir = TempDir::new().unwrap();
+        let mut bytes = packed(&[("sound.txt", b"kept whole"), ("torn.txt", b"damaged goods")]);
+        let at = bytes
+            .windows(13)
+            .position(|window| window == b"damaged goods")
+            .unwrap();
+        bytes[at] ^= 0xFF;
+
+        let lines = harvest(&bytes, Contract::Unpack, Some(dir.path())).unwrap();
+
+        assert!(
+            lines.iter().any(|line| {
+                line["attribute"] == "prov:note"
+                    && line["value"]
+                        .as_str()
+                        .is_some_and(|value| value.starts_with("entry torn.txt stayed inside: "))
+            }),
+            "got {lines:#?}"
+        );
+        assert!(
+            lines.contains(&json!({ "file": "sound.txt", "mime": "text/plain" })),
+            "got {lines:#?}"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
