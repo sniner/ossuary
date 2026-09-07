@@ -52,7 +52,7 @@ in its source.
 ## Namespaces
 
 - `prov:` — provenance: the archive's own acts — who took content in,
-  in which run, and what has looked at it
+  in which run, what has looked at it and what the looking remarked
 - `file:` — the file as observed: its places, names, size, kind and
   mtimes — what any format has on day one
 - `derive:` — relations between content: what came from what
@@ -98,6 +98,19 @@ need.
   content standing elsewhere
 - value: `true` — who looked, and with what, is the claim's source
 - written by: `ossuary extract`
+
+### prov:note
+
+- meaning: a remark an examiner left about this content — what the
+  harvest itself cannot say: why one was discarded, figures included,
+  or that the document refused to be read. Said only when there is
+  something to say; an empty harvest is no event. Remarks accrete, and
+  who remarked is the claim's source — `prov:note` under
+  `extractor:pdf/…` read together is "this PDF gave no text", with no
+  narrower attribute needed
+- value: string, one sentence in the examiner's own words
+- written by: extractors, as an ordinary finding — today
+  ossuary-extract-pdf
 
 ### file:path
 

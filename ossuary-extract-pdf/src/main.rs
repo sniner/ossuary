@@ -17,8 +17,12 @@
 //!
 //! A document with no text to give — scanned pages, an empty harvest, a
 //! PDF pdftotext cannot open — is an examination like any other, with
-//! no file to announce: exit 0. Only the environment failing (no
-//! pdftotext, a broken pipe world) is a failure.
+//! no file to announce: exit 0. A harvest more than half of which is no
+//! text at all — glyph numbers from fonts that do not say what they
+//! spell — is discarded the same way. Whenever there is a reason worth
+//! a sentence, the sentence goes on the record as a `prov:note` finding
+//! and onto stderr, the same words in both places. Only the environment
+//! failing (no pdftotext, a broken pipe world) is a failure.
 
 use std::io::{Read, Write as _};
 use std::path::Path;
@@ -76,13 +80,20 @@ fn examine(directory: &Path) -> ExitCode {
     }
     let text = match pdftotext(bytes) {
         Ok(Harvest::Text(text)) => text,
-        Ok(Harvest::Refused) => return ExitCode::SUCCESS,
+        Ok(Harvest::Refused(sentence)) => {
+            note(&sentence);
+            return ExitCode::SUCCESS;
+        }
         Err(error) => {
             eprintln!("ossuary-extract-pdf: {error}");
             return ExitCode::FAILURE;
         }
     };
     if blank(&text) {
+        return ExitCode::SUCCESS;
+    }
+    if let Some(sentence) = junk_verdict(&String::from_utf8_lossy(&text)) {
+        note(&sentence);
         return ExitCode::SUCCESS;
     }
     if let Err(error) = std::fs::write(directory.join("text.txt"), &text) {
@@ -111,10 +122,10 @@ fn pdftotext_present() -> bool {
 enum Harvest {
     /// The extracted text, UTF-8 as asked for.
     Text(Vec<u8>),
-    /// The document's own refusal — unreadable or extraction forbidden.
-    /// Deterministic, so it counts as examined: retrying will not change
-    /// the document.
-    Refused,
+    /// The document's own refusal — unreadable or extraction forbidden —
+    /// with the sentence that says which. Deterministic, so it counts as
+    /// examined: retrying will not change the document.
+    Refused(String),
 }
 
 /// The bytes through `pdftotext -q -enc UTF-8 - -`. Quiet on purpose:
@@ -148,10 +159,11 @@ fn pdftotext(bytes: Vec<u8>) -> std::io::Result<Harvest> {
     if status.success() {
         Ok(Harvest::Text(text))
     } else if documents_own_fault(status.code()) {
-        eprintln!(
-            "ossuary-extract-pdf: pdftotext could not read this document ({status}) — examined, nothing found"
-        );
-        Ok(Harvest::Refused)
+        Ok(Harvest::Refused(if status.code() == Some(3) {
+            "this document forbids text extraction".to_string()
+        } else {
+            format!("pdftotext could not read this document ({status})")
+        }))
     } else {
         Err(std::io::Error::other(format!(
             "pdftotext failed ({status})"
@@ -172,6 +184,53 @@ fn documents_own_fault(code: Option<i32>) -> bool {
 /// harvest.
 fn blank(text: &[u8]) -> bool {
     text.iter().all(u8::is_ascii_whitespace)
+}
+
+/// A reason worth a sentence is said twice from one wording: onto the
+/// record as a `prov:note` finding, and onto stderr for whoever watches
+/// the run.
+fn note(sentence: &str) {
+    println!("{}", json!({ "attribute": "prov:note", "value": sentence }));
+    eprintln!("ossuary-extract-pdf: {sentence}");
+}
+
+/// Whether the harvest is mostly not text at all — and the sentence
+/// that says so when it is. Among the non-whitespace characters, more
+/// than half unwritable is a harvest of noise: fonts without a
+/// `ToUnicode` map give pdftotext glyph numbers, not characters, and
+/// printed as bytes those are exactly the ranges [`unwritable`] names.
+/// Where the line errs, it errs toward keeping — a bad `text.txt` can
+/// be derived again, a silently discarded good one cannot.
+fn junk_verdict(text: &str) -> Option<String> {
+    let mut junk = 0usize;
+    let mut ink = 0usize;
+    for character in text.chars().filter(|character| !character.is_whitespace()) {
+        ink += 1;
+        if unwritable(character) {
+            junk += 1;
+        }
+    }
+    (junk * 2 > ink).then(|| {
+        let percent = (junk * 100 + ink / 2) / ink;
+        format!(
+            "{percent}% of the text is not characters at all — the fonts do not say what they spell; harvest discarded"
+        )
+    })
+}
+
+/// A character written text cannot contain: controls (tab and the line
+/// and page breaks are whitespace and never get here), the replacement
+/// character — poppler's "no idea what this glyph spells", and a broken
+/// UTF-8 sequence reads as one too — the Private Use Areas, and the
+/// noncharacters. Plain codepoint ranges, deliberately no Unicode
+/// tables: the measure must not drift with a dependency.
+fn unwritable(character: char) -> bool {
+    let code = u32::from(character);
+    character.is_control()
+        || character == '\u{FFFD}'
+        || matches!(code, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x10_0000..=0x10_FFFD)
+        || matches!(code, 0xFDD0..=0xFDEF)
+        || code & 0xFFFE == 0xFFFE
 }
 
 /// The document information dictionary, verbatim under `pdf:`: the keys
@@ -367,6 +426,103 @@ mod tests {
         assert!(blank(b" \n\x0c \n"));
         assert!(!blank(b" a "));
         assert!(!blank("ü".as_bytes()));
+    }
+
+    #[test]
+    fn prose_passes_whatever_the_script() {
+        for prose in [
+            "Der Umbau beginnt im Frühjahr, sobald der Boden trocken ist.",
+            "Η θάλασσα ήταν ήρεμη και ο ουρανός καθαρός όλο το πρωί.",
+            "Архив хранит всё, что ему доверили, без изменений.",
+            "書類は箱の中に整理されて保管されている。",
+            "الأرشيف يحفظ كل ما أودع فيه دون تغيير.",
+        ] {
+            assert_eq!(junk_verdict(prose), None, "{prose}");
+        }
+    }
+
+    /// Letters are no signal: phone lists, timetables and blood-pressure
+    /// logs are flawless extractions with hardly a letter in them. The
+    /// letter-share idea was measured against a real corpus and
+    /// rejected — this test stands guard against its return.
+    #[test]
+    fn a_table_of_digits_and_punctuation_passes() {
+        let table = "07:15  4711 / 22  120/80\n08:00  0231 555-77  118/79\n";
+        assert_eq!(junk_verdict(table), None);
+    }
+
+    #[test]
+    fn glyph_numbers_are_refused_and_the_sentence_carries_the_share() {
+        let mut noise = String::new();
+        for _ in 0..30 {
+            for code in 1u8..=8 {
+                noise.push(code as char);
+                noise.push(' ');
+            }
+        }
+        let sentence = junk_verdict(&noise).expect("nothing here is writable");
+        assert!(sentence.contains("100%"), "{sentence}");
+    }
+
+    #[test]
+    fn private_use_text_is_refused() {
+        let pua: String = "\u{E000}\u{E742} \u{F0001} \u{10FFFD}".into();
+        assert!(junk_verdict(&pua).is_some());
+    }
+
+    #[test]
+    fn a_stray_replacement_character_does_not_condemn_prose() {
+        let prose = "The one sign \u{FFFD} was all the font could not say.";
+        assert_eq!(junk_verdict(prose), None);
+    }
+
+    #[test]
+    fn broken_utf8_reads_as_unwritable() {
+        let mut bytes = b"ab".to_vec();
+        bytes.extend(std::iter::repeat_n(0xFF, 10));
+        assert!(junk_verdict(&String::from_utf8_lossy(&bytes)).is_some());
+    }
+
+    #[test]
+    fn whitespace_stays_blanks_business() {
+        assert_eq!(junk_verdict(""), None, "an empty measure refuses nothing");
+        assert_eq!(junk_verdict(" \n\x0c \n"), None);
+    }
+
+    #[test]
+    fn one_control_character_in_a_page_of_prose_passes() {
+        let prose = format!("{}\x02 and the rest reads fine.", "words ".repeat(50));
+        assert_eq!(junk_verdict(&prose), None);
+    }
+
+    #[test]
+    fn exactly_half_junk_is_kept() {
+        assert_eq!(
+            junk_verdict("a\u{E000}"),
+            None,
+            "the line is MORE than half"
+        );
+    }
+
+    #[test]
+    fn the_unwritable_ranges_and_no_others() {
+        for bad in [
+            '\x01',
+            '\u{9F}',
+            '\u{FFFD}',
+            '\u{E000}',
+            '\u{F8FF}',
+            '\u{F0000}',
+            '\u{10FFFD}',
+            '\u{FDD0}',
+            '\u{FFFE}',
+            '\u{5FFFF}',
+        ] {
+            assert!(unwritable(bad), "U+{:04X}", u32::from(bad));
+        }
+        for fine in ['a', '0', '€', '種', 'ب', 'ß', '—', '·'] {
+            assert!(!unwritable(fine), "{fine}");
+        }
     }
 
     #[test]

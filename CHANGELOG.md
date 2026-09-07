@@ -15,7 +15,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Attribute vocabulary** — [docs/vocabulary.md](docs/vocabulary.md): what each attribute means
   and how standing claims become an answer — every attribute is a set of standing values,
   deduplicated at fold time; narrowing to one value is the reader's own policy; extractors
-  record verbatim, interpretation stays at query time
+  record verbatim, interpretation stays at query time — and when an examiner has something to
+  say that its harvest cannot, one sentence in its own words goes on the record as `prov:note`
 - **`ossuary init`** begins an archive — or completes one already standing: nothing standing is
   remade or edited, and what is missing (today: `config.toml`) is added
 - **`config.toml`** in the archive root: `[ingest] exclude` glob patterns (`.DS_Store` and
@@ -145,7 +146,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   through poppler's `pdftotext` (which must be on PATH), goes into the archive as a `text/plain`
   file of its own beside the document information verbatim under `pdf:` (`pdf:title`,
   `pdf:creation-date` — dates as the document spells them). A document with no text to give —
-  scanned pages, an unreadable file — is examined all the same, with nothing found
+  scanned pages, an unreadable file — is examined all the same, with nothing found; a harvest
+  that is mostly not text at all — glyph numbers from fonts that do not say what they spell —
+  is discarded rather than archived as noise, and the reason goes on the record as a
+  `prov:note`
 - **`ossuary-extract-mail`** — the mail extractor: a message's own headers verbatim under
   `mail:` (`mail:from`, `mail:subject`, `mail:date` — unfolded and their encoded words decoded,
   otherwise as the mail spells them; the transport's trail stays untold), and what the mail
