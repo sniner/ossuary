@@ -70,6 +70,20 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the whole subtree, short names bracketed beside the files. Without a PLACE the roots answer;
   one name may honestly carry several files, when different bytes stood there over time, and a
   retracted place no longer answers
+- **`ossuary mount DIR`** grafts the whole forest onto a directory, read-only — the archive's
+  files readable in place by any program, browsable in a file manager. The command stays in the
+  foreground and Ctrl-C gives the directory back; `umount` works too. Served over NFS on
+  127.0.0.1 and mounted by the system's own client — nothing kernel-side, no sudo; macOS today.
+  Where the record says more than a filesystem can, the view narrows by declared policy: of
+  several files standing at one name the newest wins, and a name standing as file and folder at
+  once keeps the folder, the file stepping aside under a name carrying its digest.
+  `--as-of TIME` shows the record as it was known at that moment (UTC): files since retracted
+  stand again, files since arrived are absent, and a place whose file changed shows the old
+  bytes — mount today and last year side by side and compare
+- **Outside verbs**: an unrecognised command looks for its own program — `ossuary mount …` runs
+  `ossuary-mount …` from the `PATH`, the resolved archive travelling as `OSSUARY_ARCHIVE` in
+  the environment and the rest of the line passed through word for word — so heavier tools
+  arrive without weighing `ossuary` itself down
 - **`ossuary annotate SUBJECT… --comment TEXT --tag TAG`** puts the user's own word on files
   already on the record: each comment and tag becomes a claim (`user:comment`, `user:tag`)
   under the source `user`, on every named file — beside what `ingest --tag` said at arrival.

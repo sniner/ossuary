@@ -3,6 +3,7 @@
 //! Thin on purpose: parsing, wording and exit codes live here, and nothing
 //! else does — every decision about the archive itself is `ossuary-core`'s.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -385,6 +386,12 @@ enum Command {
         #[arg(short, long)]
         json: bool,
     },
+    // An outside verb: `ossuary NAME …` becomes `ossuary-NAME …` from
+    // the PATH, the way `mount` arrives without weighing this tool
+    // down. The resolved archive travels in the environment; the rest
+    // of the line goes through word for word.
+    #[command(external_subcommand)]
+    Outside(Vec<OsString>),
 }
 
 fn main() -> ExitCode {
@@ -448,7 +455,35 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
         } => export::export(&cli.archive, &destination, &ids, dry_run, quiet),
         Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
+        Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }
+}
+
+/// Hand the line to an outside verb: `ossuary NAME …` becomes
+/// `ossuary-NAME …` found on the PATH and *becomes* this process —
+/// signals, exit code and all. The archive travels resolved: however
+/// it was named — flag, environment, or standing in it — the child
+/// sees one absolute `OSSUARY_ARCHIVE` and resolves nothing itself.
+fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
+    use std::os::unix::process::CommandExt as _;
+    let Some((name, rest)) = pieces.split_first() else {
+        return Err(anyhow!(
+            "no command named — `ossuary --help` lists what there is"
+        ));
+    };
+    let name = name.to_string_lossy();
+    let program = format!("ossuary-{name}");
+    let archive = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let error = std::process::Command::new(&program)
+        .args(rest)
+        .env("OSSUARY_ARCHIVE", &archive)
+        .exec();
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return Err(anyhow!(
+            "`{name}` is no command of ossuary's own, and no `{program}` stands on the PATH — `ossuary --help` lists what is built in"
+        ));
+    }
+    Err(anyhow::Error::new(error).context(format!("running {program}")))
 }
 
 /// One answer line onto stdout. `Ok(true)` means written; `Ok(false)`

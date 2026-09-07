@@ -48,9 +48,10 @@ $ git clone https://github.com/sniner/ossuary
 $ cd ossuary && cargo build --release
 ```
 
-That builds the `ossuary` command and the extractors
-(`ossuary-extract-exif`, `-pdf`, `-mail`, `-packed`); put them on your
-`PATH` together — extractors are found there, not built in.
+That builds the `ossuary` command, the extractors
+(`ossuary-extract-exif`, `-pdf`, `-mail`, `-packed`) and
+`ossuary-mount`; put them on your `PATH` together — extractors and
+outside verbs like `mount` are found there, not built in.
 `ossuary-extract-pdf` additionally wants poppler's `pdftotext` on the
 `PATH`.
 
@@ -217,6 +218,30 @@ Beside each file stands its name in the archive, ready for `about`,
 `get` and `export`; `ls` puts that name first, the way
 `export --dry-run` speaks. The mail's attachment is not here: a
 derived file never sat at any place — `find` reaches it, as above.
+
+## The reading room
+
+`mount` grafts that same forest onto a directory, read-only — the
+archive's files readable in place by any program, browsable in a
+file manager, previews and all:
+
+```console
+$ ossuary mount ~/view
+the record stands at /home/john/view — read-only, 5 file(s) in 5 folder(s); Ctrl-C gives it back
+$ open ~/view/home/john/photos/DSC_1042.jpg
+```
+
+The command stays in the foreground; Ctrl-C gives the directory back,
+and so does a plain `umount`. Writing is answered by the operating
+system itself: read-only filesystem. Where the record says more than
+a filesystem can, the view narrows — of several files standing at one
+name, the newest wins — and `--as-of TIME` turns that dial back: the
+record as it was known at that moment, UTC. Files since retracted
+stand again, files since arrived are absent, and a place whose file
+changed shows the old bytes — mount today and last year side by side
+and compare. The room is served over NFS on `127.0.0.1` and mounted
+by the system's own client: nothing kernel-side, no sudo. macOS
+today; the Linux door is still to be built.
 
 ## Your own word
 
