@@ -267,23 +267,30 @@ enum Command {
     /// PLACE is a folder or file the way the record spells it: the
     /// absolute path an ingest saw, from whatever machine the file sat
     /// on; left out, the roots answer. Folders come back with a
-    /// trailing slash, files with their short name in the archive
-    /// beside them — the name `about`, `get` and `export` take. The
+    /// trailing slash; each file answers a line of its own, its short
+    /// name in the archive first — the name `about`, `get` and
+    /// `export` take — the way `export --dry-run` speaks. The
     /// record answers, not a disk: every place a file was ever seen
     /// at answers as long as it stands, however long the disk is
     /// gone — and one name may honestly carry several files, when
-    /// different bytes stood there over time. What was retracted no
-    /// longer counts.
+    /// different bytes stood there over time, each answering its own
+    /// line. What was retracted no longer counts.
     Ls {
         /// The place to look at: an absolute path; left out, /
         #[arg(value_name = "PLACE")]
         place: Option<String>,
+
+        /// One JSON object per entry, ready for jq: a file's name with
+        /// everything standing there spelled in full, or a folder as
+        /// itself
+        #[arg(short, long)]
+        json: bool,
     },
     /// Everything below one place, drawn as the tree it is
     ///
     /// The same answer `ls` gives, whole: every folder and file the
     /// record still holds below PLACE, one branch per folder, files
-    /// with their short names beside them. Reading it is browsing the
+    /// with their short names bracketed beside them. Reading it is browsing the
     /// record the way a file manager browses a disk — except this
     /// disk is every machine the archive ever took files from, and no
     /// place is forgotten while it stands.
@@ -431,7 +438,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             id,
             json,
         } => find(&cli.archive, &terms, &missing, id, json, quiet),
-        Command::Ls { place } => browse::ls(&cli.archive, place.as_deref(), quiet),
+        Command::Ls { place, json } => browse::ls(&cli.archive, place.as_deref(), json, quiet),
         Command::Tree { place } => browse::tree(&cli.archive, place.as_deref(), quiet),
         Command::Id { path } => id(&cli.archive, &path, quiet),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref(), quiet),

@@ -64,11 +64,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   values as lists
 - **`ossuary ls [PLACE]`** and **`ossuary tree [PLACE]`** browse the record's places: every place
   a file was ever seen at and still stands answers — the record, not a disk, so every machine's
-  paths stand in one forest and outlive the disks they were on. `ls` shows one level, folders
-  with a trailing slash, files with their short names beside them — ready for `about`, `get`
-  and `export`; `tree` draws the whole subtree; without a PLACE the roots answer. One name may
-  honestly carry several files, when different bytes stood there over time, and a retracted
-  place no longer answers
+  paths stand in one forest and outlive the disks they were on. `ls` shows one level — folders
+  with a trailing slash, one line per file with its short name first, the way `export --dry-run`
+  speaks — and `--json` answers one object per entry, the names spelled in full. `tree` draws
+  the whole subtree, short names bracketed beside the files. Without a PLACE the roots answer;
+  one name may honestly carry several files, when different bytes stood there over time, and a
+  retracted place no longer answers
 - **`ossuary annotate SUBJECT… --comment TEXT --tag TAG`** puts the user's own word on files
   already on the record: each comment and tag becomes a claim (`user:comment`, `user:tag`)
   under the source `user`, on every named file — beside what `ingest --tag` said at arrival.

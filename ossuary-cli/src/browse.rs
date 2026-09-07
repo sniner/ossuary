@@ -11,54 +11,47 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use ossuary_core::{Index, Subject};
+use ossuary_core::{Index, Subject, Value};
 
 use crate::{catch_up, open, say, shorten};
 
-pub(crate) fn ls(root: &Path, place: Option<&str>, quiet: bool) -> Result<ExitCode> {
+pub(crate) fn ls(root: &Path, place: Option<&str>, json: bool, quiet: bool) -> Result<ExitCode> {
     let place = named(place)?;
     let archive = open(root)?;
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
-    let pairs = shortened(&index, index.under(&place)?)?;
+    let pairs = index.under(&place)?;
     if pairs.is_empty() {
         if !quiet {
             eprintln!("{}", nothing(&place, "at"));
         }
         return Ok(ExitCode::SUCCESS);
     }
+    // The human answer leads with short names; a script gets them
+    // spelled in full, the contract `find --json` already keeps.
+    let pairs = if json {
+        pairs
+            .into_iter()
+            .map(|(path, subject)| (path, subject.as_str().to_string()))
+            .collect()
+    } else {
+        shortened(&index, pairs)?
+    };
     let node = grown(&place, &pairs);
+    let lines = if json {
+        objects(&place, &node)
+    } else {
+        listed(&place, &node)
+    };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut folders = 0;
-    let mut files = 0;
-    // The place itself may be a file: it answers as its own entry,
-    // ahead of whatever lies below.
-    if !node.ids.is_empty() {
-        files += node.ids.len();
-        if !say(
-            &mut out,
-            &format!("{}  {}", tail(&place), node.ids.join(" ")),
-        )? {
-            return Ok(ExitCode::SUCCESS);
-        }
-    }
-    for item in flattened(&node) {
-        let line = match item {
-            Item::File(name, ids) => {
-                files += ids.len();
-                format!("{name}  {}", ids.join(" "))
-            }
-            Item::Folder(name, _) => {
-                folders += 1;
-                format!("{name}/")
-            }
-        };
-        if !say(&mut out, &line)? {
+    for line in &lines {
+        if !say(&mut out, line)? {
             return Ok(ExitCode::SUCCESS);
         }
     }
     if !quiet {
+        let (folders, files) = level_counts(&node);
         eprintln!("{} at {place}", counted(folders, files));
     }
     Ok(ExitCode::SUCCESS)
@@ -80,7 +73,7 @@ pub(crate) fn tree(root: &Path, place: Option<&str>, quiet: bool) -> Result<Exit
     let mut lines = vec![if node.ids.is_empty() {
         place.clone()
     } else {
-        format!("{place}  {}", node.ids.join(" "))
+        format!("{place}  {}", bracketed(&node.ids))
     }];
     drawn(&node, "", &mut lines);
     let stdout = std::io::stdout();
@@ -196,6 +189,89 @@ fn flattened(node: &Node) -> Vec<Item<'_>> {
     items
 }
 
+/// The level's lines the way `ls` speaks them: one line per file, its
+/// name in the archive first — the spelling `export --dry-run` uses —
+/// and folders behind the blank the names align on. The place itself
+/// answering as a file comes ahead of what lies below.
+fn listed(place: &str, node: &Node) -> Vec<String> {
+    let width = node
+        .ids
+        .iter()
+        .chain(node.children.values().flat_map(|child| child.ids.iter()))
+        .map(String::len)
+        .max()
+        .unwrap_or(0);
+    let gap = if width == 0 {
+        String::new()
+    } else {
+        " ".repeat(width + 2)
+    };
+    let mut lines = Vec::new();
+    for id in &node.ids {
+        lines.push(format!("{id:<width$}  {}", tail(place)));
+    }
+    for item in flattened(node) {
+        match item {
+            Item::File(name, ids) => {
+                for id in ids {
+                    lines.push(format!("{id:<width$}  {name}"));
+                }
+            }
+            Item::Folder(name, _) => lines.push(format!("{gap}{name}/")),
+        }
+    }
+    lines
+}
+
+/// The level as JSON lines, one object per entry: a file's name with
+/// everything standing there spelled in full, a folder as itself —
+/// the set as a list, the way `find --json` speaks.
+fn objects(place: &str, node: &Node) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !node.ids.is_empty() {
+        lines.push(file_object(tail(place), &node.ids));
+    }
+    for item in flattened(node) {
+        match item {
+            Item::File(name, ids) => lines.push(file_object(name, ids)),
+            Item::Folder(name, _) => {
+                lines.push(format!(
+                    "{{\"folder\":{}}}",
+                    Value::String(name.to_string())
+                ));
+            }
+        }
+    }
+    lines
+}
+
+/// One file entry as its JSON object.
+fn file_object(name: &str, subjects: &[String]) -> String {
+    let spelled: Vec<Value> = subjects
+        .iter()
+        .map(|subject| Value::String(subject.clone()))
+        .collect();
+    format!(
+        "{{\"file\":{},\"subjects\":{}}}",
+        Value::String(name.to_string()),
+        Value::Array(spelled)
+    )
+}
+
+/// What one level holds: its folders, and its files — the place
+/// itself counted when it answers as one.
+fn level_counts(node: &Node) -> (usize, usize) {
+    let mut folders = 0;
+    let mut files = node.ids.len();
+    for item in flattened(node) {
+        match item {
+            Item::File(_, ids) => files += ids.len(),
+            Item::Folder(..) => folders += 1,
+        }
+    }
+    (folders, files)
+}
+
 /// One node's entries drawn beneath `prefix`, the way `tree` draws a
 /// disk: every entry on its own line, the last one closing its branch.
 fn drawn(node: &Node, prefix: &str, lines: &mut Vec<String>) {
@@ -210,7 +286,7 @@ fn drawn(node: &Node, prefix: &str, lines: &mut Vec<String>) {
         };
         match item {
             Item::File(name, ids) => {
-                lines.push(format!("{prefix}{tee}{name}  {}", ids.join(" ")));
+                lines.push(format!("{prefix}{tee}{name}  {}", bracketed(ids)));
             }
             Item::Folder(name, child) => {
                 lines.push(format!("{prefix}{tee}{name}/"));
@@ -218,6 +294,15 @@ fn drawn(node: &Node, prefix: &str, lines: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// The ids the way `tree` wears them beside a name: each in brackets
+/// of its own — two files that stood at one name are two.
+fn bracketed(ids: &[String]) -> String {
+    ids.iter()
+        .map(|id| format!("[{id}]"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// How many folders stand below this node, itself not counted.
@@ -265,26 +350,26 @@ mod tests {
     }
 
     #[test]
-    fn a_level_holds_files_and_folders_by_name() {
+    fn a_level_leads_with_the_archives_names() {
         let pairs = [
             pair("/a/b", "id3"),
             pair("/a/b/c.txt", "id1"),
             pair("/a/d.txt", "id2"),
         ];
         let node = grown("/a", &pairs);
-        let items = flattened(&node);
-        let spelled: Vec<String> = items
-            .iter()
-            .map(|item| match item {
-                Item::File(name, ids) => format!("{name}  {}", ids.join(" ")),
-                Item::Folder(name, _) => format!("{name}/"),
-            })
-            .collect();
         assert_eq!(
-            spelled,
-            ["b  id3", "b/", "d.txt  id2"],
-            "a name standing as file and folder answers twice, the file first"
+            listed("/a", &node),
+            ["id3  b", "     b/", "id2  d.txt"],
+            "a name standing as file and folder answers twice, the file first, \
+             and every entry's name stands in one column"
         );
+        assert_eq!(level_counts(&node), (1, 2));
+    }
+
+    #[test]
+    fn a_level_of_folders_alone_wears_no_blank() {
+        let node = grown("/", &[pair("/home/john/a.txt", "id1")]);
+        assert_eq!(listed("/", &node), ["home/"]);
     }
 
     #[test]
@@ -292,7 +377,7 @@ mod tests {
         let node = grown("/a/b.txt", &[pair("/a/b.txt", "id1")]);
         assert_eq!(node.ids, ["id1"], "the file lands on the root node");
         assert!(node.children.is_empty());
-        assert_eq!(tail("/a/b.txt"), "b.txt");
+        assert_eq!(listed("/a/b.txt", &node), ["id1  b.txt"]);
     }
 
     #[test]
@@ -309,11 +394,11 @@ mod tests {
             lines,
             [
                 "├── docs/",
-                "│   └── letter.pdf  id1",
+                "│   └── letter.pdf  [id1]",
                 "└── photos/",
                 "    ├── 2019/",
-                "    │   └── beach.jpg  id2",
-                "    └── pixel.jpg  id3",
+                "    │   └── beach.jpg  [id2]",
+                "    └── pixel.jpg  [id3]",
             ],
             "the last entry closes its branch, and a closed branch draws no bar"
         );
@@ -321,14 +406,37 @@ mod tests {
     }
 
     #[test]
-    fn two_files_at_one_name_stand_on_one_line() {
+    fn two_files_at_one_name_are_two() {
         let node = grown("/a", &[pair("/a/b.txt", "id1"), pair("/a/b.txt", "id2")]);
         let mut lines = Vec::new();
         drawn(&node, "", &mut lines);
         assert_eq!(
             lines,
-            ["└── b.txt  id1 id2"],
-            "different bytes stood at the name over time, and both stand"
+            ["└── b.txt  [id1] [id2]"],
+            "different bytes stood at the name over time, each in brackets of its own"
+        );
+        assert_eq!(
+            listed("/a", &node),
+            ["id1  b.txt", "id2  b.txt"],
+            "and ls answers once per file, the way export --dry-run would"
+        );
+    }
+
+    #[test]
+    fn a_json_entry_is_a_file_or_a_folder() {
+        let pairs = [
+            pair("/a/b.txt", "full1"),
+            pair("/a/b.txt", "full2"),
+            pair("/a/c/d.txt", "full3"),
+        ];
+        let node = grown("/a", &pairs);
+        assert_eq!(
+            objects("/a", &node),
+            [
+                "{\"file\":\"b.txt\",\"subjects\":[\"full1\",\"full2\"]}",
+                "{\"folder\":\"c\"}",
+            ],
+            "the set as a list, a folder as itself"
         );
     }
 
