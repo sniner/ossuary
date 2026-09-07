@@ -48,6 +48,23 @@ pub struct Folded {
     pub head: usize,
 }
 
+/// One value standing at a closing time: whose record it is on, what
+/// stands, when its newest surviving assertion was made, and that
+/// assertion's place in log order — the tie-breaker claim time cannot
+/// be, since many claims share a second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+    /// The file the value stands on.
+    pub subject: Subject,
+    /// The value itself.
+    pub value: Value,
+    /// When the newest assertion still standing was made, in claim
+    /// time's own spelling.
+    pub asserted: String,
+    /// That assertion's place in the replay, counting from zero.
+    pub order: u64,
+}
+
 /// A disposable query index over a claim log.
 #[derive(Debug)]
 pub struct Index {
@@ -321,6 +338,94 @@ impl Index {
         }
         pairs.sort();
         Ok(pairs)
+    }
+
+    /// One attribute's standing values across the whole record as it
+    /// stood at `cutoff` — each with the moment of its newest surviving
+    /// assertion.
+    ///
+    /// This is the fold run once more with a closing time: every claim
+    /// of `attribute` up to and including `cutoff` — assertions and
+    /// retractions alike, in log order — and what stands when the
+    /// replay ends is the answer. `None` closes nowhere and answers for
+    /// today. The cutoff compares in claim time's own spelling,
+    /// RFC 3339 UTC whole seconds.
+    ///
+    /// The answer carries every standing value, times attached; a
+    /// reader narrowing them to one — a mounted view's newest-wins —
+    /// decides by those times, and the narrowing stays the reader's
+    /// policy, as everywhere.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject and
+    /// row-to-value errors cannot happen for rows a fold wrote, but are
+    /// propagated rather than sworn away.
+    pub fn standing_as_of(&self, attribute: &str, cutoff: Option<&str>) -> Result<Vec<Standing>> {
+        use std::collections::BTreeMap;
+
+        let mut statement = self.connection.prepare(
+            "SELECT c.subject, c.value, c.time, c.retract
+             FROM claims c LEFT JOIN segments s ON c.segment = s.digest
+             WHERE c.attribute = ?1 AND (?2 IS NULL OR c.time <= ?2)
+             ORDER BY c.time,
+                      c.segment = 'head',
+                      s.first,
+                      s.digest,
+                      c.position",
+        )?;
+        let rows = statement.query_map(params![attribute, cutoff], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })?;
+
+        let mut folded: BTreeMap<String, BTreeMap<String, (String, u64)>> = BTreeMap::new();
+        for (order, row) in (0_u64..).zip(rows) {
+            let (subject, value, time, retract) = row?;
+            match (retract, value) {
+                // A repeated assertion collapses in the set but renews
+                // the moment: the newest surviving assertion is the one
+                // that answers for when.
+                (false, Some(value)) => {
+                    folded
+                        .entry(subject)
+                        .or_default()
+                        .insert(value, (time, order));
+                }
+                (true, Some(value)) => {
+                    if let Some(values) = folded.get_mut(&subject) {
+                        values.remove(&value);
+                    }
+                }
+                (true, None) => {
+                    folded.remove(&subject);
+                }
+                // An assertion always carries a value; rows a fold
+                // wrote cannot lack one.
+                (false, None) => {}
+            }
+        }
+
+        let mut standing = Vec::new();
+        for (subject, values) in folded {
+            if values.is_empty() {
+                continue;
+            }
+            let subject = Subject::parse(&subject)?;
+            for (value, (asserted, order)) in values {
+                standing.push(Standing {
+                    subject: subject.clone(),
+                    value: serde_json::from_str(&value)?,
+                    asserted,
+                    order,
+                });
+            }
+        }
+        Ok(standing)
     }
 
     /// Every subject on which all `terms` stand and none of `missing` does,
@@ -1544,6 +1649,103 @@ mod tests {
             index.under("/").unwrap(),
             [],
             "the retracted place no longer stands, and a number names none"
+        );
+    }
+
+    #[test]
+    fn standing_as_of_replays_to_a_closing_time() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let place = json!("/home/john/a.txt");
+        log.append(&say(
+            &subject(),
+            "file:path",
+            place.clone(),
+            "2026-01-01T00:00:00Z",
+        ))
+        .unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("file:path").unwrap(),
+                place.clone(),
+                Timestamp::parse("2026-02-01T00:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "file:path",
+            place.clone(),
+            "2026-03-01T00:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let at = |cutoff| index.standing_as_of("file:path", cutoff).unwrap();
+        assert_eq!(
+            (
+                at(Some("2026-01-15T00:00:00Z"))[0].value.clone(),
+                at(Some("2026-01-15T00:00:00Z"))[0].asserted.clone()
+            ),
+            (place.clone(), "2026-01-01T00:00:00Z".to_string()),
+            "before the retraction the first assertion stands"
+        );
+        assert_eq!(
+            at(Some("2026-02-15T00:00:00Z")),
+            [],
+            "at a cutoff behind the retraction nothing stands"
+        );
+        let today = at(None);
+        assert_eq!(
+            (
+                today[0].value.clone(),
+                today[0].asserted.clone(),
+                today[0].order
+            ),
+            (place, "2026-03-01T00:00:00Z".to_string(), 2),
+            "no cutoff answers for today, and the surviving assertion names its moment and place in the replay"
+        );
+    }
+
+    #[test]
+    fn standing_as_of_renews_the_moment_and_empties_whole_attributes() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-01-01T00:00:00Z")).unwrap();
+        log.append(&tag("beach", "2026-01-02T00:00:00Z")).unwrap();
+        log.append(&tag("holiday", "2026-01-03T00:00:00Z")).unwrap();
+        log.append(&Claim::retract_attribute(
+            subject(),
+            Attribute::parse("user:tag").unwrap(),
+            Timestamp::parse("2026-01-04T00:00:00Z").unwrap(),
+            Source::parse("user").unwrap(),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let before = index
+            .standing_as_of("user:tag", Some("2026-01-03T00:00:00Z"))
+            .unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .map(|standing| (standing.value.clone(), standing.asserted.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (json!("beach"), "2026-01-02T00:00:00Z"),
+                (json!("holiday"), "2026-01-03T00:00:00Z"),
+            ],
+            "a repeated assertion collapses in the set but renews its moment"
+        );
+        assert_eq!(
+            index.standing_as_of("user:tag", None).unwrap(),
+            [],
+            "a valueless retraction empties the attribute in the replay too"
         );
     }
 
