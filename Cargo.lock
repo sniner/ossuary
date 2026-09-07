@@ -1102,7 +1102,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ossuary-extract-text"
+name = "ossuary-extract-pdf"
 version = "0.1.0"
 dependencies = [
  "lopdf",

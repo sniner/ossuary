@@ -174,7 +174,7 @@ pub fn examine(
     };
     if names.is_empty() {
         return Err(Error::Extract(
-            "no extractors to run — name one, like `ossuary extract text`, or list this archive's own under [extract] in config.toml".to_string(),
+            "no extractors to run — name one, like `ossuary extract pdf`, or list this archive's own under [extract] in config.toml".to_string(),
         ));
     }
 

@@ -1,4 +1,4 @@
-//! The text extractor: PDFs in, plain text out — as a derived file.
+//! The PDF extractor: PDFs in, plain text out — as a derived file.
 //!
 //! Speaks the ossuary extractor protocol (`docs/extractors.md`): called
 //! with `--identify` it says who it is, that it reads `application/pdf`,
@@ -12,7 +12,7 @@
 //! to over pipes the way ossuary speaks to this program. Its version is
 //! deliberately not part of this extractor's source: re-examination
 //! follows deliberate version bumps here, not the system's update
-//! cadence — `ossuary extract text --full` is the lever for the rare
+//! cadence — `ossuary extract pdf --full` is the lever for the rare
 //! poppler leap that warrants a fresh look.
 //!
 //! A document with no text to give — scanned pages, an empty harvest, a
@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "ossuary-extract-text: run with --identify, or with the output directory as the only argument and a file's bytes on stdin"
+                "ossuary-extract-pdf: run with --identify, or with the output directory as the only argument and a file's bytes on stdin"
             );
             ExitCode::FAILURE
         }
@@ -56,7 +56,7 @@ fn identify() -> ExitCode {
         "{}",
         json!({
             "ossuary-extractor": 1,
-            "source": format!("extractor:text/{}", env!("CARGO_PKG_VERSION")),
+            "source": format!("extractor:pdf/{}", env!("CARGO_PKG_VERSION")),
             "mimes": ["application/pdf"],
             "derives": true,
         })
@@ -68,7 +68,7 @@ fn identify() -> ExitCode {
 fn examine(directory: &Path) -> ExitCode {
     let mut bytes = Vec::new();
     if let Err(error) = std::io::stdin().lock().read_to_end(&mut bytes) {
-        eprintln!("ossuary-extract-text: reading stdin: {error}");
+        eprintln!("ossuary-extract-pdf: reading stdin: {error}");
         return ExitCode::FAILURE;
     }
     for (attribute, value) in document_info(&bytes) {
@@ -78,7 +78,7 @@ fn examine(directory: &Path) -> ExitCode {
         Ok(Harvest::Text(text)) => text,
         Ok(Harvest::Refused) => return ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("ossuary-extract-text: {error}");
+            eprintln!("ossuary-extract-pdf: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -86,7 +86,7 @@ fn examine(directory: &Path) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if let Err(error) = std::fs::write(directory.join("text.txt"), &text) {
-        eprintln!("ossuary-extract-text: writing text.txt: {error}");
+        eprintln!("ossuary-extract-pdf: writing text.txt: {error}");
         return ExitCode::FAILURE;
     }
     println!("{}", json!({ "file": "text.txt", "mime": "text/plain" }));
@@ -149,7 +149,7 @@ fn pdftotext(bytes: Vec<u8>) -> std::io::Result<Harvest> {
         Ok(Harvest::Text(text))
     } else if documents_own_fault(status.code()) {
         eprintln!(
-            "ossuary-extract-text: pdftotext could not read this document ({status}) — examined, nothing found"
+            "ossuary-extract-pdf: pdftotext could not read this document ({status}) — examined, nothing found"
         );
         Ok(Harvest::Refused)
     } else {

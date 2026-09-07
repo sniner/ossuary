@@ -44,7 +44,7 @@ compress = false
 
 [extract]
 # What a bare `ossuary extract` runs, in order - each a program
-# `ossuary-extract-<name>` found on PATH, like ["mail", "exif", "text"].
+# `ossuary-extract-<name>` found on PATH, like ["mail", "exif", "pdf"].
 # A program offering several contracts runs them all; name:contract
 # runs one of them, like "packed:list". Empty means: nothing runs
 # unless named outright.
@@ -304,11 +304,11 @@ mod tests {
     #[test]
     fn the_run_list_comes_back_in_its_own_order() {
         let dir = TempDir::new().unwrap();
-        write(&dir, "[extract]\nrun = [\"text\", \"exif\"]\n");
+        write(&dir, "[extract]\nrun = [\"pdf\", \"exif\"]\n");
 
         let config = Config::load(dir.path()).unwrap();
 
-        assert_eq!(config.extractors(), ["text", "exif"]);
+        assert_eq!(config.extractors(), ["pdf", "exif"]);
     }
 
     #[test]

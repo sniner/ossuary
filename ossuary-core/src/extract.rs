@@ -357,7 +357,7 @@ mod tests {
         assert!(index.examined(&jpeg, &source()).unwrap());
         assert!(
             !index
-                .examined(&jpeg, &Source::parse("extractor:text/0.1.0").unwrap())
+                .examined(&jpeg, &Source::parse("extractor:pdf/0.1.0").unwrap())
                 .unwrap(),
             "a receipt belongs to its source alone"
         );

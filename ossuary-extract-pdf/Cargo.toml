@@ -1,6 +1,6 @@
 [package]
-name = "ossuary-extract-text"
-description = "Text extractor for ossuary archives, deriving plain text from PDFs"
+name = "ossuary-extract-pdf"
+description = "PDF extractor for ossuary archives, deriving plain text and document information"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "ossuary-extract-text"
+name = "ossuary-extract-pdf"
 path = "src/main.rs"
 
 [dependencies]

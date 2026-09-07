@@ -49,9 +49,9 @@ $ cd ossuary && cargo build --release
 ```
 
 That builds the `ossuary` command and the extractors
-(`ossuary-extract-exif`, `-text`, `-mail`, `-packed`); put them on your
+(`ossuary-extract-exif`, `-pdf`, `-mail`, `-packed`); put them on your
 `PATH` together — extractors are found there, not built in.
-`ossuary-extract-text` additionally wants poppler's `pdftotext` on the
+`ossuary-extract-pdf` additionally wants poppler's `pdftotext` on the
 `PATH`.
 
 ## A new archive

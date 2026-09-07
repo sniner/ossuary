@@ -6,7 +6,7 @@ members = [
     "ossuary-extract-exif",
     "ossuary-extract-mail",
     "ossuary-extract-packed",
-    "ossuary-extract-text",
+    "ossuary-extract-pdf",
 ]
 
 [workspace.package]

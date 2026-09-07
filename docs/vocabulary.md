@@ -58,7 +58,7 @@ in its source.
 - `derive:` — relations between content: what came from what
 - `user:` — what the user says; the archive takes their word
 - `exif:` — verbatim EXIF fields, as `ossuary-extract-exif` reads them
-- `pdf:` — verbatim PDF document information, as `ossuary-extract-text`
+- `pdf:` — verbatim PDF document information, as `ossuary-extract-pdf`
   reads it
 - `mail:` — a message's own voice, verbatim, as `ossuary-extract-mail`
   reads it — its headers standing on the mail, a part's identity on the
@@ -194,7 +194,7 @@ need.
   attribute but a derived file, `text/plain`, tied to the document by
   `derive:derived-from`
 - value: string
-- written by: ossuary-extract-text
+- written by: ossuary-extract-pdf
 
 ### mail:…
 
