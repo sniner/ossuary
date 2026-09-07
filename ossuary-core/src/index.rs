@@ -277,6 +277,52 @@ impl Index {
         Ok(subjects)
     }
 
+    /// Everything standing under one place: every standing `file:path`
+    /// that names `place` itself or anything below it, as (path, subject)
+    /// pairs sorted by path then subject — as of the last
+    /// [`fold`](Index::fold), the open head included.
+    ///
+    /// Below means component-wise, the way folders nest: `/a/b` lies
+    /// under `/a`, `/a/bc` does not. `place` comes without a trailing
+    /// slash, the root as `/`. Only string values name places; a
+    /// `file:path` standing as any other type is passed over.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than
+    /// sworn away.
+    pub fn under(&self, place: &str) -> Result<Vec<(String, Subject)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT value, subject FROM standing
+             WHERE attribute = 'file:path'",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut pairs = Vec::new();
+        for row in rows {
+            let (value, subject) = row?;
+            let Value::String(path) = serde_json::from_str(&value)? else {
+                continue;
+            };
+            let below = match place {
+                "/" => path.starts_with('/'),
+                _ => {
+                    path == place
+                        || path
+                            .strip_prefix(place)
+                            .is_some_and(|rest| rest.starts_with('/'))
+                }
+            };
+            if below {
+                pairs.push((path, Subject::parse(&subject)?));
+            }
+        }
+        pairs.sort();
+        Ok(pairs)
+    }
+
     /// Every subject on which all `terms` stand and none of `missing` does,
     /// sorted — as of the last [`fold`](Index::fold), the open head
     /// included.
@@ -1407,6 +1453,97 @@ mod tests {
             index.find(&[term("user:tag", "..")], &[]).unwrap(),
             [subject()],
             "the presence question, --missing turned around"
+        );
+    }
+
+    #[test]
+    fn under_answers_component_wise() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let neighbour =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let deeper =
+            Subject::parse("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
+        let when = "2026-09-01T21:14:03Z";
+        log.append(&say(
+            &subject(),
+            "file:path",
+            json!("/home/john/a.txt"),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &neighbour,
+            "file:path",
+            json!("/home/johnny/b.txt"),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &deeper,
+            "file:path",
+            json!("/home/john/photos/c.jpg"),
+            when,
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.under("/home/john").unwrap(),
+            [
+                ("/home/john/a.txt".to_string(), subject()),
+                ("/home/john/photos/c.jpg".to_string(), deeper.clone()),
+            ],
+            "a place bounds by component: johnny is a neighbour, not a child"
+        );
+        assert_eq!(
+            index.under("/home/john/a.txt").unwrap(),
+            [("/home/john/a.txt".to_string(), subject())],
+            "a place that is a file answers with itself"
+        );
+        assert_eq!(
+            index.under("/").unwrap().len(),
+            3,
+            "the root is over everything"
+        );
+        assert_eq!(index.under("/mnt").unwrap(), []);
+    }
+
+    #[test]
+    fn under_reads_standing_string_places_only() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let when = "2026-09-01T21:14:03Z";
+        log.append(&say(
+            &subject(),
+            "file:path",
+            json!("/home/john/a.txt"),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(&subject(), "file:path", json!(42), when))
+            .unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("file:path").unwrap(),
+                json!("/home/john/a.txt"),
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.under("/").unwrap(),
+            [],
+            "the retracted place no longer stands, and a number names none"
         );
     }
 

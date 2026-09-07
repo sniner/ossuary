@@ -191,6 +191,32 @@ For scripts: `find --id` prints full names alone, ready to pipe;
 `--json` on `about`, `value` and `find` keeps the JSON spelling for
 `jq`; and `-q` silences the narration everywhere.
 
+## Looking around
+
+`ls` shows what stands at one place, one level of it; `tree` draws
+everything below:
+
+```console
+$ ossuary tree /home/john
+/home/john
+├── docs/
+│   ├── backup.zip  e176bedf
+│   └── notes.txt  719aac93
+├── mail/
+│   └── 2026-03-10-quarterly.eml  e9ed6104
+└── photos/
+    ├── DSC_1042.jpg  bd84e795
+    └── DSC_1043.jpg  6ca81e7a
+3 folder(s), 5 file(s) under /home/john
+```
+
+What answers is the record, not a disk: every place a file was ever
+seen at answers as long as it stands, every machine's paths in one
+forest — and after a disk is gone, its places remain browsable.
+Beside each file stands its name in the archive, ready for `about`,
+`get` and `export`. The mail's attachment is not here: a derived file
+never sat at any place — `find` reaches it, as above.
+
 ## Your own word
 
 `annotate` puts tags and comments on files already on the record, under

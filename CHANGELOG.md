@@ -62,6 +62,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only bare attributes every file on the record answers. `--id` answers with the full names
   alone, one per line, ready to pipe; `--json` answers one JSON object per match with the
   values as lists
+- **`ossuary ls [PLACE]`** and **`ossuary tree [PLACE]`** browse the record's places: every place
+  a file was ever seen at and still stands answers — the record, not a disk, so every machine's
+  paths stand in one forest and outlive the disks they were on. `ls` shows one level, folders
+  with a trailing slash, files with their short names beside them — ready for `about`, `get`
+  and `export`; `tree` draws the whole subtree; without a PLACE the roots answer. One name may
+  honestly carry several files, when different bytes stood there over time, and a retracted
+  place no longer answers
 - **`ossuary annotate SUBJECT… --comment TEXT --tag TAG`** puts the user's own word on files
   already on the record: each comment and tag becomes a claim (`user:comment`, `user:tag`)
   under the source `user`, on every named file — beside what `ingest --tag` said at arrival.
