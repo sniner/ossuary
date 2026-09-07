@@ -38,8 +38,10 @@ struct Cli {
     #[arg(long, value_name = "DIR", env = "OSSUARY_ARCHIVE", default_value = ".")]
     archive: PathBuf,
 
-    /// Where the view appears; created when missing. The command stays
-    /// in the foreground — Ctrl-C gives the directory back
+    /// Where the view appears; created when missing, and a directory
+    /// this command created goes with the mount when it ends. The
+    /// command stays in the foreground — Ctrl-C gives the directory
+    /// back
     #[arg(value_name = "DIR")]
     mountpoint: PathBuf,
 
@@ -85,6 +87,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         .unwrap_or_else(|| Timestamp::now().as_str().to_string());
     let view_time = forest::clamped(forest::epoch(&moment)).unwrap_or(0);
 
+    let made = !mountpoint.exists();
     std::fs::create_dir_all(&mountpoint)
         .with_context(|| format!("{}: making the mountpoint", mountpoint.display()))?;
     let owner = std::fs::metadata(&mountpoint)
@@ -97,9 +100,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let told = counted(&view);
     let record = fs::RecordFs::new(view, archive, uid, gid, view_time);
 
-    tokio::runtime::Runtime::new()
+    let served = tokio::runtime::Runtime::new()
         .context("starting the runtime")?
-        .block_on(serve(record, &mountpoint, cutoff.as_deref(), &told, quiet))
+        .block_on(serve(record, &mountpoint, cutoff.as_deref(), &told, quiet));
+
+    // A directory made for the mount is taken back with it; one that
+    // stood before stays. Removal only works on an empty, unmounted
+    // directory, so a room still occupied simply remains — a leftover,
+    // never a failure.
+    if made {
+        let _ = std::fs::remove_dir(&mountpoint);
+    }
+    served
 }
 
 /// The archive, or the way to one — `ossuary`'s own wording.
