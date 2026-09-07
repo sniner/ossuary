@@ -267,16 +267,18 @@ fn take(
     tags: &[String],
     word: &Source,
 ) -> Result<(Status, usize)> {
-    let bytes = fs::read(path).map_err(|source| Error::Io {
+    let file = fs::File::open(path).map_err(|source| Error::Io {
         context: "reading".to_string(),
         source,
     })?;
+    // The file streams into the store and never stands whole in memory;
+    // what the day-one facts need of the bytes is observed in passing.
+    let mut observed = Observed::over(file);
+    let (status, entry) = content.add_reader(&mut observed)?;
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(modified_value);
-
-    let (status, entry) = content.add(&bytes)?;
     let subject = Subject::parse(entry.digest().as_str())?;
     let time = Timestamp::now();
 
@@ -311,14 +313,14 @@ fn take(
         claims.push(fact(
             &subject,
             "file:size",
-            json!(bytes.len()),
+            json!(observed.length),
             &time,
             source,
         )?);
         claims.push(fact(
             &subject,
             "file:mime",
-            json!(mime(&bytes)),
+            json!(observed.mime()),
             &time,
             source,
         )?);
@@ -356,16 +358,116 @@ fn fact(
     )
 }
 
-/// What the bytes say they are: magic bytes first, a UTF-8 look for plain
-/// text second, and the honest shrug when nothing answers.
-fn mime(bytes: &[u8]) -> String {
-    infer::get(bytes)
-        .map(|kind| kind.mime_type().to_string())
-        .or_else(|| {
-            (!bytes.is_empty() && std::str::from_utf8(bytes).is_ok())
-                .then(|| "text/plain".to_string())
-        })
-        .unwrap_or_else(|| "application/octet-stream".to_string())
+/// How much of a file's head the magic-byte sniff sees — the same 8 KiB
+/// infer's own file reading takes, comfortably past every offset its
+/// matchers look at.
+const SNIFF: usize = 8192;
+
+/// A reader that watches bytes on their way into the store: the head for
+/// the sniff, a running UTF-8 check for the text fallback, the length.
+/// Everything [`mime`](Observed::mime) will need, observed in passing —
+/// which is what lets a file stream in without standing whole in memory.
+struct Observed<R> {
+    inner: R,
+    head: Vec<u8>,
+    text: Utf8Watch,
+    length: u64,
+}
+
+impl<R: std::io::Read> Observed<R> {
+    fn over(inner: R) -> Observed<R> {
+        Observed {
+            inner,
+            head: Vec::with_capacity(SNIFF),
+            text: Utf8Watch::new(),
+            length: 0,
+        }
+    }
+
+    /// What the bytes say they are: magic bytes first, a UTF-8 look for
+    /// plain text second, and the honest shrug when nothing answers. The
+    /// sniff reads the head, the UTF-8 look judged the whole stream.
+    fn mime(&self) -> String {
+        infer::get(&self.head)
+            .map(|kind| kind.mime_type().to_string())
+            .or_else(|| (self.length > 0 && self.text.holds()).then(|| "text/plain".to_string()))
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for Observed<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buf)?;
+        let passed = &buf[..count];
+        if self.head.len() < SNIFF {
+            let room = SNIFF - self.head.len();
+            self.head
+                .extend_from_slice(&passed[..room.min(passed.len())]);
+        }
+        self.text.feed(passed);
+        self.length += count as u64;
+        Ok(count)
+    }
+}
+
+/// Whether everything fed through so far could be one valid UTF-8 text —
+/// the whole-stream judgement, kept across chunk borders: a multi-byte
+/// character split between two reads must not read as junk.
+struct Utf8Watch {
+    sound: bool,
+    /// The bytes at a chunk's end that began a character whose end had
+    /// not arrived yet — at most three, a character being four at the
+    /// longest.
+    pending: [u8; 4],
+    pended: usize,
+}
+
+impl Utf8Watch {
+    fn new() -> Utf8Watch {
+        Utf8Watch {
+            sound: true,
+            pending: [0; 4],
+            pended: 0,
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8]) {
+        if !self.sound {
+            return;
+        }
+        let mut rest = chunk;
+        // First finish the character the last chunk began: one byte at a
+        // time until it is whole or proven junk — four bytes always
+        // decide, so this ends within three steps and the buffer holds.
+        while self.pended > 0 && !rest.is_empty() {
+            self.pending[self.pended] = rest[0];
+            self.pended += 1;
+            rest = &rest[1..];
+            match std::str::from_utf8(&self.pending[..self.pended]) {
+                Ok(_) => self.pended = 0,
+                Err(error) if error.error_len().is_some() => {
+                    self.sound = false;
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
+        match std::str::from_utf8(rest) {
+            Ok(_) => {}
+            Err(error) if error.error_len().is_some() => self.sound = false,
+            Err(error) => {
+                let tail = &rest[error.valid_up_to()..];
+                self.pending[..tail.len()].copy_from_slice(tail);
+                self.pended = tail.len();
+            }
+        }
+    }
+
+    /// Whether the whole stream read as text. A character still waiting
+    /// for its end when the stream ends is junk, not text.
+    fn holds(&self) -> bool {
+        self.sound && self.pended == 0
+    }
 }
 
 /// The moment the filesystem reported, spelled as the RFC 3339 instant it
@@ -1216,5 +1318,76 @@ mod tests {
 
         assert_eq!(result.stored + result.known, 0);
         assert_eq!(result.failed.len(), 1);
+    }
+
+    #[test]
+    fn the_utf8_watch_reads_across_chunk_borders() {
+        let mut split = Utf8Watch::new();
+        for byte in "grüße, öl".as_bytes() {
+            // Byte by byte: every multi-byte character is torn apart.
+            split.feed(std::slice::from_ref(byte));
+        }
+        assert!(split.holds());
+
+        let mut torn = Utf8Watch::new();
+        torn.feed(&[0xC3]);
+        assert!(
+            !torn.holds(),
+            "a character begun and never finished is junk"
+        );
+        torn.feed(&[0xA4]);
+        assert!(torn.holds(), "finished, it is the text it always was");
+
+        let mut junk = Utf8Watch::new();
+        junk.feed(&[b'a', 0xFF, b'b']);
+        assert!(!junk.holds());
+        junk.feed(b"all text from here on");
+        assert!(!junk.holds(), "junk once is junk for good");
+    }
+
+    fn recorded_mime(dir: &TempDir, bytes: &[u8]) -> serde_json::Value {
+        let (content, log) = archive(dir);
+        let file = dir.path().join("specimen");
+        fs::write(&file, bytes).unwrap();
+        ingest(
+            &content,
+            &log,
+            [&file],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
+        log.head()
+            .unwrap()
+            .iter()
+            .find(|claim| claim.attribute().as_str() == "file:mime")
+            .and_then(|claim| claim.value())
+            .cloned()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_text_fallback_judges_the_whole_file_not_the_sniff_head() {
+        // Text for longer than the sniff head sees, then one raw byte:
+        // only a whole-stream look can refuse the text/plain fallback.
+        let dir = TempDir::new().unwrap();
+        let mut bytes = vec![b'a'; SNIFF + 1024];
+        bytes.push(0xFF);
+        assert_eq!(
+            recorded_mime(&dir, &bytes),
+            json!("application/octet-stream")
+        );
+    }
+
+    #[test]
+    fn a_text_larger_than_the_sniff_head_is_still_text() {
+        // A multi-byte character straddling the head's edge: the truncated
+        // head is no longer valid UTF-8, the whole stream is.
+        let dir = TempDir::new().unwrap();
+        let mut bytes = vec![b'a'; SNIFF - 1];
+        bytes.extend_from_slice("ä und noch viel mehr Text".as_bytes());
+        assert_eq!(recorded_mime(&dir, &bytes), json!("text/plain"));
     }
 }

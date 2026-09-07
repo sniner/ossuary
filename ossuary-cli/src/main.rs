@@ -906,8 +906,12 @@ pub(crate) fn shorten(index: &Index, subject: &Subject) -> Result<String> {
 fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     let algorithm = archive.content().algorithm();
-    let bytes = std::fs::read(path).with_context(|| format!("{}: reading", path.display()))?;
-    let digest = algorithm.hash(&bytes);
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("{}: reading", path.display()))?;
+    let mut hasher = algorithm.hasher();
+    std::io::copy(&mut file, &mut hasher)
+        .with_context(|| format!("{}: reading", path.display()))?;
+    let digest = hasher.finish();
     println!("{digest}");
     // The name is the answer and stays alone on stdout; whether the
     // archive holds the bytes is the run talking. Held means held —

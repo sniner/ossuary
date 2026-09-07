@@ -170,18 +170,32 @@ fn take(
         stored: 0,
         known: 0,
     };
-    let bytes = fs::read(&derivation.path).map_err(|io| Error::Io {
+    let io = |source| Error::Io {
         context: format!("{}: reading the derived file", derivation.name),
-        source: io,
-    })?;
-    let digest = derived.algorithm().hash(&bytes);
+        source,
+    };
+    // Hashed in one streaming pass, stored in a second: the subject must
+    // be known before the stores are asked, and neither pass holds the
+    // file whole. The scratch directory has no other writer — the
+    // extractor has exited — so the passes see the same bytes, and a
+    // mismatch is refused rather than recorded askew.
+    let mut file = fs::File::open(&derivation.path).map_err(io)?;
+    let mut hasher = derived.algorithm().hasher();
+    let size = std::io::copy(&mut file, &mut hasher).map_err(io)?;
+    let digest = hasher.finish();
     let subject = Subject::parse(digest.as_str())?;
     // The digest does not say which store it belongs to — so the writer
     // may choose, and content/ wins: bytes once taken in need no
     // second-class copy, the claims below stand either way. This asks
     // the store itself, truth asking truth; the index has no say here.
     if content.matching(digest.as_str())?.is_empty() {
-        let (status, _) = derived.add(&bytes)?;
+        let (status, entry) = derived.add_reader(fs::File::open(&derivation.path).map_err(io)?)?;
+        if entry.digest().as_str() != digest.as_str() {
+            return Err(Error::Extract(format!(
+                "{}: changed between hashing and storing",
+                derivation.name
+            )));
+        }
         // The size describes the content and is said on the bytes' first
         // day, the way ingest says it — and ingest already said it for
         // everything content/ holds. Kind, name, origin and run belong
@@ -189,8 +203,8 @@ fn take(
         // the same bytes under other words, and every word stands in
         // the set.
         if status.is_new() {
-            let size = known_attribute("file:size");
-            append(log, &subject, &size, &json!(bytes.len()), time, source)?;
+            let attribute = known_attribute("file:size");
+            append(log, &subject, &attribute, &json!(size), time, source)?;
             examined.claims += 1;
             examined.stored += 1;
         } else {

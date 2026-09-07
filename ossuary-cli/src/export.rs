@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
-use ossuary_core::{Archive, Attribute, Index, Placed, Placement, Subject};
+use ossuary_core::{Algorithm, Archive, Attribute, Index, Placed, Placement, Subject};
 
 use crate::{catch_up, open, resolve, say, shorten};
 
@@ -170,8 +170,8 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
             Ok(_) => {
                 // Something already stands here. The same bytes count
                 // as done; anything else is left untouched and named.
-                match fs::read(&dest) {
-                    Ok(bytes) if algorithm.hash(&bytes).as_str() == placed.subject.as_str() => {
+                match hashed(&dest, algorithm) {
+                    Ok(name) if name == placed.subject.as_str() => {
                         delivery.standing += 1;
                         landed.entry(placed.subject.clone()).or_insert(dest);
                     }
@@ -279,6 +279,15 @@ fn bump(target: &Path, count: usize) -> PathBuf {
         None => format!("{stem}-{count}"),
     };
     target.with_file_name(name)
+}
+
+/// The name the bytes at `path` answer to, streamed through the hasher:
+/// holding a file against the plan does not need it in memory.
+fn hashed(path: &Path, algorithm: Algorithm) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = algorithm.hasher();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(hasher.finish().to_string())
 }
 
 /// One subject's bytes to `dest`, from whichever store holds them —

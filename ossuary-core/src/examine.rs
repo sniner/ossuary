@@ -23,7 +23,7 @@
 //! said, where, and how loudly is the observer's business alone.
 
 use std::collections::HashSet;
-use std::io::{Read, Write as _};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -722,15 +722,9 @@ fn examine_one(
             }
         },
     };
-    let mut bytes = Vec::new();
-    store
+    let mut reader = store
         .reader(&digest)?
-        .ok_or_else(|| Error::Extract("gone between naming and reading".to_string()))?
-        .read_to_end(&mut bytes)
-        .map_err(|error| Error::Io {
-            context: "reading from the store".to_string(),
-            source: error,
-        })?;
+        .ok_or_else(|| Error::Extract("gone between naming and reading".to_string()))?;
 
     // A fresh directory per file: names cannot collide across files, and
     // dropping it sweeps everything — announced files once they are taken
@@ -758,15 +752,15 @@ fn examine_one(
             context: format!("running `{program}`"),
             source: error,
         })?;
-    child
-        .stdin
-        .take()
-        .expect("stdin was piped")
-        .write_all(&bytes)
-        .map_err(|error| Error::Io {
-            context: "handing the bytes over".to_string(),
-            source: error,
-        })?;
+    // Streamed straight from the store into the pipe: the examinee never
+    // stands whole in memory. The drop closes the pipe — the extractor's
+    // end-of-file.
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    std::io::copy(&mut reader, &mut stdin).map_err(|error| Error::Io {
+        context: "handing the bytes over".to_string(),
+        source: error,
+    })?;
+    drop(stdin);
     let mut answer = String::new();
     child
         .stdout
