@@ -11,9 +11,14 @@ env:
 
 jobs:
   lint:
-    # Not matrixed: no cfg-gated per-OS code — clippy sees everything on one OS.
-    name: Format & clippy
-    runs-on: ubuntu-latest
+    # Matrixed: ossuary-mount has a door per OS (NFS on macOS, FUSE on
+    # Linux), and clippy only sees the door of the OS it runs on.
+    name: Format & clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 

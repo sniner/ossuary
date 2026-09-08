@@ -19,6 +19,13 @@ use crate::forest::{Entry, Forest, Kind};
 /// are let go.
 const LOADED_AT_MOST: usize = 512 * 1024 * 1024;
 
+/// How many store files to keep open for reading in place before the
+/// least recently opened are closed again. A closed one is simply
+/// opened anew on its next read, so the number only bounds what the
+/// process holds — well under the 1024 descriptors a login shell
+/// commonly allows, with room for the doors' own.
+const HELD_AT_MOST: usize = 256;
+
 /// Why an answer could not be given. Each door says it in the words its
 /// protocol has for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +61,16 @@ struct Loaded {
     total: usize,
 }
 
+/// Store files held open for reading in place — `None` marks an entry
+/// the store keeps compressed, where reading in place would misread
+/// the bytes. Bounded: the least recently opened is closed when one
+/// too many stands open.
+#[derive(Default)]
+struct Held {
+    files: HashMap<u64, Option<Arc<std::fs::File>>>,
+    order: VecDeque<u64>,
+}
+
 pub struct Record {
     forest: Forest,
     archive: Archive,
@@ -61,10 +78,7 @@ pub struct Record {
     gid: u32,
     /// The moment the view answers for: folders wear it as their time.
     view_time: u32,
-    /// Plain store entries opened once, read in place ever after —
-    /// `None` marks one the store keeps compressed, where reading in
-    /// place would misread the bytes.
-    handles: Mutex<HashMap<u64, Option<std::fs::File>>>,
+    handles: Mutex<Held>,
     loaded: Mutex<Loaded>,
 }
 
@@ -76,7 +90,7 @@ impl Record {
             uid,
             gid,
             view_time,
-            handles: Mutex::new(HashMap::new()),
+            handles: Mutex::new(Held::default()),
             loaded: Mutex::new(Loaded::default()),
         }
     }
@@ -182,8 +196,8 @@ impl Record {
         Ok((data, done))
     }
 
-    /// Read a plain entry in place, opening it on first use — `None`
-    /// when the store keeps these bytes compressed.
+    /// Read a plain entry in place, opening it when it is not held —
+    /// `None` when the store keeps these bytes compressed.
     fn read_in_place(
         &self,
         id: u64,
@@ -191,12 +205,10 @@ impl Record {
         offset: u64,
         wanted: usize,
     ) -> Result<Option<Vec<u8>>, Fault> {
-        let mut handles = self.handles.lock().expect("no poisoned lock");
-        let opened = match handles.entry(id) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(self.openable(digest)?),
-        };
-        let Some(file) = opened else {
+        // The file is cloned out from under the lock: the bytes are
+        // read without holding up every other reader, and a file
+        // closed meanwhile stays open for this read alone.
+        let Some(file) = self.held(id, digest)? else {
             return Ok(None);
         };
         let mut data = vec![0; wanted];
@@ -212,6 +224,25 @@ impl Record {
         }
         data.truncate(filled);
         Ok(Some(data))
+    }
+
+    /// The entry's file as held open, opened now when it is not — and
+    /// the least recently opened closed to make room for it.
+    fn held(&self, id: u64, digest: &str) -> Result<Option<Arc<std::fs::File>>, Fault> {
+        let mut held = self.handles.lock().expect("no poisoned lock");
+        if let Some(file) = held.files.get(&id) {
+            return Ok(file.clone());
+        }
+        let file = self.openable(digest)?.map(Arc::new);
+        held.files.insert(id, file.clone());
+        held.order.push_back(id);
+        while held.files.len() > HELD_AT_MOST {
+            let Some(oldest) = held.order.pop_front() else {
+                break;
+            };
+            held.files.remove(&oldest);
+        }
+        Ok(file)
     }
 
     /// The entry's file, when its bytes lie in the store as they are.
@@ -254,6 +285,11 @@ impl Record {
         };
         let bytes = Arc::new(bytes);
         let mut loaded = self.loaded.lock().expect("no poisoned lock");
+        // Another reader may have loaded the same bytes meanwhile: theirs
+        // stand, and this load is let go rather than counted twice.
+        if let Some(theirs) = loaded.bytes.get(digest) {
+            return Ok(theirs.clone());
+        }
         if bytes.len() <= LOADED_AT_MOST {
             loaded.total += bytes.len();
             loaded.order.push_back(digest.to_string());
