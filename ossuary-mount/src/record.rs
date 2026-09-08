@@ -110,7 +110,9 @@ impl Record {
         self.gid
     }
 
-    /// How many entries the view holds, root included.
+    /// How many entries the view holds, root included. Only the FUSE
+    /// door's statfs asks; NFS's FSSTAT is answered by nfsserve itself.
+    #[cfg(target_os = "linux")]
     pub fn entries(&self) -> usize {
         self.forest.entries.len()
     }
