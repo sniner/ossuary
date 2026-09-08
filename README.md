@@ -239,9 +239,11 @@ name, the newest wins — and `--as-of TIME` turns that dial back: the
 record as it was known at that moment, UTC. Files since retracted
 stand again, files since arrived are absent, and a place whose file
 changed shows the old bytes — mount today and last year side by side
-and compare. The room is served over NFS on `127.0.0.1` and mounted
-by the system's own client: nothing kernel-side, no sudo. macOS
-today; the Linux door is still to be built.
+and compare. The room has a door for each platform, and neither asks
+for root or installs anything kernel-side: on macOS it is served over
+NFS on `127.0.0.1` and mounted by the system's own client; on Linux it
+is a FUSE filesystem, mounted through `fusermount3` from the fuse3
+package every distribution ships.
 
 ## Your own word
 

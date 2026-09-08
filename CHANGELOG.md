@@ -73,8 +73,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary mount DIR`** grafts the whole forest onto a directory, read-only — the archive's
   files readable in place by any program, browsable in a file manager. The command stays in the
   foreground and Ctrl-C gives the directory back; `umount` and the Finder's eject work too. A
-  mountpoint the command created goes with the mount when it ends. Served over NFS on
-  127.0.0.1 and mounted by the system's own client — nothing kernel-side, no sudo; macOS today.
+  mountpoint the command created goes with the mount when it ends. A door for each platform,
+  neither asking for root nor installing anything kernel-side: on macOS the room is served over
+  NFS on 127.0.0.1 and mounted by the system's own client, on Linux it is a FUSE filesystem
+  mounted through `fusermount3` from the fuse3 package every distribution ships.
   Where the record says more than a filesystem can, the view narrows by declared policy: of
   several files standing at one name the newest wins, and a name standing as file and folder at
   once keeps the folder, the file stepping aside under a name carrying its digest.

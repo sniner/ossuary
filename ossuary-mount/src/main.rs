@@ -7,31 +7,48 @@
 //! mount's own, or the one `--as-of` names — and Ctrl-C gives the
 //! directory back.
 //!
-//! Under the hood an NFS server answers on 127.0.0.1 and the operating
-//! system's own client mounts it; nothing kernel-side is installed.
-//! Where the record says more than a filesystem can — several files at
-//! one name, a name that is file and folder at once — the view narrows
-//! by declared policy; the narrowing lives in [`forest`].
+//! The view is grown here and answered by [`record`]; the door it is
+//! served through is the platform's own. On macOS an NFS server
+//! answers on 127.0.0.1 and the operating system's own client mounts
+//! it ([`nfs`]); on Linux the view is a FUSE filesystem mounted through
+//! `fusermount3` ([`fuse`]). Neither installs anything kernel-side or
+//! asks for root. Where the record says more than a filesystem can —
+//! several files at one name, a name that is file and folder at once —
+//! the view narrows by declared policy; the narrowing lives in
+//! [`forest`].
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
-use nfsserve::tcp::{NFSTcp as _, NFSTcpListener};
 use ossuary_core::{Archive, Error, Standing, Timestamp, Value};
 
 mod forest;
-mod fs;
+mod record;
+
+#[cfg(target_os = "linux")]
+mod fuse;
+#[cfg(target_os = "macos")]
+mod nfs;
+
+#[cfg(target_os = "linux")]
+use fuse as door;
+#[cfg(target_os = "macos")]
+use nfs as door;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("ossuary-mount has a door for macOS (NFS) and one for Linux (FUSE) only");
 
 use forest::{Forest, Kind, Sighting};
+use record::Record;
 
 #[derive(Parser)]
 #[command(
     name = "ossuary-mount",
     version,
-    about = "The record as a read-only filesystem: every place it knows, browsable in the Finder and readable by any program"
+    about = "The record as a read-only filesystem: every place it knows, browsable in a file manager and readable by any program"
 )]
 struct Cli {
     /// The archive to mount; standing in it is enough
@@ -73,11 +90,6 @@ fn run(cli: Cli) -> Result<ExitCode> {
         as_of,
         quiet,
     } = cli;
-    if !cfg!(target_os = "macos") {
-        return Err(anyhow!(
-            "this build mounts on macOS only — the Linux door (FUSE) is still to be built"
-        ));
-    }
     let cutoff = as_of.as_deref().map(closing).transpose()?;
     let archive = open(&archive)?;
     let view = grown_view(&archive, cutoff.as_deref(), quiet)?;
@@ -97,12 +109,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
         (owner.uid(), owner.gid())
     };
 
-    let told = counted(&view);
-    let record = fs::RecordFs::new(view, archive, uid, gid, view_time);
-
-    let served = tokio::runtime::Runtime::new()
-        .context("starting the runtime")?
-        .block_on(serve(record, &mountpoint, cutoff.as_deref(), &told, quiet));
+    let (files, folders) = counted(&view);
+    let room = Room {
+        place: mountpoint.display().to_string(),
+        cutoff: cutoff.as_deref(),
+        files,
+        folders,
+        quiet,
+    };
+    let record = Record::new(view, archive, uid, gid, view_time);
+    let served = door::serve(record, &mountpoint, &room);
 
     // A directory made for the mount is taken back with it; one that
     // stood before stays. Removal only works on an empty, unmounted
@@ -112,6 +128,51 @@ fn run(cli: Cli) -> Result<ExitCode> {
         let _ = std::fs::remove_dir(&mountpoint);
     }
     served
+}
+
+/// What the run says about the room it holds — the same words at
+/// every door.
+pub struct Room<'a> {
+    place: String,
+    cutoff: Option<&'a str>,
+    files: usize,
+    folders: usize,
+    quiet: bool,
+}
+
+impl Room<'_> {
+    /// A line of narration, kept back under `--quiet`.
+    pub fn tell(&self, line: impl Display) {
+        if !self.quiet {
+            eprintln!("{line}");
+        }
+    }
+
+    /// The room is open: what stands in it, and how to leave.
+    pub fn opened(&self) {
+        let Room {
+            place,
+            cutoff,
+            files,
+            folders,
+            ..
+        } = self;
+        let stood = match cutoff {
+            Some(moment) => format!(", as it stood at {moment}"),
+            None => String::new(),
+        };
+        self.tell(format_args!(
+            "the record stands at {place} — read-only, {files} file(s) in {folders} folder(s){stood}; Ctrl-C gives it back"
+        ));
+        if *files == 0 {
+            self.tell("no places on the record yet — `ossuary ingest` fills the view");
+        }
+    }
+
+    /// The room is given back.
+    pub fn given_back(&self) {
+        self.tell(format_args!("{} given back", self.place));
+    }
 }
 
 /// The archive, or the way to one — `ossuary`'s own wording.
@@ -212,111 +273,4 @@ fn closing(given: &str) -> Result<String> {
             "{given:?} names no moment — the record reads UTC: 2026-01-01 or 2026-01-01T08:00:00, a trailing Z welcome"
         )),
     }
-}
-
-/// Serve, mount, wait, give back.
-async fn serve(
-    record: fs::RecordFs,
-    mountpoint: &Path,
-    cutoff: Option<&str>,
-    told: &(usize, usize),
-    quiet: bool,
-) -> Result<ExitCode> {
-    let mut listener = NFSTcpListener::bind("127.0.0.1:0", record)
-        .await
-        .context("opening the NFS door on 127.0.0.1")?;
-    let port = listener.get_listen_port();
-    let (mounted, mut mount_events) = tokio::sync::mpsc::channel(8);
-    listener.set_mount_listener(mounted);
-    let mut server = tokio::spawn(async move { listener.handle_forever().await });
-
-    let place = mountpoint.display().to_string();
-    let options = format!(
-        "nolocks,vers=3,tcp,soft,timeo=10,retrans=3,rsize=131072,actimeo=120,rdonly,port={port},mountport={port}"
-    );
-    let outcome = Command::new("mount")
-        .args(["-t", "nfs", "-o", &options, "127.0.0.1:/", &place])
-        .status()
-        .context("running mount")?;
-    if !outcome.success() {
-        server.abort();
-        return Err(anyhow!(
-            "{place}: mount refused — the mountpoint must be a directory of your own, and nothing may already be mounted there"
-        ));
-    }
-
-    if !quiet {
-        let (files, folders) = told;
-        let stood = match cutoff {
-            Some(moment) => format!(", as it stood at {moment}"),
-            None => String::new(),
-        };
-        eprintln!(
-            "the record stands at {place} — read-only, {files} file(s) in {folders} folder(s){stood}; Ctrl-C gives it back"
-        );
-        if *files == 0 {
-            eprintln!("no places on the record yet — `ossuary ingest` fills the view");
-        }
-    }
-
-    let mut terminated = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .context("listening for signals")?;
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            _ = terminated.recv() => break,
-            event = mount_events.recv() => {
-                // `false` is the client letting go: someone ran umount
-                // themselves, and the room is already given back.
-                if event == Some(false) {
-                    if !quiet {
-                        eprintln!("{place} given back");
-                    }
-                    server.abort();
-                    return Ok(ExitCode::SUCCESS);
-                }
-            }
-            _ = &mut server => {
-                return Err(anyhow!(
-                    "the NFS door closed on its own — unmount with `umount {place}`, then mount anew"
-                ));
-            }
-        }
-    }
-
-    let given_back = give_back(&place, quiet);
-    server.abort();
-    given_back
-}
-
-/// Unmount, forcing politely when something still reads.
-fn give_back(place: &str, quiet: bool) -> Result<ExitCode> {
-    if Command::new("umount")
-        .arg(place)
-        .status()
-        .context("running umount")?
-        .success()
-    {
-        if !quiet {
-            eprintln!("{place} given back");
-        }
-        return Ok(ExitCode::SUCCESS);
-    }
-    if !quiet {
-        eprintln!("{place} still in use — asking diskutil to force it");
-    }
-    if Command::new("diskutil")
-        .args(["unmount", "force", place])
-        .status()
-        .context("running diskutil")?
-        .success()
-    {
-        if !quiet {
-            eprintln!("{place} given back");
-        }
-        return Ok(ExitCode::SUCCESS);
-    }
-    Err(anyhow!(
-        "{place} is still mounted — close what reads it and run `umount {place}`"
-    ))
 }
