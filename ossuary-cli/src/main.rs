@@ -21,7 +21,15 @@ mod output;
 #[command(
     name = "ossuary",
     version,
-    about = "A personal archive: files kept for good, with everything known about them"
+    about = "A personal archive: files kept for good, with everything known about them",
+    after_help = "The verbs, by family:
+  custody       init, audit
+  taking in     ingest, extract, annotate, seal
+  asking        about, standing, find, ls, tree, id
+  handing back  get, export
+
+A verb not listed runs as its own program: `ossuary mount` finds
+ossuary-mount on the PATH and becomes it."
 )]
 struct Cli {
     /// The archive to work in; standing in it is enough
