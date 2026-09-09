@@ -6,6 +6,7 @@
 //! narration alone — and turns the settlement into the closing words
 //! and the exit code.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -17,17 +18,32 @@ pub fn extract(
     name: Option<&str>,
     subjects: &[String],
     full: bool,
+    dry_run: bool,
     temp_dir: Option<&Path>,
     quiet: bool,
 ) -> Result<ExitCode> {
+    // Said no before the archive is even opened: the refusal does not
+    // depend on what stands in it.
+    if dry_run && subjects.is_empty() {
+        return Err(anyhow!(
+            "a dry run needs named files — name subjects or a run id; over everything that waits it would examine the whole archive and keep none of it"
+        ));
+    }
     let archive = crate::open(root)?;
     if !quiet {
         eprintln!("archive {}", archive.root().display());
     }
     let subjects = expand(&archive, subjects, quiet)?;
-    let mut narrate = |event: Event<'_>| render(&event, quiet);
-    let settlement =
-        ossuary_core::examine(&archive, name, &subjects, full, temp_dir, &mut narrate)?;
+    let mut narrate = |event: Event<'_>| render(&event, quiet, dry_run);
+    let settlement = ossuary_core::examine(
+        &archive,
+        name,
+        &subjects,
+        full,
+        dry_run,
+        temp_dir,
+        &mut narrate,
+    )?;
     if settlement.ran == 0 {
         println!("nothing ran — no extractor in the archive's list answered --identify");
     }
@@ -91,8 +107,31 @@ fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>>
 /// One event onto the terminal. Idle notes and verdicts are answers and
 /// go to stdout; skipped entries and failure lists survive `-q` the way
 /// every failure does; the rest is narration.
-fn render(event: &Event<'_>, quiet: bool) {
+fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
     match event {
+        Event::Rehearsed {
+            subject,
+            findings,
+            derived,
+            ..
+        } => {
+            // The block an answer speaks: the file's name, what would
+            // stand on it, what would arrive beside it.
+            let mut block = subject.to_string();
+            for (attribute, value) in *findings {
+                block.push_str("\n  ");
+                block.push_str(&crate::output::pair(attribute, value));
+            }
+            for (name, mime, bytes) in *derived {
+                write!(
+                    block,
+                    "\n  derived {name} ({mime}, {})",
+                    crate::output::human_bytes(*bytes)
+                )
+                .expect("a String takes what is written to it");
+            }
+            println!("{block}");
+        }
         Event::CaughtUp { segments } => {
             if !quiet {
                 eprintln!("catching the index up: {segments} sealed segment(s) it had not seen");
@@ -132,7 +171,11 @@ fn render(event: &Event<'_>, quiet: bool) {
             already,
             failures,
         } => {
-            println!("{}", verdict(source, tally, *already));
+            if dry_run {
+                println!("{}", rehearsal_verdict(source, tally, *already));
+            } else {
+                println!("{}", verdict(source, tally, *already));
+            }
             if !failures.is_empty() {
                 eprintln!(
                     "{} could not be examined — offered again next run:",
@@ -144,6 +187,21 @@ fn render(event: &Event<'_>, quiet: bool) {
             }
         }
     }
+}
+
+/// The rehearsal's verdict: what was tried, and that nothing stands
+/// changed for it.
+fn rehearsal_verdict(source: &Source, tally: &Tally, already: usize) -> String {
+    let mut verdict = vec![format!("{} file(s) rehearsed by {source}", tally.examined)];
+    if tally.nothing > 0 {
+        verdict.push(format!("{} had nothing to tell", tally.nothing));
+    }
+    if already > 0 {
+        verdict.push(format!(
+            "{already} already examined — --full rehearses them anew"
+        ));
+    }
+    format!("{}; nothing written", verdict.join("; "))
 }
 
 /// The pass's verdict, in one line: what happened, and which parts of

@@ -92,7 +92,7 @@ pub fn human_bytes(bytes: u64) -> String {
 }
 
 /// One shown attribute and value, spelled as a query term.
-fn pair(attribute: &Attribute, value: &Value) -> String {
+pub(crate) fn pair(attribute: &Attribute, value: &Value) -> String {
     match value {
         Value::String(text) if plain(text) => format!("{}={text}", attribute.as_str()),
         Value::String(text) => format!("{}=\"{text}\"", attribute.as_str()),

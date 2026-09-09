@@ -23,6 +23,7 @@
 //! said, where, and how loudly is the observer's business alone.
 
 use std::collections::HashSet;
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -70,6 +71,16 @@ pub enum Event<'a> {
     },
     /// A pass over named files begins.
     Named { source: &'a Source, count: usize },
+    /// One file rehearsed under --dry-run: what the extractor would
+    /// record, shown and then dropped.
+    Rehearsed {
+        source: &'a Source,
+        subject: &'a Subject,
+        /// The claims that would go on the examined file.
+        findings: &'a [(Attribute, Value)],
+        /// The files that would be taken in: name, MIME type, size.
+        derived: &'a [(String, String, u64)],
+    },
     /// A pass ended: the verdict's material, what failed included.
     Verdict {
         source: &'a Source,
@@ -159,6 +170,10 @@ struct Line {
 /// grip: resolved the way `about` resolves a name, one pass, no rounds.
 /// `full` ignores standing receipts; `temp_dir` is where a deriving
 /// extractor's files wait, `cache/tmp` in the archive when unnamed.
+/// `dry_run` runs the extractors and records nothing: each named file's
+/// would-be harvest is told as [`Event::Rehearsed`] and dropped — and
+/// because a rehearsal over everything that waits would examine the
+/// whole archive and keep none of it, it demands named `subjects`.
 ///
 /// # Errors
 ///
@@ -172,9 +187,15 @@ pub fn examine(
     name: Option<&str>,
     subjects: &[String],
     full: bool,
+    dry_run: bool,
     temp_dir: Option<&Path>,
     observer: &mut dyn Observer,
 ) -> Result<Settlement> {
+    if dry_run && subjects.is_empty() {
+        return Err(Error::Extract(
+            "a dry run needs named files — name subjects or a run id; over everything that waits it would examine the whole archive and keep none of it".to_string(),
+        ));
+    }
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_string()],
         None => archive.config().extractors().to_vec(),
@@ -227,6 +248,7 @@ pub fn examine(
         archive,
         run_id: run_id(),
         full,
+        dry_run,
         temp_dir,
         observer,
         examined: HashSet::new(),
@@ -418,6 +440,9 @@ struct Invocation<'a> {
     /// call takes in, rounds included — they are the call's insides.
     run_id: String,
     full: bool,
+    /// Run the extractors, record nothing: harvests become
+    /// [`Event::Rehearsed`] and are dropped.
+    dry_run: bool,
     temp_dir: Option<&'a Path>,
     observer: &'a mut dyn Observer,
     /// Who examined what within THIS call. Under --full, receipts from
@@ -520,6 +545,18 @@ fn run_one(
     let mut tally = Tally::default();
     let mut failures: Vec<(Subject, Error)> = Vec::new();
     for subject in worklist {
+        if invocation.dry_run {
+            match rehearse_one(invocation, run, &subject, scratch.as_deref()) {
+                Ok(nothing) => {
+                    tally.examined += 1;
+                    if nothing {
+                        tally.nothing += 1;
+                    }
+                }
+                Err(error) => failures.push((subject, error)),
+            }
+            continue;
+        }
         match examine_one(
             archive,
             program,
@@ -727,6 +764,54 @@ fn examine_one(
     run_id: &str,
     scratch_parent: Option<&Path>,
 ) -> Result<Examined> {
+    let (Harvest { findings, derived }, _scratch) =
+        try_one(archive, program, contract, subject, scratch_parent)?;
+    record_examination(archive, subject, &findings, &derived, source, run_id)
+}
+
+/// One file under --dry-run: same run, same harvest, and the harvest
+/// is shown as [`Event::Rehearsed`] instead of recorded — dropped with
+/// the scratch. Answers whether the whole harvest was empty.
+fn rehearse_one(
+    invocation: &mut Invocation,
+    run: &Run,
+    subject: &Subject,
+    scratch: Option<&Path>,
+) -> Result<bool> {
+    let (Harvest { findings, derived }, _scratch) = try_one(
+        invocation.archive,
+        &run.program,
+        run.identity.contract.as_deref(),
+        subject,
+        scratch,
+    )?;
+    let derived: Vec<(String, String, u64)> = derived
+        .iter()
+        .map(|derivation| {
+            let bytes = fs::metadata(&derivation.path).map_or(0, |metadata| metadata.len());
+            (derivation.name.clone(), derivation.mime.clone(), bytes)
+        })
+        .collect();
+    let nothing = findings.is_empty() && derived.is_empty();
+    invocation.observer.event(Event::Rehearsed {
+        source: &run.source,
+        subject,
+        findings: &findings,
+        derived: &derived,
+    });
+    Ok(nothing)
+}
+
+/// The examination itself, short of the record: the bytes handed over,
+/// the answer harvested. The scratch directory rides along so announced
+/// files still stand when the caller reads or records them.
+fn try_one(
+    archive: &Archive,
+    program: &str,
+    contract: Option<&str>,
+    subject: &Subject,
+    scratch_parent: Option<&Path>,
+) -> Result<(Harvest, Option<tempfile::TempDir>)> {
     let content = archive.content();
     // The examinee may be an original or itself derived — the PDF out of
     // a mail: content/ is asked first, derived/ second.
@@ -800,12 +885,12 @@ fn examine_one(
         )));
     }
 
-    let Harvest { findings, derived } = harvest(
+    let harvest = harvest(
         program,
         &answer,
         scratch.as_ref().map(tempfile::TempDir::path),
     )?;
-    record_examination(archive, subject, &findings, &derived, source, run_id)
+    Ok((harvest, scratch))
 }
 
 /// An answer sorted: what stands on the examined file, and what became

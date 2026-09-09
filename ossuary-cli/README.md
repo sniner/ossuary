@@ -31,7 +31,7 @@ making the run a failure.
 |---|---|
 | `init` | begin an empty archive — or complete one already standing. `--algorithm` is the one choice made for good, and only when the archive begins |
 | `ingest` | take directory trees and single files in; everything of one call arrives as one run. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--dry-run` counts and measures what would go in and writes nothing |
-| `extract` | run extractors over what they have not examined — see below |
+| `extract` | run extractors over what they have not examined — see below. `--dry-run` shows what named files' examination would record, and writes nothing |
 | `annotate` | put `user:tag` and `user:comment` on files already on the record |
 | `seal` | close the open segment; its claims become part of the sealed log |
 | `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
@@ -75,9 +75,11 @@ Naming subjects runs no rounds: the named files are examined once, now,
 and a named file is handed over even when its kind is not one the
 extractor reads. A whole run's files are named by its dashed id — runs
 and files mix freely, the grammar `export` speaks — and whenever files
-were derived, the closing line names the call's own run id. `--full`
-ignores standing receipts; `--temp-dir` moves the place derived files
-wait in off `cache/tmp`.
+were derived, the closing line names the call's own run id. `--dry-run`
+shows what the named files' examination would record — claims, and each
+derived file with name, kind and size — and writes nothing, receipt
+included. `--full` ignores standing receipts; `--temp-dir` moves the
+place derived files wait in off `cache/tmp`.
 
 The extractors that ship with ossuary:
 [exif](../ossuary-extract-exif/README.md),

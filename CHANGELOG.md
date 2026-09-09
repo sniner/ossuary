@@ -167,7 +167,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   them — `extract pdf SUBJECT` examines one file
   now instead of everything that waits, a beginning of the digest is enough, and a named file
   is handed over even when its kind is not one the extractor reads; a whole run's files are
-  named by its dashed id, runs and files mixed freely — the grammar `export` speaks. `--full` examines anew,
+  named by its dashed id, runs and files mixed freely — the grammar `export` speaks.
+  `--dry-run` runs the extractor over the named files and shows what it would record — the
+  claims, and each derived file with name, kind and size — then drops it all, receipt
+  included: nothing written. It demands named files, because a rehearsal over everything that
+  waits would examine the whole archive and keep none of it. `--full` examines anew,
   receipted or not: the named files, or everything of a kind the extractor reads — for the
   extractor upgrade that is worth a fresh look at the archive. The pipe protocol, open to any
   language, is [docs/extractors.md](docs/extractors.md)

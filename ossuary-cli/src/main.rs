@@ -128,7 +128,12 @@ enum Command {
     /// handed over even when its kind is not one the extractor reads,
     /// because naming is more deliberate than a pattern. A whole run's
     /// files are named by its dashed id — the id an ingest or extract
-    /// verdict speaks — and runs and files mix in one call.
+    /// verdict speaks — and runs and files mix in one call. --dry-run
+    /// runs the extractor over named files and shows what it would
+    /// record — the claims, and each derived file with name, kind and
+    /// size — then drops it all: nothing written, nothing receipted.
+    /// It needs named files: over everything that waits it would
+    /// examine the whole archive and keep none of it.
     Extract {
         /// Which extractor to run: the part after `ossuary-extract-`,
         /// with `:CONTRACT` picking one contract of a program that
@@ -146,6 +151,11 @@ enum Command {
         /// none named — everything of a kind the extractor reads
         #[arg(long)]
         full: bool,
+
+        /// Run the extractor over the named files and show what it
+        /// would record — claims and derived files — writing nothing
+        #[arg(long)]
+        dry_run: bool,
 
         /// Where derived files wait on their way into the archive —
         /// cache/tmp in the archive unless this names another place; a
@@ -439,12 +449,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
             name,
             subjects,
             full,
+            dry_run,
             temp_dir,
         } => extract::extract(
             &cli.archive,
             name.as_deref(),
             &subjects,
             full,
+            dry_run,
             temp_dir.as_deref(),
             quiet,
         ),
