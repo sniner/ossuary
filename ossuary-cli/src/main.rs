@@ -230,12 +230,12 @@ enum Command {
     /// answer; what was retracted no longer counts.
     ///
     /// Each match answers as a block: the file's name on a line of its
-    /// own, shortened the way git shortens a hash, and every attribute
-    /// the question named indented beneath it, one attribute=value
-    /// pair per line, spelled the way a query would — so a pair pastes
-    /// back into a refined query, quotes and all. A bare
-    /// attribute among the terms is shown without asking anything of
-    /// it (`find file:name=*.pdf file:modified` shows when the PDFs
+    /// own, shortened to the shortest prefix that names it alone, and
+    /// every attribute the question named indented beneath it, one
+    /// attribute=value pair per line, spelled the way a query would —
+    /// so a pair pastes back into a refined query, quotes and all. A
+    /// bare attribute among the terms is shown without asking anything
+    /// of it (`find file:name=*.pdf file:modified` shows when the PDFs
     /// changed), a namespace like `exif:` shows all of it, and asking
     /// for it to stand remains `attribute=..`. With only bare
     /// attributes, every file on the record answers. Every standing

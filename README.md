@@ -48,12 +48,19 @@ $ git clone https://github.com/sniner/ossuary
 $ cd ossuary && cargo build --release
 ```
 
-That builds the `ossuary` command, the extractors
-(`ossuary-extract-exif`, `-pdf`, `-mail`, `-packed`) and
-`ossuary-mount`; put them on your `PATH` together — extractors and
-outside verbs like `mount` are found there, not built in.
-`ossuary-extract-pdf` additionally wants poppler's `pdftotext` on the
-`PATH`.
+Put everything it builds on your `PATH` together — extractors and
+outside verbs like `mount` are found there, not built in. Each crate
+says for itself what it is and what it needs:
+
+| | |
+|---|---|
+| [`ossuary-cli`](ossuary-cli/README.md) | the `ossuary` command — every verb, from `init` to `audit` |
+| [`ossuary-core`](ossuary-core/README.md) | the archive itself: claims, segments, the fold. What everything else stands on |
+| [`ossuary-mount`](ossuary-mount/README.md) | the record as a read-only filesystem |
+| [`ossuary-extract-exif`](ossuary-extract-exif/README.md) | what a camera wrote into the picture |
+| [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a message's own voice, and what it carries |
+| [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip's inventory, or its files |
+| [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a document's text and info — wants poppler's `pdftotext` |
 
 ## A new archive
 
@@ -116,16 +123,21 @@ $ ossuary extract packed:list
 
 The mail extractor read both files that sniff as text, recognised one
 as a message, recorded its headers and handed its attachment over as
-content of its own; the plain note "had nothing to tell" — which is an
-answer too, and neither file is examined again. `packed:list`
-inventoried a zip without unpacking a byte. Every examined file gets a
-receipt, so a repeated run costs only what is new, and a new extractor
-version looks at everything again.
+content of its own; the plain note "had nothing to tell" — an answer
+too, and neither file is examined again. `packed:list` inventoried a
+zip without unpacking a byte. Every examined file gets a receipt, so a
+repeated run costs only what is new, and a new extractor version looks
+at everything again.
 
 List extractors under `[extract] run` in `config.toml` and a bare
 `ossuary extract` runs them in rounds until nothing is left — what one
 extractor hands back, the next round offers to whichever extractor
 reads it, so mail → attachment → text runs to its end in one call.
+What each of the four reads, what it says and what it needs stands in
+its own README: [exif](ossuary-extract-exif/README.md),
+[mail](ossuary-extract-mail/README.md),
+[packed](ossuary-extract-packed/README.md),
+[pdf](ossuary-extract-pdf/README.md).
 
 ## What the archive knows
 
@@ -190,7 +202,8 @@ b5743276
 For scripts: `find --id` prints full names alone, ready to pipe;
 `value` answers one attribute's standing values, strings bare;
 `--json` on `about`, `value`, `find` and `ls` keeps the JSON spelling
-for `jq`; and `-q` silences the narration everywhere.
+for `jq`; and `-q` silences the narration everywhere. Every verb and
+every flag stands in [`ossuary-cli`](ossuary-cli/README.md).
 
 ## Looking around
 
@@ -239,11 +252,10 @@ name, the newest wins — and `--as-of TIME` turns that dial back: the
 record as it was known at that moment, UTC. Files since retracted
 stand again, files since arrived are absent, and a place whose file
 changed shows the old bytes — mount today and last year side by side
-and compare. The room has a door for each platform, and neither asks
-for root or installs anything kernel-side: on macOS it is served over
-NFS on `127.0.0.1` and mounted by the system's own client; on Linux it
-is a FUSE filesystem, mounted through `fusermount3` from the fuse3
-package every distribution ships.
+and compare. The room has a door for each platform — NFS on macOS,
+FUSE on Linux — and neither asks for root or installs anything
+kernel-side; [`ossuary-mount`](ossuary-mount/README.md) spells both
+out.
 
 ## Your own word
 
