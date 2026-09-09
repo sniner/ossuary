@@ -25,8 +25,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other; what is already stored keeps its form, and reading understands both) and
   `[extract] run` (the extractors a bare `ossuary extract` runs, in order). A missing
   file means the defaults; an unknown key is refused rather than half-applied
-- **`ossuary ingest PATH…`** (callable as `add` — what `get` hands out, `add` takes in) takes
-  directory trees and single files in, any mix, several per
+- **`ossuary ingest PATH…`** takes directory trees and single files in, any mix, several per
   call — a glob's expansion included — all under one run id, so "arrived together" stays an
   askable fact; a path that will not resolve is named in the verdict and costs only itself.
   Every regular file goes

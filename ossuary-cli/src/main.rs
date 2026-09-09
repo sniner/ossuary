@@ -63,7 +63,6 @@ enum Command {
     },
     /// Take files in: directory trees and single files, any mix
     ///
-    /// Callable as `add` too — what `get` hands out, `add` takes in.
     /// Every regular file goes in — minus what the archive's config.toml
     /// excludes; a file named outright goes in regardless — and seven
     /// claims go on the record for each: where it came from, what it is
@@ -74,7 +73,6 @@ enum Command {
     /// What is taken in is only read. A repeated run remembers what it
     /// already observed and leaves unchanged files in peace, so pouring
     /// the same directory in again costs only what is new or changed.
-    #[command(visible_alias = "add")]
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]

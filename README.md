@@ -79,7 +79,7 @@ which is what the examples below do.
 
 ## Taking files in
 
-`ingest` (or `add`) takes directory trees and single files, any mix,
+`ingest` takes directory trees and single files, any mix,
 and everything of one call arrives as one *run* — so "these arrived
 together" stays an askable fact:
 

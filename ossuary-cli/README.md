@@ -30,7 +30,7 @@ making the run a failure.
 | | |
 |---|---|
 | `init` | begin an empty archive — or complete one already standing. `--algorithm` is the one choice made for good, and only when the archive begins |
-| `ingest` (`add`) | take directory trees and single files in; everything of one call arrives as one run. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew |
+| `ingest` | take directory trees and single files in; everything of one call arrives as one run. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew |
 | `extract` | run extractors over what they have not examined — see below |
 | `annotate` | put `user:tag` and `user:comment` on files already on the record |
 | `seal` | close the open segment; its claims become part of the sealed log |
