@@ -169,6 +169,62 @@ impl Index {
         Ok(folded)
     }
 
+    /// The record as it stood at `cutoff`, as an index of its own: every
+    /// claim recorded by then — assertions and retractions alike, in log
+    /// order — replayed into a throwaway in-memory index, so every
+    /// question this type answers can be asked of that day instead of
+    /// today. The cutoff compares in claim time's own spelling, RFC 3339
+    /// UTC. Call [`fold`](Index::fold) first: the replay reads this
+    /// index, not the log.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-claim errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than
+    /// sworn away.
+    pub fn as_of(&self, cutoff: &str) -> Result<Index> {
+        let mut replayed = Index::open(":memory:")?;
+        let mut statement = self.connection.prepare(
+            "SELECT subject, attribute, value, time, source, retract, segment, position
+             FROM claims WHERE time <= ?1 ORDER BY rowid",
+        )?;
+        let rows = statement.query_map(params![cutoff], |row| {
+            Ok((
+                (
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
+                ),
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+        let segments: std::result::Result<Vec<(String, Option<String>)>, _> = self
+            .connection
+            .prepare("SELECT digest, first FROM segments")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        let transaction = replayed.connection.transaction()?;
+        for row in rows {
+            let (fields, segment, position) = row?;
+            replay(&transaction, &claim(fields)?, &segment, position)?;
+        }
+        // The segments' own order rides along: `about` breaks time ties
+        // by it, and the replayed record must read like the original.
+        for row in segments? {
+            let (digest, first) = row;
+            transaction.execute(
+                "INSERT INTO segments (digest, first) VALUES (?1, ?2)",
+                params![digest, first],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(replayed)
+    }
+
     /// Everything the log says about one subject, in log order: by time,
     /// ties broken by the segments' own order, the head last.
     ///
@@ -865,45 +921,58 @@ impl Index {
 /// out, a valueless retraction empties the attribute. All three are
 /// idempotent, which is what lets the head be applied afresh each fold.
 fn insert(transaction: &rusqlite::Transaction<'_>, segment: &str, claims: &[Claim]) -> Result<()> {
-    let mut history = transaction.prepare(
+    for (position, claim) in claims.iter().enumerate() {
+        let position = i64::try_from(position).expect("fewer claims than i64 can count");
+        replay(transaction, claim, segment, position)?;
+    }
+    Ok(())
+}
+
+/// One claim into the tables: into the history as it is, onto the
+/// standing what it asserts or takes away.
+fn replay(
+    transaction: &rusqlite::Transaction<'_>,
+    claim: &Claim,
+    segment: &str,
+    position: i64,
+) -> Result<()> {
+    let mut history = transaction.prepare_cached(
         "INSERT INTO claims
              (subject, attribute, value, time, source, retract, segment, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
-    let mut put = transaction.prepare(
-        "INSERT OR IGNORE INTO standing (subject, attribute, value) VALUES (?1, ?2, ?3)",
-    )?;
-    let mut take = transaction
-        .prepare("DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3")?;
-    let mut empty =
-        transaction.prepare("DELETE FROM standing WHERE subject = ?1 AND attribute = ?2")?;
-    for (position, claim) in claims.iter().enumerate() {
-        let position = i64::try_from(position).expect("fewer claims than i64 can count");
-        history.execute(params![
-            claim.subject().as_str(),
-            claim.attribute().as_str(),
-            claim.value().map(Value::to_string),
-            claim.time().as_str(),
-            claim.source().as_str(),
-            claim.is_retraction(),
-            segment,
-            position,
-        ])?;
-        let subject = claim.subject().as_str();
-        let attribute = claim.attribute().as_str();
-        match (claim.value(), claim.is_retraction()) {
-            (Some(value), false) => {
-                put.execute(params![subject, attribute, value.to_string()])?;
-            }
-            (Some(value), true) => {
-                take.execute(params![subject, attribute, value.to_string()])?;
-            }
-            (None, true) => {
-                empty.execute(params![subject, attribute])?;
-            }
-            // A claim without value and without retract cannot be built.
-            (None, false) => {}
+    history.execute(params![
+        claim.subject().as_str(),
+        claim.attribute().as_str(),
+        claim.value().map(Value::to_string),
+        claim.time().as_str(),
+        claim.source().as_str(),
+        claim.is_retraction(),
+        segment,
+        position,
+    ])?;
+    let subject = claim.subject().as_str();
+    let attribute = claim.attribute().as_str();
+    match (claim.value(), claim.is_retraction()) {
+        (Some(value), false) => {
+            let mut put = transaction.prepare_cached(
+                "INSERT OR IGNORE INTO standing (subject, attribute, value) VALUES (?1, ?2, ?3)",
+            )?;
+            put.execute(params![subject, attribute, value.to_string()])?;
         }
+        (Some(value), true) => {
+            let mut take = transaction.prepare_cached(
+                "DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3",
+            )?;
+            take.execute(params![subject, attribute, value.to_string()])?;
+        }
+        (None, true) => {
+            let mut empty = transaction
+                .prepare_cached("DELETE FROM standing WHERE subject = ?1 AND attribute = ?2")?;
+            empty.execute(params![subject, attribute])?;
+        }
+        // A claim without value and without retract cannot be built.
+        (None, false) => {}
     }
     Ok(())
 }
@@ -1237,6 +1306,53 @@ mod tests {
                 .unwrap(),
             Vec::<Value>::new(),
             "an attribute never claimed has nothing standing"
+        );
+    }
+
+    #[test]
+    fn as_of_answers_with_the_knowledge_of_that_day() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T10:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("holiday"),
+                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        log.append(&tag("beach", "2026-09-04T10:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+
+        let tags = Attribute::parse("user:tag").unwrap();
+        let early = index.as_of("2026-09-02T00:00:00Z").unwrap();
+        assert_eq!(
+            early.values(&subject(), &tags).unwrap(),
+            [json!("holiday")],
+            "on the second, holiday stood and nothing had been taken back"
+        );
+        assert_eq!(
+            early.about(&subject()).unwrap().len(),
+            1,
+            "the story as well ends at the cutoff"
+        );
+
+        let late = index.as_of("2026-09-03T12:00:00Z").unwrap();
+        assert_eq!(
+            late.values(&subject(), &tags).unwrap(),
+            Vec::<Value>::new(),
+            "after the retraction nothing stands, and beach has not arrived yet"
+        );
+        assert_eq!(
+            index.values(&subject(), &tags).unwrap(),
+            [json!("beach")],
+            "the index itself keeps answering for today"
         );
     }
 

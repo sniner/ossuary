@@ -44,7 +44,10 @@ making the run a failure.
 | `audit` | prove the archive intact: every byte against its name, the record against the stores. Exits 1 when findings stand |
 
 `--json` on `about`, `standing`, `find`, `ls` and `audit` keeps the JSON
-spelling, one object per line, for `jq`.
+spelling, one object per line, for `jq`. `--as-of TIME` on `find`, `ls`,
+`tree`, `standing`, `about` and `export` answers with what the archive
+knew at TIME — the axis is claim time, never the file's own, and a date
+alone closes at that day's end.
 
 Files are named by the hex digest of their content. A beginning of it is
 enough wherever a name is asked for, as long as it names only one file.

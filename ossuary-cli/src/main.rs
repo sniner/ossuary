@@ -205,6 +205,12 @@ enum Command {
         /// Each claim as the JSON line the log holds, ready for jq
         #[arg(short, long)]
         json: bool,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
     },
     /// What stands on one file — the outcome, not the story
     ///
@@ -235,6 +241,12 @@ enum Command {
         /// One JSON object: each shown attribute's values as a list
         #[arg(short, long)]
         json: bool,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
     },
     /// Every file on which all the terms stand — shown with the fields
     /// the question named
@@ -290,6 +302,12 @@ enum Command {
         /// attribute's values as a list
         #[arg(short, long)]
         json: bool,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
     },
     /// What stands at one place, one level of it
     ///
@@ -314,6 +332,12 @@ enum Command {
         /// itself
         #[arg(short, long)]
         json: bool,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
     },
     /// Everything below one place, drawn as the tree it is
     ///
@@ -327,6 +351,12 @@ enum Command {
         /// The place to start from: an absolute path; left out, /
         #[arg(value_name = "PLACE")]
         place: Option<String>,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
     },
     /// The name a file answers to in the archive
     ///
@@ -390,6 +420,12 @@ enum Command {
         /// Say what would land where, and write nothing
         #[arg(long)]
         dry_run: bool,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
     },
     /// Prove the archive intact: every byte against its name, the
     /// record against the stores
@@ -470,27 +506,68 @@ fn run(cli: Cli) -> Result<ExitCode> {
             subject,
             attributes,
             json,
-        } => about(&cli.archive, &subject, &attributes, json, quiet),
+            as_of,
+        } => about(
+            &cli.archive,
+            &subject,
+            &attributes,
+            json,
+            as_of.as_deref(),
+            quiet,
+        ),
         Command::Standing {
             subject,
             attributes,
             json,
-        } => standing(&cli.archive, &subject, &attributes, json, quiet),
+            as_of,
+        } => standing(
+            &cli.archive,
+            &subject,
+            &attributes,
+            json,
+            as_of.as_deref(),
+            quiet,
+        ),
         Command::Find {
             terms,
             missing,
             id,
             json,
-        } => find(&cli.archive, &terms, &missing, id, json, quiet),
-        Command::Ls { place, json } => browse::ls(&cli.archive, place.as_deref(), json, quiet),
-        Command::Tree { place } => browse::tree(&cli.archive, place.as_deref(), quiet),
+            as_of,
+        } => find(
+            &cli.archive,
+            &terms,
+            &missing,
+            id,
+            json,
+            as_of.as_deref(),
+            quiet,
+        ),
+        Command::Ls { place, json, as_of } => browse::ls(
+            &cli.archive,
+            place.as_deref(),
+            json,
+            as_of.as_deref(),
+            quiet,
+        ),
+        Command::Tree { place, as_of } => {
+            browse::tree(&cli.archive, place.as_deref(), as_of.as_deref(), quiet)
+        }
         Command::Id { path } => id(&cli.archive, &path, quiet),
         Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref(), quiet),
         Command::Export {
             destination,
             ids,
             dry_run,
-        } => export::export(&cli.archive, &destination, &ids, dry_run, quiet),
+            as_of,
+        } => export::export(
+            &cli.archive,
+            &destination,
+            &ids,
+            dry_run,
+            as_of.as_deref(),
+            quiet,
+        ),
         Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
         Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }
@@ -809,6 +886,35 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
     Ok(())
 }
 
+/// The index a question asks: the archive's cache caught up — or,
+/// under --as-of, a throwaway replay of everything recorded by then,
+/// so the same door answers with that day's knowledge.
+pub(crate) fn index_at(archive: &Archive, as_of: Option<&str>, quiet: bool) -> Result<Index> {
+    let mut index = archive.index()?;
+    catch_up(&mut index, archive, quiet)?;
+    match as_of {
+        None => Ok(index),
+        Some(given) => Ok(index.as_of(&cutoff(given)?)?),
+    }
+}
+
+/// The --as-of moment as claim time spells it: RFC 3339 UTC. A date
+/// alone closes at that day's end — "as of the first" means the first
+/// has happened.
+fn cutoff(given: &str) -> Result<String> {
+    let spelled = if given.len() == 10 && !given.contains('T') {
+        format!("{given}T23:59:59Z")
+    } else {
+        given.to_string()
+    };
+    if ossuary_core::Timestamp::parse(&spelled).is_err() {
+        return Err(anyhow!(
+            "{given:?} is not a time — RFC 3339 like 2026-01-01T12:00:00Z, or the date alone"
+        ));
+    }
+    Ok(spelled)
+}
+
 /// The subject as the log spells it, from whatever the user typed —
 /// [`Index::resolve`], with a refused beginning worded by core. `None`
 /// when nothing on the record begins that way.
@@ -821,11 +927,11 @@ fn about(
     subject: &str,
     attributes: &[String],
     json: bool,
+    as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
     let archive = open(root)?;
-    let mut index = archive.index()?;
-    catch_up(&mut index, &archive, quiet)?;
+    let index = index_at(&archive, as_of, quiet)?;
 
     // Under --json, stdout is claims and nothing else; the calm zero
     // answers move over to where the run talks.
@@ -886,6 +992,7 @@ fn standing(
     subject: &str,
     attributes: &[String],
     json: bool,
+    as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
     // Every spelling is checked before the archive opens: a mistyped
@@ -911,8 +1018,7 @@ fn standing(
         attributes.len() == 1 && matches!(projections.as_slice(), [Projection::Attribute(_)]);
 
     let archive = open(root)?;
-    let mut index = archive.index()?;
-    catch_up(&mut index, &archive, quiet)?;
+    let index = index_at(&archive, as_of, quiet)?;
 
     // Nothing standing is a testable answer, not a broken run: the exit
     // code carries it, and the sentence is for a reader wondering why
@@ -1040,6 +1146,7 @@ fn find(
     missing: &[String],
     id_only: bool,
     json: bool,
+    as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
     if id_only && json {
@@ -1054,8 +1161,7 @@ fn find(
         ));
     }
     let archive = open(root)?;
-    let mut index = archive.index()?;
-    catch_up(&mut index, &archive, quiet)?;
+    let index = index_at(&archive, as_of, quiet)?;
     // Only bare attributes asked: nothing narrows, every file answers.
     let subjects = if filters.is_empty() && missing.is_empty() {
         index.subjects()?

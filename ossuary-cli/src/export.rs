@@ -15,13 +15,14 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, anyhow};
 use ossuary_core::{Algorithm, Archive, Attribute, Index, Placed, Placement, Subject};
 
-use crate::{catch_up, open, resolve, say, shorten};
+use crate::{index_at, open, resolve, say, shorten};
 
 pub(crate) fn export(
     root: &Path,
     destination: &Path,
     ids: &[String],
     dry_run: bool,
+    as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
     if forgotten_destination(destination) {
@@ -42,8 +43,7 @@ pub(crate) fn export(
             ));
         }
     }
-    let mut index = archive.index()?;
-    catch_up(&mut index, &archive, quiet)?;
+    let index = index_at(&archive, as_of, quiet)?;
     let pairs = gather(&index, ids)?;
     let plan = disambiguate(ossuary_core::lay_out(&pairs), quiet);
 

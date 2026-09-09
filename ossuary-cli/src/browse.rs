@@ -13,13 +13,18 @@ use std::process::ExitCode;
 use anyhow::{Result, anyhow};
 use ossuary_core::{Index, Subject, Value};
 
-use crate::{catch_up, open, say, shorten};
+use crate::{index_at, open, say, shorten};
 
-pub(crate) fn ls(root: &Path, place: Option<&str>, json: bool, quiet: bool) -> Result<ExitCode> {
+pub(crate) fn ls(
+    root: &Path,
+    place: Option<&str>,
+    json: bool,
+    as_of: Option<&str>,
+    quiet: bool,
+) -> Result<ExitCode> {
     let place = named(place)?;
     let archive = open(root)?;
-    let mut index = archive.index()?;
-    catch_up(&mut index, &archive, quiet)?;
+    let index = index_at(&archive, as_of, quiet)?;
     let pairs = index.under(&place)?;
     if pairs.is_empty() {
         if !quiet {
@@ -57,11 +62,15 @@ pub(crate) fn ls(root: &Path, place: Option<&str>, json: bool, quiet: bool) -> R
     Ok(ExitCode::SUCCESS)
 }
 
-pub(crate) fn tree(root: &Path, place: Option<&str>, quiet: bool) -> Result<ExitCode> {
+pub(crate) fn tree(
+    root: &Path,
+    place: Option<&str>,
+    as_of: Option<&str>,
+    quiet: bool,
+) -> Result<ExitCode> {
     let place = named(place)?;
     let archive = open(root)?;
-    let mut index = archive.index()?;
-    catch_up(&mut index, &archive, quiet)?;
+    let index = index_at(&archive, as_of, quiet)?;
     let pairs = shortened(&index, index.under(&place)?)?;
     if pairs.is_empty() {
         if !quiet {

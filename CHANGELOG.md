@@ -128,6 +128,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `--dry-run` answers what would land where without writing anything. A destination inside
   the archive is refused — exports land outside it.
   `ossuary find --id … | xargs ossuary export DIR` exports a found set
+- **`--as-of TIME`** on `find`, `ls`, `tree`, `standing`, `about` and `export`: the same
+  question, answered with what the archive knew at TIME — claims recorded later sit out,
+  assertions and retractions alike. The axis is claim time, never the file's own: a file
+  changed in March and taken in come June appears in the June view. RFC 3339 UTC; a date
+  alone closes at that day's end — "as of the first" means the first has happened. A re-ingested
+  file's earlier bytes answer at its path, because the newest claim before TIME still carries
+  the old digest
 - **`ossuary audit`** proves the archive intact from its own files alone — the cache plays no
   part. Every file in the content and derived stores is read back whole and its bytes re-hashed
   against its name; every sealed segment and the open head must read back claim by claim; and
