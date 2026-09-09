@@ -54,11 +54,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--missing ATTRIBUTE` (or a namespace like `exif:`) asks for what a file lacks. Only standing
   values count — a retracted value no longer answers. The question is also the projection: each
   match answers as a block — the file's name (shortened like a git hash, growing as the archive
-  does) on a line of its own, every attribute the query named indented beneath it as the
+  does) on a line of its own, the shown attributes indented beneath it as the
   `attribute=value` pairs a query would use — a pair pastes back into a refined query, quotes
-  and all, and every standing value is shown. A bare attribute among the terms is shown without filtering
-  (`find file:name=*.pdf file:modified`), a namespace like `exif:` shows all of it, and with
-  only bare attributes every file on the record answers. `--id` answers with the full names
+  and all, and every standing value is shown. The filters show themselves until a bare
+  attribute stands among the terms; then only the bare ones show — explicit beats implicit,
+  and `find file:name=*.pdf file:modified` answers with the times alone. A namespace like
+  `exif:` shows all of it, and with only bare attributes every file on the record answers. `--id` answers with the full names
   alone, one per line, ready to pipe; `--json` answers one JSON object per match with the
   values as lists
 - **`ossuary ls [PLACE]`** and **`ossuary tree [PLACE]`** browse the record's places: every place

@@ -172,14 +172,12 @@ about one archive file.
 ## Finding files
 
 `find` takes `attribute=value` terms that must all hold, and the
-question is also the projection — every attribute the query names is
-shown on each match:
+question is also the projection — a filter shows itself until a bare
+attribute names what to show; then only the named ones show:
 
 ```console
 $ ossuary find file:mime=message/rfc822 mail:subject mail:from
 e9ed6104
-  file:mime=message/rfc822
-  file:mime=text/plain
   mail:subject="Quarterly figures"
   mail:from="Erika Muster <erika@example.org>"
 1 file(s)
@@ -194,7 +192,6 @@ is found like any other file, with its origin one term away:
 ```console
 $ ossuary find 'file:name=*.pdf' derive:derived-from
 b5743276
-  file:name=figures-q1.pdf
   derive:derived-from=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
 1 file(s)
 ```

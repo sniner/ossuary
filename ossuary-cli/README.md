@@ -52,8 +52,9 @@ enough wherever a name is asked for, as long as it names only one file.
 ### Asking
 
 `find` takes `attribute=value` terms that must all hold, and the question
-is also the projection: every attribute the query names is shown on each
-match. `*` and `?` match within text values, `low..high` asks for a value
+is also the projection: the filters show themselves until a bare
+attribute stands among the terms — then only the bare ones show,
+explicit beats implicit. `*` and `?` match within text values, `low..high` asks for a value
 in a range with either side open, a bare `..` asks only that the
 attribute stands at all, and a value in double quotes is literal — no
 glob, no range. `--missing exif:` turns the question around: which files

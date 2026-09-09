@@ -235,21 +235,22 @@ enum Command {
     ///
     /// Each match answers as a block: the file's name on a line of its
     /// own, shortened to the shortest prefix that names it alone, and
-    /// every attribute the question named indented beneath it, one
-    /// attribute=value pair per line, spelled the way a query would —
-    /// so a pair pastes back into a refined query, quotes and all. A
-    /// bare attribute among the terms is shown without asking anything
-    /// of it (`find file:name=*.pdf file:modified` shows when the PDFs
-    /// changed), a namespace like `exif:` shows all of it, and asking
-    /// for it to stand remains `attribute=..`. With only bare
+    /// the shown attributes indented beneath it, one attribute=value
+    /// pair per line, spelled the way a query would — so a pair pastes
+    /// back into a refined query, quotes and all. The filters show
+    /// themselves until a bare attribute stands among the terms; then
+    /// only the bare ones show — explicit beats implicit — and `find
+    /// file:name=*.pdf file:modified` answers with the times alone. A
+    /// namespace like `exif:` shows all of it, and asking for an
+    /// attribute to stand remains `attribute=..`. With only bare
     /// attributes, every file on the record answers. Every standing
     /// value is shown — several pairs mean the attribute honestly
     /// holds several. --id answers with the full names alone, one per
-    /// line, ready to pipe into `about`, `value` or `get`; --json
+    /// line, ready to pipe into `about`, `standing` or `get`; --json
     /// answers one JSON object per match, the values as lists.
     Find {
         /// attribute=value; repeat to demand all of them at once. A bare
-        /// attribute (or namespace:) only asks to be shown
+        /// attribute (or namespace:) picks what is shown instead
         #[arg(value_name = "TERM")]
         terms: Vec<String>,
 
@@ -878,12 +879,61 @@ fn grouped(rows: Vec<(Attribute, Value)>) -> Vec<(Attribute, Vec<Value>)> {
 }
 
 /// One thing a `find` match shows: an attribute, or a whole namespace.
-/// The question is the projection — a term that filters also shows its
-/// attribute, and a bare attribute among the terms only shows.
-#[derive(PartialEq)]
+/// The question is the projection — the filters show themselves until a
+/// bare attribute stands among the terms; then explicit beats implicit,
+/// and only the bare ones show.
+#[derive(Debug, PartialEq)]
 enum Projection {
     Attribute(Attribute),
     Namespace(String),
+}
+
+/// One narrowing term: the attribute and the pattern asked of it.
+type Filter = (Attribute, String);
+
+/// The question taken apart: what narrows, and what is shown. Filter
+/// terms show their own attributes only while no bare attribute stands
+/// among the terms — naming one takes the showing over.
+fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Projection>)> {
+    let mut filters = Vec::new();
+    let mut asked: Vec<Projection> = Vec::new();
+    let mut implied: Vec<Projection> = Vec::new();
+    let remember = |projection: Projection, projections: &mut Vec<Projection>| {
+        if !projections.contains(&projection) {
+            projections.push(projection);
+        }
+    };
+    for word in terms {
+        if let Some((attribute, value)) = word.split_once('=') {
+            let attribute = Attribute::parse(attribute)?;
+            remember(Projection::Attribute(attribute.clone()), &mut implied);
+            filters.push((attribute, value.to_string()));
+        } else if let Some(namespace) = word.strip_suffix(':') {
+            // The grammar has one door; a prefix walks through it
+            // wearing a dummy name.
+            Attribute::parse(&format!("{namespace}:a"))?;
+            if id_only {
+                return Err(anyhow!(
+                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
+                ));
+            }
+            remember(Projection::Namespace(namespace.to_string()), &mut asked);
+        } else if word.contains(':') {
+            let attribute = Attribute::parse(word)?;
+            if id_only {
+                return Err(anyhow!(
+                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
+                ));
+            }
+            remember(Projection::Attribute(attribute), &mut asked);
+        } else {
+            return Err(anyhow!(
+                "{word:?} is not a term — attribute=value asks for it, a bare attribute (or a namespace, like exif:) is shown on each match"
+            ));
+        }
+    }
+    let projections = if asked.is_empty() { implied } else { asked };
+    Ok((filters, projections))
 }
 
 fn find(
@@ -899,45 +949,7 @@ fn find(
             "--id answers with the names alone — --json would say no more; drop one of them"
         ));
     }
-    let mut filters = Vec::new();
-    let mut projections: Vec<Projection> = Vec::new();
-    let remember = |projection: Projection, projections: &mut Vec<Projection>| {
-        if !projections.contains(&projection) {
-            projections.push(projection);
-        }
-    };
-    for word in terms {
-        if let Some((attribute, value)) = word.split_once('=') {
-            let attribute = Attribute::parse(attribute)?;
-            remember(Projection::Attribute(attribute.clone()), &mut projections);
-            filters.push((attribute, value.to_string()));
-        } else if let Some(namespace) = word.strip_suffix(':') {
-            // The grammar has one door; a prefix walks through it
-            // wearing a dummy name.
-            Attribute::parse(&format!("{namespace}:a"))?;
-            if id_only {
-                return Err(anyhow!(
-                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
-                ));
-            }
-            remember(
-                Projection::Namespace(namespace.to_string()),
-                &mut projections,
-            );
-        } else if word.contains(':') {
-            let attribute = Attribute::parse(word)?;
-            if id_only {
-                return Err(anyhow!(
-                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
-                ));
-            }
-            remember(Projection::Attribute(attribute), &mut projections);
-        } else {
-            return Err(anyhow!(
-                "{word:?} is not a term — attribute=value asks for it, a bare attribute (or a namespace, like exif:) is shown on each match"
-            ));
-        }
-    }
+    let (filters, projections) = question(terms, id_only)?;
     if filters.is_empty() && missing.is_empty() && projections.is_empty() {
         return Err(anyhow!(
             "nothing asked — name a TERM as attribute=value, an attribute to show, or --missing ATTRIBUTE"
@@ -1137,6 +1149,58 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(terms: &[&str]) -> Vec<String> {
+        terms.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn the_filters_show_themselves_while_nothing_is_named() {
+        let (filters, projections) = question(
+            &words(&["file:mime=application/pdf", "user:tag=crete"]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(filters.len(), 2);
+        assert_eq!(
+            projections,
+            [
+                Projection::Attribute(Attribute::parse("file:mime").unwrap()),
+                Projection::Attribute(Attribute::parse("user:tag").unwrap()),
+            ],
+            "no bare attribute among the terms: the filters are the projection"
+        );
+    }
+
+    #[test]
+    fn a_bare_attribute_takes_the_showing_over() {
+        let (filters, projections) =
+            question(&words(&["file:path=*crete*", "file:name", "exif:"]), false).unwrap();
+        assert_eq!(filters.len(), 1, "the filter still narrows");
+        assert_eq!(
+            projections,
+            [
+                Projection::Attribute(Attribute::parse("file:name").unwrap()),
+                Projection::Namespace("exif".to_string()),
+            ],
+            "explicit beats implicit: only the bare ones show, in the question's order"
+        );
+    }
+
+    #[test]
+    fn a_projection_named_twice_shows_once() {
+        let (_, projections) = question(
+            &words(&["file:name", "file:name", "file:name=*.pdf"]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            projections,
+            [Projection::Attribute(
+                Attribute::parse("file:name").unwrap()
+            )]
+        );
+    }
 
     /// A reader that left: every write answers with a closed pipe.
     struct Gone;
