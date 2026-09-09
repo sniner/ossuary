@@ -97,6 +97,19 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Both options repeat, several files go in one call, and every name is resolved before
   anything is written, so a mistyped name refuses the whole call.
   `ossuary find --id … | xargs ossuary annotate --tag …` is the after-the-fact batch tagging
+- **`ossuary retract TARGET…`** takes a statement back: what it names no longer stands, and the
+  record keeps the whole story — the retraction is one more claim, under the source `user`,
+  never an edit. Targets mix freely, told apart by shape: a hex name (or a beginning) names a
+  file, `attribute=value` names what to take back on every named file, `attribute=..` takes
+  back every standing value of the attribute. A pair speaks the answers' own language — a line
+  from `standing` pastes back — and is taken literally: double quotes mean the characters
+  themselves, globs and ranges are refused, and `find --id … | xargs ossuary retract` takes
+  back across a found set. Everything resolves before anything is written: a pair standing on
+  none of the named files refuses the whole call. Anything on the record can be taken back,
+  the machines' word included — a later `extract --full` or a new extractor version may
+  honestly assert it again; the user's own word returns with `annotate`. `--as-of` still
+  answers for the day before, and exporting a whole run keeps speaking what the run recorded.
+  `--dry-run` shows what would fall, and writes nothing
 - **`ossuary standing SUBJECT [ATTRIBUTE…]`** answers what currently stands on one file —
   retractions applied, repeats collapsed — where `about` answers with everything ever said.
   Without attributes the whole standing comes, one `attribute=value` pair per line in the query

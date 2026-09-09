@@ -272,6 +272,23 @@ e9ed6104
 $ ossuary find --id 'file:name=*.jpg' | xargs ossuary annotate --tag holiday
 ```
 
+`retract` takes a statement back: what it names no longer stands, and
+the record keeps the whole story — the retraction is one more entry,
+never an edit. A pair from an answer pastes straight back, and
+`attribute=..` takes back every standing value at once:
+
+```console
+$ ossuary retract e9ed6104 user:tag=taxes
+1 value(s) no longer stand on 1 file(s); 1 retraction(s) written
+$ ossuary about e9ed6104 user:tag
+2026-03-12T09:15:02Z  user:tag = "taxes"  [user]
+2026-03-14T18:40:51Z  retracted: user:tag = "taxes"  [user]
+```
+
+Anything on the record can be taken back, the machines' word included —
+and a later `extract --full` may honestly assert it again; `--as-of`
+still answers for the day before.
+
 ## Getting things back out
 
 `get` hands one file's bytes to stdout or `--output FILE`, exactly as

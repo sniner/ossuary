@@ -24,7 +24,7 @@ mod output;
     about = "A personal archive: files kept for good, with everything known about them",
     after_help = "The verbs, by family:
   custody       init, audit
-  taking in     ingest, extract, annotate, seal
+  taking in     ingest, extract, annotate, retract, seal
   asking        about, standing, find, ls, tree, id
   handing back  get, export
 
@@ -195,6 +195,39 @@ enum Command {
         /// A label, as user:tag; may be repeated
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
+    },
+    /// Take a statement back: it no longer stands, the record keeps it
+    ///
+    /// TARGETs mix freely, told apart by shape: a hex name — or a
+    /// beginning of it — names a file, attribute=value names what to
+    /// take back on every named file, and attribute=.. takes back
+    /// every standing value of the attribute (the comment said wrong:
+    /// take them all, then `annotate` anew). A pair speaks the
+    /// answers' own language — a line from `standing` pastes back —
+    /// and is taken literally: double quotes mean the characters
+    /// themselves, and globs and ranges are refused, because retract
+    /// takes back what you name; what *matches* is find's business —
+    /// `ossuary find --id … | xargs ossuary retract user:tag=old`
+    /// takes back across a found set. Everything is resolved before
+    /// anything is written: a pair that stands on none of the named
+    /// files refuses the whole call, nothing half-retracted. A
+    /// retraction is a claim like any other, under the source user:
+    /// `about` keeps the whole story, --as-of still answers for the
+    /// day before, and export of a whole run keeps speaking what the
+    /// run recorded. Anything on the record can be taken back, the
+    /// machines' word included — and a later `extract --full`, or a
+    /// new extractor version, may honestly assert it again. The way
+    /// back: the user's own word returns with `annotate`, a
+    /// machine's with `extract NAME FILE --full`.
+    Retract {
+        /// Files and pairs, mixed freely; several files take back
+        /// the same pairs
+        #[arg(value_name = "TARGET", required = true)]
+        targets: Vec<String>,
+
+        /// Say what would no longer stand, and write nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Close the open segment; its claims become part of the sealed log
     Seal,
@@ -509,6 +542,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             comments,
             tags,
         } => annotate(&cli.archive, &subjects, &comments, &tags, quiet),
+        Command::Retract { targets, dry_run } => retract(&cli.archive, &targets, dry_run, quiet),
         Command::Seal => seal(&cli.archive),
         Command::About {
             subject,
@@ -865,6 +899,217 @@ fn annotate(
     let written = ossuary_core::annotate(archive.log(), &subjects, comments, tags)?;
     println!(
         "{} file(s) annotated, {written} claim(s) written",
+        subjects.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What one pair asks to take back: the exact value, or all of them.
+#[derive(Debug, PartialEq)]
+enum Asked {
+    Literal(String),
+    All,
+}
+
+/// A pair's value part, read the way the answers spell one: double
+/// quotes mean the characters themselves, `..` alone means all of it,
+/// and anything that reads like a glob or a range is refused — retract
+/// takes back what is named, and what matches is find's business.
+fn asked(attribute: &Attribute, raw: &str) -> Result<Asked> {
+    if raw == ".." {
+        return Ok(Asked::All);
+    }
+    if let Some(inner) = raw
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return Ok(Asked::Literal(inner.to_string()));
+    }
+    let name = attribute.as_str();
+    if raw.is_empty() {
+        return Err(anyhow!(
+            "{name}= names no value — name it, or say {name}=.. to take back all of it"
+        ));
+    }
+    if raw.contains("..") {
+        return Err(anyhow!(
+            "{name}={raw} reads like a range, and retract takes back what you name — double quotes mean the characters themselves: {name}=\"{raw}\""
+        ));
+    }
+    if raw.contains('*') || raw.contains('?') {
+        return Err(anyhow!(
+            "{name}={raw} reads like a glob, and retract takes back what you name — what matches is find's business: `ossuary find --id {name}={raw} | xargs ossuary retract …`; double quotes mean the characters themselves"
+        ));
+    }
+    Ok(Asked::Literal(raw.to_string()))
+}
+
+/// Whether a standing value is the one a literal names: a string by
+/// its text, anything else by its JSON spelling — the way `standing`
+/// and `find` print them, so what the answer showed is what the
+/// taking names.
+fn named_value(value: &Value, literal: &str) -> bool {
+    match value {
+        Value::String(text) => text == literal,
+        #[allow(
+            clippy::cmp_owned,
+            reason = "a number's JSON spelling exists only once rendered — Value's own == would compare types, not spellings"
+        )]
+        other => other.to_string() == literal,
+    }
+}
+
+/// What the pairs take back on one subject, checked against what
+/// stands: the takings to write, and — grouped for showing — every
+/// value that would fall. A pair standing nowhere on the subject is an
+/// error: a taking that changes nothing must not look like one that did.
+#[allow(
+    clippy::type_complexity,
+    reason = "the two halves of one answer — splitting them would only rename the tuple"
+)]
+fn matched(
+    index: &Index,
+    subject: &Subject,
+    pairs: &[(Attribute, Asked)],
+) -> Result<(
+    Vec<(Subject, Attribute, ossuary_core::Taking)>,
+    Vec<(Attribute, Vec<Value>)>,
+)> {
+    let mut takings = Vec::new();
+    let mut falling: Vec<(Attribute, Vec<Value>)> = Vec::new();
+    for (attribute, what) in pairs {
+        let standing = index.values(subject, attribute)?;
+        match what {
+            Asked::All => {
+                if standing.is_empty() {
+                    return Err(anyhow!(
+                        "nothing stands for {} on {subject} — nothing was taken back; `ossuary about {}` tells whether anything ever did",
+                        attribute.as_str(),
+                        shorten(index, subject)?
+                    ));
+                }
+                falling.push((attribute.clone(), standing));
+                takings.push((
+                    subject.clone(),
+                    attribute.clone(),
+                    ossuary_core::Taking::All,
+                ));
+            }
+            Asked::Literal(literal) => {
+                let taken: Vec<Value> = standing
+                    .into_iter()
+                    .filter(|value| named_value(value, literal))
+                    .collect();
+                if taken.is_empty() {
+                    return Err(anyhow!(
+                        "{}={literal} does not stand on {subject} — nothing was taken back; `ossuary standing {}` shows what does",
+                        attribute.as_str(),
+                        shorten(index, subject)?
+                    ));
+                }
+                for value in taken {
+                    takings.push((
+                        subject.clone(),
+                        attribute.clone(),
+                        ossuary_core::Taking::Value(value.clone()),
+                    ));
+                    match falling.iter_mut().find(|(known, _)| known == attribute) {
+                        Some((_, seen)) => seen.push(value),
+                        None => falling.push((attribute.clone(), vec![value])),
+                    }
+                }
+            }
+        }
+    }
+    Ok((takings, falling))
+}
+
+fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Result<ExitCode> {
+    // Shapes first, before the archive opens: a call that cannot mean
+    // anything is refused without touching a thing.
+    let mut names: Vec<&str> = Vec::new();
+    let mut pairs: Vec<(Attribute, Asked)> = Vec::new();
+    for target in targets {
+        if let Some((name, raw)) = target.split_once('=') {
+            let attribute = Attribute::parse(name)?;
+            let asked = asked(&attribute, raw)?;
+            if !pairs.contains(&(attribute.clone(), Asked::All))
+                && !pairs
+                    .iter()
+                    .any(|(known, what)| *known == attribute && *what == asked)
+            {
+                pairs.push((attribute, asked));
+            }
+        } else if target.contains(':') {
+            return Err(anyhow!(
+                "{target} names an attribute, not a taking — {target}=VALUE takes one value back, {target}=.. all of it"
+            ));
+        } else if !names.contains(&target.as_str()) {
+            names.push(target);
+        }
+    }
+    if pairs.is_empty() {
+        return Err(anyhow!(
+            "nothing named to take back — add attribute=value, or attribute=.. for all of it"
+        ));
+    }
+    if names.is_empty() {
+        return Err(anyhow!(
+            "no file named — add its hex name, or a beginning of it; `ossuary find --id` hands names over, ready to pipe"
+        ));
+    }
+
+    let archive = open(root)?;
+    let mut index = archive.index()?;
+    catch_up(&mut index, &archive, quiet)?;
+
+    // Everything resolves before anything is written: a mistake in the
+    // third of five must not leave the first two half-retracted.
+    let mut subjects: Vec<Subject> = Vec::new();
+    for name in &names {
+        let Some(subject) = resolve(&index, name)? else {
+            return Err(anyhow!(
+                "nothing on the record begins with {name:?} — nothing was taken back"
+            ));
+        };
+        if !subjects.contains(&subject) {
+            subjects.push(subject);
+        }
+    }
+    let mut takings: Vec<(Subject, Attribute, ossuary_core::Taking)> = Vec::new();
+    let mut told: Vec<String> = Vec::new();
+    let mut values = 0usize;
+    for subject in &subjects {
+        let (subject_takings, falling) = matched(&index, subject, &pairs)?;
+        takings.extend(subject_takings);
+        values += falling.iter().map(|(_, seen)| seen.len()).sum::<usize>();
+        let mut block = shorten(&index, subject)?;
+        for line in output::pairs(&falling).lines() {
+            block.push_str("\n  ");
+            block.push_str(line);
+        }
+        told.push(block);
+    }
+
+    if dry_run {
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        for block in &told {
+            if !say(&mut out, block)? {
+                break;
+            }
+        }
+        if !quiet {
+            eprintln!(
+                "would take back {values} value(s) from {} file(s); nothing written",
+                subjects.len()
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let written = ossuary_core::retract(archive.log(), &takings)?;
+    println!(
+        "{values} value(s) no longer stand on {} file(s); {written} retraction(s) written",
         subjects.len()
     );
     Ok(ExitCode::SUCCESS)

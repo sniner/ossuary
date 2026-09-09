@@ -33,6 +33,7 @@ making the run a failure.
 | `ingest` | take directory trees and single files in; everything of one call arrives as one run. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--dry-run` counts and measures what would go in and writes nothing |
 | `extract` | run extractors over what they have not examined — see below. `--dry-run` shows what named files' examination would record, and writes nothing |
 | `annotate` | put `user:tag` and `user:comment` on files already on the record |
+| `retract` | take a statement back: it no longer stands, the record keeps it. Files and `attribute=value` pairs mix freely; `attribute=..` takes back every standing value; `--dry-run` says what would fall |
 | `seal` | close the open segment; its claims become part of the sealed log |
 | `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
 | `standing` | what stands on one file — the outcome after retractions, where `about` tells the story. Attributes or a `namespace:` narrow it; exactly one attribute answers its values bare, one per line. Exits 1 when nothing stands, so a script can test for it |

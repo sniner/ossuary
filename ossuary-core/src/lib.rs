@@ -30,6 +30,7 @@ mod index;
 mod ingest;
 mod log;
 mod manifest;
+mod retract;
 
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
@@ -45,3 +46,4 @@ pub use index::{Folded, Index, Standing};
 pub use ingest::{IngestMemory, Ingested, Previewed, ingest, preview};
 pub use log::{GENERATION, Log, Segment};
 pub use manifest::{Manifest, Manifests};
+pub use retract::{Taking, retract};
