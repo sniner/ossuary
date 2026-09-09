@@ -160,9 +160,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   original — the attachment that was also saved as a file — are recorded without a second
   copy: a digest is store-agnostic, and the bytes answer from the content store;
   `--temp-dir` says where derived files wait on their way in, for when the archive sits on a
-  slow share. Naming files narrows the run to them — `extract pdf SUBJECT` examines one file
+  slow share. The closing line names the call's run id whenever files were derived, so the
+  batch is one paste away from `export` or another `extract`. Naming files narrows the run to
+  them — `extract pdf SUBJECT` examines one file
   now instead of everything that waits, a beginning of the digest is enough, and a named file
-  is handed over even when its kind is not one the extractor reads. `--full` examines anew,
+  is handed over even when its kind is not one the extractor reads; a whole run's files are
+  named by its dashed id, runs and files mixed freely — the grammar `export` speaks. `--full` examines anew,
   receipted or not: the named files, or everything of a kind the extractor reads — for the
   extractor upgrade that is worth a fresh look at the archive. The pipe protocol, open to any
   language, is [docs/extractors.md](docs/extractors.md)

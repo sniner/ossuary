@@ -366,7 +366,7 @@ fn forgotten_destination(destination: &Path) -> bool {
 
 /// A run id as the verdicts spell one: the dashed UUID, whole. Anything
 /// else a caller names is a file.
-fn run_id(id: &str) -> bool {
+pub(crate) fn run_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     bytes.len() == 36
         && bytes

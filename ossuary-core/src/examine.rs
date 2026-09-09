@@ -106,6 +106,13 @@ pub struct Settlement {
     pub rounds: usize,
     /// Files examined, across all rounds.
     pub examinations: usize,
+    /// Derived files taken in, across all rounds — bytes new to the
+    /// archive and bytes it already held alike.
+    pub derived: usize,
+    /// The call's run id: what stands as `prov:run` on every derived
+    /// file's sighting. On the record only where `derived` counted
+    /// something — a call that derived nothing left no trace of it.
+    pub run: String,
 }
 
 /// One line of the answer to `--identify` — one contract. Unknown keys
@@ -227,11 +234,13 @@ pub fn examine(
 
     let mut rounds = 1;
     let mut examinations = 0;
+    let mut derived = 0;
     if subjects.is_empty() {
         let settled = settle(&mut invocation, &mut index, &runs)?;
         troubled |= settled.troubled;
         rounds = settled.rounds;
         examinations = settled.examinations;
+        derived = settled.derived;
     } else {
         // Named files are the surgical grip: one pass, no rounds.
         for run in &runs {
@@ -239,6 +248,7 @@ pub fn examine(
             let outcome = run_one(&mut invocation, &index, run, subjects, 1)?;
             troubled |= !outcome.clean;
             examinations += outcome.examined;
+            derived += outcome.derived;
         }
     }
     Ok(Settlement {
@@ -246,6 +256,8 @@ pub fn examine(
         ran: runs.len(),
         rounds,
         examinations,
+        derived,
+        run: invocation.run_id,
     })
 }
 
@@ -254,6 +266,7 @@ struct Settled {
     troubled: bool,
     rounds: usize,
     examinations: usize,
+    derived: usize,
 }
 
 /// Rounds over the list until a full round examines nothing — the
@@ -266,6 +279,7 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
     let mut troubled = false;
     let mut round = 0usize;
     let mut total = 0usize;
+    let mut derived = 0usize;
     loop {
         round += 1;
         let mut examined = 0usize;
@@ -274,6 +288,7 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
             catch_up(index, invocation.archive, invocation.observer)?;
             let outcome = run_one(invocation, index, run, &[], round)?;
             troubled |= !outcome.clean;
+            derived += outcome.derived;
             if outcome.examined > 0 {
                 examined += outcome.examined;
                 busy.push(run.source.to_string());
@@ -296,6 +311,7 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
         troubled,
         rounds: round - 1,
         examinations: total,
+        derived,
     })
 }
 
@@ -418,6 +434,7 @@ struct Invocation<'a> {
 struct Outcome {
     clean: bool,
     examined: usize,
+    derived: usize,
 }
 
 /// The memo's spelling of "this source examined this file".
@@ -479,6 +496,7 @@ fn run_one(
             return Ok(Outcome {
                 clean: true,
                 examined: 0,
+                derived: 0,
             });
         }
         invocation.observer.event(Event::Waiting {
@@ -528,6 +546,7 @@ fn run_one(
     Ok(Outcome {
         clean: failures.is_empty(),
         examined: tally.examined,
+        derived: tally.stored + tally.known,
     })
 }
 

@@ -73,8 +73,11 @@ the same spelling holds in the archive's `[extract] run` list. A bare
 nothing new — so mail → attachment → text runs to its end in one call.
 Naming subjects runs no rounds: the named files are examined once, now,
 and a named file is handed over even when its kind is not one the
-extractor reads. `--full` ignores standing receipts; `--temp-dir` moves
-the place derived files wait in off `cache/tmp`.
+extractor reads. A whole run's files are named by its dashed id — runs
+and files mix freely, the grammar `export` speaks — and whenever files
+were derived, the closing line names the call's own run id. `--full`
+ignores standing receipts; `--temp-dir` moves the place derived files
+wait in off `cache/tmp`.
 
 The extractors that ship with ossuary:
 [exif](../ossuary-extract-exif/README.md),

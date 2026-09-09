@@ -118,7 +118,9 @@ enum Command {
     /// runs rounds, over that one extractor; naming files runs none —
     /// the named files are examined once, now, and a named file is
     /// handed over even when its kind is not one the extractor reads,
-    /// because naming is more deliberate than a pattern.
+    /// because naming is more deliberate than a pattern. A whole run's
+    /// files are named by its dashed id — the id an ingest or extract
+    /// verdict speaks — and runs and files mix in one call.
     Extract {
         /// Which extractor to run: the part after `ossuary-extract-`,
         /// with `:CONTRACT` picking one contract of a program that
@@ -126,9 +128,9 @@ enum Command {
         #[arg(value_name = "NAME")]
         name: Option<String>,
 
-        /// Only these files, named the way the archive names them — the
-        /// hex name or a beginning of it — instead of everything that
-        /// waits
+        /// Only these files — the hex name or a beginning of it, or a
+        /// whole run by its dashed id, mixed freely — instead of
+        /// everything that waits
         #[arg(value_name = "SUBJECT")]
         subjects: Vec<String>,
 

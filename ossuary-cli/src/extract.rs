@@ -9,8 +9,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::Result;
-use ossuary_core::{Event, Source, Tally};
+use anyhow::{Result, anyhow};
+use ossuary_core::{Archive, Event, Source, Tally};
 
 pub fn extract(
     root: &Path,
@@ -24,8 +24,10 @@ pub fn extract(
     if !quiet {
         eprintln!("archive {}", archive.root().display());
     }
+    let subjects = expand(&archive, subjects, quiet)?;
     let mut narrate = |event: Event<'_>| render(&event, quiet);
-    let settlement = ossuary_core::examine(&archive, name, subjects, full, temp_dir, &mut narrate)?;
+    let settlement =
+        ossuary_core::examine(&archive, name, &subjects, full, temp_dir, &mut narrate)?;
     if settlement.ran == 0 {
         println!("nothing ran — no extractor in the archive's list answered --identify");
     }
@@ -38,11 +40,52 @@ pub fn extract(
             settlement.rounds, settlement.examinations
         );
     }
+    // The call's own run id, said once for the whole call — but only
+    // when something carries it: a call that derived nothing put no
+    // prov:run on the record, and naming one would point at nothing.
+    if settlement.derived > 0 {
+        println!(
+            "{} derived file(s) in all, taken in as run {}",
+            settlement.derived, settlement.run
+        );
+    }
     Ok(if settlement.clean {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// The named ids, run ids expanded: a dashed run id becomes every file
+/// that run recorded — the same grammar `export` speaks — and file
+/// names pass through as given, for core to resolve. Whole before
+/// anything runs: an unknown run refuses the call, not its third pass.
+fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>> {
+    if !ids.iter().any(|id| crate::export::run_id(id)) {
+        return Ok(ids.to_vec());
+    }
+    let mut index = archive.index()?;
+    crate::catch_up(&mut index, archive, quiet)?;
+    let mut names: Vec<String> = Vec::new();
+    for id in ids {
+        if crate::export::run_id(id) {
+            let sightings = index.run_sightings(id)?;
+            if sightings.is_empty() {
+                return Err(anyhow!(
+                    "no run {id} on the record — `ossuary about FILE prov:run` names the runs a file arrived in; nothing was examined"
+                ));
+            }
+            for (subject, _) in sightings {
+                let name = subject.as_str().to_string();
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        } else {
+            names.push(id.clone());
+        }
+    }
+    Ok(names)
 }
 
 /// One event onto the terminal. Idle notes and verdicts are answers and
