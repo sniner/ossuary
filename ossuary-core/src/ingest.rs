@@ -141,12 +141,71 @@ where
     // sweep, and a root that will not resolve costs only itself. The
     // failure list names the path beside each error, so the contexts
     // here say only what was being done when it went wrong.
-    let mut files: Vec<PathBuf> = Vec::new();
+    let gathered = gather(roots, excludes)?;
+    result.excluded = gathered.excluded;
+    result.archives = gathered.archives;
+    result.failed = gathered.failed;
+    let files = gathered.files;
+    if let Some(memory) = memory {
+        memory.begin()?;
+    }
+    for path in files {
+        // What the memory compares is what the last run wrote into it:
+        // the size and mtime read just before the file was, so a change
+        // mid-read surfaces as a mismatch on the next sweep.
+        let seen = memory
+            .map(|memory| observe(memory, host, &path))
+            .transpose()?;
+        if let Some(Observation::Unchanged) = seen {
+            result.unchanged += 1;
+            continue;
+        }
+        match take(content, log, &path, host, &result.run, &source, tags, &word) {
+            Ok((status, claims)) => {
+                if status.is_new() {
+                    result.stored += 1;
+                } else {
+                    result.known += 1;
+                }
+                result.claims += claims;
+                if let (Some(memory), Some(Observation::Changed(size, mtime))) = (memory, seen) {
+                    memory.record(host, &path, size, mtime)?;
+                }
+            }
+            Err(error) => result.failed.push((path, error)),
+        }
+    }
+    if let Some(memory) = memory {
+        memory.commit()?;
+    }
+    Ok(result)
+}
+
+/// Every named root gathered, before anything is read: the walks done,
+/// the archives met set aside, the troubles collected.
+struct Gathered {
+    files: Vec<PathBuf>,
+    excluded: usize,
+    archives: Vec<PathBuf>,
+    failed: Vec<(PathBuf, Error)>,
+}
+
+fn gather<I>(roots: I, excludes: &Excludes) -> Result<Gathered>
+where
+    I: IntoIterator,
+    I::Item: AsRef<Path>,
+{
+    let mut gathered = Gathered {
+        files: Vec::new(),
+        excluded: 0,
+        archives: Vec::new(),
+        failed: Vec::new(),
+    };
     for given in roots {
         let root = match fs::canonicalize(given.as_ref()) {
             Ok(root) => root,
             Err(error) => {
-                result.failed.push((
+                gathered.failed.push((
                     given.as_ref().to_path_buf(),
                     Error::Io {
                         context: "resolving".to_string(),
@@ -193,18 +252,76 @@ where
                 },
             )),
         }
-        result.excluded += walker.excluded;
-        result.archives.extend(walker.archives);
-        result.failed.extend(walker.failed);
-        files.extend(walker.files);
+        gathered.excluded += walker.excluded;
+        gathered.archives.extend(walker.archives);
+        gathered.failed.extend(walker.failed);
+        gathered.files.extend(walker.files);
     }
-    if let Some(memory) = memory {
-        memory.begin()?;
-    }
-    for path in files {
-        // What the memory compares is what the last run wrote into it:
-        // the size and mtime read just before the file was, so a change
-        // mid-read surfaces as a mismatch on the next sweep.
+    Ok(gathered)
+}
+
+/// What an ingest would do, told without doing it.
+#[derive(Debug)]
+pub struct Previewed {
+    /// Files that would be read and taken in.
+    pub files: usize,
+    /// Their sizes as the filesystem reports them, summed — the number
+    /// that makes a forgotten ISO visible before it is hashed.
+    pub bytes: u64,
+    /// Files the memory knows unchanged — the run would leave them in
+    /// peace.
+    pub unchanged: usize,
+    /// Paths the excludes would leave out.
+    pub excluded: usize,
+    /// Archives the walk met — left whole, run or rehearsal alike.
+    pub archives: Vec<PathBuf>,
+    /// What could not even be looked at, and why.
+    pub failed: Vec<(PathBuf, Error)>,
+}
+
+/// What [`ingest`] would do with these roots, without reading a byte of
+/// them: the same walk, the same excludes, the same memory — and the
+/// sizes the filesystem reports where the real run would hash. The
+/// answer to `--dry-run`.
+///
+/// # Errors
+///
+/// [`Error::IngestsArchive`] when a named root is an archive or lies
+/// inside one, and the memory refusing to read. Per-file trouble is
+/// collected in [`Previewed::failed`], the way the real run collects it.
+pub fn preview<I>(
+    roots: I,
+    host: &str,
+    excludes: &Excludes,
+    memory: Option<&IngestMemory>,
+) -> Result<Previewed>
+where
+    I: IntoIterator,
+    I::Item: AsRef<Path>,
+{
+    let gathered = gather(roots, excludes)?;
+    let mut result = Previewed {
+        files: 0,
+        bytes: 0,
+        unchanged: 0,
+        excluded: gathered.excluded,
+        archives: gathered.archives,
+        failed: gathered.failed,
+    };
+    for path in gathered.files {
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(source) => {
+                result.failed.push((
+                    path,
+                    Error::Io {
+                        context: "measuring".to_string(),
+                        source,
+                    },
+                ));
+                continue;
+            }
+        };
         let seen = memory
             .map(|memory| observe(memory, host, &path))
             .transpose()?;
@@ -212,23 +329,8 @@ where
             result.unchanged += 1;
             continue;
         }
-        match take(content, log, &path, host, &result.run, &source, tags, &word) {
-            Ok((status, claims)) => {
-                if status.is_new() {
-                    result.stored += 1;
-                } else {
-                    result.known += 1;
-                }
-                result.claims += claims;
-                if let (Some(memory), Some(Observation::Changed(size, mtime))) = (memory, seen) {
-                    memory.record(host, &path, size, mtime)?;
-                }
-            }
-            Err(error) => result.failed.push((path, error)),
-        }
-    }
-    if let Some(memory) = memory {
-        memory.commit()?;
+        result.files += 1;
+        result.bytes += metadata.len();
     }
     Ok(result)
 }
@@ -719,6 +821,48 @@ mod tests {
 
     /// A generation-1 mark, the way `Archive::create` writes one.
     const MARK_LINE: &str = "{\"ossuary-archive\":1,\"algorithm\":\"sha256\",\"content-depth\":2,\"derived-depth\":2,\"claims-depth\":1}\n";
+
+    #[test]
+    fn a_preview_measures_without_reading() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.bin"), [0u8; 4096]).unwrap();
+        let memory = IngestMemory::open(dir.path().join("memory.sqlite")).unwrap();
+
+        let before = preview([&tree], "atlas.example.net", &none(), Some(&memory)).unwrap();
+        assert_eq!(before.files, 2);
+        assert_eq!(before.bytes, 11 + 4096);
+        assert_eq!(before.unchanged, 0);
+
+        assert!(
+            log.head().unwrap().is_empty()
+                && preview([&tree], "atlas.example.net", &none(), Some(&memory))
+                    .unwrap()
+                    .files
+                    == 2,
+            "a preview leaves no trace — not in the log, not in the memory"
+        );
+
+        ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &[],
+            &none(),
+            Some(&memory),
+        )
+        .unwrap();
+        let after = preview([&tree], "atlas.example.net", &none(), Some(&memory)).unwrap();
+        assert_eq!(
+            (after.files, after.bytes, after.unchanged),
+            (0, 0, 2),
+            "what the run remembered, the preview leaves in peace"
+        );
+    }
 
     #[test]
     fn an_archive_met_on_the_walk_is_left_whole() {

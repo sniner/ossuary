@@ -42,6 +42,6 @@ pub use export::{Placed, Placement, lay_out};
 pub use extract::{Derivation, EXAMINED, Examined, record_examination, run_id};
 pub use immure::{Algorithm, Digest};
 pub use index::{Folded, Index, Standing};
-pub use ingest::{IngestMemory, Ingested, ingest};
+pub use ingest::{IngestMemory, Ingested, Previewed, ingest, preview};
 pub use log::{GENERATION, Log, Segment};
 pub use manifest::{Manifest, Manifests};

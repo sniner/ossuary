@@ -65,6 +65,32 @@ pub fn pairs(shown: &[(Attribute, Vec<Value>)]) -> String {
     lines.join("\n")
 }
 
+/// A byte count the way a human sizes one: binary steps, one decimal
+/// under ten — 3.7 GiB reads at a glance where 3971934208 does not.
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display only — a tenth of a unit is the finest this ever says"
+    )]
+    let mut size = bytes as f64;
+    let mut unit = "B";
+    for step in ["KiB", "MiB", "GiB", "TiB", "PiB"] {
+        size /= 1024.0;
+        unit = step;
+        if size < 1024.0 {
+            break;
+        }
+    }
+    if size < 10.0 {
+        format!("{size:.1} {unit}")
+    } else {
+        format!("{size:.0} {unit}")
+    }
+}
+
 /// One shown attribute and value, spelled as a query term.
 fn pair(attribute: &Attribute, value: &Value) -> String {
     match value {
@@ -139,6 +165,15 @@ mod tests {
             "file:mime=application/pdf\nfile:name=\"Rechnung 07.pdf\"\nfile:name=scan.pdf",
             "one pair per line, no name and no indent — the asker typed the subject themselves"
         );
+    }
+
+    #[test]
+    fn bytes_read_the_way_a_human_sizes_them() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(4096), "4.0 KiB");
+        assert_eq!(human_bytes(54_597), "53 KiB");
+        assert_eq!(human_bytes(3_971_934_208), "3.7 GiB");
     }
 
     #[test]

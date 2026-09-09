@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
-use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, Subject, Value};
+use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, IngestMemory, Subject, Value};
 
 mod audit;
 mod browse;
@@ -75,7 +75,10 @@ enum Command {
     /// the same directory in again costs only what is new or changed.
     /// An archive met on the walk is left whole, and naming one — or a
     /// path inside one — refuses the call: an archive never takes in
-    /// an archive, its own least of all.
+    /// an archive, its own least of all. --dry-run walks, counts and
+    /// measures — same excludes, same memory — and writes nothing:
+    /// the summed size is where a forgotten ISO shows itself before
+    /// it is hashed.
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
@@ -90,6 +93,11 @@ enum Command {
         /// Look at every file anew, remembered or not
         #[arg(long)]
         full: bool,
+
+        /// Count and measure what would go in, and write nothing — the
+        /// number a forgotten ISO shows up in
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Run extractors over every file they have not yet examined
     ///
@@ -421,7 +429,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let quiet = cli.quiet;
     match cli.command {
         Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
-        Command::Ingest { paths, tags, full } => ingest(&cli.archive, &paths, &tags, full, quiet),
+        Command::Ingest {
+            paths,
+            tags,
+            full,
+            dry_run,
+        } => ingest(&cli.archive, &paths, &tags, full, dry_run, quiet),
         Command::Extract {
             name,
             subjects,
@@ -568,6 +581,7 @@ fn ingest(
     paths: &[PathBuf],
     tags: &[String],
     full: bool,
+    dry_run: bool,
     quiet: bool,
 ) -> Result<ExitCode> {
     if let Some(empty) = tags.iter().find(|tag| tag.trim().is_empty()) {
@@ -592,6 +606,9 @@ fn ingest(
     } else {
         Some(archive.ingest_memory()?)
     };
+    if dry_run {
+        return previewed(&archive, paths, &host, memory.as_ref(), quiet);
+    }
     let run = ossuary_core::ingest(
         archive.content(),
         archive.log(),
@@ -658,6 +675,55 @@ fn ingest(
         }
         Ok(ExitCode::FAILURE)
     }
+}
+
+/// The --dry-run answer: [`ossuary_core::preview`]'s findings, worded
+/// like the run they spare.
+fn previewed(
+    archive: &Archive,
+    paths: &[PathBuf],
+    host: &str,
+    memory: Option<&IngestMemory>,
+    quiet: bool,
+) -> Result<ExitCode> {
+    let run = ossuary_core::preview(paths, host, archive.config().excludes(), memory)?;
+    if !quiet {
+        for path in &run.archives {
+            eprintln!(
+                "{}: an ossuary archive — left whole, never taken in",
+                path.display()
+            );
+        }
+    }
+    let mut verdict = vec![format!(
+        "would take in {} file(s), {}",
+        run.files,
+        output::human_bytes(run.bytes)
+    )];
+    if run.unchanged > 0 {
+        verdict.push(format!(
+            "{} unchanged since the last run and left in peace",
+            run.unchanged
+        ));
+    }
+    if run.excluded > 0 {
+        verdict.push(format!(
+            "{} path(s) left out as config.toml asks",
+            run.excluded
+        ));
+    }
+    if !run.archives.is_empty() {
+        verdict.push(format!("{} archive(s) left whole", run.archives.len()));
+    }
+    println!("{}; nothing written", verdict.join(", "));
+    if run.failed.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    eprintln!("{} could not be looked at:", run.failed.len());
+    for (path, error) in &run.failed {
+        eprintln!("  {}: {}", path.display(), error.spelled());
+    }
+    Ok(ExitCode::FAILURE)
 }
 
 fn annotate(

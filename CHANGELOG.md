@@ -37,7 +37,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it already observed (in `cache/`) and leaves unchanged files in peace: not read, not hashed,
   no claims — tags among them, and the verdict says so; `--full` looks at everything anew. An
   archive met on the walk is left whole and counted in the verdict, and naming one — or a path
-  inside one — refuses the call: an archive never takes in an archive, its own least of all
+  inside one — refuses the call: an archive never takes in an archive, its own least of all.
+  `--dry-run` walks, counts and measures — same excludes, same memory — and writes nothing:
+  "would take in 1,204 file(s), 3.7 GiB" is the answer a forgotten ISO shows up in
 - **`ossuary seal`** closes the open segment; its claims become part of the sealed log. The open
   segment also closes itself once it grows to 1 MiB — a few thousand claims — no matter which
   command was writing; the command remains for sealing on demand, before a backup or right away
