@@ -46,6 +46,9 @@ pub struct Ingested {
     pub unchanged: usize,
     /// Paths the excludes left out — a directory counts once, unwalked.
     pub excluded: usize,
+    /// Archives the walk met and left whole, each counted at its root —
+    /// an archive never takes in an archive.
+    pub archives: Vec<PathBuf>,
     /// What could not be taken in, and why. A walk over a million files
     /// does not forfeit the rest to one unreadable one; what failed is
     /// named here instead.
@@ -104,9 +107,10 @@ pub struct Ingested {
 ///
 /// # Errors
 ///
-/// Whatever building the first claims can answer, and the memory refusing
-/// to read or write. Per-file trouble is not an error here, and neither is
-/// a root that will not resolve: both are collected in
+/// Whatever building the first claims can answer, the memory refusing
+/// to read or write, and [`Error::IngestsArchive`] when a named root is
+/// an archive or lies inside one. Per-file trouble is not an error here,
+/// and neither is a root that will not resolve: both are collected in
 /// [`Ingested::failed`] while the walk goes on.
 pub fn ingest<I>(
     content: &Store,
@@ -130,6 +134,7 @@ where
         claims: 0,
         unchanged: 0,
         excluded: 0,
+        archives: Vec::new(),
         failed: Vec::new(),
     };
     // Every root is gathered before anything is read: one run, one
@@ -151,12 +156,19 @@ where
                 continue;
             }
         };
+        // Named outright is refused, not skipped: whoever points ingest
+        // at an archive — or into one — is standing somewhere they did
+        // not mean to be, and no half of the call should proceed on that.
+        if let Some(found) = enclosing_archive(&root) {
+            return Err(Error::IngestsArchive(found));
+        }
         let mut walker = Walk {
             root: &root,
             excludes,
             files: Vec::new(),
             failed: Vec::new(),
             excluded: 0,
+            archives: Vec::new(),
         };
         match fs::metadata(&root) {
             Ok(metadata) if metadata.is_file() => walker.files.push(root.clone()),
@@ -182,6 +194,7 @@ where
             )),
         }
         result.excluded += walker.excluded;
+        result.archives.extend(walker.archives);
         result.failed.extend(walker.failed);
         files.extend(walker.files);
     }
@@ -599,6 +612,14 @@ impl IngestMemory {
     }
 }
 
+/// The archive root at or above a path, if any: the mark is looked for
+/// at the path itself first, then upward.
+fn enclosing_archive(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|dir| crate::archive::is_archive(dir))
+        .map(Path::to_path_buf)
+}
+
 /// The walk in progress: every regular file under the root, sorted by name
 /// at every level, minus what the excludes say never goes in.
 struct Walk<'a> {
@@ -609,6 +630,8 @@ struct Walk<'a> {
     files: Vec<PathBuf>,
     failed: Vec<(PathBuf, Error)>,
     excluded: usize,
+    /// Archive roots met on the walk and left whole.
+    archives: Vec<PathBuf>,
 }
 
 impl Walk<'_> {
@@ -644,6 +667,11 @@ impl Walk<'_> {
             }
             match child.file_type() {
                 Ok(kind) if kind.is_symlink() => {}
+                // An archive met on the walk is left whole: an archive
+                // never takes in an archive.
+                Ok(kind) if kind.is_dir() && crate::archive::is_archive(&path) => {
+                    self.archives.push(path);
+                }
                 Ok(kind) if kind.is_dir() => self.walk(&path),
                 Ok(kind) if kind.is_file() => self.files.push(path),
                 // Sockets, pipes, devices: not content, not an error.
@@ -687,6 +715,82 @@ mod tests {
 
     fn none() -> Excludes {
         Excludes::none()
+    }
+
+    /// A generation-1 mark, the way `Archive::create` writes one.
+    const MARK_LINE: &str = "{\"ossuary-archive\":1,\"algorithm\":\"sha256\",\"content-depth\":2,\"derived-depth\":2,\"claims-depth\":1}\n";
+
+    #[test]
+    fn an_archive_met_on_the_walk_is_left_whole() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("vault")).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("vault").join("FORMAT"), MARK_LINE).unwrap();
+        fs::write(tree.join("vault").join("head.jsonl"), b"claims").unwrap();
+
+        let result = ingest(
+            &content,
+            &log,
+            [&tree],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result.stored, 1, "only a.txt went in");
+        assert_eq!(
+            result.archives,
+            [fs::canonicalize(tree.join("vault")).unwrap()],
+            "the archive is named at its root, once, and nothing under it was read"
+        );
+        assert!(result.failed.is_empty(), "left whole is not a failure");
+    }
+
+    #[test]
+    fn an_archive_named_outright_refuses_the_call() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let vault = dir.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("FORMAT"), MARK_LINE).unwrap();
+        fs::write(vault.join("notes.txt"), b"inside").unwrap();
+
+        let named_whole = ingest(
+            &content,
+            &log,
+            [&vault],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        );
+        assert!(matches!(named_whole, Err(Error::IngestsArchive(_))));
+
+        let named_inside = ingest(
+            &content,
+            &log,
+            [vault.join("notes.txt")],
+            "atlas.example.net",
+            &[],
+            &none(),
+            None,
+        );
+        match named_inside {
+            Err(Error::IngestsArchive(found)) => assert_eq!(
+                found,
+                fs::canonicalize(&vault).unwrap(),
+                "pointing inside an archive names the archive"
+            ),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(
+            log.head().unwrap().is_empty(),
+            "a refused call wrote nothing"
+        );
     }
 
     #[test]

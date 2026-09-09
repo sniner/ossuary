@@ -57,6 +57,18 @@ struct Generation {
     generation: u32,
 }
 
+/// Whether a directory is an archive's root: a `FORMAT` mark stands in
+/// it and reads as one — whatever its generation, because a newer
+/// archive is still an archive.
+#[must_use]
+pub fn is_archive(dir: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(dir.join(MARK)) else {
+        return false;
+    };
+    let line = text.lines().next().unwrap_or_default();
+    serde_json::from_str::<Generation>(line).is_ok()
+}
+
 /// An archive in hand: the mark read, the settings loaded, the stores
 /// described, the log ready.
 #[derive(Debug)]
@@ -544,6 +556,29 @@ mod tests {
         assert!(
             matches!(Archive::open(dir.path()), Err(Error::ArchiveGeneration(2))),
             "members this build never heard of do not turn newer into broken"
+        );
+    }
+
+    #[test]
+    fn is_archive_asks_only_whether_a_mark_reads() {
+        let dir = TempDir::new().unwrap();
+        assert!(!is_archive(dir.path()), "no mark, no archive");
+        fs::write(dir.path().join("FORMAT"), "not a mark\n").unwrap();
+        assert!(
+            !is_archive(dir.path()),
+            "a file merely named FORMAT is not a mark"
+        );
+        let root = dir.path().join("archive");
+        Archive::create(&root, Algorithm::Sha256).unwrap();
+        assert!(is_archive(&root));
+        fs::write(
+            dir.path().join("FORMAT"),
+            "{\"ossuary-archive\":2,\"algorithm\":\"sha256\"}\n",
+        )
+        .unwrap();
+        assert!(
+            is_archive(dir.path()),
+            "a newer generation is still an archive"
         );
     }
 

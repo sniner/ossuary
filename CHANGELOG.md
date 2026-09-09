@@ -35,7 +35,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   user's own word at arrival: a `user:tag` claim under the source `user` on every file the run
   records. A repeated run remembers what
   it already observed (in `cache/`) and leaves unchanged files in peace: not read, not hashed,
-  no claims — tags among them, and the verdict says so; `--full` looks at everything anew
+  no claims — tags among them, and the verdict says so; `--full` looks at everything anew. An
+  archive met on the walk is left whole and counted in the verdict, and naming one — or a path
+  inside one — refuses the call: an archive never takes in an archive, its own least of all
 - **`ossuary seal`** closes the open segment; its claims become part of the sealed log. The open
   segment also closes itself once it grows to 1 MiB — a few thousand claims — no matter which
   command was writing; the command remains for sealing on demand, before a backup or right away
@@ -121,7 +123,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   anywhere, flat under its recorded names; the same bytes standing at two places come out as two
   files, the way they stand. Nothing standing at PATH is ever overwritten — a
   file already there with the same bytes counts as done, different bytes are a named failure —
-  and `--dry-run` answers what would land where without writing anything.
+  and `--dry-run` answers what would land where without writing anything. A destination inside
+  the archive is refused — exports land outside it.
   `ossuary find --id … | xargs ossuary export DIR` exports a found set
 - **`ossuary audit`** proves the archive intact from its own files alone — the cache plays no
   part. Every file in the content and derived stores is read back whole and its bytes re-hashed

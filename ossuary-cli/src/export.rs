@@ -31,6 +31,17 @@ pub(crate) fn export(
         ));
     }
     let archive = open(root)?;
+    // Said no to before anything is read: an export tree strewn between
+    // the stores serves nobody, and a later ingest of it is refused
+    // anyway.
+    if let Ok(inside) = fs::canonicalize(archive.root()) {
+        if resolved(destination).starts_with(&inside) {
+            return Err(anyhow!(
+                "{}: inside the archive — name a destination outside it",
+                destination.display()
+            ));
+        }
+    }
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
     let pairs = gather(&index, ids)?;
@@ -308,6 +319,34 @@ fn write_out(archive: &Archive, subject: &Subject, dest: &Path) -> Result<bool> 
     Ok(false)
 }
 
+/// The destination as the filesystem will see it: the longest standing
+/// prefix resolved, the not-yet-made rest appended as spelled — what
+/// `fs::canonicalize` would answer once the directory exists.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut standing = path.to_path_buf();
+    loop {
+        match fs::canonicalize(&standing) {
+            Ok(real) => {
+                let mut whole = real;
+                for name in rest.iter().rev() {
+                    whole.push(name);
+                }
+                return whole;
+            }
+            Err(_) => match (standing.parent(), standing.file_name()) {
+                (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                    rest.push(name.to_os_string());
+                    standing = parent.to_path_buf();
+                }
+                // Nothing of the path stands — creating it will fail
+                // with its own words; here it is simply not inside.
+                _ => return path.to_path_buf(),
+            },
+        }
+    }
+}
+
 /// Whether the destination reads like an id while no such directory
 /// stands: a run id, or a whole digest. The likeliest way to spell one
 /// here is a forgotten destination, and the first ID must not quietly
@@ -342,6 +381,18 @@ fn run_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_destination_resolves_before_it_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(
+            resolved(&dir.path().join("new").join("deeper")),
+            real.join("new").join("deeper"),
+            "the standing prefix resolves, the not-yet-made rest rides along"
+        );
+        assert_eq!(resolved(&real), real, "a standing path is itself");
+    }
 
     #[test]
     fn a_run_id_is_the_dashed_uuid_whole() {

@@ -100,6 +100,11 @@ pub enum Error {
     #[error("{}: an archive already stands here", .0.display())]
     AlreadyArchive(std::path::PathBuf),
 
+    /// A named ingest root is an archive, or lies inside one. The path
+    /// is the archive's root, wherever in it the naming pointed.
+    #[error("{}: an ossuary archive — an archive never takes in an archive", .0.display())]
+    IngestsArchive(std::path::PathBuf),
+
     /// The `FORMAT` mark would not read back.
     #[error("{}: the FORMAT mark did not read back — damaged, or not ossuary's", .0.display())]
     BadMark(std::path::PathBuf),

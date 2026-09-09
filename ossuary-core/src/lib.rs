@@ -32,7 +32,7 @@ mod log;
 mod manifest;
 
 pub use annotate::annotate;
-pub use archive::Archive;
+pub use archive::{Archive, is_archive};
 pub use audit::{Audit, LogAudit, StoreAudit, audit_log, audit_store};
 pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 pub use config::{Config, Excludes};

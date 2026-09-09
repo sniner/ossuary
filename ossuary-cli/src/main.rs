@@ -73,6 +73,9 @@ enum Command {
     /// What is taken in is only read. A repeated run remembers what it
     /// already observed and leaves unchanged files in peace, so pouring
     /// the same directory in again costs only what is new or changed.
+    /// An archive met on the walk is left whole, and naming one — or a
+    /// path inside one — refuses the call: an archive never takes in
+    /// an archive, its own least of all.
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
@@ -348,7 +351,9 @@ enum Command {
     /// out as several files, the way they stand. Nothing at PATH is
     /// ever overwritten: a
     /// file already there with the same bytes counts as done, one with
-    /// different bytes is a named failure and stays untouched.
+    /// different bytes is a named failure and stays untouched. A
+    /// destination inside the archive is refused — exports land
+    /// outside it.
     /// --dry-run answers what would land where and writes nothing.
     /// `ossuary find --id … | xargs ossuary export PATH` exports a
     /// found set.
@@ -595,6 +600,16 @@ fn ingest(
         memory.as_ref(),
     )?;
 
+    // Each archive met is named where the run talks; the verdict keeps
+    // the count.
+    if !quiet {
+        for path in &run.archives {
+            eprintln!(
+                "{}: an ossuary archive — left whole, never taken in",
+                path.display()
+            );
+        }
+    }
     let mut verdict = vec![format!("{} file(s) new to the archive", run.stored)];
     if run.known > 0 {
         verdict.push(format!(
@@ -622,6 +637,9 @@ fn ingest(
             "{} path(s) left out as config.toml asks",
             run.excluded
         ));
+    }
+    if !run.archives.is_empty() {
+        verdict.push(format!("{} archive(s) left whole", run.archives.len()));
     }
     let record = if run.claims > 0 {
         format!("{} claim(s) written as run {}", run.claims, run.run)

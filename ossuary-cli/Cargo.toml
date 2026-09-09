@@ -18,3 +18,6 @@ clap = { version = "4.5.51", features = ["derive", "env"] }
 gethostname = "1.0.2"
 ossuary-core = { path = "../ossuary-core", version = "0.1.0" }
 serde_json = "1.0.151"
+
+[dev-dependencies]
+tempfile = "3.27.0"
