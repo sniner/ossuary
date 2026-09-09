@@ -35,7 +35,7 @@ making the run a failure.
 | `annotate` | put `user:tag` and `user:comment` on files already on the record |
 | `seal` | close the open segment; its claims become part of the sealed log |
 | `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
-| `value` | what stands for one attribute, one value per line, strings bare — exits 1 when nothing stands, so a script can test for it |
+| `standing` | what stands on one file — the outcome after retractions, where `about` tells the story. Attributes or a `namespace:` narrow it; exactly one attribute answers its values bare, one per line. Exits 1 when nothing stands, so a script can test for it |
 | `find` | every file on which all the terms hold, shown with the fields the question named |
 | `ls`, `tree` | what stands at one place, one level of it — or everything below it |
 | `id` | the name a file would answer to, and whether the archive already holds it. Nothing is taken in |
@@ -43,7 +43,7 @@ making the run a failure.
 | `export` | files back out as they arrived: whole runs by id, single files by name, mixed freely. `--dry-run` says what would land where |
 | `audit` | prove the archive intact: every byte against its name, the record against the stores. Exits 1 when findings stand |
 
-`--json` on `about`, `value`, `find`, `ls` and `audit` keeps the JSON
+`--json` on `about`, `standing`, `find`, `ls` and `audit` keeps the JSON
 spelling, one object per line, for `jq`.
 
 Files are named by the hex digest of their content. A beginning of it is
@@ -94,7 +94,7 @@ without weighing this crate down.
 
 `0` is the answer given, `1` everything else: an archive that will not
 open, a name that matches nothing or too much, a file an extractor could
-not examine, an audit with findings, `value` with nothing standing.
+not examine, an audit with findings, `standing` with nothing standing.
 Failures are named on stderr and survive `-q`.
 
 ## License

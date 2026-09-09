@@ -200,9 +200,11 @@ b5743276
 ```
 
 For scripts: `find --id` prints full names alone, ready to pipe;
-`value` answers one attribute's standing values, strings bare;
-`--json` on `about`, `value`, `find` and `ls` keeps the JSON spelling
-for `jq`; and `-q` silences the narration everywhere. Every verb and
+`standing SUBJECT ATTRIBUTE` answers one attribute's standing values,
+strings bare — and without an attribute, everything standing on the
+file, where `about` tells the whole story, retractions included;
+`--json` on `about`, `standing`, `find` and `ls` keeps the JSON
+spelling for `jq`; and `-q` silences the narration everywhere. Every verb and
 every flag stands in [`ossuary-cli`](ossuary-cli/README.md).
 
 ## Looking around

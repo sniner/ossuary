@@ -183,27 +183,33 @@ enum Command {
         #[arg(short, long)]
         json: bool,
     },
-    /// What stands: one attribute's current values, ready for a script
+    /// What stands on one file — the outcome, not the story
     ///
-    /// Where `about` answers with the history — every claim, retractions
-    /// included — this answers with the outcome: the values standing after
-    /// retractions are applied and repeats collapsed, one per line,
-    /// strings bare. Several lines mean the attribute honestly holds
-    /// several values; choosing among them is the caller's business, and
-    /// with --json the values keep their JSON spelling so jq can do the
-    /// choosing. When nothing stands, nothing comes and the exit code
-    /// says 1, so a script can test for it.
-    Value {
+    /// Where `about` answers with everything ever said — retractions
+    /// included — this answers with what still holds: retractions
+    /// applied, repeats collapsed. Without attributes the whole
+    /// standing answers, one attribute=value pair per line, spelled
+    /// the way a query would — a pair pastes into `find` as a term.
+    /// Attributes narrow the answer, and a name ending in `:` means
+    /// the whole namespace, like `exif:`. Naming exactly one
+    /// attribute answers bare: the values alone, one per line,
+    /// strings without quotes, ready for a script — several lines
+    /// mean the attribute honestly holds several values, and choosing
+    /// among them stays the caller's business. When nothing stands,
+    /// nothing comes and the exit code says 1, so a script can test
+    /// for it.
+    Standing {
         /// The file's name in the archive: its hex digest — a beginning
         /// of it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
-        /// The attribute asked about, like exif:model
+        /// Only these attributes; a name ending in `:` means the whole
+        /// namespace. Exactly one attribute answers its values bare
         #[arg(value_name = "ATTRIBUTE")]
-        attribute: String,
+        attributes: Vec<String>,
 
-        /// Values in their JSON spelling — strings keep their quotes
+        /// One JSON object: each shown attribute's values as a list
         #[arg(short, long)]
         json: bool,
     },
@@ -432,11 +438,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             attributes,
             json,
         } => about(&cli.archive, &subject, &attributes, json, quiet),
-        Command::Value {
+        Command::Standing {
             subject,
-            attribute,
+            attributes,
             json,
-        } => value(&cli.archive, &subject, &attribute, json, quiet),
+        } => standing(&cli.archive, &subject, &attributes, json, quiet),
         Command::Find {
             terms,
             missing,
@@ -776,8 +782,35 @@ fn about(
     Ok(ExitCode::SUCCESS)
 }
 
-fn value(root: &Path, subject: &str, attribute: &str, json: bool, quiet: bool) -> Result<ExitCode> {
-    let attribute = Attribute::parse(attribute)?;
+fn standing(
+    root: &Path,
+    subject: &str,
+    attributes: &[String],
+    json: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
+    // Every spelling is checked before the archive opens: a mistyped
+    // attribute refuses the call, not the middle of an answer.
+    let mut projections: Vec<Projection> = Vec::new();
+    for word in attributes {
+        let projection = if let Some(namespace) = word.strip_suffix(':') {
+            // The grammar has one door; a prefix walks through it
+            // wearing a dummy name.
+            Attribute::parse(&format!("{namespace}:a"))?;
+            Projection::Namespace(namespace.to_string())
+        } else {
+            Projection::Attribute(Attribute::parse(word)?)
+        };
+        if !projections.contains(&projection) {
+            projections.push(projection);
+        }
+    }
+    // Exactly one attribute named: the asker knows what they asked, so
+    // the label would be an echo — the values come bare, the way a
+    // script wants them.
+    let bare =
+        attributes.len() == 1 && matches!(projections.as_slice(), [Projection::Attribute(_)]);
+
     let archive = open(root)?;
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
@@ -791,28 +824,57 @@ fn value(root: &Path, subject: &str, attribute: &str, json: bool, quiet: bool) -
         }
         return Ok(ExitCode::FAILURE);
     };
-    let standing = index.values(&subject, &attribute)?;
-    if standing.is_empty() {
+    let shown = if projections.is_empty() {
+        grouped(index.standing(&subject)?)
+    } else {
+        gather(&index, &subject, &projections)?
+    };
+    if shown.is_empty() {
         if !quiet {
             eprintln!(
-                "nothing stands for {} on {subject} — `ossuary about` shows what was ever said",
-                attribute.as_str()
+                "nothing stands{} on {subject} — `ossuary about` shows what was ever said",
+                if attributes.is_empty() {
+                    ""
+                } else {
+                    " of that"
+                },
             );
         }
         return Ok(ExitCode::FAILURE);
     }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    for value in &standing {
-        let line = match value {
-            Value::String(text) if !json => text.clone(),
-            other => other.to_string(),
-        };
-        if !say(&mut out, &line)? {
-            break;
+    if json {
+        say(&mut out, &output::json_line(subject.as_str(), &shown))?;
+    } else if bare {
+        for (_, values) in &shown {
+            for value in values {
+                let line = match value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                if !say(&mut out, &line)? {
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
         }
+    } else {
+        say(&mut out, &output::pairs(&shown))?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Rows ordered by attribute, folded into the shape an answer shows:
+/// each attribute once, its standing values together.
+fn grouped(rows: Vec<(Attribute, Value)>) -> Vec<(Attribute, Vec<Value>)> {
+    let mut shown: Vec<(Attribute, Vec<Value>)> = Vec::new();
+    for (attribute, value) in rows {
+        match shown.last_mut() {
+            Some((known, values)) if *known == attribute => values.push(value),
+            _ => shown.push((attribute, vec![value])),
+        }
+    }
+    shown
 }
 
 /// One thing a `find` match shows: an attribute, or a whole namespace.

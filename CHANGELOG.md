@@ -92,12 +92,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Both options repeat, several files go in one call, and every name is resolved before
   anything is written, so a mistyped name refuses the whole call.
   `ossuary find --id … | xargs ossuary annotate --tag …` is the after-the-fact batch tagging
-- **`ossuary value SUBJECT ATTRIBUTE`** answers what currently stands for one attribute —
-  retractions applied, repeats collapsed — one value per line, strings bare, ready for a script;
-  several lines mean the attribute honestly holds several values, and choosing among them stays
-  the caller's policy. Exits 1 when nothing stands, so a script can test for it
-- **`--json`** on `about` and `value` answers in JSON lines ready for `jq`: `about --json` gives
-  each claim exactly as the log spells it, `value --json` keeps the values' JSON spelling
+- **`ossuary standing SUBJECT [ATTRIBUTE…]`** answers what currently stands on one file —
+  retractions applied, repeats collapsed — where `about` answers with everything ever said.
+  Without attributes the whole standing comes, one `attribute=value` pair per line in the query
+  spelling, so a pair pastes into `find` as a term; attributes narrow it, `exif:` names a whole
+  namespace, and exactly one attribute answers bare — the values alone, one per line, strings
+  without quotes, ready for a script. Several lines mean the attribute honestly holds several
+  values, and choosing among them stays the caller's policy. Exits 1 when nothing stands, so a
+  script can test for it
+- **`--json`** on `about` and `standing` answers ready for `jq`: `about --json` gives each claim
+  exactly as the log spells it, `standing --json` one object with every shown attribute's
+  values as a list
 - **`--archive DIR`** on every command names the archive to work in; standing in it is enough,
   and so is the environment — `OSSUARY_ARCHIVE` holds the name for a whole shell session, the
   flag still outranking it

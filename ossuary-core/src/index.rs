@@ -272,6 +272,34 @@ impl Index {
         Ok(standing)
     }
 
+    /// Everything currently standing on one subject: every standing
+    /// `(attribute, value)` pair, ordered by attribute and value — as of
+    /// the last [`fold`](Index::fold), the open head included. The whole
+    /// outcome where [`values`](Index::values) answers one attribute and
+    /// [`values_in`](Index::values_in) one namespace.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; a row that does not parse back
+    /// cannot happen for rows a fold wrote, but is propagated rather than
+    /// sworn away.
+    pub fn standing(&self, subject: &Subject) -> Result<Vec<(Attribute, Value)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT attribute, value FROM standing
+             WHERE subject = ?1
+             ORDER BY attribute, value",
+        )?;
+        let rows = statement.query_map(params![subject.as_str()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut standing = Vec::new();
+        for row in rows {
+            let (attribute, value) = row?;
+            standing.push((Attribute::parse(&attribute)?, serde_json::from_str(&value)?));
+        }
+        Ok(standing)
+    }
+
     /// Every subject the record speaks about, sorted — as of the last
     /// [`fold`](Index::fold), the open head included. The answer to a
     /// question that names no terms at all: show me something about
@@ -1209,6 +1237,54 @@ mod tests {
                 .unwrap(),
             Vec::<Value>::new(),
             "an attribute never claimed has nothing standing"
+        );
+    }
+
+    #[test]
+    fn standing_answers_the_whole_outcome_of_one_subject() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("crete", "2026-09-01T21:14:03Z")).unwrap();
+        log.append(&tag("beach", "2026-09-01T21:14:04Z")).unwrap();
+        log.append(&say(
+            &subject(),
+            "file:name",
+            json!("dscn0042.jpg"),
+            "2026-09-01T21:14:05Z",
+        ))
+        .unwrap();
+        log.append(&tag("holiday", "2026-09-01T21:14:06Z")).unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("holiday"),
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let other =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        log.append(&tag_about(other, "noise", "2026-09-02T10:00:01Z"))
+            .unwrap();
+        index.fold(&log).unwrap();
+
+        let pairs = index.standing(&subject()).unwrap();
+        assert_eq!(
+            pairs,
+            [
+                (
+                    Attribute::parse("file:name").unwrap(),
+                    json!("dscn0042.jpg")
+                ),
+                (Attribute::parse("user:tag").unwrap(), json!("beach")),
+                (Attribute::parse("user:tag").unwrap(), json!("crete")),
+            ],
+            "every attribute of this subject and no other's, retracted values gone, ordered by attribute then value"
         );
     }
 

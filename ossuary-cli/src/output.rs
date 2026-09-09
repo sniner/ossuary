@@ -52,6 +52,19 @@ pub fn json_line(subject: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
     line
 }
 
+/// What `standing` answers without a heading: every pair on a line of
+/// its own, the same query spelling a `find` block indents — the name
+/// is absent because the asker typed it themselves.
+pub fn pairs(shown: &[(Attribute, Vec<Value>)]) -> String {
+    let mut lines = Vec::new();
+    for (attribute, values) in shown {
+        for value in values {
+            lines.push(pair(attribute, value));
+        }
+    }
+    lines.join("\n")
+}
+
 /// One shown attribute and value, spelled as a query term.
 fn pair(attribute: &Attribute, value: &Value) -> String {
     match value {
@@ -109,6 +122,22 @@ mod tests {
         assert_eq!(
             pair(&attribute("user:tag"), &json!("v*")),
             "user:tag=\"v*\""
+        );
+    }
+
+    #[test]
+    fn pairs_speak_the_query_language_without_a_heading() {
+        let shown = vec![
+            (attribute("file:mime"), vec![json!("application/pdf")]),
+            (
+                attribute("file:name"),
+                vec![json!("Rechnung 07.pdf"), json!("scan.pdf")],
+            ),
+        ];
+        assert_eq!(
+            pairs(&shown),
+            "file:mime=application/pdf\nfile:name=\"Rechnung 07.pdf\"\nfile:name=scan.pdf",
+            "one pair per line, no name and no indent — the asker typed the subject themselves"
         );
     }
 
