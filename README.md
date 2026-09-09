@@ -1,11 +1,9 @@
 # ossuary — a personal archive of everything, with everything known about it
 
-> [!WARNING]
-> This is pre-0.1.0 software. Anything may change from one commit to the
-> next — the commands, the format, and any archive you have created may
-> stop being readable, with no migration path. It is ready to be played
-> with, and for nothing more. Once there are releases, the usual
-> versioning rules take over.
+> [!NOTE]
+> This is 0.x software. Commands and format may still change between
+> minor versions — a breaking change bumps the minor and names itself
+> in the [CHANGELOG](CHANGELOG.md).
 
 `ossuary` keeps files for good and writes down everything that is ever
 said about them. A file goes in once and is named by the hash of its own
