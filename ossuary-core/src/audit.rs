@@ -15,9 +15,8 @@
 //! findings, because a run interrupted between storing and recording
 //! leaves such entries legitimately, and the next arrival of the same
 //! bytes records them. Segments that name no predecessor are noted the
-//! same way: a chain has one beginning, and segments sealed before
-//! segments named their predecessors, or a head begun anew where one had
-//! been lost, begin a chain of their own without anything sealed being
+//! same way: a chain has one beginning, and a head begun anew where one
+//! had been lost begins a chain of its own without anything sealed being
 //! gone.
 //!
 //! The whole pass works from the truth tiers alone: stores, segments,
@@ -114,10 +113,9 @@ pub struct LogAudit {
     /// store entry answers to it.
     pub head_predecessor_missing: Option<String>,
     /// Readable segments that name no predecessor. One is where the
-    /// chain begins; more are chains of their own — sealed before
-    /// segments named their predecessors, or begun anew where the head
-    /// had been lost. An observation, not a finding: nothing sealed is
-    /// shown to be gone.
+    /// chain begins; more are chains of their own, begun anew where the
+    /// head had been lost. An observation, not a finding: nothing sealed
+    /// is shown to be gone.
     pub unchained: Vec<String>,
     /// Every subject the readable claims speak of: their subjects, and
     /// the subjects link values name. Read from the whole history,
@@ -466,8 +464,8 @@ mod tests {
     fn segments_that_name_no_predecessor_begin_chains_of_their_own() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
-        // A segment sealed before segments named their predecessors:
-        // a header of the generation alone, planted straight into the store.
+        // A segment that names no predecessor, planted straight into the
+        // store: what a head begun anew leaves behind once sealed.
         let mut text = String::from("{\"ossuary-segment\":1}\n");
         let claim = Claim::assert(
             Subject::parse(&"ab".repeat(32)).unwrap(),

@@ -485,7 +485,8 @@ enum Command {
     /// has no innocent reading. Files held that no claim speaks of are
     /// noted, not counted as findings: an interrupted run leaves such
     /// files, and the next arrival records them; so are segments that
-    /// name no predecessor beyond the one where the chain begins. The
+    /// name no predecessor beyond the one where the chain begins — a
+    /// head lost and begun anew leaves those. The
     /// answer counts what it finds; up to a handful of names
     /// stands right there, --verbose spells out every one, and --json
     /// answers one object per finding for a script. Reading the whole

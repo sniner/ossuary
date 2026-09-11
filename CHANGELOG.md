@@ -9,8 +9,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Segment chain** — from the second segment of an archive on, a segment's header names the
   one sealed before it (`previous`, its digest), so the record hangs together from the open head
-  back to the first segment. Segments written before this stand at the start of a chain of their
-  own, naming no predecessor
+  back to the first segment
 - **`ossuary audit`** follows the chain: a segment named as sealed before another, or as the last
   one sealed before the open head, that no store holds is a finding — a sealed segment is gone
   (`missing-segment` under `--json`). More than one segment naming no predecessor is noted, not

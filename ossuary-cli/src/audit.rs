@@ -101,7 +101,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
     }
     if audit.log.unchained.len() > 1 {
         let heading = format!(
-            "{} sealed segment(s) name no predecessor — not a finding; a chain has one beginning, and segments sealed before segments named theirs, or after the open head was lost, begin one of their own",
+            "{} sealed segment(s) name no predecessor — not a finding; a chain has one beginning, and a head begun anew after the open head was lost begins one of its own",
             audit.log.unchained.len()
         );
         if !listing(out, &heading, &audit.log.unchained, verbose)? {

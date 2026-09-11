@@ -71,8 +71,7 @@ struct Header {
     generation: u32,
     /// The digest of the segment sealed before this one, as the claims
     /// store files it: bare hex. Absent from the first segment of an
-    /// archive — and from every segment sealed before segments named
-    /// their predecessors.
+    /// archive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous: Option<String>,
 }
@@ -133,8 +132,7 @@ pub struct Contents {
 impl Contents {
     /// The segment sealed before this one, as its header names it.
     ///
-    /// `None` for the first segment of an archive, and for a segment
-    /// sealed before segments named their predecessors.
+    /// `None` for the first segment of an archive.
     #[must_use]
     pub fn previous(&self) -> Option<&Digest> {
         self.previous.as_ref()
