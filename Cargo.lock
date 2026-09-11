@@ -1284,7 +1284,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "ossuary-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "globset",
  "immure",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-extract-exif"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kamadak-exif",
  "serde_json",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-extract-mail"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mail-parser",
  "serde_json",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-extract-packed"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "infer",
  "serde_json",
@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-extract-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lopdf",
  "serde_json",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-mailvault"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "ossuary-mount"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

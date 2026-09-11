@@ -16,7 +16,7 @@ path = "src/main.rs"
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 imap = { version = "2.4.1", default-features = false }
-ossuary-core = { path = "../ossuary-core", version = "0.1.0" }
+ossuary-core = { path = "../ossuary-core", version = "0.2.0" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

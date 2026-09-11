@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive", "env"] }
-ossuary-core = { path = "../ossuary-core", version = "0.1.0" }
+ossuary-core = { path = "../ossuary-core", version = "0.2.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
 
 # The macOS door: an NFS server the system's own client mounts.

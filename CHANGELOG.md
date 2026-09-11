@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-11
+
 ### Added
 
 - **Segment chain** — from the second segment of an archive on, a segment's header names the
@@ -39,7 +41,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Segment header** — a reader passes over header members it does not know; generation 1 may
   gain members that add to what a header says without a new generation. What a reader must
-  understand to read the claims stays a matter for a new generation ([docs/format.md](docs/format.md))
+  understand to read the claims stays a matter for a new generation ([docs/format.md](docs/format.md)).
+  0.1.0 refused every member it did not know, so a 0.1.0 build reads no archive this version has
+  sealed in — the way back is this version, which reads 0.1.0 archives unchanged
 
 ## [0.1.0] - 2026-09-09
 
