@@ -476,13 +476,17 @@ enum Command {
     /// Three checks, run whole: every file in content/ and derived/ is
     /// read and its bytes re-hashed, because a name must still be true
     /// of its bytes; every sealed segment and the open head must read
-    /// back claim by claim; and every file the claims speak of — as
-    /// their subject, or named as what a derived file came from — must
-    /// be held by a store, because nothing is ever deliberately removed
-    /// from an archive and absence has no innocent reading. Files held
-    /// that no claim speaks of are noted, not counted as findings: an
-    /// interrupted run leaves such files, and the next arrival records
-    /// them. The answer counts what it finds; up to a handful of names
+    /// back claim by claim, and every segment one of them names as
+    /// sealed before it must still be held, because a sealed segment
+    /// that is gone is a loss the record itself points at; and every
+    /// file the claims speak of — as their subject, or named as what a
+    /// derived file came from — must be held by a store, because
+    /// nothing is ever deliberately removed from an archive and absence
+    /// has no innocent reading. Files held that no claim speaks of are
+    /// noted, not counted as findings: an interrupted run leaves such
+    /// files, and the next arrival records them; so are segments that
+    /// name no predecessor beyond the one where the chain begins. The
+    /// answer counts what it finds; up to a handful of names
     /// stands right there, --verbose spells out every one, and --json
     /// answers one object per finding for a script. Reading the whole
     /// archive takes the time it takes — that is the point. Exits 0

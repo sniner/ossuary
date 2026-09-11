@@ -99,6 +99,15 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
             return Ok(());
         }
     }
+    if audit.log.unchained.len() > 1 {
+        let heading = format!(
+            "{} sealed segment(s) name no predecessor — not a finding; a chain has one beginning, and segments sealed before segments named theirs, or after the open head was lost, begin one of their own",
+            audit.log.unchained.len()
+        );
+        if !listing(out, &heading, &audit.log.unchained, verbose)? {
+            return Ok(());
+        }
+    }
     say(out, &verdict(audit))?;
     Ok(())
 }
@@ -106,7 +115,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
 /// The last line: which clean outcome it is, or how much is wrong.
 fn verdict(audit: &Audit) -> String {
     if audit.is_sound() {
-        "sound — every file re-hashed and true to its name, every claim read back, nothing spoken of is missing".to_string()
+        "sound — every file re-hashed and true to its name, every claim read back, every sealed segment named still held, nothing spoken of is missing".to_string()
     } else {
         format!("not sound: {} finding(s)", audit.findings())
     }
@@ -150,9 +159,30 @@ fn store_block(
 }
 
 /// The log's lines: whatever will not read back is named whole — those
-/// errors are the findings — then the count of segments, claims, and
-/// damage listed under the handful rule.
+/// errors are the findings — and so is every sealed segment that is gone,
+/// with who names it; then the count of segments, claims, and damage
+/// listed under the handful rule.
 fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
+    for (successor, digest) in &log.predecessor_missing {
+        if !say(
+            out,
+            &format!(
+                "claims: segment {digest} is not held — {successor} names it as the one sealed before it"
+            ),
+        )? {
+            return Ok(false);
+        }
+    }
+    if let Some(digest) = &log.head_predecessor_missing {
+        if !say(
+            out,
+            &format!(
+                "claims: segment {digest} is not held — the open head names it as the last one sealed"
+            ),
+        )? {
+            return Ok(false);
+        }
+    }
     for (digest, error) in &log.unreadable {
         if !say(
             out,
@@ -191,10 +221,21 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     if !log.broken.is_empty() {
         clauses.push(format!("{} broken", log.broken.len()));
     }
+    let lost = log.predecessor_missing.len() + usize::from(log.head_predecessor_missing.is_some());
+    if lost > 0 {
+        clauses.push(format!("{lost} lost"));
+    }
     if !log.damaged.is_empty() {
         clauses.push(format!("{} damaged", log.damaged.len()));
-    } else if log.unreadable.is_empty() && log.broken.is_empty() && log.head_broken.is_none() {
+    } else if log.unreadable.is_empty()
+        && log.broken.is_empty()
+        && log.head_broken.is_none()
+        && lost == 0
+    {
         clauses.push("read back whole".to_string());
+        if log.segments > 0 && log.unchained.len() <= 1 {
+            clauses.push("chained from the open head back to the first".to_string());
+        }
     }
     listing(
         out,
@@ -254,6 +295,14 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     if let Some(error) = &audit.log.head_broken {
         lines.push(json!({"finding": "broken-head", "error": error}));
     }
+    for (successor, segment) in &audit.log.predecessor_missing {
+        lines.push(
+            json!({"finding": "missing-segment", "segment": segment, "successor": successor}),
+        );
+    }
+    if let Some(segment) = &audit.log.head_predecessor_missing {
+        lines.push(json!({"finding": "missing-segment", "segment": segment, "successor": "head"}));
+    }
     for subject in &audit.missing {
         lines.push(json!({"finding": "missing", "subject": subject}));
     }
@@ -263,6 +312,11 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     ] {
         for subject in unrecorded {
             lines.push(json!({"observation": "unrecorded", "store": place, "subject": subject}));
+        }
+    }
+    if audit.log.unchained.len() > 1 {
+        for segment in &audit.log.unchained {
+            lines.push(json!({"observation": "unchained", "segment": segment}));
         }
     }
     for line in &lines {

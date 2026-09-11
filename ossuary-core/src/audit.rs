@@ -4,14 +4,21 @@
 //! claims it recorded about them — and the audit proves the two still
 //! agree. Every entry of both blob stores is read whole and re-hashed: a
 //! name must still be true of its bytes. Every sealed segment and the
-//! open head must read back claim by claim. And every subject the claims
-//! speak of must be held by a store: the claims are the record, and a
-//! record that names what nothing holds has found a loss, not a policy —
-//! nothing is ever deliberately removed from an archive. The other
-//! direction is milder: bytes held that no claim mentions are noted as
-//! observations, never findings, because a run interrupted between
-//! storing and recording leaves such entries legitimately, and the next
-//! arrival of the same bytes records them.
+//! open head must read back claim by claim, and the chain they form must
+//! hold: every segment a header names as the one sealed before it must
+//! be held, because a sealed segment that is gone is a loss the record
+//! itself points at. And every subject the claims speak of must be held
+//! by a store: the claims are the record, and a record that names what
+//! nothing holds has found a loss, not a policy — nothing is ever
+//! deliberately removed from an archive. The other direction is milder:
+//! bytes held that no claim mentions are noted as observations, never
+//! findings, because a run interrupted between storing and recording
+//! leaves such entries legitimately, and the next arrival of the same
+//! bytes records them. Segments that name no predecessor are noted the
+//! same way: a chain has one beginning, and segments sealed before
+//! segments named their predecessors, or a head begun anew where one had
+//! been lost, begin a chain of their own without anything sealed being
+//! gone.
 //!
 //! The whole pass works from the truth tiers alone: stores, segments,
 //! head. The cache is never consulted — an audit is the tool for the day
@@ -99,6 +106,19 @@ pub struct LogAudit {
     pub broken: Vec<(String, String)>,
     /// What stands in the open head's way, when something does.
     pub head_broken: Option<String>,
+    /// Segments named as the one sealed before another that no store
+    /// entry answers to: the segment that names it, and the name. Each
+    /// is a sealed segment lost — the finding the chain exists for.
+    pub predecessor_missing: Vec<(String, String)>,
+    /// The segment the open head names as the last one sealed, when no
+    /// store entry answers to it.
+    pub head_predecessor_missing: Option<String>,
+    /// Readable segments that name no predecessor. One is where the
+    /// chain begins; more are chains of their own — sealed before
+    /// segments named their predecessors, or begun anew where the head
+    /// had been lost. An observation, not a finding: nothing sealed is
+    /// shown to be gone.
+    pub unchained: Vec<String>,
     /// Every subject the readable claims speak of: their subjects, and
     /// the subjects link values name. Read from the whole history,
     /// retractions included — a retraction withdraws a statement, never
@@ -107,7 +127,8 @@ pub struct LogAudit {
 }
 
 /// Audit the claim log: fixity of every sealed segment, every line of
-/// every segment that is true to its name, the open head last.
+/// every segment that is true to its name, the open head last, and the
+/// chain the headers form held against what the store holds.
 ///
 /// # Errors
 ///
@@ -122,13 +143,23 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         unreadable: Vec::new(),
         broken: Vec::new(),
         head_broken: None,
+        predecessor_missing: Vec::new(),
+        head_predecessor_missing: None,
+        unchained: Vec::new(),
         referenced: BTreeSet::new(),
     };
+    // Every name the store holds, damaged or not — what a predecessor is
+    // held against. A damaged segment is still held: it is a finding once
+    // already, and gone on top would count the same wound twice.
+    let mut held = BTreeSet::new();
+    // Who names whom as sealed before it, for the readable segments.
+    let mut named: Vec<(String, Option<String>)> = Vec::new();
     let store = log.store();
     for entry in store.entries() {
         let entry = entry?;
         let name = entry.digest().as_str().to_string();
         report.segments += 1;
+        held.insert(name.clone());
         match store.verify(&entry) {
             Ok(true) => {}
             Ok(false) => {
@@ -140,25 +171,45 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
                 continue;
             }
         }
-        match log.read(entry.digest()) {
-            Ok(claims) => {
-                report.claims += claims.len();
-                for claim in &claims {
+        match log.contents(entry.digest()) {
+            Ok(contents) => {
+                report.claims += contents.claims().len();
+                for claim in contents.claims() {
                     reference(claim, &mut report.referenced);
                 }
+                let previous = contents
+                    .previous()
+                    .map(|digest| digest.as_str().to_string());
+                named.push((name, previous));
             }
             Err(error) => report.broken.push((name, error.spelled())),
         }
     }
-    match log.head() {
-        Ok(claims) => {
-            report.claims += claims.len();
-            for claim in &claims {
+    match log.head_contents() {
+        Ok(contents) => {
+            report.claims += contents.claims().len();
+            for claim in contents.claims() {
                 reference(claim, &mut report.referenced);
+            }
+            if let Some(previous) = contents.previous() {
+                if !held.contains(previous.as_str()) {
+                    report.head_predecessor_missing = Some(previous.as_str().to_string());
+                }
             }
         }
         Err(error) => report.head_broken = Some(error.spelled()),
     }
+    for (segment, previous) in named {
+        match previous {
+            Some(previous) if !held.contains(&previous) => {
+                report.predecessor_missing.push((segment, previous));
+            }
+            Some(_) => {}
+            None => report.unchained.push(segment),
+        }
+    }
+    report.predecessor_missing.sort();
+    report.unchained.sort();
     Ok(report)
 }
 
@@ -237,6 +288,8 @@ impl Audit {
             + self.log.unreadable.len()
             + self.log.broken.len()
             + usize::from(self.log.head_broken.is_some())
+            + self.log.predecessor_missing.len()
+            + usize::from(self.log.head_predecessor_missing.is_some())
             + self.missing.len()
     }
 
@@ -322,6 +375,128 @@ mod tests {
         assert!(audit.missing.is_empty());
         assert!(audit.unrecorded_content.is_empty());
         assert!(audit.unrecorded_derived.is_empty());
+        assert_eq!(audit.log.unchained.len(), 1, "a chain has one beginning");
+        assert!(audit.log.predecessor_missing.is_empty());
+        assert!(audit.log.head_predecessor_missing.is_none());
+    }
+
+    /// Delete a sealed segment's file outright — the loss the chain
+    /// exists to show.
+    fn lose(archive: &Archive, digest: &Digest) {
+        let path = archive.log().store().find(digest).unwrap().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_lost_segment_is_found_by_the_one_sealed_after_it() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first");
+        let first = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second");
+        let second = archive.log().seal().unwrap().unwrap();
+        lose(&archive, first.digest());
+
+        let audit = run(&archive);
+
+        assert_eq!(
+            audit.log.predecessor_missing,
+            vec![(
+                second.digest().as_str().to_string(),
+                first.digest().as_str().to_string()
+            )]
+        );
+        assert!(audit.log.head_predecessor_missing.is_none());
+        assert!(
+            audit.log.unchained.is_empty(),
+            "the second names a predecessor, gone or not"
+        );
+        assert_eq!(audit.findings(), 1);
+        assert!(!audit.is_sound());
+        assert_eq!(
+            audit.unrecorded_content.len(),
+            1,
+            "the blob the lost segment spoke of turns unrecorded — an observation, the loss is counted once"
+        );
+    }
+
+    #[test]
+    fn a_lost_last_segment_is_found_by_the_open_head() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"sealed and lost");
+        let segment = archive.log().seal().unwrap().unwrap();
+        lose(&archive, segment.digest());
+
+        let audit = run(&archive);
+
+        assert_eq!(
+            audit.log.head_predecessor_missing.as_deref(),
+            Some(segment.digest().as_str())
+        );
+        assert_eq!(audit.log.segments, 0);
+        assert_eq!(audit.findings(), 1);
+    }
+
+    #[test]
+    fn a_damaged_predecessor_is_held_and_counted_once() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"damaged later");
+        let segment = archive.log().seal().unwrap().unwrap();
+        let path = archive
+            .log()
+            .store()
+            .find(segment.digest())
+            .unwrap()
+            .unwrap();
+        tamper(&path, b"garbage");
+
+        let audit = run(&archive);
+
+        assert_eq!(audit.log.damaged.len(), 1);
+        assert!(
+            audit.log.head_predecessor_missing.is_none(),
+            "damaged is still held — the head's predecessor answers"
+        );
+        assert_eq!(audit.findings(), 1);
+    }
+
+    #[test]
+    fn segments_that_name_no_predecessor_begin_chains_of_their_own() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        // A segment sealed before segments named their predecessors:
+        // a header of the generation alone, planted straight into the store.
+        let mut text = String::from("{\"ossuary-segment\":1}\n");
+        let claim = Claim::assert(
+            Subject::parse(&"ab".repeat(32)).unwrap(),
+            Attribute::parse("user:tag").unwrap(),
+            json!("old"),
+            Timestamp::parse("2026-09-01T00:00:00Z").unwrap(),
+            Source::parse("test").unwrap(),
+        )
+        .unwrap();
+        text.push_str(&claim.to_line());
+        text.push('\n');
+        let (_, planted) = archive.log().store().add(text.as_bytes()).unwrap();
+        take(&archive, b"chained");
+        let sealed = archive.log().seal().unwrap().unwrap();
+
+        let audit = run(&archive);
+
+        let mut expected = vec![
+            planted.digest().as_str().to_string(),
+            sealed.digest().as_str().to_string(),
+        ];
+        expected.sort();
+        assert_eq!(audit.log.unchained, expected);
+        assert!(audit.log.predecessor_missing.is_empty());
+        assert_eq!(
+            audit.findings(),
+            1,
+            "the planted claim's subject is held by no store — that, not the second beginning, is the finding"
+        );
     }
 
     #[test]

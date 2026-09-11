@@ -10,6 +10,15 @@
 //! once it grows to [`SEAL_AT`]; sealing by hand remains for closing it
 //! on demand.
 //!
+//! Segments hang together. The fresh head that a seal begins names, in
+//! its header, the segment just sealed — so every segment but the first
+//! knows the one before it, and the open head knows the last. A sealed
+//! segment that goes missing leaves a name nothing answers to, in the
+//! header of its successor or of the head: that is what an audit follows.
+//! What the chain cannot show is a loss at its very end that the head was
+//! rewritten to hide — the head is the one mutable file — which is a job
+//! for a copy of the latest digest kept outside the archive.
+//!
 //! The head belongs to one writer at a time; concurrency lives in the store,
 //! not here. An append does not fsync — the open segment's tail is the one
 //! thing a crash may cost, and an ingest can say it again — while everything
@@ -48,12 +57,24 @@ const SEAL_AT: u64 = 1024 * 1024;
 
 /// The first line of every segment, open or sealed: a segment names its own
 /// format before anything else, so that a stray file found alone in fifty
-/// years still says what it is.
+/// years still says what it is — and, from the second segment on, the
+/// segment sealed before it.
+///
+/// Members this build does not know are skipped, not refused: generation
+/// 1 may gain header members that add to what is known without changing
+/// how the claims after the header are read. `docs/format.md` says so, and
+/// a member that a reader *must* understand is what a new generation is
+/// for.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Header {
     #[serde(rename = "ossuary-segment")]
     generation: u32,
+    /// The digest of the segment sealed before this one, as the claims
+    /// store files it: bare hex. Absent from the first segment of an
+    /// archive — and from every segment sealed before segments named
+    /// their predecessors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<String>,
 }
 
 /// The generation alone, read leniently — see [`parse_segment`] for why the
@@ -64,10 +85,12 @@ struct Generation {
     generation: u32,
 }
 
-/// The header as it stands in a file, newline included.
-fn header_line() -> String {
+/// The header as it stands in a file, newline included: the generation,
+/// and the segment sealed before this one when there is one.
+fn header_line(previous: Option<&Digest>) -> String {
     let header = serde_json::to_string(&Header {
         generation: GENERATION,
+        previous: previous.map(|digest| digest.as_str().to_string()),
     });
     // A struct of one number serialises; see `Claim::to_line` for the
     // reasoning behind not pretending otherwise.
@@ -97,6 +120,36 @@ impl Segment {
     #[must_use]
     pub fn first_claim_at(&self) -> Option<&Timestamp> {
         self.first.as_ref()
+    }
+}
+
+/// A segment read back whole: the segment it follows, and its claims.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contents {
+    previous: Option<Digest>,
+    claims: Vec<Claim>,
+}
+
+impl Contents {
+    /// The segment sealed before this one, as its header names it.
+    ///
+    /// `None` for the first segment of an archive, and for a segment
+    /// sealed before segments named their predecessors.
+    #[must_use]
+    pub fn previous(&self) -> Option<&Digest> {
+        self.previous.as_ref()
+    }
+
+    /// The claims, in the order recorded.
+    #[must_use]
+    pub fn claims(&self) -> &[Claim] {
+        &self.claims
+    }
+
+    /// The claims alone, the header's word left behind.
+    #[must_use]
+    pub fn into_claims(self) -> Vec<Claim> {
+        self.claims
     }
 }
 
@@ -138,9 +191,13 @@ impl Log {
 
     /// Append one claim to the open segment.
     ///
-    /// A head that is not there yet is begun, header first. Header and
-    /// claim go out in one write, and nothing is fsynced — see the module
-    /// notes on what a crash may cost and what it may not.
+    /// A head that is not there yet is begun, header first, and names no
+    /// predecessor: the head a seal leaves behind is already there, so a
+    /// head begun here is an archive's first — or one begun anew where
+    /// the head had been lost, which the audit notes as a chain of its
+    /// own. Header and claim go out in one write, and nothing is fsynced
+    /// — see the module notes on what a crash may cost and what it may
+    /// not.
     ///
     /// An append that grows the head to [`SEAL_AT`] seals it in the same
     /// breath, so no writer needs a sealing policy of its own. The claim
@@ -166,7 +223,7 @@ impl Log {
         let fresh = file.metadata().map_err(io)?.len() == 0;
         let mut lines = String::new();
         if fresh {
-            lines.push_str(&header_line());
+            lines.push_str(&header_line(None));
         }
         lines.push_str(&claim.to_line());
         lines.push('\n');
@@ -184,12 +241,27 @@ impl Log {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the file cannot be read, and everything
-    /// [`read`](Log::read) can answer for a segment that is broken.
+    /// Everything [`head_contents`](Log::head_contents) can answer.
     pub fn head(&self) -> Result<Vec<Claim>> {
+        self.head_contents().map(Contents::into_claims)
+    }
+
+    /// The open segment whole: the last sealed segment as the head names
+    /// it, and the claims appended since.
+    ///
+    /// A head that does not exist yet names nothing and holds nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the file cannot be read, and everything
+    /// [`contents`](Log::contents) can answer for a segment that is broken.
+    pub fn head_contents(&self) -> Result<Contents> {
         match fs::read_to_string(&self.head) {
             Ok(text) => parse_segment(&text),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Contents {
+                previous: None,
+                claims: Vec::new(),
+            }),
             Err(source) => Err(Error::Io {
                 context: format!("{}: reading", self.head.display()),
                 source,
@@ -198,7 +270,7 @@ impl Log {
     }
 
     /// Seal the open segment: its bytes go into the store verbatim, and a
-    /// fresh head takes its place.
+    /// fresh head takes its place, naming the segment just sealed.
     ///
     /// `None` when there is nothing to seal — no head, or a head of no
     /// claims. The whole head is validated first, so nothing broken is ever
@@ -223,7 +295,7 @@ impl Log {
                 });
             }
         };
-        let claims = parse_segment(&text)?;
+        let claims = parse_segment(&text)?.into_claims();
         if claims.is_empty() {
             return Ok(None);
         }
@@ -239,7 +311,8 @@ impl Log {
         let mut name = self.head.file_name().unwrap_or_default().to_os_string();
         name.push(".tmp");
         let tmp = self.head.with_file_name(name);
-        fs::write(&tmp, header_line()).map_err(io("beginning the fresh head"))?;
+        fs::write(&tmp, header_line(Some(entry.digest())))
+            .map_err(io("beginning the fresh head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
 
         if let Some(manifests) = &self.manifests {
@@ -307,12 +380,22 @@ impl Log {
     ///
     /// # Errors
     ///
+    /// Everything [`contents`](Log::contents) can answer.
+    pub fn read(&self, digest: &Digest) -> Result<Vec<Claim>> {
+        self.contents(digest).map(Contents::into_claims)
+    }
+
+    /// Read one sealed segment back whole: the segment it names as sealed
+    /// before it, and its claims in the order recorded.
+    ///
+    /// # Errors
+    ///
     /// [`Error::SegmentMissing`] when the digest names nothing,
     /// [`Error::NotText`] and [`Error::SegmentHeader`] when what it names is
     /// not a segment, [`Error::SegmentGeneration`] for one from a newer
     /// build, and [`Error::BadLine`] naming the first line that would not
     /// read back.
-    pub fn read(&self, digest: &Digest) -> Result<Vec<Claim>> {
+    pub fn contents(&self, digest: &Digest) -> Result<Contents> {
         let bytes = self
             .store
             .read(digest)?
@@ -322,20 +405,30 @@ impl Log {
     }
 }
 
-/// Header first, claims after, strict throughout.
-fn parse_segment(text: &str) -> Result<Vec<Claim>> {
+/// Header first, claims after, strict throughout — strict about what the
+/// header is known to say, that is; a member this build does not know is
+/// passed over.
+fn parse_segment(text: &str) -> Result<Contents> {
     let mut lines = text.lines().enumerate();
     let first = lines.next().map(|(_, line)| line).unwrap_or_default();
-    // The generation is read leniently before the header is read strictly:
-    // a future generation may add members to its header, and it must be
-    // refused as what it is — newer — not reported as broken.
+    // The generation is read on its own before the header is read whole:
+    // a future generation may spell its members differently, and it must
+    // be refused as what it is — newer — not reported as broken.
     let generation: Generation =
         serde_json::from_str(first).map_err(|_| Error::SegmentHeader(first.to_string()))?;
     if generation.generation != GENERATION {
         return Err(Error::SegmentGeneration(generation.generation));
     }
-    let _: Header =
+    let header: Header =
         serde_json::from_str(first).map_err(|_| Error::SegmentHeader(first.to_string()))?;
+    // A predecessor is named by digest, and a header that names one in
+    // any other spelling is a broken header, not a segment without one.
+    let previous = header
+        .previous
+        .as_deref()
+        .map(Digest::parse)
+        .transpose()
+        .map_err(|_| Error::SegmentHeader(first.to_string()))?;
     let mut claims = Vec::new();
     for (index, line) in lines {
         let claim = Claim::parse_line(line).map_err(|source| Error::BadLine {
@@ -344,7 +437,7 @@ fn parse_segment(text: &str) -> Result<Vec<Claim>> {
         })?;
         claims.push(claim);
     }
-    Ok(claims)
+    Ok(Contents { previous, claims })
 }
 
 #[cfg(test)]
@@ -434,19 +527,29 @@ mod tests {
             Vec::new(),
             "the fresh head holds the header and nothing else"
         );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("head.jsonl")).unwrap(),
+            format!(
+                "{{\"ossuary-segment\":1,\"previous\":\"{}\"}}\n",
+                segment.digest()
+            ),
+            "and the header names the segment just sealed"
+        );
         assert_eq!(log.seal().unwrap(), None, "an empty head does not seal");
     }
 
     #[test]
-    fn sealing_the_same_claims_twice_is_the_same_segment() {
+    fn a_seal_interrupted_before_the_fresh_head_seals_the_same_bytes_again() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
+        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
+            .unwrap();
+        let head = dir.path().join("head.jsonl");
+        let before = fs::read_to_string(&head).unwrap();
 
-        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
-            .unwrap();
         let first = log.seal().unwrap().unwrap();
-        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
-            .unwrap();
+        // The crash: stored, but the old head still stands.
+        fs::write(&head, before).unwrap();
         let again = log.seal().unwrap().unwrap();
 
         assert_eq!(
@@ -454,6 +557,68 @@ mod tests {
             again.digest(),
             "identical bytes, identical name — the store dedups, the log inherits it"
         );
+    }
+
+    #[test]
+    fn every_segment_names_the_one_sealed_before_it() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+
+        log.append(&claim("first", "2026-09-01T00:00:00Z")).unwrap();
+        let first = log.seal().unwrap().unwrap();
+        log.append(&claim("second", "2026-09-02T00:00:00Z"))
+            .unwrap();
+        let second = log.seal().unwrap().unwrap();
+        log.append(&claim("open", "2026-09-03T00:00:00Z")).unwrap();
+
+        assert_eq!(
+            log.contents(first.digest()).unwrap().previous(),
+            None,
+            "the first segment of an archive follows nothing"
+        );
+        assert_eq!(
+            log.contents(second.digest()).unwrap().previous(),
+            Some(first.digest())
+        );
+        let head = log.head_contents().unwrap();
+        assert_eq!(head.previous(), Some(second.digest()));
+        assert_eq!(head.claims().len(), 1);
+        assert_ne!(
+            first.digest(),
+            second.digest(),
+            "the same claim text after a seal is a new segment: its header names a different predecessor"
+        );
+    }
+
+    #[test]
+    fn a_header_member_this_build_does_not_know_is_passed_over() {
+        let dir = TempDir::new().unwrap();
+        let store = store_in(&dir);
+        let mut text = String::from("{\"ossuary-segment\":1,\"signature\":\"ed25519:…\"}\n");
+        text.push_str(&claim("holiday", "2026-09-01T21:14:03Z").to_line());
+        text.push('\n');
+        let (_, entry) = store.add(text.as_bytes()).unwrap();
+        let log = Log::new(store, dir.path().join("head.jsonl"));
+
+        let contents = log.contents(entry.digest()).unwrap();
+
+        assert_eq!(contents.claims().len(), 1);
+        assert_eq!(contents.previous(), None);
+    }
+
+    #[test]
+    fn a_predecessor_that_is_not_a_digest_is_a_broken_header() {
+        let dir = TempDir::new().unwrap();
+        let store = store_in(&dir);
+        let (_, entry) = store
+            .add(b"{\"ossuary-segment\":1,\"previous\":\"the one before\"}\n")
+            .unwrap();
+        let log = Log::new(store, dir.path().join("head.jsonl"));
+
+        assert!(matches!(
+            log.contents(entry.digest()),
+            Err(Error::SegmentHeader(_))
+        ));
     }
 
     #[test]

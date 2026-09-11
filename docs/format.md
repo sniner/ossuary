@@ -173,14 +173,29 @@ does not depend on them.
 
 ## Segments
 
-Claims live in segments. A segment is a JSONL file whose first line names
-its own format:
+Claims live in segments. A segment is a JSONL file whose first line is its
+header — a JSON object that names the segment's own format before anything
+else:
 
 ```json
 {"ossuary-segment": 1}
 ```
 
 Every line after it is a claim, in the order recorded.
+
+From the second segment of an archive on, the header also names the
+segment sealed before it — by digest, the hex the claims store files it
+under:
+
+```json
+{"ossuary-segment": 1, "previous": "3c1e…"}
+```
+
+`ossuary-segment` is the one member every header carries; `previous` is
+absent only from the first segment of an archive. A reader passes over
+header members it does not know: generation 1 may gain members that add
+to what a header says, and none of them changes how the claims after it
+are read.
 
 The one open segment is `head.jsonl` in the archive root — the same format,
 appended to as claims arrive, and the only mutable file in the archive.
@@ -197,6 +212,17 @@ for an archive that is not a limitation but the point.
 The order of segments — needed only to break same-second ties across them —
 is the order of their first claims' `time`, then the segment digest.
 
+**The chain.** Sealing stores the head and begins a fresh one whose header
+names the segment just sealed, so every segment but the first knows the one
+before it, and the open head knows the last. A store can prove that what it
+holds is unchanged — every name is a checksum — but not that nothing is
+gone; the chain is what says so. A sealed segment that goes missing leaves
+a `previous` nothing answers to, in the header of its successor or of the
+head. What the chain cannot show is a loss at its very end: the head is the
+one mutable file, and a head rewritten to name an earlier segment leaves a
+chain that looks whole. Keeping the latest segment's digest somewhere
+outside the archive closes that gap.
+
 ## Caches
 
 Everything under `cache/` is derived from the stores and `head.jsonl`, and
@@ -212,7 +238,9 @@ The whole archive, from the tree and (if sealed) the key:
 
 1. Read `FORMAT`: generation, algorithm, depths.
 2. Walk `claims/`, decompress (`zstd -dc`) and unseal each entry, check the
-   first line says `ossuary-segment`, order the segments as above.
+   first line says `ossuary-segment`, order the segments as above. Every
+   `previous` a header names must be among them — one that is not names a
+   segment that is gone.
 3. Concatenate, append `head.jsonl`: this is the complete claim log.
 4. Walk `content/` and `derived/` the same way for the content itself;
    every byte answers to its name via the algorithm's checksum tool.
@@ -225,8 +253,10 @@ answers "what do I know about this blob".
 ## Evolution
 
 Generation 1 is this document. Anything that would change how these files
-are *read* — a claim field beyond the six, a different segment header, a
-changed layout — is a new generation: the mark and the segment header exist
-so that a reader refuses what it does not know instead of guessing. What may
-grow freely without a new generation: attribute vocabulary, source kinds,
-the configuration's keys, and everything under `cache/`.
+are *read* — a claim field beyond the six, a header member a reader must
+understand to read the claims after it, a changed layout — is a new
+generation: the mark and the segment header exist so that a reader refuses
+what it does not know instead of guessing. What may grow freely without a
+new generation: attribute vocabulary, source kinds, the configuration's
+keys, header members that only add to what a header says, and everything
+under `cache/`.
