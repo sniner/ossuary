@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+mod accession;
 mod annotate;
 mod archive;
 mod audit;
@@ -32,6 +33,7 @@ mod log;
 mod manifest;
 mod retract;
 
+pub use accession::{Admitted, Sighting, admit, record};
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
 pub use audit::{Audit, LogAudit, StoreAudit, audit_log, audit_store};

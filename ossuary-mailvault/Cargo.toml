@@ -1,0 +1,30 @@
+[package]
+name = "ossuary-mailvault"
+description = "Mail into an ossuary archive: whole mailboxes fetched over IMAP, every message on the record with the place it was seen in"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-mailvault"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.51", features = ["derive", "env"] }
+imap = { version = "2.4.1", default-features = false }
+ossuary-core = { path = "../ossuary-core", version = "0.1.0" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+toml = "1.1.4"
+webpki-roots = "1.0"
+zstd = "0.13.3"
+
+[dev-dependencies]
+tempfile = "3.27.0"

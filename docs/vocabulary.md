@@ -66,6 +66,8 @@ in its source.
 - `zip:` — what a zip archive says about itself, verbatim, as
   `ossuary-extract-packed` reads it — the inventory standing on the
   archive, an entry's place on the unpacked file
+- `mailbox:` — the mailbox as observed: where a message was when it
+  was fetched, as `ossuary-mailvault` saw it
 
 Vocabulary for subjects that are not blobs waits for the first real
 need.
@@ -87,7 +89,8 @@ need.
   one call under one id. What kind of run it was is the claim's
   source, like everything about who was acting
 - value: string, a UUID
-- written by: ingest; `ossuary extract`, on derived files
+- written by: ingest; `ossuary extract`, on derived files;
+  `ossuary mailvault`, on every message it takes in
 
 ### prov:examined
 
@@ -138,7 +141,7 @@ need.
 - meaning: the content's size in bytes — a fact of the bytes, said once,
   on the blob's first day
 - value: number
-- written by: ingest
+- written by: ingest; `ossuary mailvault`
 
 ### file:mime
 
@@ -151,9 +154,12 @@ need.
   zip that is really an epub or an Office document gains its declared
   kind. All the words stand in the set
 - value: string, a MIME type
-- written by: ingest; `ossuary extract`, in the deriving extractor's
-  words; ossuary-extract-mail and ossuary-extract-packed, on what they
-  recognized
+- written by: ingest, on the blob's first day; `ossuary extract`, in
+  the deriving extractor's words; ossuary-extract-mail and
+  ossuary-extract-packed, on what they recognized; `ossuary mailvault`,
+  which knows it holds a message and says `message/rfc822` on every
+  sighting — what a taker knows is not answered by the bytes, and may
+  be the one thing the sniff got wrong
 
 ### file:modified
 
@@ -245,3 +251,33 @@ need.
   and whose origin is `derive:derived-from`
 - value: string, the entry's path inside the archive
 - written by: ossuary-extract-packed, under its `unpack` contract
+
+### mailbox:place
+
+- meaning: where a message was seen — the account it was fetched from
+  and the folder in it, as one value: the account's name as
+  `mailvault.toml` gives it, a slash, the folder as the server spells
+  it (`"example.org/INBOX"`, `"example.org/[Gmail]/All Mail"`). The two
+  stay together because a message in two folders of two accounts must
+  not lose which was where. Information, like `file:path`: a sighting,
+  true for its time — an account renamed later is a new name in new
+  sightings. Places accrete. Taken over from a mailvault archive, a
+  place may name the account alone (`"example.org"`, folder unknown)
+  or a folder alone (`"/old mail"`, no account behind it). The
+  server's numbering of a message is not here and nowhere on the
+  record: it is temporary, and lives in the fetcher's own memory in
+  `cache/`
+- value: string
+- written by: `ossuary mailvault`
+
+### mailbox:seen
+
+- meaning: when a place was seen holding the message, where that is
+  not the claim's own time. A fetch says nothing here: its claim's time
+  is the sighting. A takeover repeats what a mailvault archive's log saw
+  years earlier, and carries the date the log file was sealed, in the
+  log's own spelling. Like `file:modified` beside `file:path`, it stands
+  beside `mailbox:place` in the set without being paired to one place;
+  a message seen in two places at two dates holds both dates
+- value: string, the date as the vault's log wrote it
+- written by: `ossuary mailvault --from-vault`

@@ -14,6 +14,26 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one sealed before the open head, that no store holds is a finding — a sealed segment is gone
   (`missing-segment` under `--json`). More than one segment naming no predecessor is noted, not
   counted (`unchained` under `--json`)
+- **`ossuary mailvault`** — a new outside verb, [`ossuary-mailvault`](ossuary-mailvault/README.md):
+  whole mailboxes fetched over IMAP into the archive. The mailboxes stand in `mailvault.toml` in
+  the archive root, one `[[account]]` table each (`password_cmd` runs only under `--allow-exec`);
+  naming accounts fetches those alone. Every message goes in once, however many folders carry it,
+  with the place it was seen in as a `mailbox:place` claim — account and folder, one value. Each
+  folder's fetch carries on where the last one left off: its UIDVALIDITY and highest fetched UID
+  are remembered in `cache/`, and the server is asked only for what lies above; `--full` fetches
+  every folder whole, `--dry-run` says what a run would fetch and writes nothing
+- **`ossuary mailvault --from-vault DIR`** takes an archive of the Python mailvault over whole:
+  every message with every mailbox and folder its log saw it in, and the date the log first saw
+  it there, held against its own name on the way. Interrupted, the next call carries on where it
+  left off
+- **`mailbox:` namespace** in the [vocabulary](docs/vocabulary.md): `mailbox:place`, where a
+  message was seen; `mailbox:seen`, when a takeover's vault saw it there
+- **Library: `admit` and `record`** — the two steps through which content enters an ossuary
+  archive: `admit` streams bytes into the content store and answers what it saw (subject, whether
+  new, size, sniffed kind); `record` puts an admission on the record with the taker's
+  `Sighting` — its facts, the run, the user's tags — and the day-one facts. `ingest` goes through
+  both now. A taker that knows what it holds says the kind itself, on every sighting, so a message
+  first taken in as a file and later fetched from its server is `message/rfc822` all the same
 
 ### Changed
 

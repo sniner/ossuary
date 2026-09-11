@@ -29,7 +29,7 @@ mod output;
   handing back  get, export
 
 A verb not listed runs as its own program: `ossuary mount` finds
-ossuary-mount on the PATH and becomes it."
+ossuary-mount on the PATH and becomes it, `ossuary mailvault` the same."
 )]
 struct Cli {
     /// The archive to work in; standing in it is enough

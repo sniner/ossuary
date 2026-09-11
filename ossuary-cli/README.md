@@ -97,8 +97,9 @@ A verb this command does not know is looked for on the PATH: `ossuary mount
 ~/view` becomes `ossuary-mount ~/view`. The child *becomes* this process —
 signals and exit code included — and inherits the archive resolved: however it
 was named, the child sees one absolute `OSSUARY_ARCHIVE` and resolves nothing
-itself. That is how [`ossuary-mount`](../ossuary-mount/README.md) arrives
-without weighing this crate down.
+itself. That is how [`ossuary-mount`](../ossuary-mount/README.md) and
+[`ossuary-mailvault`](../ossuary-mailvault/README.md) arrive without
+weighing this crate down.
 
 ## Exit codes
 

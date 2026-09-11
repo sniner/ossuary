@@ -55,6 +55,7 @@ says for itself what it is and what it needs:
 | [`ossuary-cli`](ossuary-cli/README.md) | the `ossuary` command — every verb, from `init` to `audit` |
 | [`ossuary-core`](ossuary-core/README.md) | the archive itself: claims, segments, the fold. What everything else stands on |
 | [`ossuary-mount`](ossuary-mount/README.md) | the record as a read-only filesystem |
+| [`ossuary-mailvault`](ossuary-mailvault/README.md) | mail into the archive: whole mailboxes fetched over IMAP |
 | [`ossuary-extract-exif`](ossuary-extract-exif/README.md) | what a camera wrote into the picture |
 | [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a message's own voice, and what it carries |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip's inventory, or its files |
