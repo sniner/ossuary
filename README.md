@@ -37,16 +37,20 @@ would use it for:
 * **Everything back out again.** One file by its name, or a whole batch
   laid down the way it arrived.
 
-## Building it
+## Getting it
 
-There are no releases yet; the way in is cargo:
+Every [release](https://github.com/sniner/ossuary/releases) carries the
+programs built: for Linux on x86_64 and arm64, statically linked, and
+for macOS as universal binaries — one file per program, named after the
+program, the version and the platform. Building it yourself is the
+other way in:
 
 ```console
 $ git clone https://github.com/sniner/ossuary
 $ cd ossuary && cargo build --release
 ```
 
-Put everything it builds on your `PATH` together — extractors and
+Either way, put all of them on your `PATH` together — extractors and
 outside verbs like `mount` are found there, not built in. Each crate
 says for itself what it is and what it needs:
 
