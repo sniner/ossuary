@@ -223,6 +223,31 @@ one mutable file, and a head rewritten to name an earlier segment leaves a
 chain that looks whole. Keeping the latest segment's digest somewhere
 outside the archive closes that gap.
 
+**The mend.** A break in the chain is closed by adding, never by
+rewriting. A mend is a segment of no claims whose header names the two
+ends it joins:
+
+```json
+{"ossuary-segment": 1, "previous": "3c1e…", "mend": {"before": "9b07…", "replaces": "5d2a…"}}
+```
+
+`previous` is the last segment before the break, as in any header. `mend`
+marks the segment as a mend; `before` names the segment the mend stands in
+front of — sealed, so it cannot be made to name the mend itself, and a
+reader finds the mend by this member instead. `replaces` names the segment
+that was lost, when its name was known: the one the segment after the
+break names as sealed before it. Both members of `mend` are optional. A
+mend without `before` stands in front of the open head, which names the
+mend as its `previous` the way it would name any segment; when that head
+is sealed, the segment it becomes names the mend the same way.
+
+A reader hangs the chain together with mends applied: a segment whose
+`previous` is absent or not held is preceded by the mend whose `before`
+names it, if one is held, and the chain continues from that mend's
+`previous`. The segment after the break still names what it named, so the
+record keeps saying what was lost and where. A mend in front of a segment
+whose `previous` is held closes nothing and is on no chain.
+
 ## Caches
 
 Everything under `cache/` is derived from the stores and `head.jsonl`, and
@@ -239,7 +264,8 @@ The whole archive, from the tree and (if sealed) the key:
 1. Read `FORMAT`: generation, algorithm, depths.
 2. Walk `claims/`, decompress (`zstd -dc`) and unseal each entry, check the
    first line says `ossuary-segment`, order the segments as above. Every
-   `previous` a header names must be among them — one that is not names a
+   `previous` a header names must be among them, or a mend must stand in
+   front of the segment that names it — one that is neither names a
    segment that is gone.
 3. Concatenate, append `head.jsonl`: this is the complete claim log.
 4. Walk `content/` and `derived/` the same way for the content itself;

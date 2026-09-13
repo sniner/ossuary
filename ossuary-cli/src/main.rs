@@ -15,6 +15,7 @@ mod audit;
 mod browse;
 mod export;
 mod extract;
+mod maintain;
 mod output;
 
 #[derive(Parser)]
@@ -23,7 +24,7 @@ mod output;
     version,
     about = "A personal archive: files kept for good, with everything known about them",
     after_help = "The verbs, by family:
-  custody       init, audit
+  custody       init, audit, maintain
   taking in     ingest, extract, annotate, retract, seal
   asking        about, standing, find, ls, tree, id
   handing back  get, export
@@ -482,12 +483,16 @@ enum Command {
     /// file the claims speak of — as their subject, or named as what a
     /// derived file came from — must be held by a store, because
     /// nothing is ever deliberately removed from an archive and absence
-    /// has no innocent reading. Files held that no claim speaks of are
-    /// noted, not counted as findings: an interrupted run leaves such
-    /// files, and the next arrival records them; so are segments that
-    /// name no predecessor beyond the one where the chain begins — a
-    /// head lost and begun anew leaves those. The
-    /// answer counts what it finds; up to a handful of names
+    /// has no innocent reading. A chain in more than one piece is a
+    /// finding too: a segment that names no predecessor, beyond the one
+    /// the archive begins with, stands where the open head was lost and
+    /// begun anew, and the lost head's claims went with it. The answer
+    /// names every piece with its span, so the loss can be narrowed
+    /// down and taken in again; `maintain mend` joins the pieces
+    /// afterwards, and a break so mended is noted, not counted. Files
+    /// held that no claim speaks of are noted, not counted either: an
+    /// interrupted run leaves such files, and the next arrival records
+    /// them. The answer counts what it finds; up to a handful of names
     /// stands right there, --verbose spells out every one, and --json
     /// answers one object per finding for a script. Reading the whole
     /// archive takes the time it takes — that is the point. Exits 0
@@ -498,6 +503,9 @@ enum Command {
         #[arg(short, long)]
         json: bool,
     },
+    /// Repairs that add to the archive and rewrite nothing
+    #[command(subcommand)]
+    Maintain(maintain::Maintenance),
     // An outside verb: `ossuary NAME …` becomes `ossuary-NAME …` from
     // the PATH, the way `mount` arrives without weighing this tool
     // down. The resolved archive travels in the environment; the rest
@@ -517,6 +525,10 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per verb — the table is the point, and splitting it hides the map"
+)]
 fn run(cli: Cli) -> Result<ExitCode> {
     let quiet = cli.quiet;
     match cli.command {
@@ -616,6 +628,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             quiet,
         ),
         Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
+        Command::Maintain(task) => maintain::run(&cli.archive, &task, quiet),
         Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }
 }

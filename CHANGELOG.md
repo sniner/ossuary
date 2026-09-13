@@ -5,6 +5,33 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary maintain mend`** — the first verb of a new family, repairs that add to the archive and
+  rewrite nothing. Where the audit finds the chain of sealed segments in pieces, this closes each
+  break with a mend: a segment of no claims that names the two ends it joins, stored like any
+  other. Nothing already sealed is touched, and the segment after the break still names what it
+  named, so the record keeps saying what was lost and where. A break behind a segment that is
+  held but damaged is left open, and the run exits 1. `--dry-run` says what would be mended
+- **Mends in the segment format** — a header member `mend`, with `before` (the segment the mend
+  stands in front of) and `replaces` (the lost segment's name, when known); see
+  [`docs/format.md`](docs/format.md). Generation 1 gains a member, as it was allowed to
+- **Library: `Log::mend`, `Log::head_follows`, `mend`** — store a mend; make the open head name a
+  segment; close one `Break` the audit reported
+
+### Changed
+
+- **`ossuary audit`** now names a broken chain for what it is. A segment naming no predecessor,
+  beyond the one the archive begins with, stands where the open head was lost and begun anew, and
+  the lost head's claims went with it: a finding (`head-lost` under `--json`), where it was an
+  observation before. The answer lists every piece of the chain with its ends, its claim count
+  and its span, and each break with what the record says of it and what to do. A break a mend
+  has closed is noted, not counted (`mended` under `--json`), and so is a mend whose loss was
+  made good since, the segment restored from a copy (`restored`); a chain that runs in a circle
+  is a finding (`chain-loop`). The `unchained` observation is gone
+- **Library: `LogAudit`** answers `chains`, `breaks`, `mended`, `restored`, `idle_mends` and
+  `looped` in place of `unchained`; `predecessor_missing` leaves out what a mend stands in for
+
 ## [0.2.0] - 2026-09-11
 
 ### Added

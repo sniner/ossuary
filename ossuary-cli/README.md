@@ -43,6 +43,7 @@ making the run a failure.
 | `get` | one file's bytes to stdout, or to `--output FILE` |
 | `export` | files back out as they arrived: whole runs by id, single files by name, mixed freely. `--dry-run` says what would land where |
 | `audit` | prove the archive intact: every byte against its name, the record against the stores. Exits 1 when findings stand |
+| `maintain mend` | join the pieces of a broken chain of sealed segments, and keep the break on the record. Nothing sealed is rewritten; `--dry-run` says what would be mended. Exits 1 when a break was left open |
 
 `--json` on `about`, `standing`, `find`, `ls` and `audit` keeps the JSON
 spelling, one object per line, for `jq`. `--as-of TIME` on `find`, `ls`,

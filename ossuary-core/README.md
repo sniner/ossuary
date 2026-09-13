@@ -77,7 +77,8 @@ funnel the answer through the claim grammar, write the receipt — and
 narrates itself to an `Observer` rather than to a terminal; `annotate`
 puts the user's word on files already on the record; `lay_out` decides
 where an export's files land; `audit_store` and `audit_log` prove the
-archive against itself.
+archive against itself, and `mend` closes a break the audit found in the
+chain without rewriting anything sealed.
 
 Errors are one `Error` enum. `Error::spelled` is the sentence a caller
 can hand to a user without rewording it.
