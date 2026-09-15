@@ -26,7 +26,7 @@ mod output;
     after_help = "The verbs, by family:
   custody       init, audit, maintain
   taking in     ingest, extract, annotate, retract, seal
-  asking        about, standing, find, ls, tree, id
+  asking        about, standing, find, attributes, ls, tree, id
   handing back  get, export
 
 A verb not listed runs as its own program: `ossuary mount` finds
@@ -351,6 +351,40 @@ enum Command {
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
+    /// Every attribute standing on the record — the words a question
+    /// can be asked in
+    ///
+    /// One attribute per line, sorted, bare: the tokens `find` takes,
+    /// so `ossuary find $(ossuary attributes mail:)` shows everything
+    /// known about mail. Naming namespaces, spelled with their colon
+    /// like `exif:`, narrows the answer to them. Only standing values
+    /// speak: an attribute every value of which was retracted is not
+    /// among the words, because no `find` could reach it — `about`
+    /// still tells its story on each file. --count puts the number of
+    /// files each attribute stands on in front of it, so `sort -rn`
+    /// ranks them; --json answers one object per attribute, name and
+    /// count.
+    Attributes {
+        /// Only these namespaces, spelled with their colon, like
+        /// `exif:`; may be repeated
+        #[arg(value_name = "NAMESPACE:")]
+        namespaces: Vec<String>,
+
+        /// In front of each attribute, the number of files it stands on
+        #[arg(long)]
+        count: bool,
+
+        /// One JSON object per attribute: its name and the number of
+        /// files it stands on
+        #[arg(short, long)]
+        json: bool,
+
+        /// Answer from what the archive knew at TIME — the axis is
+        /// claim time, never the file's own; a date alone closes at
+        /// that day's end
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
+    },
     /// What stands at one place, one level of it
     ///
     /// PLACE is a folder or file the way the record spells it: the
@@ -598,6 +632,19 @@ fn run(cli: Cli) -> Result<ExitCode> {
             &terms,
             &missing,
             id,
+            json,
+            as_of.as_deref(),
+            quiet,
+        ),
+        Command::Attributes {
+            namespaces,
+            count,
+            json,
+            as_of,
+        } => attributes(
+            &cli.archive,
+            &namespaces,
+            count,
             json,
             as_of.as_deref(),
             quiet,
@@ -1463,6 +1510,96 @@ fn find(
             0 => eprintln!("nothing standing matches"),
             n => eprintln!("{n} file(s)"),
         }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn attributes(
+    root: &Path,
+    namespaces: &[String],
+    count: bool,
+    json: bool,
+    as_of: Option<&str>,
+    quiet: bool,
+) -> Result<ExitCode> {
+    // Every spelling is checked before the archive opens: a mistyped
+    // namespace refuses the call, not the middle of an answer.
+    let mut wanted: Vec<&str> = Vec::new();
+    for word in namespaces {
+        let Some(namespace) = word.strip_suffix(':') else {
+            return Err(anyhow!(
+                "{word:?} names no namespace — a namespace is spelled with its colon, like exif:"
+            ));
+        };
+        // The grammar has one door; a prefix walks through it wearing
+        // a dummy name.
+        Attribute::parse(&format!("{namespace}:a"))?;
+        if !wanted.contains(&namespace) {
+            wanted.push(namespace);
+        }
+    }
+    let archive = open(root)?;
+    let index = index_at(&archive, as_of, quiet)?;
+    let mut words = index.attributes()?;
+    if !wanted.is_empty() {
+        words.retain(|(attribute, _)| wanted.contains(&attribute.namespace()));
+    }
+    if words.is_empty() {
+        // The way forward differs by what was asked: an empty record
+        // wants an ingest, an empty namespace wants the plain call —
+        // and a moment past wants neither, the record has moved on.
+        if !quiet {
+            let named = wanted
+                .iter()
+                .map(|namespace| format!("{namespace}:"))
+                .collect::<Vec<_>>()
+                .join(" or ");
+            match (as_of, wanted.is_empty()) {
+                (Some(time), true) => eprintln!("nothing stood on the record as of {time}"),
+                (Some(time), false) => eprintln!("nothing stood in {named} as of {time}"),
+                (None, true) => eprintln!(
+                    "nothing stands on the record — take files in with `ossuary ingest DIR`"
+                ),
+                (None, false) => eprintln!(
+                    "nothing stands in {named} — plain `ossuary attributes` names every namespace there is"
+                ),
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The count stands first, right-aligned to the widest, the way
+    // `uniq -c` speaks — so `sort -rn` ranks the answer.
+    let width = words
+        .iter()
+        .map(|(_, files)| files.to_string().len())
+        .max()
+        .unwrap_or(0);
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for (attribute, files) in &words {
+        let line = if json {
+            output::attribute_line(attribute, *files)
+        } else if count {
+            format!("{files:>width$}  {}", attribute.as_str())
+        } else {
+            attribute.as_str().to_string()
+        };
+        if !say(&mut out, &line)? {
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+    // The words alone stay on stdout, ready to pipe; the count is the
+    // run's word on how it went.
+    if !quiet {
+        let namespaces: std::collections::BTreeSet<&str> = words
+            .iter()
+            .map(|(attribute, _)| attribute.namespace())
+            .collect();
+        eprintln!(
+            "{} attribute(s) standing in {} namespace(s)",
+            words.len(),
+            namespaces.len()
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

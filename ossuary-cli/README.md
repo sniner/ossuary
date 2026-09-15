@@ -38,6 +38,7 @@ making the run a failure.
 | `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
 | `standing` | what stands on one file — the outcome after retractions, where `about` tells the story. Attributes or a `namespace:` narrow it; exactly one attribute answers its values bare, one per line. Exits 1 when nothing stands, so a script can test for it |
 | `find` | every file on which all the terms hold, shown with the fields the question named |
+| `attributes` | every attribute standing on the record, sorted, one per line — the words a question can be asked in. Namespaces like `exif:` narrow it; `--count` puts the number of files each stands on in front |
 | `ls`, `tree` | what stands at one place, one level of it — or everything below it |
 | `id` | the name a file would answer to, and whether the archive already holds it. Nothing is taken in |
 | `get` | one file's bytes to stdout, or to `--output FILE` |
@@ -45,9 +46,10 @@ making the run a failure.
 | `audit` | prove the archive intact: every byte against its name, the record against the stores. Exits 1 when findings stand |
 | `maintain mend` | join the pieces of a broken chain of sealed segments, and keep the break on the record. Nothing sealed is rewritten; `--dry-run` says what would be mended. Exits 1 when a break was left open |
 
-`--json` on `about`, `standing`, `find`, `ls` and `audit` keeps the JSON
-spelling, one object per line, for `jq`. `--as-of TIME` on `find`, `ls`,
-`tree`, `standing`, `about` and `export` answers with what the archive
+`--json` on `about`, `standing`, `find`, `attributes`, `ls` and `audit`
+keeps the JSON spelling, one object per line, for `jq`. `--as-of TIME` on
+`find`, `attributes`, `ls`, `tree`, `standing`, `about` and `export`
+answers with what the archive
 knew at TIME — the axis is claim time, never the file's own, and a date
 alone closes at that day's end.
 
@@ -68,6 +70,16 @@ no longer counts.
 
 `--id` prints the full names alone, ready to pipe into `about`, `get`,
 `annotate` or `export`.
+
+`attributes` answers the question before the question: which words are
+there to ask in. Every attribute standing on the record, sorted, one
+per line and bare — the tokens `find` takes as a projection, so
+`ossuary find $(ossuary attributes mail:)` shows everything known about
+mail. Naming namespaces narrows the list to them; `--count` puts the
+number of files each attribute stands on in front of it, the way
+`uniq -c` speaks, so `sort -rn` ranks them. Only standing values speak:
+an attribute every value of which was retracted is not among the words,
+because no `find` could reach it.
 
 ### Extracting
 

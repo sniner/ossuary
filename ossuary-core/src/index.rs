@@ -378,6 +378,39 @@ impl Index {
         Ok(subjects)
     }
 
+    /// Every attribute standing on the record, each with the number of
+    /// files it stands on — sorted by attribute, as of the last
+    /// [`fold`](Index::fold), the open head included. The words a
+    /// question can be asked in: what [`find`](Index::find) can name is
+    /// exactly what answers here, and an attribute every value of which
+    /// was retracted is not among them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-attribute errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than
+    /// sworn away.
+    pub fn attributes(&self) -> Result<Vec<(Attribute, u64)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT attribute, COUNT(DISTINCT subject) FROM standing
+             GROUP BY attribute ORDER BY attribute",
+        )?;
+        let rows = statement.query_map([], |row| {
+            // A COUNT is never negative; the conversion is the type's
+            // formality, and its failure would be SQLite's own error.
+            let files: i64 = row.get(1)?;
+            let files = u64::try_from(files)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, files))?;
+            Ok((row.get::<_, String>(0)?, files))
+        })?;
+        let mut attributes = Vec::new();
+        for row in rows {
+            let (attribute, files) = row?;
+            attributes.push((Attribute::parse(&attribute)?, files));
+        }
+        Ok(attributes)
+    }
+
     /// Everything standing under one place: every standing `file:path`
     /// that names `place` itself or anything below it, as (path, subject)
     /// pairs sorted by path then subject — as of the last
@@ -1515,6 +1548,52 @@ mod tests {
             index.subjects().unwrap(),
             [subject()],
             "the record names every subject it speaks about"
+        );
+    }
+
+    #[test]
+    fn attributes_names_the_standing_words_and_counts_their_files() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let other =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let when = "2026-09-01T21:14:03Z";
+        log.append(&say(&subject(), "file:mime", json!("image/jpeg"), when))
+            .unwrap();
+        log.append(&say(&other, "file:mime", json!("image/jpeg"), when))
+            .unwrap();
+        log.append(&say(&subject(), "user:tag", json!("holiday"), when))
+            .unwrap();
+        log.append(&say(&subject(), "user:tag", json!("beach"), when))
+            .unwrap();
+        log.append(&say(&other, "exif:make", json!("Google"), when))
+            .unwrap();
+        log.append(
+            &Claim::retract_value(
+                other.clone(),
+                Attribute::parse("exif:make").unwrap(),
+                json!("Google"),
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let spelled: Vec<(String, u64)> = index
+            .attributes()
+            .unwrap()
+            .into_iter()
+            .map(|(attribute, files)| (attribute.as_str().to_string(), files))
+            .collect();
+        assert_eq!(
+            spelled,
+            [("file:mime".to_string(), 2), ("user:tag".to_string(), 1)],
+            "sorted by attribute; files are counted, not values — two tags on \
+             one file are one file; a word retracted everywhere is gone"
         );
     }
 

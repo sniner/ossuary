@@ -18,6 +18,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [`docs/format.md`](docs/format.md). Generation 1 gains a member, as it was allowed to
 - **Library: `Log::mend`, `Log::head_follows`, `mend`** — store a mend; make the open head name a
   segment; close one `Break` the audit reported
+- **`ossuary attributes`** — every attribute standing on the record, sorted, one per line: the
+  words a question can be asked in, bare so they paste into `find`. Namespaces like `exif:`
+  narrow the answer, `--count` puts the number of files each attribute stands on in front of it,
+  `--json` answers one object per attribute, `--as-of TIME` answers for a moment past. An
+  attribute every value of which was retracted is not among the words, since no `find` could
+  reach it
+- **Library: `Index::attributes`** — every standing attribute with the number of subjects it
+  stands on
 
 ### Changed
 

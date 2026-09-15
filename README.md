@@ -199,12 +199,30 @@ b5743276
 1 file(s)
 ```
 
+Which words there are to ask in at all is a question of its own —
+`attributes` lists every one standing on the record, sorted, and a
+namespace narrows it:
+
+```console
+$ ossuary attributes mail:
+mail:date
+mail:from
+mail:message-id
+mail:subject
+mail:to
+5 attribute(s) standing in 1 namespace(s)
+```
+
+The list is bare on purpose: `ossuary find $(ossuary attributes mail:)`
+shows everything known about mail, and `--count` says on how many files
+each attribute stands.
+
 For scripts: `find --id` prints full names alone, ready to pipe;
 `standing SUBJECT ATTRIBUTE` answers one attribute's standing values,
 strings bare — and without an attribute, everything standing on the
 file, where `about` tells the whole story, retractions included;
-`--json` on `about`, `standing`, `find` and `ls` keeps the JSON
-spelling for `jq`; and `-q` silences the narration everywhere. Every verb and
+`--json` on `about`, `standing`, `find`, `attributes` and `ls` keeps the
+JSON spelling for `jq`; and `-q` silences the narration everywhere. Every verb and
 every flag stands in [`ossuary-cli`](ossuary-cli/README.md).
 
 ## Looking around

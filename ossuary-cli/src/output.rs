@@ -52,6 +52,15 @@ pub fn json_line(subject: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
     line
 }
 
+/// One `attributes` answer as one JSON object: the attribute, and the
+/// number of files it stands on. One object per line, ready for `jq`.
+pub fn attribute_line(attribute: &Attribute, files: u64) -> String {
+    format!(
+        "{{\"attribute\":{},\"files\":{files}}}",
+        Value::String(attribute.as_str().to_string())
+    )
+}
+
 /// What `standing` answers without a heading: every pair on a line of
 /// its own, the same query spelling a `find` block indents — the name
 /// is absent because the asker typed it themselves.
