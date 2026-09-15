@@ -43,12 +43,12 @@ struct Cli {
     )]
     archive: PathBuf,
 
-    /// Answers and errors only — the run keeps its narration to itself
+    /// Answers and errors only; the run keeps its narration to itself
     #[arg(short, long, global = true)]
     quiet: bool,
 
-    /// Answers in full: every name spelled out where a count would
-    /// stand — audit lists what it only counted
+    /// Answers in full: every name spelled out where a count would stand;
+    /// audit lists what it only counted
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -58,13 +58,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Begin an empty archive — or complete one already standing
+    /// Begin an empty archive, or complete one already standing
     ///
     /// Running init on an archive is safe: nothing standing is remade or
-    /// edited, and what is missing is added — today that is config.toml,
+    /// edited, and what is missing is added; today that is config.toml,
     /// for archives begun before it existed.
     Init {
-        /// The hash that names everything taken in — for good, chosen only
+        /// The hash that names everything taken in, for good, chosen only
         /// when the archive begins. sha256 unless this machine lacks SHA
         /// instructions; then blake3 hashes faster
         #[arg(long, value_name = "NAME")]
@@ -72,30 +72,29 @@ enum Command {
     },
     /// Take files in: directory trees and single files, any mix
     ///
-    /// Every regular file goes in — minus what the archive's config.toml
-    /// excludes; a file named outright goes in regardless — and seven
-    /// claims go on the record for each: where it came from, what it is
-    /// called, on which machine, with which run, how large, what kind,
-    /// and when it last changed. Everything of one call arrives in one
-    /// run — `ossuary ingest *.pdf` keeps what a glob matched together,
-    /// and "arrived together" stays an askable fact.
-    /// What is taken in is only read. A repeated run remembers what it
-    /// already observed and leaves unchanged files in peace, so pouring
-    /// the same directory in again costs only what is new or changed.
-    /// An archive met on the walk is left whole, and naming one — or a
-    /// path inside one — refuses the call: an archive never takes in
-    /// an archive, its own least of all. --dry-run walks, counts and
-    /// measures — same excludes, same memory — and writes nothing:
-    /// the summed size is where a forgotten ISO shows itself before
-    /// it is hashed.
+    /// Every regular file goes in, minus what the archive's config.toml
+    /// excludes; a file named outright goes in regardless. Seven claims
+    /// go on the record for each: where it came from, what it is called,
+    /// on which machine, with which run, how large, what kind, and when
+    /// it last changed. Everything of one call arrives in one run;
+    /// `ossuary ingest *.pdf` keeps what a glob matched together, and
+    /// "arrived together" stays an askable fact. What is taken in is only
+    /// read. A repeated run remembers what it already observed and leaves
+    /// unchanged files in peace, so pouring the same directory in again
+    /// costs only what is new or changed. An archive met on the walk is
+    /// left whole, and naming one, or a path inside one, refuses the
+    /// call: an archive never takes in an archive, its own least of all.
+    /// --dry-run walks, counts and measures with the same excludes and
+    /// the same memory, and writes nothing: the summed size is where a
+    /// forgotten ISO shows itself before it is hashed.
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
         paths: Vec<PathBuf>,
 
-        /// The user's own word on the batch, as a user:tag claim on
-        /// every file this run records; may be repeated. Files an
-        /// earlier run already recorded sit out — --full reaches them
+        /// The user's own word on the batch, as a user:tag claim on every
+        /// file this run records; may be repeated. Files an earlier run
+        /// already recorded sit out; --full reaches them
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
 
@@ -103,7 +102,7 @@ enum Command {
         #[arg(long)]
         full: bool,
 
-        /// Count and measure what would go in, and write nothing — the
+        /// Count and measure what would go in, and write nothing; the
         /// number a forgotten ISO shows up in
         #[arg(long)]
         dry_run: bool,
@@ -111,38 +110,36 @@ enum Command {
     /// Run extractors over every file they have not yet examined
     ///
     /// NAME names the program: `ossuary extract exif` runs
-    /// `ossuary-extract-exif` from PATH, and every contract it offers —
+    /// `ossuary-extract-exif` from PATH, and every contract it offers;
     /// some programs carry several, each examined and receipted on its
-    /// own. NAME:CONTRACT runs one of them: `ossuary extract
-    /// packed:list` inventories archives without unpacking them, and
-    /// the same spelling holds in the config's list. Without a NAME,
-    /// the archive's own list runs — `[extract] run` in its
-    /// config.toml — in rounds,
-    /// until a whole round finds nothing left: what one extractor
-    /// hands back, the next round offers to whichever extractor reads
-    /// it, so one call drives a chain like mail, attachment, text to
-    /// its end. Each extractor reads each file's bytes and tells the
-    /// archive what it found; every finding goes on the record under
-    /// the extractor's own name, and every examined file gets a
-    /// receipt — found something or not — so a repeated run costs only
-    /// what is new, and a call cut short simply continues next time.
-    /// An extractor may hand back files as well as findings — an
-    /// unpacked attachment, extracted text — and each goes into the
-    /// archive as content of its own, named, typed, tied to its origin
-    /// and stamped with this call's run id on the record. Files of
+    /// own. NAME:CONTRACT runs one of them: `ossuary extract packed:list`
+    /// inventories archives without unpacking them, and the same spelling
+    /// holds in the config's list. Without a NAME, the archive's own list
+    /// runs, `[extract] run` in its config.toml, in rounds until a whole
+    /// round finds nothing left: what one extractor hands back, the next
+    /// round offers to whichever extractor reads it, so one call drives a
+    /// chain like mail, attachment, text to its end. Each extractor reads
+    /// each file's bytes and tells the archive what it found; every
+    /// finding goes on the record under the extractor's own name, and
+    /// every examined file gets a receipt, found something or not, so a
+    /// repeated run costs only what is new, and a call cut short simply
+    /// continues next time. An extractor may hand back files as well as
+    /// findings, an unpacked attachment or extracted text, and each goes
+    /// into the archive as content of its own, named, typed, tied to its
+    /// origin and stamped with this call's run id on the record. Files of
     /// kinds an extractor does not read are never touched, and a new
     /// extractor version looks at everything again. A NAME alone still
-    /// runs rounds, over that one extractor; naming files runs none —
-    /// the named files are examined once, now, and a named file is
-    /// handed over even when its kind is not one the extractor reads,
-    /// because naming is more deliberate than a pattern. A whole run's
-    /// files are named by its dashed id — the id an ingest or extract
-    /// verdict speaks — and runs and files mix in one call. --dry-run
-    /// runs the extractor over named files and shows what it would
-    /// record — the claims, and each derived file with name, kind and
-    /// size — then drops it all: nothing written, nothing receipted.
-    /// It needs named files: over everything that waits it would
-    /// examine the whole archive and keep none of it.
+    /// runs rounds, over that one extractor; naming files runs none; the
+    /// named files are examined once, now, and a named file is handed
+    /// over even when its kind is not one the extractor reads, because
+    /// naming is more deliberate than a pattern. A whole run's files are
+    /// named by its dashed id, the id an ingest or extract verdict
+    /// speaks, and runs and files mix in one call. --dry-run runs the
+    /// extractor over named files and shows what it would record, the
+    /// claims and each derived file with name, kind and size, then drops
+    /// it all: nothing written, nothing receipted. It needs named files:
+    /// over everything that waits it would examine the whole archive and
+    /// keep none of it.
     Extract {
         /// Which extractor to run: the part after `ossuary-extract-`,
         /// with `:CONTRACT` picking one contract of a program that
@@ -150,42 +147,42 @@ enum Command {
         #[arg(value_name = "NAME")]
         name: Option<String>,
 
-        /// Only these files — the hex name or a beginning of it, or a
-        /// whole run by its dashed id, mixed freely — instead of
-        /// everything that waits
+        /// Only these files instead of everything that waits: the hex
+        /// name or a beginning of it, or a whole run by its dashed id,
+        /// mixed freely
         #[arg(value_name = "SUBJECT")]
         subjects: Vec<String>,
 
-        /// Examine anew, receipted or not: the named files, or — with
-        /// none named — everything of a kind the extractor reads
+        /// Examine anew, receipted or not: the named files or, with none
+        /// named, everything of a kind the extractor reads
         #[arg(long)]
         full: bool,
 
-        /// Run the extractor over the named files and show what it
-        /// would record — claims and derived files — writing nothing
+        /// Run the extractor over the named files and show what it would
+        /// record, claims and derived files, writing nothing
         #[arg(long)]
         dry_run: bool,
 
-        /// Where derived files wait on their way into the archive —
-        /// cache/tmp in the archive unless this names another place; a
-        /// fast local disk pays off when the archive sits on a share
+        /// Where derived files wait on their way into the archive;
+        /// cache/tmp unless this names another place, and a fast local
+        /// disk pays off when the archive sits on a share
         #[arg(long, value_name = "DIR")]
         temp_dir: Option<PathBuf>,
     },
     /// Put the user's own word on files already on the record
     ///
-    /// Each --comment and --tag becomes a claim on every named file —
-    /// user:comment, user:tag — under the source user: the human
+    /// Each --comment and --tag becomes a claim on every named file,
+    /// user:comment and user:tag, under the source user: the human
     /// asserts, the archive takes their word. Words accrete: a second
-    /// comment stands beside the first, and `about` answers who said
-    /// what when. Every name is resolved before anything is written,
-    /// so a mistyped name refuses the whole call with nothing
-    /// half-annotated. Tags at arrival are `ingest --tag`'s business;
-    /// this is the door for later — one file, or a found set:
-    /// `ossuary find --id … | xargs ossuary annotate --tag …`
+    /// comment stands beside the first, and `about` answers who said what
+    /// when. Every name is resolved before anything is written, so a
+    /// mistyped name refuses the whole call with nothing half-annotated.
+    /// Tags at arrival are `ingest --tag`'s business; this is the door
+    /// for later, one file or a found set: `ossuary find --id … | xargs
+    /// ossuary annotate --tag …`
     Annotate {
-        /// The files to annotate: by hex name, or a beginning of it —
-        /// enough of it to name only one file; several may be named
+        /// The files to annotate: by hex name, or a beginning of it,
+        /// enough to name only one file; several may be named
         #[arg(value_name = "SUBJECT", required = true)]
         subjects: Vec<String>,
 
@@ -199,27 +196,26 @@ enum Command {
     },
     /// Take a statement back: it no longer stands, the record keeps it
     ///
-    /// TARGETs mix freely, told apart by shape: a hex name — or a
-    /// beginning of it — names a file, attribute=value names what to
-    /// take back on every named file, and attribute=.. takes back
-    /// every standing value of the attribute (the comment said wrong:
-    /// take them all, then `annotate` anew). A pair speaks the
-    /// answers' own language — a line from `standing` pastes back —
-    /// and is taken literally: double quotes mean the characters
-    /// themselves, and globs and ranges are refused, because retract
-    /// takes back what you name; what *matches* is find's business —
-    /// `ossuary find --id … | xargs ossuary retract user:tag=old`
-    /// takes back across a found set. Everything is resolved before
-    /// anything is written: a pair that stands on none of the named
-    /// files refuses the whole call, nothing half-retracted. A
-    /// retraction is a claim like any other, under the source user:
-    /// `about` keeps the whole story, --as-of still answers for the
-    /// day before, and export of a whole run keeps speaking what the
-    /// run recorded. Anything on the record can be taken back, the
-    /// machines' word included — and a later `extract --full`, or a
-    /// new extractor version, may honestly assert it again. The way
-    /// back: the user's own word returns with `annotate`, a
-    /// machine's with `extract NAME FILE --full`.
+    /// TARGETs mix freely, told apart by shape: a hex name, or a
+    /// beginning of it, names a file, attribute=value names what to take
+    /// back on every named file, and attribute=.. takes back every
+    /// standing value of the attribute (the comment said wrong: take them
+    /// all, then `annotate` anew). A pair speaks the answers' own
+    /// language, a line from `standing` pastes back, and is taken
+    /// literally: double quotes mean the characters themselves, and globs
+    /// and ranges are refused, because retract takes back what you name;
+    /// what *matches* is find's business: `ossuary find --id … | xargs
+    /// ossuary retract user:tag=old` takes back across a found set.
+    /// Everything is resolved before anything is written: a pair that
+    /// stands on none of the named files refuses the whole call, nothing
+    /// half-retracted. A retraction is a claim like any other, under the
+    /// source user: `about` keeps the whole story, --as-of still answers
+    /// for the day before, and export of a whole run keeps speaking what
+    /// the run recorded. Anything on the record can be taken back, the
+    /// machines' word included, and a later `extract --full`, or a new
+    /// extractor version, may honestly assert it again. The way back: the
+    /// user's own word returns with `annotate`, a machine's with `extract
+    /// NAME FILE --full`.
     Retract {
         /// Files and pairs, mixed freely; several files take back
         /// the same pairs
@@ -234,8 +230,8 @@ enum Command {
     Seal,
     /// Everything on the record about one file, oldest first
     About {
-        /// The file's name in the archive: its hex digest — a beginning
-        /// of it is enough while it names only one file
+        /// The file's name in the archive: its hex digest; a beginning of
+        /// it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
@@ -248,30 +244,29 @@ enum Command {
         #[arg(short, long)]
         json: bool,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
-    /// What stands on one file — the outcome, not the story
+    /// What stands on one file: the outcome, not the story
     ///
-    /// Where `about` answers with everything ever said — retractions
-    /// included — this answers with what still holds: retractions
-    /// applied, repeats collapsed. Without attributes the whole
-    /// standing answers, one attribute=value pair per line, spelled
-    /// the way a query would — a pair pastes into `find` as a term.
-    /// Attributes narrow the answer, and a name ending in `:` means
-    /// the whole namespace, like `exif:`. Naming exactly one
-    /// attribute answers bare: the values alone, one per line,
-    /// strings without quotes, ready for a script — several lines
-    /// mean the attribute honestly holds several values, and choosing
-    /// among them stays the caller's business. When nothing stands,
-    /// nothing comes and the exit code says 1, so a script can test
-    /// for it.
+    /// Where `about` answers with everything ever said, retractions
+    /// included, this answers with what still holds: retractions applied,
+    /// repeats collapsed. Without attributes the whole standing answers,
+    /// one attribute=value pair per line, spelled the way a query would;
+    /// a pair pastes into `find` as a term. Attributes narrow the answer,
+    /// and a name ending in `:` means the whole namespace, like `exif:`.
+    /// Naming exactly one attribute answers bare: the values alone, one
+    /// per line, strings without quotes, ready for a script; several
+    /// lines mean the attribute honestly holds several values, and
+    /// choosing among them stays the caller's business. When nothing
+    /// stands, nothing comes and the exit code says 1, so a script can
+    /// test for it.
     Standing {
-        /// The file's name in the archive: its hex digest — a beginning
-        /// of it is enough while it names only one file
+        /// The file's name in the archive: its hex digest; a beginning of
+        /// it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
@@ -284,47 +279,47 @@ enum Command {
         #[arg(short, long)]
         json: bool,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
-    /// Every file on which all the terms stand — shown with the fields
-    /// the question named
+    /// Every file on which all the terms stand, shown with the fields the
+    /// question named
     ///
     /// A term is attribute=value, and every term must hold: `find
     /// file:mime=image/jpeg exif:make=Google` names the files that are
-    /// both. `*` and `?` match within text values — `find
-    /// file:path=*crete*` answers "what came from that folder".
-    /// A value low..high asks for one value inside the range, either
-    /// side open: `file:modified=2026-09-01..` is "changed since
-    /// September", `file:size=..4096` "at most 4 KiB". Bounds compare in
-    /// the attribute's own spelling, a bare `..` asks only that the
-    /// attribute stands at all, and two ranged terms on one attribute
-    /// may be satisfied by two different values — one low..high term
-    /// speaks about a single one. A value wrapped in double quotes is
-    /// literal: no glob, no range. --missing turns the question around:
-    /// files that lack an attribute (or, ending in `:`, a whole
-    /// namespace) — `find file:mime=image/jpeg --missing exif:` is
-    /// "which photos have no EXIF on record". Only standing values
-    /// answer; what was retracted no longer counts.
+    /// both. `*` and `?` match within text values; `find
+    /// file:path=*crete*` answers "what came from that folder". A value
+    /// low..high asks for one value inside the range, either side open:
+    /// `file:modified=2026-09-01..` is "changed since September",
+    /// `file:size=..4096` "at most 4 KiB". Bounds compare in the
+    /// attribute's own spelling, a bare `..` asks only that the attribute
+    /// stands at all, and two ranged terms on one attribute may be
+    /// satisfied by two different values; one low..high term speaks about
+    /// a single one. A value wrapped in double quotes is literal: no
+    /// glob, no range. --missing turns the question around: files that
+    /// lack an attribute (or, ending in `:`, a whole namespace); `find
+    /// file:mime=image/jpeg --missing exif:` is "which photos have no
+    /// EXIF on record". Only standing values answer; what was retracted
+    /// no longer counts.
     ///
     /// Each match answers as a block: the file's name on a line of its
-    /// own, shortened to the shortest prefix that names it alone, and
-    /// the shown attributes indented beneath it, one attribute=value
-    /// pair per line, spelled the way a query would — so a pair pastes
-    /// back into a refined query, quotes and all. The filters show
-    /// themselves until a bare attribute stands among the terms; then
-    /// only the bare ones show — explicit beats implicit — and `find
-    /// file:name=*.pdf file:modified` answers with the times alone. A
-    /// namespace like `exif:` shows all of it, and asking for an
-    /// attribute to stand remains `attribute=..`. With only bare
-    /// attributes, every file on the record answers. Every standing
-    /// value is shown — several pairs mean the attribute honestly
-    /// holds several. --id answers with the full names alone, one per
-    /// line, ready to pipe into `about`, `standing` or `get`; --json
-    /// answers one JSON object per match, the values as lists.
+    /// own, shortened to the shortest prefix that names it alone, and the
+    /// shown attributes indented beneath it, one attribute=value pair per
+    /// line, spelled the way a query would, so a pair pastes back into a
+    /// refined query, quotes and all. The filters show themselves until a
+    /// bare attribute stands among the terms; then only the bare ones
+    /// show, explicit beats implicit, and `find file:name=*.pdf
+    /// file:modified` answers with the times alone. A namespace like
+    /// `exif:` shows all of it, and asking for an attribute to stand
+    /// remains `attribute=..`. With only bare attributes, every file on
+    /// the record answers. Every standing value is shown; several pairs
+    /// mean the attribute honestly holds several. --id answers with the
+    /// full names alone, one per line, ready to pipe into `about`,
+    /// `standing` or `get`; --json answers one JSON object per match, the
+    /// values as lists.
     Find {
         /// attribute=value; repeat to demand all of them at once. A bare
         /// attribute (or namespace:) picks what is shown instead
@@ -336,7 +331,7 @@ enum Command {
         #[arg(long, value_name = "ATTRIBUTE")]
         missing: Vec<String>,
 
-        /// The full names alone, one per line — the scripting answer
+        /// The full names alone, one per line, the scripting answer
         #[arg(long)]
         id: bool,
 
@@ -345,25 +340,24 @@ enum Command {
         #[arg(short, long)]
         json: bool,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
-    /// Every attribute standing on the record — the words a question
-    /// can be asked in
+    /// Every attribute standing on the record, the words a question can
+    /// be asked in
     ///
-    /// One attribute per line, sorted, bare: the tokens `find` takes,
-    /// so `ossuary find $(ossuary attributes mail:)` shows everything
-    /// known about mail. Naming namespaces, spelled with their colon
-    /// like `exif:`, narrows the answer to them. Only standing values
-    /// speak: an attribute every value of which was retracted is not
-    /// among the words, because no `find` could reach it — `about`
-    /// still tells its story on each file. --count puts the number of
-    /// files each attribute stands on in front of it, so `sort -rn`
-    /// ranks them; --json answers one object per attribute, name and
-    /// count.
+    /// One attribute per line, sorted, bare: the tokens `find` takes, so
+    /// `ossuary find $(ossuary attributes mail:)` shows everything known
+    /// about mail. Naming namespaces, spelled with their colon like
+    /// `exif:`, narrows the answer to them. Only standing values speak:
+    /// an attribute every value of which was retracted is not among the
+    /// words, because no `find` could reach it; `about` still tells its
+    /// story on each file. --count puts the number of files each
+    /// attribute stands on in front of it, so `sort -rn` ranks them;
+    /// --json answers one object per attribute, name and count.
     Attributes {
         /// Only these namespaces, spelled with their colon, like
         /// `exif:`; may be repeated
@@ -379,9 +373,9 @@ enum Command {
         #[arg(short, long)]
         json: bool,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -389,15 +383,14 @@ enum Command {
     ///
     /// PLACE is a folder or file the way the record spells it: the
     /// absolute path an ingest saw, from whatever machine the file sat
-    /// on; left out, the roots answer. Folders come back with a
-    /// trailing slash; each file answers a line of its own, its short
-    /// name in the archive first — the name `about`, `get` and
-    /// `export` take — the way `export --dry-run` speaks. The
-    /// record answers, not a disk: every place a file was ever seen
-    /// at answers as long as it stands, however long the disk is
-    /// gone — and one name may honestly carry several files, when
-    /// different bytes stood there over time, each answering its own
-    /// line. What was retracted no longer counts.
+    /// on; left out, the roots answer. Folders come back with a trailing
+    /// slash; each file answers a line of its own, its short name in the
+    /// archive first, the name `about`, `get` and `export` take, the way
+    /// `export --dry-run` speaks. The record answers, not a disk: every
+    /// place a file was ever seen at answers as long as it stands,
+    /// however long the disk is gone, and one name may honestly carry
+    /// several files, when different bytes stood there over time, each
+    /// answering its own line. What was retracted no longer counts.
     Ls {
         /// The place to look at: an absolute path; left out, /
         #[arg(value_name = "PLACE")]
@@ -409,37 +402,37 @@ enum Command {
         #[arg(short, long)]
         json: bool,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
     /// Everything below one place, drawn as the tree it is
     ///
     /// The same answer `ls` gives, whole: every folder and file the
-    /// record still holds below PLACE, one branch per folder, files
-    /// with their short names bracketed beside them. Reading it is browsing the
-    /// record the way a file manager browses a disk — except this
-    /// disk is every machine the archive ever took files from, and no
-    /// place is forgotten while it stands.
+    /// record still holds below PLACE, one branch per folder, files with
+    /// their short names bracketed beside them. Reading it is browsing
+    /// the record the way a file manager browses a disk, except this disk
+    /// is every machine the archive ever took files from, and no place is
+    /// forgotten while it stands.
     Tree {
         /// The place to start from: an absolute path; left out, /
         #[arg(value_name = "PLACE")]
         place: Option<String>,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
     /// The name a file answers to in the archive
     ///
-    /// Hashes the file the way the archive names content — the file is
-    /// only read, never taken in — and says whether the archive already
-    /// holds those bytes. Works before an ingest as well as after: the
-    /// name is the bytes' own, not something an ingest hands out.
+    /// Hashes the file the way the archive names content, only read and
+    /// never taken in, and says whether the archive already holds those
+    /// bytes. Works before an ingest as well as after: the name is the
+    /// bytes' own, not something an ingest hands out.
     Id {
         /// The file to name
         #[arg(value_name = "FILE")]
@@ -450,8 +443,8 @@ enum Command {
     /// The bytes come out exactly as they went in, to stdout, ready to
     /// pipe; --output writes them to a file instead.
     Get {
-        /// The file's name in the archive: its hex digest — a beginning
-        /// of it is enough while it names only one file
+        /// The file's name in the archive: its hex digest; a beginning of
+        /// it is enough while it names only one file
         #[arg(value_name = "SUBJECT")]
         subject: String,
 
@@ -461,35 +454,32 @@ enum Command {
     },
     /// Files back out of the archive, laid down as they arrived
     ///
-    /// Each ID is one file — the hex name that find, id and get speak,
-    /// or a beginning of it — or a whole run: the id an ingest or
-    /// extract verdict names, spelled out whole; both kinds mix in one
-    /// call. A run brings every file it recorded, each under the path
-    /// the run saw it at, kept relative: the folders all the exported
-    /// files share are trimmed away, and what lay side by side lands
-    /// side by side. When one export reaches into unrelated places,
-    /// each place becomes its own folder under PATH, named after the
-    /// deepest folder its files shared. A file named alone lands at
-    /// every place still standing on its record — no place is
-    /// preferred over another, and a retracted one no longer counts;
-    /// a derived file, which never sat anywhere, lands under its
-    /// recorded names. The same bytes standing at several places come
-    /// out as several files, the way they stand. Nothing at PATH is
-    /// ever overwritten: a
-    /// file already there with the same bytes counts as done, one with
-    /// different bytes is a named failure and stays untouched. A
-    /// destination inside the archive is refused — exports land
-    /// outside it.
-    /// --dry-run answers what would land where and writes nothing.
-    /// `ossuary find --id … | xargs ossuary export PATH` exports a
-    /// found set.
+    /// Each ID is one file, the hex name that find, id and get speak or a
+    /// beginning of it, or a whole run: the id an ingest or extract
+    /// verdict names, spelled out whole; both kinds mix in one call. A
+    /// run brings every file it recorded, each under the path the run saw
+    /// it at, kept relative: the folders all the exported files share are
+    /// trimmed away, and what lay side by side lands side by side. When
+    /// one export reaches into unrelated places, each place becomes its
+    /// own folder under PATH, named after the deepest folder its files
+    /// shared. A file named alone lands at every place still standing on
+    /// its record; no place is preferred over another, and a retracted
+    /// one no longer counts; a derived file, which never sat anywhere,
+    /// lands under its recorded names. The same bytes standing at several
+    /// places come out as several files, the way they stand. Nothing at
+    /// PATH is ever overwritten: a file already there with the same bytes
+    /// counts as done, one with different bytes is a named failure and
+    /// stays untouched. A destination inside the archive is refused;
+    /// exports land outside it. --dry-run answers what would land where
+    /// and writes nothing. `ossuary find --id … | xargs ossuary export
+    /// PATH` exports a found set.
     Export {
         /// The directory the files land in; made if it is not there
         #[arg(value_name = "PATH")]
         destination: PathBuf,
 
-        /// A file — by hex name or a beginning of it — or a whole run,
-        /// by its dashed id; several may be named, mixed freely
+        /// A file, by hex name or a beginning of it, or a whole run by
+        /// its dashed id; several may be named, mixed freely
         #[arg(value_name = "ID", required = true)]
         ids: Vec<String>,
 
@@ -497,9 +487,9 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
-        /// Answer from what the archive knew at TIME — the axis is
-        /// claim time, never the file's own; a date alone closes at
-        /// that day's end
+        /// Answer from what the archive knew at TIME, on the axis of
+        /// claim time, never the file's own; a date alone closes at that
+        /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -507,32 +497,31 @@ enum Command {
     /// record against the stores
     ///
     /// The audit trusts nothing it cannot prove, so the cache plays no
-    /// part — every answer is derived from the archive's own files.
-    /// Three checks, run whole: every file in content/ and derived/ is
-    /// read and its bytes re-hashed, because a name must still be true
-    /// of its bytes; every sealed segment and the open head must read
-    /// back claim by claim, and every segment one of them names as
-    /// sealed before it must still be held, because a sealed segment
-    /// that is gone is a loss the record itself points at; and every
-    /// file the claims speak of — as their subject, or named as what a
-    /// derived file came from — must be held by a store, because
-    /// nothing is ever deliberately removed from an archive and absence
-    /// has no innocent reading. A chain in more than one piece is a
-    /// finding too: a segment that names no predecessor, beyond the one
-    /// the archive begins with, stands where the open head was lost and
-    /// begun anew, and the lost head's claims went with it. The answer
-    /// names every piece with its span, so the loss can be narrowed
-    /// down and taken in again; `maintain mend` joins the pieces
-    /// afterwards, and a break so mended is noted, not counted. Files
-    /// held that no claim speaks of are noted, not counted either: an
-    /// interrupted run leaves such files, and the next arrival records
-    /// them. The answer counts what it finds; up to a handful of names
-    /// stands right there, --verbose spells out every one, and --json
-    /// answers one object per finding for a script. Reading the whole
-    /// archive takes the time it takes — that is the point. Exits 0
+    /// part; every answer is derived from the archive's own files. Three
+    /// checks, run whole: every file in content/ and derived/ is read and
+    /// its bytes re-hashed, because a name must still be true of its
+    /// bytes; every sealed segment and the open head must read back claim
+    /// by claim, and every segment one of them names as sealed before it
+    /// must still be held, because a sealed segment that is gone is a
+    /// loss the record itself points at; and every file the claims speak
+    /// of, as their subject or as what a derived file came from, must be
+    /// held by a store, because nothing is ever deliberately removed from
+    /// an archive and absence has no innocent reading. A chain in more
+    /// than one piece is a finding too: a segment that names no
+    /// predecessor, beyond the one the archive begins with, stands where
+    /// the open head was lost and begun anew, and the lost head's claims
+    /// went with it. The answer names every piece with its span, so the
+    /// loss can be narrowed down and taken in again; `maintain mend`
+    /// joins the pieces afterwards, and a break so mended is noted, not
+    /// counted. Files held that no claim speaks of are noted, not counted
+    /// either: an interrupted run leaves such files, and the next arrival
+    /// records them. The answer counts what it finds; up to a handful of
+    /// names stands right there, --verbose spells out every one, and
+    /// --json answers one object per finding for a script. Reading the
+    /// whole archive takes the time it takes; that is the point. Exits 0
     /// when the archive is sound, 1 when findings stand.
     Audit {
-        /// One JSON object per finding, ready for jq — a sound archive
+        /// One JSON object per finding, ready for jq; a sound archive
         /// answers an empty stream
         #[arg(short, long)]
         json: bool,
@@ -689,7 +678,7 @@ fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
     use std::os::unix::process::CommandExt as _;
     let Some((name, rest)) = pieces.split_first() else {
         return Err(anyhow!(
-            "no command named — `ossuary --help` lists what there is"
+            "no command named; `ossuary --help` lists what there is"
         ));
     };
     let name = name.to_string_lossy();
@@ -701,7 +690,7 @@ fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
         .exec();
     if error.kind() == std::io::ErrorKind::NotFound {
         return Err(anyhow!(
-            "`{name}` is no command of ossuary's own, and no `{program}` stands on the PATH — `ossuary --help` lists what is built in"
+            "`{name}` is no command of ossuary's own, and no `{program}` stands on the PATH; `ossuary --help` lists what is built in"
         ));
     }
     Err(anyhow::Error::new(error).context(format!("running {program}")))
@@ -723,7 +712,7 @@ pub(crate) fn say(out: &mut impl std::io::Write, line: &str) -> Result<bool> {
 pub(crate) fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
-            "{}: not an ossuary archive — stand in one, name it with --archive, or begin one with `ossuary init`",
+            "{}: not an ossuary archive; stand in one, name it with --archive, or begin one with `ossuary init`",
             path.display()
         ),
         other => other.into(),
@@ -735,7 +724,7 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     match Archive::create(root, requested.unwrap_or(Algorithm::Sha256)) {
         Ok(archive) => {
             println!(
-                "{}: an empty archive — its settings stand in config.toml; take files in with `ossuary ingest DIR`",
+                "{}: an empty archive, settings in config.toml; take files in with `ossuary ingest DIR`",
                 archive.root().display()
             );
             Ok(ExitCode::SUCCESS)
@@ -749,7 +738,7 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
             if let Some(asked) = requested {
                 if asked != standing {
                     return Err(anyhow!(
-                        "{}: named by {}, for good — an algorithm is chosen when an archive begins, not after",
+                        "{}: named by {}, for good; an algorithm is chosen when an archive begins, not after",
                         archive.root().display(),
                         standing.name()
                     ));
@@ -757,12 +746,12 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
             }
             if archive.complete()? {
                 println!(
-                    "{}: already an archive — config.toml was missing and now spells the defaults",
+                    "{}: already an archive; config.toml was missing and now spells the defaults",
                     archive.root().display()
                 );
             } else {
                 println!(
-                    "{}: already an archive, and whole — nothing to add",
+                    "{}: already an archive, and whole; nothing to add",
                     archive.root().display()
                 );
             }
@@ -782,7 +771,7 @@ fn ingest(
 ) -> Result<ExitCode> {
     if let Some(empty) = tags.iter().find(|tag| tag.trim().is_empty()) {
         return Err(anyhow!(
-            "{empty:?} is not a tag — a tag says something; give it a word or leave it off"
+            "{empty:?} is not a tag; give it a word or leave it off"
         ));
     }
     let archive = open(root)?;
@@ -820,17 +809,14 @@ fn ingest(
     if !quiet {
         for path in &run.archives {
             eprintln!(
-                "{}: an ossuary archive — left whole, never taken in",
+                "{}: an ossuary archive, left whole, never taken in",
                 path.display()
             );
         }
     }
     let mut verdict = vec![format!("{} file(s) new to the archive", run.stored)];
     if run.known > 0 {
-        verdict.push(format!(
-            "{} already held — every place they sat is on the record",
-            run.known
-        ));
+        verdict.push(format!("{} already held", run.known));
     }
     if run.unchanged > 0 {
         verdict.push(if tags.is_empty() {
@@ -842,7 +828,7 @@ fn ingest(
             // A tag rides only on what the run records; saying so here
             // beats a tree that looks tagged and is not.
             format!(
-                "{} unchanged since the last run and left in peace, untagged — --full tags them too",
+                "{} unchanged since the last run and left in peace, untagged; --full tags them too",
                 run.unchanged
             )
         });
@@ -886,7 +872,7 @@ fn previewed(
     if !quiet {
         for path in &run.archives {
             eprintln!(
-                "{}: an ossuary archive — left whole, never taken in",
+                "{}: an ossuary archive, left whole, never taken in",
                 path.display()
             );
         }
@@ -931,17 +917,17 @@ fn annotate(
 ) -> Result<ExitCode> {
     if comments.is_empty() && tags.is_empty() {
         return Err(anyhow!(
-            "nothing to say — give --comment TEXT, --tag TAG, or both"
+            "nothing to say; give --comment TEXT, --tag TAG, or both"
         ));
     }
     if comments.iter().any(|text| text.trim().is_empty()) {
         return Err(anyhow!(
-            "an empty comment says nothing — give it words or leave it off"
+            "an empty comment says nothing; give it words or leave it off"
         ));
     }
     if let Some(empty) = tags.iter().find(|tag| tag.trim().is_empty()) {
         return Err(anyhow!(
-            "{empty:?} is not a tag — a tag says something; give it a word or leave it off"
+            "{empty:?} is not a tag; give it a word or leave it off"
         ));
     }
     let archive = open(root)?;
@@ -954,7 +940,7 @@ fn annotate(
     for name in given {
         let Some(subject) = resolve(&index, name)? else {
             return Err(anyhow!(
-                "nothing on the record begins with {name:?} — nothing was written"
+                "nothing on the record begins with {name:?}; nothing was written"
             ));
         };
         if !subjects.contains(&subject) {
@@ -993,17 +979,17 @@ fn asked(attribute: &Attribute, raw: &str) -> Result<Asked> {
     let name = attribute.as_str();
     if raw.is_empty() {
         return Err(anyhow!(
-            "{name}= names no value — name it, or say {name}=.. to take back all of it"
+            "{name}= names no value; name it, or say {name}=.. to take back all of it"
         ));
     }
     if raw.contains("..") {
         return Err(anyhow!(
-            "{name}={raw} reads like a range, and retract takes back what you name — double quotes mean the characters themselves: {name}=\"{raw}\""
+            "{name}={raw} reads like a range; double quotes mean the characters themselves: {name}=\"{raw}\""
         ));
     }
     if raw.contains('*') || raw.contains('?') {
         return Err(anyhow!(
-            "{name}={raw} reads like a glob, and retract takes back what you name — what matches is find's business: `ossuary find --id {name}={raw} | xargs ossuary retract …`; double quotes mean the characters themselves"
+            "{name}={raw} reads like a glob; what matches is find's business: `ossuary find --id {name}={raw} | xargs ossuary retract …`; double quotes mean the characters themselves"
         ));
     }
     Ok(Asked::Literal(raw.to_string()))
@@ -1048,7 +1034,7 @@ fn matched(
             Asked::All => {
                 if standing.is_empty() {
                     return Err(anyhow!(
-                        "nothing stands for {} on {subject} — nothing was taken back; `ossuary about {}` tells whether anything ever did",
+                        "nothing stands for {} on {subject}; nothing was taken back; `ossuary about {}` tells whether anything ever did",
                         attribute.as_str(),
                         shorten(index, subject)?
                     ));
@@ -1067,7 +1053,7 @@ fn matched(
                     .collect();
                 if taken.is_empty() {
                     return Err(anyhow!(
-                        "{}={literal} does not stand on {subject} — nothing was taken back; `ossuary standing {}` shows what does",
+                        "{}={literal} does not stand on {subject}; nothing was taken back; `ossuary standing {}` shows what does",
                         attribute.as_str(),
                         shorten(index, subject)?
                     ));
@@ -1107,7 +1093,7 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
             }
         } else if target.contains(':') {
             return Err(anyhow!(
-                "{target} names an attribute, not a taking — {target}=VALUE takes one value back, {target}=.. all of it"
+                "{target} names an attribute, not a taking; {target}=VALUE takes one value back, {target}=.. all of it"
             ));
         } else if !names.contains(&target.as_str()) {
             names.push(target);
@@ -1115,12 +1101,12 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
     }
     if pairs.is_empty() {
         return Err(anyhow!(
-            "nothing named to take back — add attribute=value, or attribute=.. for all of it"
+            "nothing named to take back; add attribute=value, or attribute=.. for all of it"
         ));
     }
     if names.is_empty() {
         return Err(anyhow!(
-            "no file named — add its hex name, or a beginning of it; `ossuary find --id` hands names over, ready to pipe"
+            "no file named; add its hex name, or a beginning of it; `ossuary find --id` hands names over, ready to pipe"
         ));
     }
 
@@ -1134,7 +1120,7 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
     for name in &names {
         let Some(subject) = resolve(&index, name)? else {
             return Err(anyhow!(
-                "nothing on the record begins with {name:?} — nothing was taken back"
+                "nothing on the record begins with {name:?}; nothing was taken back"
             ));
         };
         if !subjects.contains(&subject) {
@@ -1184,10 +1170,10 @@ fn seal(root: &Path) -> Result<ExitCode> {
     let archive = open(root)?;
     match archive.log().seal()? {
         Some(segment) => println!(
-            "sealed as {} — the open segment starts afresh",
+            "sealed as {}; the open segment starts afresh",
             segment.digest()
         ),
-        None => println!("nothing to seal — the open segment holds no claims"),
+        None => println!("nothing to seal; the open segment holds no claims"),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1227,7 +1213,7 @@ fn cutoff(given: &str) -> Result<String> {
     };
     if ossuary_core::Timestamp::parse(&spelled).is_err() {
         return Err(anyhow!(
-            "{given:?} is not a time — RFC 3339 like 2026-01-01T12:00:00Z, or the date alone"
+            "{given:?} is not a time; RFC 3339 like 2026-01-01T12:00:00Z, or the date alone"
         ));
     }
     Ok(spelled)
@@ -1285,7 +1271,7 @@ fn about(
         });
         if claims.is_empty() {
             calm(format!(
-                "nothing of that on the record about {subject} — plain `ossuary about` shows all of it"
+                "nothing of that on the record about {subject}; plain `ossuary about` shows all of it"
             ));
             return Ok(ExitCode::SUCCESS);
         }
@@ -1355,7 +1341,7 @@ fn standing(
     if shown.is_empty() {
         if !quiet {
             eprintln!(
-                "nothing stands{} on {subject} — `ossuary about` shows what was ever said",
+                "nothing stands{} on {subject}; `ossuary about` shows what was ever said",
                 if attributes.is_empty() {
                     ""
                 } else {
@@ -1436,7 +1422,7 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Project
             Attribute::parse(&format!("{namespace}:a"))?;
             if id_only {
                 return Err(anyhow!(
-                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
+                    "{word:?} names what to show, and --id shows the names alone; drop one of them"
                 ));
             }
             remember(Projection::Namespace(namespace.to_string()), &mut asked);
@@ -1444,13 +1430,13 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Project
             let attribute = Attribute::parse(word)?;
             if id_only {
                 return Err(anyhow!(
-                    "{word:?} names what to show, and --id shows the names alone — drop one of them"
+                    "{word:?} names what to show, and --id shows the names alone; drop one of them"
                 ));
             }
             remember(Projection::Attribute(attribute), &mut asked);
         } else {
             return Err(anyhow!(
-                "{word:?} is not a term — attribute=value asks for it, a bare attribute (or a namespace, like exif:) is shown on each match"
+                "{word:?} is not a term; attribute=value asks for it, a bare attribute (or a namespace, like exif:) is shown on each match"
             ));
         }
     }
@@ -1469,13 +1455,13 @@ fn find(
 ) -> Result<ExitCode> {
     if id_only && json {
         return Err(anyhow!(
-            "--id answers with the names alone — --json would say no more; drop one of them"
+            "--id answers with the names alone; --json would say no more; drop one of them"
         ));
     }
     let (filters, projections) = question(terms, id_only)?;
     if filters.is_empty() && missing.is_empty() && projections.is_empty() {
         return Err(anyhow!(
-            "nothing asked — name a TERM as attribute=value, an attribute to show, or --missing ATTRIBUTE"
+            "nothing asked; name a TERM as attribute=value, an attribute to show, or --missing ATTRIBUTE"
         ));
     }
     let archive = open(root)?;
@@ -1528,7 +1514,7 @@ fn attributes(
     for word in namespaces {
         let Some(namespace) = word.strip_suffix(':') else {
             return Err(anyhow!(
-                "{word:?} names no namespace — a namespace is spelled with its colon, like exif:"
+                "{word:?} names no namespace; a namespace is spelled with its colon, like exif:"
             ));
         };
         // The grammar has one door; a prefix walks through it wearing
@@ -1558,10 +1544,10 @@ fn attributes(
                 (Some(time), true) => eprintln!("nothing stood on the record as of {time}"),
                 (Some(time), false) => eprintln!("nothing stood in {named} as of {time}"),
                 (None, true) => eprintln!(
-                    "nothing stands on the record — take files in with `ossuary ingest DIR`"
+                    "nothing stands on the record; take files in with `ossuary ingest DIR`"
                 ),
                 (None, false) => eprintln!(
-                    "nothing stands in {named} — plain `ossuary attributes` names every namespace there is"
+                    "nothing stands in {named}; plain `ossuary attributes` names every namespace there is"
                 ),
             }
         }
@@ -1679,9 +1665,9 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
         let held = !archive.content().matching(digest.as_str())?.is_empty()
             || !archive.derived().matching(digest.as_str())?.is_empty();
         if held {
-            eprintln!("the archive holds these bytes — `ossuary about` says what is on the record");
+            eprintln!("the archive holds these bytes; `ossuary about` says what is on the record");
         } else {
-            eprintln!("not in the archive — `ossuary ingest` takes it in");
+            eprintln!("not in the archive; `ossuary ingest` takes it in");
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1700,13 +1686,13 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
     let bare = subject;
     if !bare.bytes().all(|byte| byte.is_ascii_hexdigit()) || bare.is_empty() {
         return Err(anyhow!(
-            "{bare:?} is not hex — a file's name is the hex of its digest, the way `ossuary find` shows it"
+            "{bare:?} is not hex; a file's name is the hex of its digest, the way `ossuary find` shows it"
         ));
     }
     let needed = content.min_prefix().max(derived.min_prefix());
     if bare.len() < needed {
         return Err(anyhow!(
-            "{bare:?} is too short to look up — the stores are filed by the first {needed} characters, give at least that many"
+            "{bare:?} is too short to look up; the stores are filed by the first {needed} characters, give at least that many"
         ));
     }
     let mut candidates = content.matching(bare)?;
@@ -1720,7 +1706,7 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
         [one] => one.clone(),
         many => {
             return Err(anyhow!(
-                "{bare:?} begins {} names — give more of it to name only one",
+                "{bare:?} begins {} names; give more of it to name only one",
                 many.len()
             ));
         }

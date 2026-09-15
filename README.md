@@ -73,7 +73,7 @@ lives beneath it. `init` puts one wherever `--archive` points:
 
 ```console
 $ ossuary --archive /home/john/archive init
-/home/john/archive: an empty archive — its settings stand in config.toml; take files in with `ossuary ingest DIR`
+/home/john/archive: an empty archive, settings in config.toml; take files in with `ossuary ingest DIR`
 ```
 
 Every command takes `--archive`; standing inside the archive is enough,
@@ -260,7 +260,7 @@ file manager, previews and all:
 
 ```console
 $ ossuary mount ~/view
-the record stands at /home/john/view — read-only, 5 file(s) in 5 folder(s); Ctrl-C gives it back
+the record stands at /home/john/view, read-only, 5 file(s) in 5 folder(s); Ctrl-C gives it back
 $ open ~/view/home/john/photos/DSC_1042.jpg
 ```
 
@@ -324,7 +324,7 @@ e176bedf  docs/backup.zip
 e9ed6104  mail/2026-03-10-quarterly.eml
 bd84e795  photos/DSC_1042.jpg
 6ca81e7a  photos/DSC_1043.jpg
-would export 5 file(s) into /home/john/refile — nothing written
+would export 5 file(s) into /home/john/refile; nothing written
 ```
 
 Without `--dry-run` that writes the five files. File names and run ids

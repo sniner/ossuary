@@ -27,7 +27,7 @@ pub(crate) fn export(
 ) -> Result<ExitCode> {
     if forgotten_destination(destination) {
         return Err(anyhow!(
-            "{}: reads like an id, and no such directory stands — the destination comes first: `ossuary export DIR ID…`",
+            "{}: reads like an id, and no such directory stands; the destination comes first: `ossuary export DIR ID…`",
             destination.display()
         ));
     }
@@ -38,7 +38,7 @@ pub(crate) fn export(
     if let Ok(inside) = fs::canonicalize(archive.root()) {
         if resolved(destination).starts_with(&inside) {
             return Err(anyhow!(
-                "{}: inside the archive — name a destination outside it",
+                "{}: inside the archive; name a destination outside it",
                 destination.display()
             ));
         }
@@ -64,7 +64,7 @@ pub(crate) fn export(
         }
         if !quiet {
             eprintln!(
-                "would export {} file(s) into {} — nothing written",
+                "would export {} file(s) into {}; nothing written",
                 plan.len(),
                 destination.display()
             );
@@ -119,7 +119,7 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
             let sightings = index.run_sightings(id)?;
             if sightings.is_empty() {
                 return Err(anyhow!(
-                    "no run {id} on the record — `ossuary about FILE prov:run` names the runs a file arrived in; nothing was exported"
+                    "no run {id} on the record; `ossuary about FILE prov:run` names the runs a file arrived in; nothing was exported"
                 ));
             }
             pairs.extend(sightings);
@@ -128,18 +128,18 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
             // name — the likeliest way one lands here is a pipe that
             // forgot --id.
             return Err(anyhow!(
-                "{id:?} is not a file's name — it reads like find's rendered answer; `ossuary find --id …` hands over bare names, ready to pipe; nothing was exported"
+                "{id:?} is not a file's name; it reads like find's rendered answer; `ossuary find --id …` hands over bare names, ready to pipe; nothing was exported"
             ));
         } else {
             let Some(subject) = resolve(index, id)? else {
                 return Err(anyhow!(
-                    "nothing on the record begins with {id:?} — nothing was exported"
+                    "nothing on the record begins with {id:?}; nothing was exported"
                 ));
             };
             let standing = places(index, &subject, &file_path, &file_name)?;
             if standing.is_empty() {
                 return Err(anyhow!(
-                    "no path and no name stands on the record for {subject} — `ossuary get` still hands the bytes out, to a name of yours; nothing was exported"
+                    "no path and no name stands on the record for {subject}; `ossuary get` still hands the bytes out, to a name of yours; nothing was exported"
                 ));
             }
             pairs.extend(standing.into_iter().map(|place| (subject.clone(), place)));
@@ -187,7 +187,7 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
                         landed.entry(placed.subject.clone()).or_insert(dest);
                     }
                     Ok(_) => {
-                        fail("different content already stands here — left untouched".to_string());
+                        fail("different content already stands here, left untouched".to_string());
                     }
                     Err(error) => fail(format!("reading what stands here: {error}")),
                 }
@@ -268,7 +268,7 @@ fn disambiguate(mut plan: Vec<Placed>, quiet: bool) -> Vec<Placed> {
             if taken.insert(bumped.clone()) {
                 if !quiet {
                     eprintln!(
-                        "{}: name already taken in this export — landing as {}",
+                        "{}: name already taken in this export, landing as {}",
                         placed.target.display(),
                         bumped.display()
                     );

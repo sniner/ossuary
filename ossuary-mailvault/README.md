@@ -20,9 +20,9 @@ $ cd /home/john/archive
 $ ossuary mailvault --allow-exec
 archive /home/john/archive
 example.org: 2 folders
-example.org/INBOX: carrying on above UID 1180 — 24 messages to fetch
+example.org/INBOX: carrying on above UID 1180, 24 messages to fetch
 example.org/INBOX: 24 of 24 fetched
-example.org/Sent: carrying on above UID 310 — 0 messages to fetch
+example.org/Sent: carrying on above UID 310, 0 messages to fetch
 24 messages new to the archive; 96 claim(s) written as run 315e360b-020e-48be-8f2d-f2002a2ea9b4
 ```
 

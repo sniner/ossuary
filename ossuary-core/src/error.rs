@@ -93,7 +93,7 @@ pub enum Error {
     BadLine { line: usize, source: Box<Error> },
 
     /// The directory is not an archive: no `FORMAT` mark stands in it.
-    #[error("{}: not an ossuary archive — no FORMAT mark", .0.display())]
+    #[error("{}: not an ossuary archive, no FORMAT mark", .0.display())]
     NoArchive(std::path::PathBuf),
 
     /// An archive already stands where one was to be created.
@@ -102,11 +102,11 @@ pub enum Error {
 
     /// A named ingest root is an archive, or lies inside one. The path
     /// is the archive's root, wherever in it the naming pointed.
-    #[error("{}: an ossuary archive — an archive never takes in an archive", .0.display())]
+    #[error("{}: an ossuary archive; an archive never takes in an archive", .0.display())]
     IngestsArchive(std::path::PathBuf),
 
     /// The `FORMAT` mark would not read back.
-    #[error("{}: the FORMAT mark did not read back — damaged, or not ossuary's", .0.display())]
+    #[error("{}: the FORMAT mark did not read back; damaged, or not ossuary's", .0.display())]
     BadMark(std::path::PathBuf),
 
     /// The archive's `config.toml` would not read back.
@@ -114,14 +114,14 @@ pub enum Error {
     /// Strictness is the point: a key this build does not know may be a
     /// typo or a newer ossuary's knob, and either way applying half a
     /// write policy is worse than applying none.
-    #[error("{}: not readable as the archive's settings — fix the file, or remove it to run on the defaults\n{trouble}", .path.display())]
+    #[error("{}: not readable as the archive's settings; fix the file, or remove it to run on the defaults\n{trouble}", .path.display())]
     BadConfig {
         path: std::path::PathBuf,
         trouble: String,
     },
 
     /// An exclude pattern would not compile into a glob.
-    #[error("not a glob pattern: {pattern:?} — {trouble}")]
+    #[error("not a glob pattern: {pattern:?}; {trouble}")]
     Pattern { pattern: String, trouble: String },
 
     /// The archive is written in a generation this build does not know.
@@ -133,7 +133,7 @@ pub enum Error {
     ArchiveGeneration(u32),
 
     /// A beginning that names several subjects names none of them.
-    #[error("{given:?} begins {count} names — give more of it to name only one")]
+    #[error("{given:?} begins {count} names; give more of it to name only one")]
     Ambiguous { given: String, count: usize },
 
     /// A given name, whole or begun, that the record does not know.

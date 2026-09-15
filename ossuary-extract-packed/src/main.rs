@@ -79,7 +79,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "ossuary-extract-packed: run with --identify, with `list`, or with `unpack DIR` — a file's bytes on stdin either way"
+                "ossuary-extract-packed: run with --identify, with `list`, or with `unpack DIR`; a file's bytes on stdin either way"
             );
             ExitCode::FAILURE
         }

@@ -10,7 +10,7 @@ nothing can be written.
 
 ```console
 $ ossuary mount ~/view
-the record stands at /home/john/view — read-only, 5 file(s) in 5 folder(s); Ctrl-C gives it back
+the record stands at /home/john/view, read-only, 5 file(s) in 5 folder(s); Ctrl-C gives it back
 $ open ~/view/home/john/photos/DSC_1042.jpg
 ```
 

@@ -64,10 +64,7 @@ impl Tally {
             counted(self.stored, "message", "messages")
         )];
         if self.known > 0 {
-            parts.push(format!(
-                "{} already held — every place they sat is on the record",
-                self.known
-            ));
+            parts.push(format!("{} already held", self.known));
         }
         if self.left > 0 {
             parts.push(format!(
@@ -123,8 +120,8 @@ mod tests {
         tally.claims = 11;
         assert_eq!(
             tally.verdict(false),
-            "2 messages new to the archive, 1 already held — every place they sat is on the \
-             record, 4 on the record before and left in peace; 11 claim(s) written as run run-0001"
+            "2 messages new to the archive, 1 already held, 4 on the record before and left in peace; \
+             11 claim(s) written as run run-0001"
         );
     }
 }

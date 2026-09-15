@@ -109,7 +109,7 @@ impl Remote {
             .map_err(|(error, _)| error)
             .with_context(|| {
                 format!(
-                    "{}: {} refused the login for {} — wrong password, or the server \
+                    "{}: {} refused the login for {}; wrong password, or the server \
                      wants an app-specific one",
                     account.name, account.host, account.user
                 )

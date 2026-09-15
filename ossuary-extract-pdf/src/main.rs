@@ -52,7 +52,7 @@ fn main() -> ExitCode {
 fn identify() -> ExitCode {
     if !pdftotext_present() {
         eprintln!(
-            "no `pdftotext` on PATH — this extractor drives poppler; install it (Homebrew: poppler, Debian: poppler-utils), then run this again"
+            "no `pdftotext` on PATH; install poppler (Homebrew: poppler, Debian: poppler-utils), then run this again"
         );
         return ExitCode::FAILURE;
     }
@@ -212,9 +212,7 @@ fn junk_verdict(text: &str) -> Option<String> {
     }
     (junk * 2 > ink).then(|| {
         let percent = (junk * 100 + ink / 2) / ink;
-        format!(
-            "{percent}% of the text is not characters at all — the fonts do not say what they spell; harvest discarded"
-        )
+        format!("{percent}% of the text is not characters at all; harvest discarded")
     })
 }
 

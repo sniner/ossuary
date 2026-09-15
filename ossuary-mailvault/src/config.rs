@@ -73,7 +73,7 @@ impl Config {
         let text = std::fs::read_to_string(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 anyhow!(
-                    "{}: no {FILE_NAME} here — the mailboxes stand in the archive's own \
+                    "{}: no {FILE_NAME} here; the mailboxes stand in the archive's own \
                      {FILE_NAME}, one [[account]] table each; see the README for the shape",
                     root.display()
                 )
@@ -87,7 +87,7 @@ impl Config {
         for account in &config.accounts {
             if !valid_name(&account.name) {
                 bail!(
-                    "{}: {:?} cannot name a mailbox on the record — use letters, digits, \
+                    "{}: {:?} cannot name a mailbox on the record; use letters, digits, \
                      '.', '_' and '-' only",
                     path.display(),
                     account.name
@@ -95,7 +95,7 @@ impl Config {
             }
             if !names.insert(account.name.as_str()) {
                 bail!(
-                    "{}: two accounts named {:?} — every mailbox needs a name of its own",
+                    "{}: two accounts named {:?}; every mailbox needs a name of its own",
                     path.display(),
                     account.name
                 );
@@ -117,7 +117,7 @@ impl Config {
         for name in names {
             if !self.accounts.iter().any(|account| &account.name == name) {
                 bail!(
-                    "{name}: no such account in {FILE_NAME} — it knows {}",
+                    "{name}: no such account in {FILE_NAME}; it knows {}",
                     self.accounts
                         .iter()
                         .map(|account| account.name.as_str())
@@ -172,7 +172,7 @@ impl Account {
                 .with_context(|| format!("{}: password_cmd could not be run", self.name))?;
             if !out.status.success() {
                 bail!(
-                    "{}: password_cmd failed ({}) — what it said stands above",
+                    "{}: password_cmd failed ({}); what it said stands above",
                     self.name,
                     out.status
                 );
@@ -181,7 +181,7 @@ impl Account {
             let password = stdout.lines().next().unwrap_or("").trim();
             if password.is_empty() {
                 bail!(
-                    "{}: password_cmd printed nothing — it has to print the password on its first line",
+                    "{}: password_cmd printed nothing; it has to print the password on its first line",
                     self.name
                 );
             }
@@ -191,7 +191,7 @@ impl Account {
             return Ok(password.clone());
         }
         bail!(
-            "{}: no password configured — set password_cmd (a command that prints it) \
+            "{}: no password configured; set password_cmd (a command that prints it) \
              or password in {FILE_NAME}",
             self.name
         );

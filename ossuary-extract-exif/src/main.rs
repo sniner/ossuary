@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         }
         Some(other) => {
             eprintln!(
-                "ossuary-extract-exif: {other:?} is not part of the protocol — run with --identify, or with a file's bytes on stdin"
+                "ossuary-extract-exif: {other:?} is not part of the protocol; run with --identify, or with a file's bytes on stdin"
             );
             ExitCode::FAILURE
         }

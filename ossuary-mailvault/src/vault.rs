@@ -80,7 +80,7 @@ pub fn verify(vault: &Path) -> Result<()> {
     let mark = fs::read_to_string(vault.join(MARK)).ok();
     if mark.as_deref().map(str::trim) != Some(MARK_LINE) {
         bail!(
-            "{}: not a mailvault archive — its {MARK} mark would say so",
+            "{}: not a mailvault archive; its {MARK} mark would say so",
             vault.display()
         );
     }
@@ -293,12 +293,12 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
     let text = fs::read_to_string(path).context("could not be read")?;
     let mut lines = text.lines();
     let Some(head) = lines.next() else {
-        bail!("empty — not a log file");
+        bail!("empty, not a log file");
     };
     let header: Header = serde_json::from_str(head).context("its header is not one")?;
     if !LOG_VERSIONS.contains(&header.version) {
         bail!(
-            "written by a newer mailvault (log version {}) — upgrade this program to read it",
+            "written by a newer mailvault (log version {}); upgrade this program to read it",
             header.version
         );
     }
@@ -315,7 +315,7 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
         // holding one would make every place of this file unreadable.
         if !valid_name(mailbox) {
             bail!(
-                "its mailbox {mailbox:?} cannot name a place — letters, digits, '.', '_' \
+                "its mailbox {mailbox:?} cannot name a place; letters, digits, '.', '_' \
                  and '-' only; rename it in the vault's log or leave it out"
             );
         }
@@ -375,10 +375,7 @@ fn read_message(vault: &Path, store_id: &str) -> Result<Vec<u8>> {
     };
     let digest = format!("{:x}", Sha384::digest(&bytes));
     if digest != store_id {
-        bail!(
-            "{}: damaged — the bytes do not answer to their name",
-            path.display()
-        );
+        bail!("{}: damaged", path.display());
     }
     Ok(bytes)
 }

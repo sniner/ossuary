@@ -185,7 +185,7 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
     ];
     let mut session = Session::new(Door { record }, mountpoint, &config).with_context(|| {
         format!(
-            "{place}: mount refused — the mountpoint must be a directory of your own with nothing mounted there, and the fuse3 package (fusermount3) must be installed"
+            "{place}: mount refused; the mountpoint must be a directory of your own with nothing mounted there, and the fuse3 package (fusermount3) must be installed"
         )
     })?;
     let mut unmounter = session.unmount_callable();
@@ -225,15 +225,17 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
             Ok(ExitCode::SUCCESS)
         }
         Some(Ok(Err(error))) => Err(anyhow!(
-            "the FUSE door closed on its own: {error} — unmount with `fusermount3 -u {place}`, then mount anew"
+            "the FUSE door closed on its own: {error}; unmount with `fusermount3 -u {place}`, then mount anew"
         )),
         Some(Err(_)) => Err(anyhow!(
-            "the filesystem thread ended without a word — unmount with `fusermount3 -u {place}`, then mount anew"
+            "the filesystem thread ended without a word; unmount with `fusermount3 -u {place}`, then mount anew"
         )),
         // A signal: give the room back ourselves.
         None => {
             unmounter.unmount().with_context(|| {
-                format!("{place} is still mounted — close what reads it and run `fusermount3 -u {place}`")
+                format!(
+                    "{place} is still mounted; close what reads it and run `fusermount3 -u {place}`"
+                )
             })?;
             // Letting go detaches the room at once; a reader still
             // holding a file keeps the thread a moment longer. Wait
@@ -246,7 +248,7 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
                 room.given_back();
             } else {
                 room.tell(format_args!(
-                    "{place} given back — a reader still held a file, and sees it go"
+                    "{place} given back; a reader still held a file, and sees it go"
                 ));
             }
             Ok(ExitCode::SUCCESS)

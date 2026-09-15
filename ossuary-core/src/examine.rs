@@ -193,7 +193,7 @@ pub fn examine(
 ) -> Result<Settlement> {
     if dry_run && subjects.is_empty() {
         return Err(Error::Extract(
-            "a dry run needs named files — name subjects or a run id; over everything that waits it would examine the whole archive and keep none of it".to_string(),
+            "a dry run needs named files; name subjects or a run id".to_string(),
         ));
     }
     let names: Vec<String> = match name {
@@ -202,7 +202,7 @@ pub fn examine(
     };
     if names.is_empty() {
         return Err(Error::Extract(
-            "no extractors to run — name one, like `ossuary extract pdf`, or list this archive's own under [extract] in config.toml".to_string(),
+            "no extractors to run; name one, like `ossuary extract pdf`, or list this archive's own under [extract] in config.toml".to_string(),
         ));
     }
 
@@ -230,15 +230,15 @@ pub fn examine(
         return Err(Error::Extract(match runs.as_slice() {
             [only] => match &only.identity.contract {
                 Some(contract) => format!(
-                    "`{}` hands no files back under its {contract} contract — --temp-dir is where derived files would wait; run this without it",
+                    "`{}` hands no files back under its {contract} contract; --temp-dir is where derived files would wait; run this without it",
                     only.program
                 ),
                 None => format!(
-                    "`{}` hands no files back — --temp-dir is where derived files would wait; run this without it",
+                    "`{}` hands no files back; --temp-dir is where derived files would wait; run this without it",
                     only.program
                 ),
             },
-            _ => "no files would come back from this run — --temp-dir is where derived files wait; run this without it".to_string(),
+            _ => "no files would come back from this run; --temp-dir is where derived files wait; run this without it".to_string(),
         }));
     }
 
@@ -322,7 +322,7 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
         total += examined;
         if round == MAX_ROUNDS {
             return Err(Error::Extract(format!(
-                "round {MAX_ROUNDS} still examined files — {} never runs dry; an extractor whose output bytes differ every round cannot settle. What is recorded so far stands; fix the extractor, then run this again",
+                "round {MAX_ROUNDS} still examined files; {} never runs dry; what is recorded so far stands. Fix the extractor, then run this again",
                 busy.join(", ")
             )));
         }
@@ -374,7 +374,7 @@ fn parse_listed(listed: &str) -> Result<(&str, Option<&str>)> {
     };
     if !well_formed(name) || contract.is_some_and(|contract| !well_formed(contract)) {
         return Err(Error::Extract(format!(
-            "{listed:?} does not name an extractor — the form is NAME or NAME:CONTRACT, lowercase letters, digits and dashes"
+            "{listed:?} does not name an extractor; the form is NAME or NAME:CONTRACT, lowercase letters, digits and dashes"
         )));
     }
     Ok((name, contract))
@@ -409,12 +409,12 @@ fn prepare(listed: &str) -> Result<Vec<Run>> {
                 Some(identity) => vec![identity],
                 None if offered.is_empty() => {
                     return Err(Error::Extract(format!(
-                        "`{program}` names no contracts — run it whole, as `ossuary extract {name}`"
+                        "`{program}` names no contracts; run it whole, as `ossuary extract {name}`"
                     )));
                 }
                 None => {
                     return Err(Error::Extract(format!(
-                        "`{program}` offers no contract named {wanted:?} — it offers {}",
+                        "`{program}` offers no contract named {wanted:?}; it offers {}",
                         offered.join(", ")
                     )));
                 }
@@ -654,7 +654,7 @@ fn identify(program: &str) -> Result<Vec<Identity>> {
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::Extract(format!(
-                    "no `{program}` on PATH — an extractor is its own program; install it, then run this again"
+                    "no `{program}` on PATH; install it, then run this again"
                 ))
             } else {
                 Error::Io {
@@ -674,7 +674,7 @@ fn identify(program: &str) -> Result<Vec<Identity>> {
             )));
         }
         return Err(Error::Extract(format!(
-            "`{program} --identify` failed — an extractor answers it before anything is examined"
+            "`{program} --identify` failed; nothing was examined"
         )));
     }
     read_identities(program, &String::from_utf8_lossy(&output.stdout))
@@ -692,7 +692,7 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
         })?;
         if identity.protocol != 1 {
             return Err(Error::Extract(format!(
-                "`{program}` speaks extractor protocol {}, this build speaks 1 — upgrade ossuary",
+                "`{program}` speaks extractor protocol {}, this build speaks 1; upgrade ossuary",
                 identity.protocol
             )));
         }
@@ -700,14 +700,14 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
             && !well_formed(contract)
         {
             return Err(Error::Extract(format!(
-                "`{program}` announces a contract named {contract:?} — a contract's name is lowercase letters, digits and dashes"
+                "`{program}` announces a contract named {contract:?}; a contract's name is lowercase letters, digits and dashes"
             )));
         }
         identities.push(identity);
     }
     if identities.is_empty() {
         return Err(Error::Extract(format!(
-            "`{program} --identify` answered nothing — an extractor announces itself in at least one line"
+            "`{program} --identify` answered nothing; an extractor announces itself in at least one line"
         )));
     }
     if identities.len() > 1 {
@@ -715,7 +715,7 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
         for identity in &identities {
             let Some(contract) = &identity.contract else {
                 return Err(Error::Extract(format!(
-                    "`{program}` announces {} contracts and one line names none — with several, every line says which it is",
+                    "`{program}` announces {} contracts and one line names none; with several, every line says which it is",
                     identities.len()
                 )));
             };
@@ -821,7 +821,7 @@ fn try_one(
             [one] => (archive.derived(), one.clone()),
             _ => {
                 return Err(Error::Extract(
-                    "not held — the log speaks of it, neither store holds its bytes".to_string(),
+                    "not held; the log speaks of it, neither store holds its bytes".to_string(),
                 ));
             }
         },
@@ -924,12 +924,12 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
             } => {
                 let Some(scratch) = scratch else {
                     return Err(Error::Extract(format!(
-                        "`{program}` announced {name:?}, but its identify line does not say it derives — no directory was handed over"
+                        "`{program}` announced {name:?}, but its identify line does not say it derives; no directory was handed over"
                     )));
                 };
                 if !bare(&name) {
                     return Err(Error::Extract(format!(
-                        "`{program}` announced {name:?} — a derived file's name is bare, no path in it"
+                        "`{program}` announced {name:?}; a derived file's name is bare, no path in it"
                     )));
                 }
                 if !announced.insert(name.clone()) {

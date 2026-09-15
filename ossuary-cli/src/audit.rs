@@ -16,23 +16,23 @@ const HANDFUL: usize = 5;
 pub(crate) fn audit(root: &Path, json: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
     if json && verbose {
         return Err(anyhow!(
-            "--json always names every finding — --verbose adds nothing; drop one of them"
+            "--json always names every finding; --verbose adds nothing; drop one of them"
         ));
     }
     let archive = open(root)?;
     if !quiet {
         eprintln!("archive {}", archive.root().display());
         eprintln!(
-            "step 1 of 3: content/ — every file read whole, its bytes proved against its name"
+            "step 1 of 3: content/, every file read whole, its bytes proved against its name"
         );
     }
     let content = ossuary_core::audit_store(archive.content())?;
     if !quiet {
-        eprintln!("step 2 of 3: derived/ — the same, for what tools made");
+        eprintln!("step 2 of 3: derived/, the same, for what tools made");
     }
     let derived = ossuary_core::audit_store(archive.derived())?;
     if !quiet {
-        eprintln!("step 3 of 3: claims/ — every sealed segment and the open head read back");
+        eprintln!("step 3 of 3: claims/, every sealed segment and the open head read back");
     }
     let log = ossuary_core::audit_log(archive.log())?;
     let audit = Audit::assemble(content, derived, log);
@@ -95,7 +95,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
             continue;
         }
         let heading = format!(
-            "{} file(s) held in {place} that no claim speaks of — not a finding; an interrupted run leaves these, and the next arrival records them",
+            "{} file(s) held in {place} that no claim speaks of, not a finding; the next arrival records them",
             unrecorded.len()
         );
         if !listing(out, &heading, unrecorded, verbose)? {
@@ -128,17 +128,17 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
         for (index, brk) in log.breaks.iter().enumerate() {
             let line = match &brk.cause {
                 Cause::HeadLost => format!(
-                    "  chain {} begins where a head was lost, its claims with it: nothing recorded between {} and {} survived — take that in again, then `ossuary maintain mend` joins the chains",
+                    "  chain {} begins where a head was lost, its claims with it: nothing recorded between {} and {} survived; take that in again, then `ossuary maintain mend` joins the chains",
                     index + 2,
                     when(brk.from.as_ref()),
                     when(brk.to.as_ref()),
                 ),
                 Cause::SegmentLost(segment) => format!(
-                    "  chain {} begins after segment {segment}, which is not held — restore it from a copy of the archive, or `ossuary maintain mend` joins the chains and keeps its name on the record",
+                    "  chain {} begins after segment {segment}, which is not held; restore it from a copy of the archive, or `ossuary maintain mend` joins the chains and keeps its name on the record",
                     index + 2,
                 ),
                 Cause::SegmentUnreadable(segment) => format!(
-                    "  chain {} begins after segment {segment}, which is held but will not read back — restore it from a copy of the archive; a mend stands in for what is gone, not for what is damaged",
+                    "  chain {} begins after segment {segment}, which is held but will not read back; restore it from a copy of the archive",
                     index + 2,
                 ),
             };
@@ -149,7 +149,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
                 && !say(
                     out,
                     &format!(
-                        "  which chain stands right before chain {} is not certain — chains whose first claims share a second could stand either way round; `maintain mend` leaves this break alone",
+                        "  which chain stands right before chain {} is not certain; `maintain mend` leaves this break alone",
                         index + 2
                     ),
                 )?
@@ -162,7 +162,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
         if !say(
             out,
             &format!(
-                "claims: the chain runs in a circle — mend {mend} joins two ends that were not a break's; take its file out of claims/, then `ossuary maintain mend` again"
+                "claims: the chain runs in a circle; mend {mend} joins two ends that were not a break's; take its file out of claims/, then `ossuary maintain mend` again"
             ),
         )? {
             return Ok(false);
@@ -191,10 +191,7 @@ fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<boo
                 line
             })
             .collect();
-        let heading = format!(
-            "{} mended break(s) in the chain — a loss seen and the chain joined over it, on the record",
-            mends.len()
-        );
+        let heading = format!("{} mended break(s) in the chain", mends.len());
         if !listing(out, &heading, &mends, verbose)? {
             return Ok(false);
         }
@@ -212,7 +209,7 @@ fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<boo
             })
             .collect();
         let heading = format!(
-            "{} mend(s) for a loss since made good — the segment each stood in for is held again, and the chain runs through it; the mend stays as the record that it was once gone",
+            "{} mend(s) for a loss since made good; the segment each stood in for is held again",
             mends.len()
         );
         if !listing(out, &heading, &mends, verbose)? {
@@ -221,7 +218,7 @@ fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<boo
     }
     if !log.idle_mends.is_empty() {
         let heading = format!(
-            "{} mend(s) that close no break — the segment each stands in front of needs none, or is not held",
+            "{} mend(s) that close no break; the segment each stands in front of needs none, or is not held",
             log.idle_mends.len()
         );
         if !listing(out, &heading, &log.idle_mends, verbose)? {
@@ -270,7 +267,7 @@ fn when(time: Option<&Timestamp>) -> &str {
 /// The last line: which clean outcome it is, or how much is wrong.
 fn verdict(audit: &Audit) -> String {
     if audit.is_sound() {
-        "sound — every file re-hashed and true to its name, every claim read back, every sealed segment named still held, nothing spoken of is missing".to_string()
+        "sound; every file re-hashed and true to its name, every claim read back, every sealed segment named still held, nothing spoken of is missing".to_string()
     } else {
         format!("not sound: {} finding(s)", audit.findings())
     }
@@ -298,10 +295,7 @@ fn store_block(
         clauses.push(format!("{} not read", store.unreadable.len()));
     }
     if !store.damaged.is_empty() {
-        clauses.push(format!(
-            "{} damaged — bytes no longer what the name says",
-            store.damaged.len()
-        ));
+        clauses.push(format!("{} damaged", store.damaged.len()));
     } else if store.unreadable.is_empty() {
         clauses.push("every one still what its name says".to_string());
     }
@@ -322,7 +316,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         if !say(
             out,
             &format!(
-                "claims: segment {digest} is not held — {successor} names it as the one sealed before it"
+                "claims: segment {digest} is not held; {successor} names it as the one sealed before it"
             ),
         )? {
             return Ok(false);
@@ -332,7 +326,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         if !say(
             out,
             &format!(
-                "claims: segment {digest} is not held — the open head names it as the last one sealed"
+                "claims: segment {digest} is not held; the open head names it as the last one sealed"
             ),
         )? {
             return Ok(false);
@@ -349,7 +343,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     for (digest, error) in &log.broken {
         if !say(
             out,
-            &format!("claims: segment {digest} will not read back — {error}"),
+            &format!("claims: segment {digest} will not read back: {error}"),
         )? {
             return Ok(false);
         }
@@ -357,7 +351,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     if let Some(error) = &log.head_broken {
         if !say(
             out,
-            &format!("claims: the open head will not read back — {error}"),
+            &format!("claims: the open head will not read back: {error}"),
         )? {
             return Ok(false);
         }
@@ -418,7 +412,7 @@ fn listing(out: &mut impl Write, heading: &str, ids: &[String], verbose: bool) -
         }
         Ok(true)
     } else {
-        say(out, &format!("{heading} — --verbose names them"))
+        say(out, &format!("{heading}; --verbose names them"))
     }
 }
 

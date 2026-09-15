@@ -70,7 +70,7 @@ struct Cli {
     #[arg(long)]
     full: bool,
 
-    /// Run the *_cmd fields of mailvault.toml — the password from a
+    /// Run the *_cmd fields of mailvault.toml, the password from a
     /// password manager
     #[arg(long)]
     allow_exec: bool,
@@ -85,8 +85,7 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     from_vault: Option<PathBuf>,
 
-    /// The verdict and errors only — the run keeps its narration to
-    /// itself
+    /// The verdict and errors only; the run keeps its narration to itself
     #[arg(short, long)]
     quiet: bool,
 }
@@ -139,7 +138,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         let chosen = config.chosen(&accounts)?;
         if chosen.is_empty() {
             bail!(
-                "{}: no accounts in {} — one [[account]] table per mailbox; see the README for the shape",
+                "{}: no accounts in {}; one [[account]] table per mailbox; see the README for the shape",
                 archive.root().display(),
                 config::FILE_NAME
             );
@@ -168,7 +167,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         eprintln!("{} failed, as named above", tally.failed.len());
     } else {
         eprintln!(
-            "{} failed, as named above — the rest is on the record, and the next run tries them again",
+            "{} failed, as named above; the rest is on the record, and the next run tries them again",
             tally.failed.len()
         );
     }
@@ -179,7 +178,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
-            "{}: not an ossuary archive — stand in one, name it with --archive, or begin one with `ossuary init`",
+            "{}: not an ossuary archive; stand in one, name it with --archive, or begin one with `ossuary init`",
             path.display()
         ),
         other => other.into(),

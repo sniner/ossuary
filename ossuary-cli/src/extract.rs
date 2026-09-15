@@ -26,7 +26,7 @@ pub fn extract(
     // depend on what stands in it.
     if dry_run && subjects.is_empty() {
         return Err(anyhow!(
-            "a dry run needs named files — name subjects or a run id; over everything that waits it would examine the whole archive and keep none of it"
+            "a dry run needs named files; name subjects or a run id"
         ));
     }
     let archive = crate::open(root)?;
@@ -45,7 +45,7 @@ pub fn extract(
         &mut narrate,
     )?;
     if settlement.ran == 0 {
-        println!("nothing ran — no extractor in the archive's list answered --identify");
+        println!("nothing ran; no extractor in the archive's list answered --identify");
     }
     // A single working round closes silently — that is every ordinary
     // run, and the verdicts have already told it. Only a real cascade
@@ -88,7 +88,7 @@ fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>>
             let sightings = index.run_sightings(id)?;
             if sightings.is_empty() {
                 return Err(anyhow!(
-                    "no run {id} on the record — `ossuary about FILE prov:run` names the runs a file arrived in; nothing was examined"
+                    "no run {id} on the record; `ossuary about FILE prov:run` names the runs a file arrived in; nothing was examined"
                 ));
             }
             for (subject, _) in sightings {
@@ -143,7 +143,7 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
                 println!("nothing of a kind {source} reads is on the record");
             } else {
                 println!(
-                    "nothing waiting for {source} — no file of a kind it reads stands unexamined"
+                    "nothing waiting for {source}; no file of a kind it reads stands unexamined"
                 );
             }
         }
@@ -178,7 +178,7 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
             }
             if !failures.is_empty() {
                 eprintln!(
-                    "{} could not be examined — offered again next run:",
+                    "{} could not be examined, offered again next run:",
                     failures.len()
                 );
                 for (subject, error) in *failures {
@@ -198,7 +198,7 @@ fn rehearsal_verdict(source: &Source, tally: &Tally, already: usize) -> String {
     }
     if already > 0 {
         verdict.push(format!(
-            "{already} already examined — --full rehearses them anew"
+            "{already} already examined; --full rehearses them anew"
         ));
     }
     format!("{}; nothing written", verdict.join("; "))
@@ -227,7 +227,7 @@ fn verdict(source: &Source, tally: &Tally, already: usize) -> String {
     }
     if already > 0 {
         verdict.push(format!(
-            "{already} already examined — --full examines them anew"
+            "{already} already examined; --full examines them anew"
         ));
     }
     verdict.join("; ")

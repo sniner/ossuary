@@ -214,7 +214,7 @@ async fn held(door: Door, mountpoint: &Path, room: &Room<'_>) -> Result<ExitCode
     if !outcome.success() {
         server.abort();
         return Err(anyhow!(
-            "{place}: mount refused — the mountpoint must be a directory of your own, and nothing may already be mounted there"
+            "{place}: mount refused; the mountpoint must be a directory of your own, and nothing may already be mounted there"
         ));
     }
 
@@ -237,7 +237,7 @@ async fn held(door: Door, mountpoint: &Path, room: &Room<'_>) -> Result<ExitCode
             }
             _ = &mut server => {
                 return Err(anyhow!(
-                    "the NFS door closed on its own — unmount with `umount {place}`, then mount anew"
+                    "the NFS door closed on its own; unmount with `umount {place}`, then mount anew"
                 ));
             }
         }
@@ -260,7 +260,7 @@ fn give_back(place: &str, room: &Room<'_>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     room.tell(format_args!(
-        "{place} still in use — asking diskutil to force it"
+        "{place} still in use, asking diskutil to force it"
     ));
     if Command::new("diskutil")
         .args(["unmount", "force", place])
@@ -272,6 +272,6 @@ fn give_back(place: &str, room: &Room<'_>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     Err(anyhow!(
-        "{place} is still mounted — close what reads it and run `umount {place}`"
+        "{place} is still mounted; close what reads it and run `umount {place}`"
     ))
 }

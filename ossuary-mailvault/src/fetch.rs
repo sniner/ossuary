@@ -147,7 +147,7 @@ impl Fetch<'_> {
             }
         };
         self.say.line(format_args!(
-            "{name}: {how} — {} to fetch",
+            "{name}: {how}, {} to fetch",
             counted(uids.len(), "message", "messages")
         ));
         if self.options.dry_run {

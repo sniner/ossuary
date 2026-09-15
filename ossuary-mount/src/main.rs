@@ -55,20 +55,19 @@ struct Cli {
     #[arg(long, value_name = "DIR", env = "OSSUARY_ARCHIVE", default_value = ".")]
     archive: PathBuf,
 
-    /// Where the view appears; created when missing, and a directory
-    /// this command created goes with the mount when it ends. The
-    /// command stays in the foreground — Ctrl-C gives the directory
-    /// back
+    /// Where the view appears; created when missing, and a directory this
+    /// command created goes with the mount when it ends. The command
+    /// stays in the foreground; Ctrl-C gives the directory back
     #[arg(value_name = "DIR")]
     mountpoint: PathBuf,
 
-    /// Show the record as it stood at this moment, UTC — what was
-    /// known then, including what was retracted since. 2026-01-01 or
+    /// Show the record as it stood at this moment, UTC: what was known
+    /// then, including what was retracted since. 2026-01-01 or
     /// 2026-01-01T08:00:00, a trailing Z welcome
     #[arg(long, value_name = "TIME")]
     as_of: Option<String>,
 
-    /// Answers and errors only — the run keeps its narration to itself
+    /// Answers and errors only; the run keeps its narration to itself
     #[arg(short, long)]
     quiet: bool,
 }
@@ -162,10 +161,10 @@ impl Room<'_> {
             None => String::new(),
         };
         self.tell(format_args!(
-            "the record stands at {place} — read-only, {files} file(s) in {folders} folder(s){stood}; Ctrl-C gives it back"
+            "the record stands at {place}, read-only, {files} file(s) in {folders} folder(s){stood}; Ctrl-C gives it back"
         ));
         if *files == 0 {
-            self.tell("no places on the record yet — `ossuary ingest` fills the view");
+            self.tell("no places on the record yet; `ossuary ingest` fills the view");
         }
     }
 
@@ -179,7 +178,7 @@ impl Room<'_> {
 fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
-            "{}: not an ossuary archive — stand in one, name it with --archive, or begin one with `ossuary init`",
+            "{}: not an ossuary archive; stand in one, name it with --archive, or begin one with `ossuary init`",
             path.display()
         ),
         other => other.into(),
@@ -270,7 +269,7 @@ fn closing(given: &str) -> Result<String> {
     match Timestamp::parse(&spelled) {
         Ok(moment) => Ok(moment.as_str().to_string()),
         Err(_) => Err(anyhow!(
-            "{given:?} names no moment — the record reads UTC: 2026-01-01 or 2026-01-01T08:00:00, a trailing Z welcome"
+            "{given:?} names no moment; the record reads UTC: 2026-01-01 or 2026-01-01T08:00:00, a trailing Z welcome"
         )),
     }
 }
