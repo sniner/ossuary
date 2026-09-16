@@ -13,6 +13,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `file:mime` takes a file off an extractor's list and a retracted receipt puts it back, which
   neither did before. Receipts reading `true` no longer count: the next `ossuary extract` examines
   every file once more, and thereafter only when a generation is raised
+- **The index cache has a new shape.** Subjects, attributes, sources and segments now stand in
+  tables of their own and appear in the claim history and the standing set as integer ids; the
+  standing set carries each value's newest moment, so a mount without `--as-of` reads it instead of
+  replaying the history; and the connection waits up to five seconds for a fold running beside it
+  instead of failing at once. The cache is a cache: delete `cache/index.sqlite` before the first
+  call of this version, and the next call folds it anew. An old file left in place fails with an
+  SQLite error naming a missing column, which is the same message
 
 ## [0.3.0] - 2026-09-16
 

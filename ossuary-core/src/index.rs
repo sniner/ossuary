@@ -11,20 +11,27 @@
 //! folded forever, and "what is new" is the set difference of digests. Only
 //! the open head is folded afresh each time, because only the head moves.
 //!
-//! The fold keeps two tables. `claims` is the history, verbatim: every
-//! claim a row, retractions included, in log order — what
-//! [`about`](Index::about) reads. `standing` is the folded answer: one row
-//! per standing (subject, attribute, value), the set semantics as a
-//! primary key — an assertion is `INSERT OR IGNORE`, a retraction a
-//! `DELETE` — and what [`find`](Index::find) reads. What stays deliberately
-//! un-baked is *narrowing*: which of several standing values a reader
-//! prefers is query-time policy, and the sets carry them all.
+//! The fold keeps two tables of substance and four of names. `claims` is
+//! the history, verbatim: every claim a row, retractions included, in
+//! fold order — what [`about`](Index::about) reads. `standing` is the
+//! folded answer: one row per standing (subject, attribute, value), the
+//! set semantics as a primary key — an assertion is an upsert that
+//! renews the row's moment, a retraction a `DELETE` — and what
+//! [`find`](Index::find) reads. Subjects, attributes, sources and
+//! segments stand in tables of their own and appear in the two big
+//! tables as integer ids: a digest is 64 bytes and a segment name the
+//! same, and either repeated a quarter of a million times is most of a
+//! file. What stays deliberately un-baked is *narrowing*: which of
+//! several standing values a reader prefers is query-time policy, and the
+//! sets carry them all.
 //!
 //! Standing follows the log forward, the only direction a log moves; a
 //! `head.jsonl` edited backwards leaves it stale until the cache is
 //! deleted and refolded — the cure every cache here has.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::{Connection, params};
 
@@ -36,6 +43,11 @@ use crate::log::Log;
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
 const SCHEMA: i64 = 1;
+
+/// The open head's row in `segments`: id 0, named `head`, ranked past
+/// every sealed segment so it sorts last wherever log order is asked.
+const HEAD: i64 = 0;
+const HEAD_SEQ: i64 = i64::MAX;
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +62,7 @@ pub struct Folded {
 
 /// One value standing at a closing time: whose record it is on, what
 /// stands, when its newest surviving assertion was made, and that
-/// assertion's place in log order — the tie-breaker claim time cannot
+/// assertion's place in fold order — the tie-breaker claim time cannot
 /// be, since many claims share a second.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Standing {
@@ -61,14 +73,71 @@ pub struct Standing {
     /// When the newest assertion still standing was made, in claim
     /// time's own spelling.
     pub asserted: String,
-    /// That assertion's place in the replay, counting from zero.
+    /// That assertion's row in the index, which counts up in fold
+    /// order: larger is later in the log.
     pub order: u64,
 }
+
+/// One row of `segments`: id, digest, first claim's time, rank.
+type SegmentRow = (i64, String, Option<String>, i64);
 
 /// A disposable query index over a claim log.
 #[derive(Debug)]
 pub struct Index {
     connection: Connection,
+    ids: Ids,
+}
+
+/// The name tables, as far as this instance has met them: a digest, an
+/// attribute or a source seen once is looked up once. Filled lazily by
+/// the fold, so a CLI call that folds nothing new pays for nothing.
+#[derive(Debug, Default)]
+struct Ids {
+    subjects: HashMap<String, i64>,
+    attributes: HashMap<String, i64>,
+    sources: HashMap<String, i64>,
+}
+
+impl Ids {
+    fn subject(&mut self, connection: &Connection, digest: &str) -> Result<i64> {
+        intern(connection, &mut self.subjects, "subjects", "digest", digest)
+    }
+
+    fn attribute(&mut self, connection: &Connection, name: &str) -> Result<i64> {
+        intern(connection, &mut self.attributes, "attributes", "name", name)
+    }
+
+    fn source(&mut self, connection: &Connection, name: &str) -> Result<i64> {
+        intern(connection, &mut self.sources, "sources", "name", name)
+    }
+}
+
+/// The id of `name` in `table`, given one if it has none yet, and
+/// remembered.
+fn intern(
+    connection: &Connection,
+    cache: &mut HashMap<String, i64>,
+    table: &str,
+    column: &str,
+    name: &str,
+) -> Result<i64> {
+    if let Some(&id) = cache.get(name) {
+        return Ok(id);
+    }
+    let mut find =
+        connection.prepare_cached(&format!("SELECT id FROM {table} WHERE {column} = ?1"))?;
+    let id = match find.query_row(params![name], |row| row.get::<_, i64>(0)) {
+        Ok(id) => id,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            let mut add = connection
+                .prepare_cached(&format!("INSERT INTO {table} ({column}) VALUES (?1)"))?;
+            add.execute(params![name])?;
+            connection.last_insert_rowid()
+        }
+        Err(error) => return Err(error.into()),
+    };
+    cache.insert(name.to_string(), id);
+    Ok(id)
 }
 
 impl Index {
@@ -83,45 +152,88 @@ impl Index {
     /// [`Error::Index`] when `SQLite` cannot open or prepare it.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open(path)?;
+        // A mount and a CLI call may hold the same file; a fold on one
+        // side makes the other wait a moment instead of failing at once.
+        connection.busy_timeout(Duration::from_secs(5))?;
+        // A cache may lose its last writes to a crash and be none the
+        // worse: the next fold restores them.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         // The cache's own generation. A file from an older schema is not
         // migrated but emptied — it is a cache, and the next fold rebuilds
         // it from the log for the cost of one slow first answer.
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version != SCHEMA {
             connection.execute_batch(&format!(
-                "DROP TABLE IF EXISTS claims;
+                "DROP TABLE IF EXISTS standing;
+                 DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
-                 DROP TABLE IF EXISTS standing;
+                 DROP TABLE IF EXISTS subjects;
+                 DROP TABLE IF EXISTS attributes;
+                 DROP TABLE IF EXISTS sources;
                  PRAGMA user_version = {SCHEMA};"
             ))?;
         }
+        // The integer columns of `claims` and `standing` are ids into the
+        // four name tables; `standing.claim` is a row of `claims`. None of
+        // it is declared a foreign key on purpose: the head's claim rows
+        // are deleted and rewritten each fold while standing rows still
+        // point at the old ones, until the same assertion, folded again,
+        // points them at the new.
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS claims (
-                 subject   TEXT NOT NULL,
-                 attribute TEXT NOT NULL,
+            "CREATE TABLE IF NOT EXISTS subjects (
+                 id     INTEGER PRIMARY KEY,
+                 digest TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS attributes (
+                 id   INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS sources (
+                 id   INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS segments (
+                 id     INTEGER PRIMARY KEY,
+                 digest TEXT NOT NULL UNIQUE,
+                 first  TEXT,
+                 seq    INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS claims (
+                 id        INTEGER PRIMARY KEY,
+                 subject   INTEGER NOT NULL,
+                 attribute INTEGER NOT NULL,
                  value     TEXT,
                  time      TEXT NOT NULL,
-                 source    TEXT NOT NULL,
+                 source    INTEGER NOT NULL,
                  retract   INTEGER NOT NULL DEFAULT 0,
-                 segment   TEXT NOT NULL,
+                 segment   INTEGER NOT NULL,
                  position  INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS claims_subject
                  ON claims (subject, attribute);
-             CREATE TABLE IF NOT EXISTS segments (
-                 digest TEXT PRIMARY KEY,
-                 first  TEXT
-             );
+             CREATE INDEX IF NOT EXISTS claims_attribute
+                 ON claims (attribute, time);
+             CREATE INDEX IF NOT EXISTS claims_segment
+                 ON claims (segment, position);
              CREATE TABLE IF NOT EXISTS standing (
-                 subject   TEXT NOT NULL,
-                 attribute TEXT NOT NULL,
+                 subject   INTEGER NOT NULL,
+                 attribute INTEGER NOT NULL,
                  value     TEXT NOT NULL,
+                 time      TEXT NOT NULL,
+                 claim     INTEGER NOT NULL,
                  PRIMARY KEY (subject, attribute, value)
-             );
+             ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS standing_lookup
                  ON standing (attribute, value);",
         )?;
-        Ok(Index { connection })
+        connection.execute(
+            "INSERT OR IGNORE INTO segments (id, digest, first, seq) VALUES (?1, 'head', NULL, ?2)",
+            params![HEAD, HEAD_SEQ],
+        )?;
+        Ok(Index {
+            connection,
+            ids: Ids::default(),
+        })
     }
 
     /// Fold the log in: new segments once, the head afresh.
@@ -135,9 +247,20 @@ impl Index {
     /// [`Error::Index`] from `SQLite`, and everything reading the log can
     /// answer.
     pub fn fold(&mut self, log: &Log) -> Result<Folded> {
+        let folded = self.fold_in(log);
+        if folded.is_err() {
+            // A transaction rolled back may have taken names with it
+            // that the cache still knows ids for.
+            self.ids = Ids::default();
+        }
+        folded
+    }
+
+    fn fold_in(&mut self, log: &Log) -> Result<Folded> {
         let mut folded = Folded::default();
 
-        for segment in log.segments()? {
+        let segments = log.segments()?;
+        for (rank, segment) in segments.iter().enumerate() {
             let digest = segment.digest().to_string();
             let known: bool = self.connection.query_row(
                 "SELECT EXISTS (SELECT 1 FROM segments WHERE digest = ?1)",
@@ -149,20 +272,39 @@ impl Index {
             }
             let claims = log.read(segment.digest())?;
             let transaction = self.connection.transaction()?;
-            insert(&transaction, &digest, &claims)?;
             transaction.execute(
-                "INSERT INTO segments (digest, first) VALUES (?1, ?2)",
-                params![digest, segment.first_claim_at().map(Timestamp::as_str)],
+                "INSERT INTO segments (digest, first, seq) VALUES (?1, ?2, ?3)",
+                params![
+                    digest,
+                    segment.first_claim_at().map(Timestamp::as_str),
+                    rank_of(rank)
+                ],
             )?;
+            let id = transaction.last_insert_rowid();
+            insert(&transaction, &mut self.ids, id, &claims)?;
             transaction.commit()?;
             folded.segments += 1;
             folded.claims += claims.len();
         }
+        if folded.segments > 0 {
+            // A new segment may sort before ones already folded, so every
+            // sealed segment takes its rank from the log's own order
+            // again — a few hundred rows at most. Whatever order the log
+            // answers in, the index inherits without knowing why.
+            let transaction = self.connection.transaction()?;
+            for (rank, segment) in segments.iter().enumerate() {
+                transaction.execute(
+                    "UPDATE segments SET seq = ?1 WHERE digest = ?2",
+                    params![rank_of(rank), segment.digest().to_string()],
+                )?;
+            }
+            transaction.commit()?;
+        }
 
         let head = log.head()?;
         let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM claims WHERE segment = 'head'", [])?;
-        insert(&transaction, "head", &head)?;
+        transaction.execute("DELETE FROM claims WHERE segment = ?1", params![HEAD])?;
+        insert(&transaction, &mut self.ids, HEAD, &head)?;
         transaction.commit()?;
         folded.head = head.len();
 
@@ -184,9 +326,24 @@ impl Index {
     /// sworn away.
     pub fn as_of(&self, cutoff: &str) -> Result<Index> {
         let mut replayed = Index::open(":memory:")?;
+        // The segments' own order rides along: `about` breaks time ties
+        // by it, and the replayed record must read like the original.
+        let segments: std::result::Result<Vec<SegmentRow>, _> = self
+            .connection
+            .prepare("SELECT id, digest, first, seq FROM segments WHERE id != ?1")?
+            .query_map(params![HEAD], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect();
         let mut statement = self.connection.prepare(
-            "SELECT subject, attribute, value, time, source, retract, segment, position
-             FROM claims WHERE time <= ?1 ORDER BY rowid",
+            "SELECT su.digest, a.name, c.value, c.time, so.name, c.retract, c.segment, c.position
+             FROM claims c
+             JOIN subjects su ON su.id = c.subject
+             JOIN attributes a ON a.id = c.attribute
+             JOIN sources so ON so.id = c.source
+             JOIN segments s ON s.id = c.segment
+             WHERE c.time <= ?1
+             ORDER BY c.time, s.seq, c.position",
         )?;
         let rows = statement.query_map(params![cutoff], |row| {
             Ok((
@@ -198,28 +355,21 @@ impl Index {
                     row.get::<_, String>(4)?,
                     row.get::<_, bool>(5)?,
                 ),
-                row.get::<_, String>(6)?,
+                row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
             ))
         })?;
-        let segments: std::result::Result<Vec<(String, Option<String>)>, _> = self
-            .connection
-            .prepare("SELECT digest, first FROM segments")?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect();
-        let transaction = replayed.connection.transaction()?;
+        let Index { connection, ids } = &mut replayed;
+        let transaction = connection.transaction()?;
+        for (id, digest, first, seq) in segments? {
+            transaction.execute(
+                "INSERT INTO segments (id, digest, first, seq) VALUES (?1, ?2, ?3, ?4)",
+                params![id, digest, first, seq],
+            )?;
+        }
         for row in rows {
             let (fields, segment, position) = row?;
-            replay(&transaction, &claim(fields)?, &segment, position)?;
-        }
-        // The segments' own order rides along: `about` breaks time ties
-        // by it, and the replayed record must read like the original.
-        for row in segments? {
-            let (digest, first) = row;
-            transaction.execute(
-                "INSERT INTO segments (digest, first) VALUES (?1, ?2)",
-                params![digest, first],
-            )?;
+            replay(&transaction, ids, &claim(fields)?, segment, position)?;
         }
         transaction.commit()?;
         Ok(replayed)
@@ -237,14 +387,14 @@ impl Index {
     /// for rows a fold wrote, but are propagated rather than sworn away.
     pub fn about(&self, subject: &Subject) -> Result<Vec<Claim>> {
         let mut statement = self.connection.prepare(
-            "SELECT c.subject, c.attribute, c.value, c.time, c.source, c.retract
-             FROM claims c LEFT JOIN segments s ON c.segment = s.digest
-             WHERE c.subject = ?1
-             ORDER BY c.time,
-                      c.segment = 'head',
-                      s.first,
-                      s.digest,
-                      c.position",
+            "SELECT su.digest, a.name, c.value, c.time, so.name, c.retract
+             FROM claims c
+             JOIN subjects su ON su.id = c.subject
+             JOIN attributes a ON a.id = c.attribute
+             JOIN sources so ON so.id = c.source
+             JOIN segments s ON s.id = c.segment
+             WHERE su.digest = ?1
+             ORDER BY c.time, s.seq, c.position",
         )?;
         let rows = statement.query_map(params![subject.as_str()], |row| {
             Ok((
@@ -280,7 +430,8 @@ impl Index {
     pub fn values(&self, subject: &Subject, attribute: &Attribute) -> Result<Vec<Value>> {
         let mut statement = self.connection.prepare(
             "SELECT value FROM standing
-             WHERE subject = ?1 AND attribute = ?2
+             WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
+               AND attribute = (SELECT id FROM attributes WHERE name = ?2)
              ORDER BY value",
         )?;
         let rows = statement.query_map(params![subject.as_str(), attribute.as_str()], |row| {
@@ -308,9 +459,11 @@ impl Index {
         let mut statement = self.connection.prepare(
             // ';' is the character after ':', and no attribute contains
             // one: the half-open range is the namespace.
-            "SELECT attribute, value FROM standing
-             WHERE subject = ?1 AND attribute >= ?2 AND attribute < ?3
-             ORDER BY attribute, value",
+            "SELECT a.name, st.value
+             FROM standing st JOIN attributes a ON a.id = st.attribute
+             WHERE st.subject = (SELECT id FROM subjects WHERE digest = ?1)
+               AND a.name >= ?2 AND a.name < ?3
+             ORDER BY a.name, st.value",
         )?;
         let rows = statement.query_map(
             params![
@@ -341,9 +494,10 @@ impl Index {
     /// sworn away.
     pub fn standing(&self, subject: &Subject) -> Result<Vec<(Attribute, Value)>> {
         let mut statement = self.connection.prepare(
-            "SELECT attribute, value FROM standing
-             WHERE subject = ?1
-             ORDER BY attribute, value",
+            "SELECT a.name, st.value
+             FROM standing st JOIN attributes a ON a.id = st.attribute
+             WHERE st.subject = (SELECT id FROM subjects WHERE digest = ?1)
+             ORDER BY a.name, st.value",
         )?;
         let rows = statement.query_map(params![subject.as_str()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -367,9 +521,11 @@ impl Index {
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
     pub fn subjects(&self) -> Result<Vec<Subject>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT DISTINCT subject FROM standing ORDER BY subject")?;
+        let mut statement = self.connection.prepare(
+            "SELECT digest FROM subjects su
+             WHERE EXISTS (SELECT 1 FROM standing st WHERE st.subject = su.id)
+             ORDER BY digest",
+        )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let mut subjects = Vec::new();
         for row in rows {
@@ -392,8 +548,9 @@ impl Index {
     /// sworn away.
     pub fn attributes(&self) -> Result<Vec<(Attribute, u64)>> {
         let mut statement = self.connection.prepare(
-            "SELECT attribute, COUNT(DISTINCT subject) FROM standing
-             GROUP BY attribute ORDER BY attribute",
+            "SELECT a.name, COUNT(DISTINCT st.subject)
+             FROM standing st JOIN attributes a ON a.id = st.attribute
+             GROUP BY a.id ORDER BY a.name",
         )?;
         let rows = statement.query_map([], |row| {
             // A COUNT is never negative; the conversion is the type's
@@ -428,8 +585,9 @@ impl Index {
     /// sworn away.
     pub fn under(&self, place: &str) -> Result<Vec<(String, Subject)>> {
         let mut statement = self.connection.prepare(
-            "SELECT value, subject FROM standing
-             WHERE attribute = 'file:path'",
+            "SELECT st.value, su.digest
+             FROM standing st JOIN subjects su ON su.id = st.subject
+             WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'file:path')",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -461,12 +619,13 @@ impl Index {
     /// stood at `cutoff` — each with the moment of its newest surviving
     /// assertion.
     ///
-    /// This is the fold run once more with a closing time: every claim
-    /// of `attribute` up to and including `cutoff` — assertions and
-    /// retractions alike, in log order — and what stands when the
-    /// replay ends is the answer. `None` closes nowhere and answers for
-    /// today. The cutoff compares in claim time's own spelling,
-    /// RFC 3339 UTC whole seconds.
+    /// With a cutoff this is the fold run once more with a closing time:
+    /// every claim of `attribute` up to and including `cutoff` —
+    /// assertions and retractions alike, in log order — and what stands
+    /// when the replay ends is the answer. `None` closes nowhere and
+    /// answers for today, straight from the standing set, which carries
+    /// each row's newest moment already. The cutoff compares in claim
+    /// time's own spelling, RFC 3339 UTC whole seconds.
     ///
     /// The answer carries every standing value, times attached; a
     /// reader narrowing them to one — a mounted view's newest-wins —
@@ -481,15 +640,42 @@ impl Index {
     pub fn standing_as_of(&self, attribute: &str, cutoff: Option<&str>) -> Result<Vec<Standing>> {
         use std::collections::BTreeMap;
 
+        let Some(cutoff) = cutoff else {
+            let mut statement = self.connection.prepare(
+                "SELECT su.digest, st.value, st.time, st.claim
+                 FROM standing st JOIN subjects su ON su.id = st.subject
+                 WHERE st.attribute = (SELECT id FROM attributes WHERE name = ?1)
+                 ORDER BY su.digest, st.value",
+            )?;
+            let rows = statement.query_map(params![attribute], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?;
+            let mut standing = Vec::new();
+            for row in rows {
+                let (subject, value, asserted, claim) = row?;
+                standing.push(Standing {
+                    subject: Subject::parse(&subject)?,
+                    value: serde_json::from_str(&value)?,
+                    asserted,
+                    order: order_of(claim),
+                });
+            }
+            return Ok(standing);
+        };
+
         let mut statement = self.connection.prepare(
-            "SELECT c.subject, c.value, c.time, c.retract
-             FROM claims c LEFT JOIN segments s ON c.segment = s.digest
-             WHERE c.attribute = ?1 AND (?2 IS NULL OR c.time <= ?2)
-             ORDER BY c.time,
-                      c.segment = 'head',
-                      s.first,
-                      s.digest,
-                      c.position",
+            "SELECT su.digest, c.value, c.time, c.retract, c.id
+             FROM claims c
+             JOIN subjects su ON su.id = c.subject
+             JOIN segments s ON s.id = c.segment
+             WHERE c.attribute = (SELECT id FROM attributes WHERE name = ?1)
+               AND c.time <= ?2
+             ORDER BY c.time, s.seq, c.position",
         )?;
         let rows = statement.query_map(params![attribute, cutoff], |row| {
             Ok((
@@ -497,12 +683,13 @@ impl Index {
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, bool>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })?;
 
         let mut folded: BTreeMap<String, BTreeMap<String, (String, u64)>> = BTreeMap::new();
-        for (order, row) in (0_u64..).zip(rows) {
-            let (subject, value, time, retract) = row?;
+        for row in rows {
+            let (subject, value, time, retract, claim) = row?;
             match (retract, value) {
                 // A repeated assertion collapses in the set but renews
                 // the moment: the newest surviving assertion is the one
@@ -511,7 +698,7 @@ impl Index {
                     folded
                         .entry(subject)
                         .or_default()
-                        .insert(value, (time, order));
+                        .insert(value, (time, order_of(claim)));
                 }
                 (true, Some(value)) => {
                     if let Some(values) = folded.get_mut(&subject) {
@@ -592,7 +779,8 @@ impl Index {
             }
             value.as_f64().map(Sql::Real)
         };
-        let mut sql = String::new();
+        // The terms meet as sets of subject ids; the names come last.
+        let mut sql = String::from("SELECT digest FROM subjects WHERE id IN (");
         let mut params: Vec<Sql> = Vec::new();
         if terms.is_empty() {
             sql.push_str("SELECT DISTINCT subject FROM standing");
@@ -601,7 +789,10 @@ impl Index {
             if position > 0 {
                 sql.push_str(" INTERSECT ");
             }
-            sql.push_str("SELECT subject FROM standing WHERE attribute = ?");
+            sql.push_str(
+                "SELECT subject FROM standing
+                 WHERE attribute = (SELECT id FROM attributes WHERE name = ?)",
+            );
             params.push(text(attribute.as_str()));
             if let Some(literal) = pattern
                 .strip_prefix('"')
@@ -667,23 +858,23 @@ impl Index {
             }
         }
         for absent in missing {
-            sql.push_str(" EXCEPT SELECT subject FROM standing WHERE ");
+            sql.push_str(" EXCEPT SELECT subject FROM standing WHERE attribute IN (SELECT id FROM attributes WHERE ");
             if let Some(namespace) = absent.strip_suffix(':') {
                 // The grammar has one door; a prefix walks through it
                 // wearing a dummy name.
                 Attribute::parse(&format!("{namespace}:a"))?;
                 // ';' is the character after ':', and no attribute
                 // contains one: the half-open range is the namespace.
-                sql.push_str("attribute >= ? AND attribute < ?");
+                sql.push_str("name >= ? AND name < ?)");
                 params.push(text(&format!("{namespace}:")));
                 params.push(text(&format!("{namespace};")));
             } else {
                 let attribute = Attribute::parse(absent)?;
-                sql.push_str("attribute = ?");
+                sql.push_str("name = ?)");
                 params.push(text(attribute.as_str()));
             }
         }
-        sql.push_str(" ORDER BY subject");
+        sql.push_str(") ORDER BY digest");
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             row.get::<_, String>(0)
@@ -716,13 +907,15 @@ impl Index {
         }
         let holes = vec!["?"; mimes.len()].join(", ");
         let mut statement = self.connection.prepare(&format!(
-            "SELECT DISTINCT subject FROM standing
-             WHERE attribute = 'file:mime'
-               AND value IN ({holes})
-               AND subject NOT IN (
-                   SELECT subject FROM standing
-                    WHERE attribute = 'prov:examined' AND value = ?)
-             ORDER BY subject"
+            "SELECT digest FROM subjects WHERE id IN (
+                 SELECT subject FROM standing
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = 'file:mime')
+                    AND value IN ({holes})
+                 EXCEPT
+                 SELECT subject FROM standing
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = 'prov:examined')
+                    AND value = ?)
+             ORDER BY digest"
         ))?;
         // The value column holds values as JSON, so a MIME type and the
         // receipt's source are compared in their stored spelling: quoted.
@@ -760,10 +953,11 @@ impl Index {
         }
         let holes = vec!["?"; mimes.len()].join(", ");
         let mut statement = self.connection.prepare(&format!(
-            "SELECT DISTINCT subject FROM standing
-             WHERE attribute = 'file:mime'
-               AND value IN ({holes})
-             ORDER BY subject"
+            "SELECT digest FROM subjects WHERE id IN (
+                 SELECT subject FROM standing
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = 'file:mime')
+                    AND value IN ({holes}))
+             ORDER BY digest"
         ))?;
         // The value column holds values as JSON, so a MIME type is
         // compared in its stored spelling: quoted.
@@ -792,7 +986,9 @@ impl Index {
     pub fn examined(&self, subject: &Subject, source: &Source) -> Result<bool> {
         let mut statement = self.connection.prepare_cached(
             "SELECT 1 FROM standing
-              WHERE subject = ?1 AND attribute = 'prov:examined' AND value = ?2
+              WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
+                AND attribute = (SELECT id FROM attributes WHERE name = 'prov:examined')
+                AND value = ?2
               LIMIT 1",
         )?;
         let receipt = Value::String(source.as_str().to_string()).to_string();
@@ -820,13 +1016,18 @@ impl Index {
     pub fn run_sightings(&self, run: &str) -> Result<Vec<(Subject, Placement)>> {
         let quoted = Value::String(run.to_string()).to_string();
         let mut statement = self.connection.prepare(
-            "SELECT subject, attribute, value, time, source FROM claims
-             WHERE retract = 0
-               AND attribute IN ('prov:run', 'file:path', 'file:name')
-               AND subject IN (SELECT subject FROM claims
-                                WHERE attribute = 'prov:run' AND value = ?1
-                                  AND retract = 0)
-             ORDER BY subject, time, source",
+            "SELECT su.digest, a.name, c.value, c.time, so.name
+             FROM claims c
+             JOIN subjects su ON su.id = c.subject
+             JOIN attributes a ON a.id = c.attribute
+             JOIN sources so ON so.id = c.source
+             WHERE c.retract = 0
+               AND a.name IN ('prov:run', 'file:path', 'file:name')
+               AND c.subject IN (
+                   SELECT subject FROM claims
+                    WHERE attribute = (SELECT id FROM attributes WHERE name = 'prov:run')
+                      AND value = ?1 AND retract = 0)
+             ORDER BY su.digest, c.time, so.name",
         )?;
         let rows = statement.query_map(params![quoted], |row| {
             Ok((
@@ -911,9 +1112,9 @@ impl Index {
         // index, and a stray '%' in the input stays a character.
         let high = format!("{low}g");
         let mut statement = self.connection.prepare(
-            "SELECT DISTINCT subject FROM claims
-             WHERE subject >= ?1 AND subject < ?2
-             ORDER BY subject",
+            "SELECT digest FROM subjects
+             WHERE digest >= ?1 AND digest < ?2
+             ORDER BY digest",
         )?;
         let rows = statement.query_map(params![low, high], |row| row.get::<_, String>(0))?;
         let mut subjects = Vec::new();
@@ -948,15 +1149,30 @@ impl Index {
     }
 }
 
+/// A segment's rank in log order, as the row stores it.
+fn rank_of(rank: usize) -> i64 {
+    i64::try_from(rank).expect("fewer segments than i64 can count")
+}
+
+/// A claim's row id as a [`Standing`] order: ids count up from one.
+fn order_of(claim: i64) -> u64 {
+    u64::try_from(claim).expect("row ids are positive")
+}
+
 /// One segment's claims into the tables, in their order: every claim a
 /// history row, and each one folded into `standing` — an assertion puts
-/// the value in (the primary key deduplicates), a retraction takes it
-/// out, a valueless retraction empties the attribute. All three are
-/// idempotent, which is what lets the head be applied afresh each fold.
-fn insert(transaction: &rusqlite::Transaction<'_>, segment: &str, claims: &[Claim]) -> Result<()> {
+/// the value in and renews its moment, a retraction takes it out, a
+/// valueless retraction empties the attribute. All three are idempotent,
+/// which is what lets the head be applied afresh each fold.
+fn insert(
+    transaction: &rusqlite::Transaction<'_>,
+    ids: &mut Ids,
+    segment: i64,
+    claims: &[Claim],
+) -> Result<()> {
     for (position, claim) in claims.iter().enumerate() {
         let position = i64::try_from(position).expect("fewer claims than i64 can count");
-        replay(transaction, claim, segment, position)?;
+        replay(transaction, ids, claim, segment, position)?;
     }
     Ok(())
 }
@@ -965,39 +1181,54 @@ fn insert(transaction: &rusqlite::Transaction<'_>, segment: &str, claims: &[Clai
 /// standing what it asserts or takes away.
 fn replay(
     transaction: &rusqlite::Transaction<'_>,
+    ids: &mut Ids,
     claim: &Claim,
-    segment: &str,
+    segment: i64,
     position: i64,
 ) -> Result<()> {
+    let subject = ids.subject(transaction, claim.subject().as_str())?;
+    let attribute = ids.attribute(transaction, claim.attribute().as_str())?;
+    let source = ids.source(transaction, claim.source().as_str())?;
+    let value = claim.value().map(Value::to_string);
     let mut history = transaction.prepare_cached(
         "INSERT INTO claims
              (subject, attribute, value, time, source, retract, segment, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     history.execute(params![
-        claim.subject().as_str(),
-        claim.attribute().as_str(),
-        claim.value().map(Value::to_string),
+        subject,
+        attribute,
+        value,
         claim.time().as_str(),
-        claim.source().as_str(),
+        source,
         claim.is_retraction(),
         segment,
         position,
     ])?;
-    let subject = claim.subject().as_str();
-    let attribute = claim.attribute().as_str();
-    match (claim.value(), claim.is_retraction()) {
+    let id = transaction.last_insert_rowid();
+    match (value, claim.is_retraction()) {
         (Some(value), false) => {
+            // Said again, the value stands as before, but the moment and
+            // the row that answer for it are the newest.
             let mut put = transaction.prepare_cached(
-                "INSERT OR IGNORE INTO standing (subject, attribute, value) VALUES (?1, ?2, ?3)",
+                "INSERT INTO standing (subject, attribute, value, time, claim)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (subject, attribute, value)
+                 DO UPDATE SET time = excluded.time, claim = excluded.claim",
             )?;
-            put.execute(params![subject, attribute, value.to_string()])?;
+            put.execute(params![
+                subject,
+                attribute,
+                value,
+                claim.time().as_str(),
+                id
+            ])?;
         }
         (Some(value), true) => {
             let mut take = transaction.prepare_cached(
                 "DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3",
             )?;
-            take.execute(params![subject, attribute, value.to_string()])?;
+            take.execute(params![subject, attribute, value])?;
         }
         (None, true) => {
             let mut empty = transaction
@@ -2015,8 +2246,8 @@ mod tests {
                 today[0].asserted.clone(),
                 today[0].order
             ),
-            (place, "2026-03-01T00:00:00Z".to_string(), 2),
-            "no cutoff answers for today, and the surviving assertion names its moment and place in the replay"
+            (place, "2026-03-01T00:00:00Z".to_string(), 3),
+            "no cutoff answers for today, and the surviving assertion names its moment and its row, the third claim folded"
         );
     }
 
