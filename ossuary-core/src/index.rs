@@ -1574,6 +1574,27 @@ mod tests {
     }
 
     #[test]
+    fn a_file_with_two_matching_values_answers_once() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        for (name, time) in [
+            ("rebar1.jpg", "2026-09-01T10:00:00Z"),
+            ("rebar4.jpg", "2026-09-01T10:00:01Z"),
+        ] {
+            log.append(&say(&subject(), "file:name", json!(name), time))
+                .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.find(&[term("file:name", "*.jpg")], &[]).unwrap(),
+            [subject()],
+            "one term, two values matching it, one file: the answer is a set of files"
+        );
+    }
+
+    #[test]
     fn two_sources_saying_one_value_stand_as_one() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);

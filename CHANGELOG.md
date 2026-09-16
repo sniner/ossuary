@@ -21,6 +21,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call of this version, and the next call folds it anew. An old file left in place fails with an
   SQLite error naming a missing column, which is the same message
 
+### Fixed
+
+- **`find` with a single term** named a file once per standing value that matched, so a file
+  under two names ending in `.jpg` answered twice and was counted twice. Every file answers once
+
 ## [0.3.0] - 2026-09-16
 
 ### Added
