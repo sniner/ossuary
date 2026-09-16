@@ -1,6 +1,6 @@
 [package]
-name = "ossuary-extract-exif"
-description = "EXIF extractor for ossuary archives, speaking the extractor protocol"
+name = "ossuary-extract-image"
+description = "Image extractor for ossuary archives: EXIF fields and the pixel raster, speaking the extractor protocol"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,16 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "ossuary-extract-exif"
+name = "ossuary-extract-image"
 path = "src/main.rs"
 
 [dependencies]
 exif = { package = "kamadak-exif", version = "0.6.1" }
+image-webp = "0.2"
+png = "0.18"
 serde_json = "1.0.151"
+tiff = "0.10"
+zune-jpeg = "0.5"
+
+[dev-dependencies]
+jpeg-encoder = "0.6.1"

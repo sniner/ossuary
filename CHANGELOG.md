@@ -7,6 +7,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`raster` contract of the image extractor** — what a file's header says about its pixel grid,
+  as numbers to search by: `raster:width` and `raster:height` in pixels, `raster:depth` in bits
+  per channel, `raster:alpha`, and `raster:color` (`gray`, `rgb`, `cmyk`, `indexed`). Read from the
+  header alone, no pixel decoded, for JPEG, PNG, TIFF and WebP; `ossuary extract image:raster` runs
+  it on its own. See [the vocabulary](docs/vocabulary.md)
 - **`ossuary maintain mend`** — the first verb of a new family, repairs that add to the archive and
   rewrite nothing. Where the audit finds the chain of sealed segments in pieces, this closes each
   break with a mend: a segment of no claims that names the two ends it joins, stored like any
@@ -35,6 +40,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which had every release write the whole extractor record anew. The next `ossuary extract`
   examines every file once more under the new sources, and thereafter only when a generation is
   raised. Every claim already written stands as it was said
+- **`ossuary-extract-exif` is now `ossuary-extract-image`**, a program of two contracts: `exif`,
+  which is the old extractor unchanged, and `raster`. `ossuary extract image` runs both,
+  `ossuary extract image:exif` the one; a config naming `exif` under `[extract] run` names `image`
+  now. The EXIF source reads `extractor:image-exif/1`, so the next `ossuary extract` examines every
+  image once more
 - **`ossuary audit`** now names a broken chain for what it is. A segment naming no predecessor,
   beyond the one the archive begins with, stands where the open head was lost and begun anew, and
   the lost head's claims went with it: a finding (`head-lost` under `--json`), where it was an

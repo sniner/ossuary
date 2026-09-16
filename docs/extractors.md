@@ -84,7 +84,7 @@ makes; where that directory lies is the orchestrator's business, and
 the extractor uses the path it was given and nothing else. Both stay
 testable by hand:
 
-    ossuary-extract-exif < photo.jpg
+    ossuary-extract-image exif < photo.jpg
     ossuary-extract-packed unpack /tmp/out < bundle.zip
 
 The extractor reads stdin to its end *before* writing anything, then

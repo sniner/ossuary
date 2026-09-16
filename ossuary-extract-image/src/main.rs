@@ -1,38 +1,55 @@
-//! The EXIF extractor: bytes in, verbatim fields out.
+//! The image extractor: bytes in, what the picture says about itself
+//! out — two contracts in one program.
 //!
-//! Speaks the ossuary extractor protocol (`docs/extractors.md`): called
-//! with `--identify` it says who it is and which kinds it reads; called
-//! bare it reads one file's bytes from stdin and answers with findings on
-//! stdout, one JSON object per line. It records what EXIF says in EXIF's
-//! own terms — tag names kebab-cased, values as the format spells them —
-//! and never normalizes; that is the vocabulary's query-time business.
+//! Speaks the ossuary extractor protocol (`docs/extractors.md`):
+//! `--identify` answers two lines, the `exif` contract and the `raster`
+//! contract, each with its own source and its own receipts. Called with
+//! the contract's name as its argument it reads one file's bytes from
+//! stdin and answers with findings on stdout, one JSON object per line.
 //!
-//! Bytes without readable EXIF are an examination like any other, with
-//! nothing found: exit 0, no output. Only failing to read stdin itself is
-//! a failure.
+//! `exif` records what EXIF says in EXIF's own terms — tag names
+//! kebab-cased, values as the format spells them — and never
+//! normalizes; that is the vocabulary's query-time business. `raster`
+//! records what the file's header says about its pixel grid — width,
+//! height, bits per channel, alpha, colour model — under `raster:`, as
+//! numbers to search by, read without decoding a pixel.
+//!
+//! Bytes without readable EXIF, or without a header this program reads,
+//! are an examination like any other, with nothing found: exit 0, no
+//! output. Only failing to read stdin itself is a failure.
+
+mod raster;
 
 use std::io::Read;
 use std::process::ExitCode;
 
 use serde_json::json;
 
-/// The generation of what this extractor writes: the number in its
+/// The generation of what each contract writes: the number in its
 /// source, and so the memory of which files it has seen. Raised by hand
 /// when the findings change, when the same bytes would yield more or
 /// something different than before, and never for a build, a dependency
 /// or a release: a new generation examines every file again, and that
-/// is the only reason to have one.
-const GENERATION: u32 = 1;
+/// is the only reason to have one. Two contracts, two numbers: what
+/// `raster` learns to read says nothing about `exif`.
+const EXIF_GENERATION: u32 = 1;
+const RASTER_GENERATION: u32 = 1;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.first().map(String::as_str) {
-        Some("--identify") => {
+    match arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--identify"] => {
             println!(
                 "{}",
                 json!({
                     "ossuary-extractor": 1,
-                    "source": format!("extractor:exif/{GENERATION}"),
+                    "contract": "exif",
+                    "source": format!("extractor:image-exif/{EXIF_GENERATION}"),
                     "mimes": [
                         "image/jpeg",
                         "image/tiff",
@@ -44,26 +61,52 @@ fn main() -> ExitCode {
                     ],
                 })
             );
+            println!(
+                "{}",
+                json!({
+                    "ossuary-extractor": 1,
+                    "contract": "raster",
+                    "source": format!("extractor:image-raster/{RASTER_GENERATION}"),
+                    "mimes": ["image/jpeg", "image/png", "image/tiff", "image/webp"],
+                })
+            );
             ExitCode::SUCCESS
         }
-        Some(other) => {
+        ["exif"] => examine(Contract::Exif),
+        ["raster"] => examine(Contract::Raster),
+        _ => {
             eprintln!(
-                "ossuary-extract-exif: {other:?} is not part of the protocol; run with --identify, or with a file's bytes on stdin"
+                "ossuary-extract-image: run with --identify, with `exif`, or with `raster`; a file's bytes on stdin either way"
             );
             ExitCode::FAILURE
         }
-        None => {
-            let mut bytes = Vec::new();
-            if let Err(error) = std::io::stdin().lock().read_to_end(&mut bytes) {
-                eprintln!("ossuary-extract-exif: reading stdin: {error}");
-                return ExitCode::FAILURE;
-            }
-            for (attribute, value) in extract(&bytes) {
-                println!("{}", json!({ "attribute": attribute, "value": value }));
-            }
-            ExitCode::SUCCESS
-        }
     }
+}
+
+/// The program's two trades.
+#[derive(Clone, Copy)]
+enum Contract {
+    Exif,
+    Raster,
+}
+
+/// One file's bytes from stdin, the contract's findings on stdout.
+fn examine(contract: Contract) -> ExitCode {
+    let mut bytes = Vec::new();
+    if let Err(error) = std::io::stdin().lock().read_to_end(&mut bytes) {
+        eprintln!("ossuary-extract-image: reading stdin: {error}");
+        return ExitCode::FAILURE;
+    }
+    let findings = match contract {
+        Contract::Exif => extract(&bytes),
+        Contract::Raster => raster::read(&bytes)
+            .map(|raster| raster.findings())
+            .unwrap_or_default(),
+    };
+    for (attribute, value) in findings {
+        println!("{}", json!({ "attribute": attribute, "value": value }));
+    }
+    ExitCode::SUCCESS
 }
 
 /// Every EXIF field of the primary image, in EXIF's own words: the tag

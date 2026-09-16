@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "ossuary-cli",
     "ossuary-core",
-    "ossuary-extract-exif",
+    "ossuary-extract-image",
     "ossuary-extract-mail",
     "ossuary-extract-packed",
     "ossuary-extract-pdf",

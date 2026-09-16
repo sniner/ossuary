@@ -44,7 +44,7 @@ compress = false
 
 [extract]
 # What a bare `ossuary extract` runs, in order - each a program
-# `ossuary-extract-<name>` found on PATH, like ["mail", "exif", "pdf"].
+# `ossuary-extract-<name>` found on PATH, like ["mail", "image", "pdf"].
 # A program offering several contracts runs them all; name:contract
 # runs one of them, like "packed:list". Empty means: nothing runs
 # unless named outright.

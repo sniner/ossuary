@@ -99,7 +99,7 @@ included. `--full` ignores standing receipts; `--temp-dir` moves the
 place derived files wait in off `cache/tmp`.
 
 The extractors that ship with ossuary:
-[exif](../ossuary-extract-exif/README.md),
+[image](../ossuary-extract-image/README.md),
 [mail](../ossuary-extract-mail/README.md),
 [packed](../ossuary-extract-packed/README.md),
 [pdf](../ossuary-extract-pdf/README.md).

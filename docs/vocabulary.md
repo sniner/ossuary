@@ -57,7 +57,10 @@ in its source.
   mtimes — what any format has on day one
 - `derive:` — relations between content: what came from what
 - `user:` — what the user says; the archive takes their word
-- `exif:` — verbatim EXIF fields, as `ossuary-extract-exif` reads them
+- `exif:` — verbatim EXIF fields, as `ossuary-extract-image` reads them
+- `raster:` — the pixel grid as the file's header describes it, as
+  `ossuary-extract-image` reads it — numbers to search by, each with
+  one meaning: a width here is always pixels
 - `pdf:` — verbatim PDF document information, as `ossuary-extract-pdf`
   reads it
 - `mail:` — a message's own voice, verbatim, as `ossuary-extract-mail`
@@ -203,7 +206,44 @@ need.
   what "the creation date" is stays a query-time mapping
 - value: text as text, numbers as numbers, rationals as
   `numerator/denominator` — one value bare, several as a list
-- written by: ossuary-extract-exif
+- written by: ossuary-extract-image, under its `exif` contract
+
+### raster:width
+
+- meaning: the pixel grid's width, as the file's header states it. Not
+  what EXIF says the width is — `exif:pixel-x-dimension` is the
+  camera's word and may be stale after a resize; this is the file's
+- value: integer, pixels
+- written by: ossuary-extract-image, under its `raster` contract
+
+### raster:height
+
+- meaning: the pixel grid's height, as the header states it
+- value: integer, pixels
+- written by: ossuary-extract-image, under its `raster` contract
+
+### raster:depth
+
+- meaning: bits per channel, as stored — a four-bit palette PNG says 4,
+  a sixteen-bit TIFF 16, a JPEG 8
+- value: integer, bits
+- written by: ossuary-extract-image, under its `raster` contract
+
+### raster:alpha
+
+- meaning: whether the file carries transparency — an alpha channel, or
+  a PNG's tRNS chunk giving a palette or a colour its transparency
+- value: boolean
+- written by: ossuary-extract-image, under its `raster` contract
+
+### raster:color
+
+- meaning: the colour model the pixels are stored in. A JPEG's YCbCr is
+  `rgb`, which is what it encodes; a palette is `indexed` whatever its
+  entries hold. Absent where the format names no model, as a multiband
+  TIFF does not
+- value: string, one of `gray`, `rgb`, `cmyk`, `indexed`
+- written by: ossuary-extract-image, under its `raster` contract
 
 ### pdf:…
 

@@ -60,7 +60,7 @@ says for itself what it is and what it needs:
 | [`ossuary-core`](ossuary-core/README.md) | the archive itself: claims, segments, the fold. What everything else stands on |
 | [`ossuary-mount`](ossuary-mount/README.md) | the record as a read-only filesystem |
 | [`ossuary-mailvault`](ossuary-mailvault/README.md) | mail into the archive: whole mailboxes fetched over IMAP |
-| [`ossuary-extract-exif`](ossuary-extract-exif/README.md) | what a camera wrote into the picture |
+| [`ossuary-extract-image`](ossuary-extract-image/README.md) | what a camera wrote into the picture, and the pixel grid |
 | [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a message's own voice, and what it carries |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip's inventory, or its files |
 | [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a document's text and info — wants poppler's `pdftotext` |
@@ -137,7 +137,7 @@ List extractors under `[extract] run` in `config.toml` and a bare
 extractor hands back, the next round offers to whichever extractor
 reads it, so mail → attachment → text runs to its end in one call.
 What each of the four reads, what it says and what it needs stands in
-its own README: [exif](ossuary-extract-exif/README.md),
+its own README: [image](ossuary-extract-image/README.md),
 [mail](ossuary-extract-mail/README.md),
 [packed](ossuary-extract-packed/README.md),
 [pdf](ossuary-extract-pdf/README.md).

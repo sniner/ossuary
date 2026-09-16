@@ -109,8 +109,8 @@ enum Command {
     },
     /// Run extractors over every file they have not yet examined
     ///
-    /// NAME names the program: `ossuary extract exif` runs
-    /// `ossuary-extract-exif` from PATH, and every contract it offers;
+    /// NAME names the program: `ossuary extract image` runs
+    /// `ossuary-extract-image` from PATH, and every contract it offers;
     /// some programs carry several, each examined and receipted on its
     /// own. NAME:CONTRACT runs one of them: `ossuary extract packed:list`
     /// inventories archives without unpacking them, and the same spelling
