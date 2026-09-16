@@ -98,11 +98,15 @@ need.
 ### prov:examined
 
 - meaning: the receipt that an extractor has looked at this blob,
-  whatever came of it — written once per blob and extractor version, on
-  the original. It tells "looked, nothing found" apart from "never
+  whatever came of it — written once per blob and contract generation,
+  on the original. It tells "looked, nothing found" apart from "never
   looked", and covers the extractor whose whole harvest was derived
   content standing elsewhere
-- value: `true` — who looked, and with what, is the claim's source
+- value: string, the source of the extractor that looked —
+  `"extractor:image-exif/1"`, the same word the claim's source says.
+  Said as the value so the standing set, which knows subject, attribute
+  and value and nothing of who said it, tells one extractor's receipt
+  from another's, and a retraction can take back exactly one
 - written by: `ossuary extract`
 
 ### prov:note

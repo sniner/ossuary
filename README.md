@@ -162,7 +162,7 @@ $ ossuary about e9ed6104
 2026-09-06T15:23:40Z  mail:subject = "Quarterly figures"  [extractor:mail/1]
 2026-09-06T15:23:40Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1]
 2026-09-06T15:23:40Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1]
-2026-09-06T15:23:40Z  prov:examined = true  [extractor:mail/1]
+2026-09-06T15:23:40Z  prov:examined = "extractor:mail/1"  [extractor:mail/1]
 ```
 
 Every line says who said it and when — the sniffed `text/plain` and the

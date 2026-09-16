@@ -5,6 +5,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The receipt names who looked.** A `prov:examined` claim's value is now the extractor's source,
+  `"extractor:image-exif/1"`, where it was `true`; the claim's own source says the same word. The
+  worklist, `--full`'s list and the one-file check read the standing set for it, so a retracted
+  `file:mime` takes a file off an extractor's list and a retracted receipt puts it back, which
+  neither did before. Receipts reading `true` no longer count: the next `ossuary extract` examines
+  every file once more, and thereafter only when a generation is raised
+
 ## [0.3.0] - 2026-09-16
 
 ### Added

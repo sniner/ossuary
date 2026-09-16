@@ -4,8 +4,8 @@
 //! is `docs/extractors.md`. This module is the archive's side of it: what
 //! comes back is funnelled through the claim grammar, stamped with the
 //! subject, the moment and the extractor's source, and closed with one
-//! receipt — [`EXAMINED`], value `true` — so the next run knows this file
-//! is done, whatever the findings were. A file whose whole harvest was
+//! receipt — [`EXAMINED`], its value the source itself — so the next run
+//! knows this file is done, whatever the findings were. A file whose whole harvest was
 //! nothing, or stood on a derived blob, is done all the same.
 //!
 //! Derived files come through here too: an extractor that wrote files
@@ -36,7 +36,8 @@ use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::log::Log;
 
-/// The receipt attribute: this blob was examined by the claim's source.
+/// The receipt attribute: this blob was examined by the claim's source,
+/// which the value names again.
 pub const EXAMINED: &str = "prov:examined";
 
 /// A fresh run id: what one `ossuary extract` invocation stamps as
@@ -104,9 +105,13 @@ pub struct Examined {
 ///
 /// `run` is the invocation's anchor — one id, minted by [`run_id`] per
 /// `ossuary extract` call — stamped as `prov:run` on every derived
-/// file's sighting, the way ingest stamps its own runs. The receipt
-/// itself stays a bare `true`: which examination it closes is told by
-/// its source and the run on what that examination derived.
+/// file's sighting, the way ingest stamps its own runs. The receipt's
+/// value is the source itself, said again: the standing set keeps one
+/// element per subject, attribute and value and knows nothing of who
+/// said it, so the value is what tells one extractor's receipt from
+/// another's there — and what lets a retraction take back exactly one
+/// extractor's receipt. Which run the examination belonged to is told
+/// by what it derived.
 ///
 /// # Errors
 ///
@@ -142,7 +147,7 @@ pub fn record_examination(
     let receipt = Claim::assert(
         subject.clone(),
         known_attribute(EXAMINED),
-        json!(true),
+        json!(source.as_str()),
         time,
         source.clone(),
     )?;
@@ -363,6 +368,85 @@ mod tests {
         );
     }
 
+    /// A retraction from the user, later than everything before it.
+    fn retract(archive: &Archive, subject: &Subject, attribute: &str, value: Value) {
+        archive
+            .log()
+            .append(
+                &Claim::retract_value(
+                    subject.clone(),
+                    Attribute::parse(attribute).unwrap(),
+                    value,
+                    Timestamp::now(),
+                    Source::parse("user").unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_retracted_kind_takes_the_file_off_the_worklist() {
+        let dir = TempDir::new().unwrap();
+        let (archive, mut index) = archive(&dir);
+        let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
+        let mimes = vec!["image/jpeg".to_string()];
+        index.fold(archive.log()).unwrap();
+        assert_eq!(
+            index.worklist(&mimes, &source()).unwrap(),
+            std::slice::from_ref(&jpeg)
+        );
+
+        retract(
+            &archive,
+            &jpeg,
+            "file:mime",
+            serde_json::json!("image/jpeg"),
+        );
+        index.fold(archive.log()).unwrap();
+
+        assert_eq!(
+            index.worklist(&mimes, &source()).unwrap(),
+            [],
+            "the kind no longer stands, so the file is no longer this extractor's business"
+        );
+        assert_eq!(
+            index.of_kind(&mimes).unwrap(),
+            [],
+            "--full asks what stands, not what was ever said"
+        );
+    }
+
+    #[test]
+    fn a_retracted_receipt_offers_the_file_again() {
+        let dir = TempDir::new().unwrap();
+        let (archive, mut index) = archive(&dir);
+        let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
+        let mimes = vec!["image/jpeg".to_string()];
+        record_examination(&archive, &jpeg, &[], &[], &source(), RUN).unwrap();
+        index.fold(archive.log()).unwrap();
+        assert_eq!(index.worklist(&mimes, &source()).unwrap(), []);
+        assert!(index.examined(&jpeg, &source()).unwrap());
+
+        retract(
+            &archive,
+            &jpeg,
+            EXAMINED,
+            serde_json::json!(source().as_str()),
+        );
+        index.fold(archive.log()).unwrap();
+
+        assert!(
+            !index.examined(&jpeg, &source()).unwrap(),
+            "a retracted receipt is no receipt"
+        );
+        assert_eq!(
+            index.worklist(&mimes, &source()).unwrap(),
+            [jpeg],
+            "and the file waits again, which is what retracting the receipt is for"
+        );
+    }
+
     #[test]
     fn another_source_is_offered_the_same_file() {
         let dir = TempDir::new().unwrap();
@@ -472,8 +556,8 @@ mod tests {
             index
                 .values(&mail, &Attribute::parse(EXAMINED).unwrap())
                 .unwrap(),
-            [serde_json::json!(true)],
-            "the receipt stands on the examined file"
+            [serde_json::json!(source().as_str())],
+            "the receipt stands on the examined file, and names who looked"
         );
         assert!(
             index

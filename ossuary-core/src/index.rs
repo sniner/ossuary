@@ -696,13 +696,14 @@ impl Index {
     }
 
     /// Every subject still waiting for an extractor: standing `file:mime`
-    /// among `mimes`, and no [`prov:examined`](crate::EXAMINED)
-    /// receipt from `source` — as of the last [`fold`](Index::fold), the
+    /// among `mimes`, and no standing [`prov:examined`](crate::EXAMINED)
+    /// receipt naming `source` — as of the last [`fold`](Index::fold), the
     /// open head included. Sorted, so a run walks the same order twice.
     ///
     /// This is the log informing *effort*, never truth: whether a file is
     /// offered again is decided here, what an extractor says about it never
-    /// is. Retracted claims do not count on either side of the test.
+    /// is. Both sides of the test read the standing set, so a retracted
+    /// kind takes a file off the list and a retracted receipt puts it back.
     ///
     /// # Errors
     ///
@@ -715,17 +716,16 @@ impl Index {
         }
         let holes = vec!["?"; mimes.len()].join(", ");
         let mut statement = self.connection.prepare(&format!(
-            "SELECT DISTINCT subject FROM claims
-             WHERE attribute = 'file:mime' AND retract = 0
+            "SELECT DISTINCT subject FROM standing
+             WHERE attribute = 'file:mime'
                AND value IN ({holes})
                AND subject NOT IN (
-                   SELECT subject FROM claims
-                    WHERE attribute = 'prov:examined'
-                      AND source = ? AND retract = 0)
+                   SELECT subject FROM standing
+                    WHERE attribute = 'prov:examined' AND value = ?)
              ORDER BY subject"
         ))?;
-        // The value column holds values as JSON, so a MIME type is
-        // compared in its stored spelling: quoted.
+        // The value column holds values as JSON, so a MIME type and the
+        // receipt's source are compared in their stored spelling: quoted.
         let quoted: Vec<String> = mimes
             .iter()
             .map(|mime| Value::String(mime.clone()).to_string())
@@ -734,8 +734,8 @@ impl Index {
         for mime in &quoted {
             params.push(mime);
         }
-        let source = source.as_str().to_string();
-        params.push(&source);
+        let receipt = Value::String(source.as_str().to_string()).to_string();
+        params.push(&receipt);
         let rows = statement.query_map(params.as_slice(), |row| row.get::<_, String>(0))?;
         let mut subjects = Vec::new();
         for row in rows {
@@ -760,8 +760,8 @@ impl Index {
         }
         let holes = vec!["?"; mimes.len()].join(", ");
         let mut statement = self.connection.prepare(&format!(
-            "SELECT DISTINCT subject FROM claims
-             WHERE attribute = 'file:mime' AND retract = 0
+            "SELECT DISTINCT subject FROM standing
+             WHERE attribute = 'file:mime'
                AND value IN ({holes})
              ORDER BY subject"
         ))?;
@@ -782,21 +782,21 @@ impl Index {
     }
 
     /// Whether `source` has already examined `subject`: a standing
-    /// [`prov:examined`](crate::EXAMINED) receipt from exactly this
-    /// source. What the worklist subtracts wholesale, asked about one
-    /// file — for a run that was handed names instead of a kind.
+    /// [`prov:examined`](crate::EXAMINED) receipt naming exactly this
+    /// source as its value. What the worklist subtracts wholesale, asked
+    /// about one file — for a run that was handed names instead of a kind.
     ///
     /// # Errors
     ///
     /// [`Error::Index`] from `SQLite`.
     pub fn examined(&self, subject: &Subject, source: &Source) -> Result<bool> {
         let mut statement = self.connection.prepare_cached(
-            "SELECT 1 FROM claims
-              WHERE subject = ?1 AND attribute = 'prov:examined'
-                AND source = ?2 AND retract = 0
+            "SELECT 1 FROM standing
+              WHERE subject = ?1 AND attribute = 'prov:examined' AND value = ?2
               LIMIT 1",
         )?;
-        let found = statement.exists(rusqlite::params![subject.as_str(), source.as_str()])?;
+        let receipt = Value::String(source.as_str().to_string()).to_string();
+        let found = statement.exists(rusqlite::params![subject.as_str(), receipt])?;
         Ok(found)
     }
 
@@ -1339,6 +1339,44 @@ mod tests {
                 .unwrap(),
             Vec::<Value>::new(),
             "an attribute never claimed has nothing standing"
+        );
+    }
+
+    #[test]
+    fn two_sources_saying_one_value_stand_as_one() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let mime = Attribute::parse("file:mime").unwrap();
+        for (source, time) in [
+            ("ingest", "2026-09-01T10:00:00Z"),
+            ("extractor:mail/1", "2026-09-01T10:00:05Z"),
+        ] {
+            log.append(
+                &Claim::assert(
+                    subject(),
+                    mime.clone(),
+                    json!("message/rfc822"),
+                    Timestamp::parse(time).unwrap(),
+                    Source::parse(source).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.values(&subject(), &mime).unwrap(),
+            [json!("message/rfc822")],
+            "who says it is the claim's business; the standing set holds the value once"
+        );
+        assert_eq!(
+            index
+                .find(&[term("file:mime", "message/rfc822")], &[])
+                .unwrap(),
+            [subject()],
+            "and a search finds the file once"
         );
     }
 

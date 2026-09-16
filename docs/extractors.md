@@ -149,10 +149,13 @@ again. After everything else it writes one receipt, on the examined
 file:
 
 ```json
-{"subject": "9f2a…", "attribute": "prov:examined", "value": true, "time": "…", "source": "extractor:mail/1"}
+{"subject": "9f2a…", "attribute": "prov:examined", "value": "extractor:mail/1", "time": "…", "source": "extractor:mail/1"}
 ```
 
-The receipt is the memory. What still needs examining is a fold over
+The value names the source again, on purpose: the standing set keeps
+one element per subject, attribute and value, and the value is what
+tells this contract's receipt from another's there. The receipt is the
+memory. What still needs examining is a fold over
 the log — every subject whose standing `file:mime` is one the extractor
 named, minus every subject already carrying its receipt — so the
 worklist survives anything a cache would not. The mime list is
