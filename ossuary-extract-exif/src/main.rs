@@ -16,6 +16,14 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
+/// The generation of what this extractor writes: the number in its
+/// source, and so the memory of which files it has seen. Raised by hand
+/// when the findings change, when the same bytes would yield more or
+/// something different than before, and never for a build, a dependency
+/// or a release: a new generation examines every file again, and that
+/// is the only reason to have one.
+const GENERATION: u32 = 1;
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
@@ -24,7 +32,7 @@ fn main() -> ExitCode {
                 "{}",
                 json!({
                     "ossuary-extractor": 1,
-                    "source": format!("extractor:exif/{}", env!("CARGO_PKG_VERSION")),
+                    "source": format!("extractor:exif/{GENERATION}"),
                     "mimes": [
                         "image/jpeg",
                         "image/tiff",

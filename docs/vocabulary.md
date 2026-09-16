@@ -35,12 +35,12 @@ have an opinion, is interpretation; interpretation is query-time policy,
 and the mapping stands in this document, where it can change without
 touching the log.
 
-**Upgrades re-claim, deliberately.** A new extractor version runs again
-and says again what it found, its source naming the new version. A
-value said again lands on the element already standing; a value newly
-found joins the set, and a reader that wants only the newest opinion
-narrows by source — "everything from `extractor:exif/` older than
-3.0" — at query time. The log keeps every word ever said, which is the
+**Upgrades re-claim, deliberately.** A new extractor generation runs
+again and says again what it found, its source naming the new
+generation. A value said again lands on the element already standing; a
+value newly found joins the set, and a reader that wants only the newest
+opinion narrows by source — "everything from `extractor:exif/` older
+than 3" — at query time. The log keeps every word ever said, which is the
 point.
 
 **Links are values.** A relation's value is a full subject — the bare

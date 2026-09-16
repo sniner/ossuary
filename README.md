@@ -113,15 +113,15 @@ archive already holds it — without taking anything in.
 Extractors are separate programs, one per format family, speaking a
 [small pipe protocol](docs/extractors.md) open to any language. They
 never touch the archive — bytes in, findings out — and everything they
-say goes on the record under their own name and version:
+say goes on the record under their own name and generation:
 
 ```console
 $ ossuary extract mail
-2 file(s) waiting for extractor:mail/0.1.0
-2 file(s) examined by extractor:mail/0.1.0, 13 claim(s) written; 1 derived file(s) taken in; 1 had nothing to tell
+2 file(s) waiting for extractor:mail/1
+2 file(s) examined by extractor:mail/1, 13 claim(s) written; 1 derived file(s) taken in; 1 had nothing to tell
 $ ossuary extract packed:list
-1 file(s) waiting for extractor:packed-list/0.1.0
-1 file(s) examined by extractor:packed-list/0.1.0, 3 claim(s) written
+1 file(s) waiting for extractor:packed-list/1
+1 file(s) examined by extractor:packed-list/1, 3 claim(s) written
 ```
 
 The mail extractor read both files that sniff as text, recognised one
@@ -156,13 +156,13 @@ $ ossuary about e9ed6104
 2026-09-06T15:23:40Z  file:size = 491  [ingest]
 2026-09-06T15:23:40Z  file:mime = "text/plain"  [ingest]
 2026-09-06T15:23:40Z  file:modified = "2026-09-06T15:23:40.89362092Z"  [ingest]
-2026-09-06T15:23:40Z  file:mime = "message/rfc822"  [extractor:mail/0.1.0]
-2026-09-06T15:23:40Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/0.1.0]
-2026-09-06T15:23:40Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/0.1.0]
-2026-09-06T15:23:40Z  mail:subject = "Quarterly figures"  [extractor:mail/0.1.0]
-2026-09-06T15:23:40Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/0.1.0]
-2026-09-06T15:23:40Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/0.1.0]
-2026-09-06T15:23:40Z  prov:examined = true  [extractor:mail/0.1.0]
+2026-09-06T15:23:40Z  file:mime = "message/rfc822"  [extractor:mail/1]
+2026-09-06T15:23:40Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/1]
+2026-09-06T15:23:40Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/1]
+2026-09-06T15:23:40Z  mail:subject = "Quarterly figures"  [extractor:mail/1]
+2026-09-06T15:23:40Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1]
+2026-09-06T15:23:40Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1]
+2026-09-06T15:23:40Z  prov:examined = true  [extractor:mail/1]
 ```
 
 Every line says who said it and when — the sniffed `text/plain` and the

@@ -29,7 +29,7 @@ stdout and exits 0 — one line of JSON per contract it offers, most
 programs offering exactly one:
 
 ```json
-{"ossuary-extractor": 1, "source": "extractor:mail/0.1.0", "mimes": ["message/rfc822"], "derives": true}
+{"ossuary-extractor": 1, "source": "extractor:mail/1", "mimes": ["message/rfc822"], "derives": true}
 ```
 
 A program may carry several contracts — separately named, separately
@@ -37,8 +37,8 @@ versioned, separately receipted capabilities, like an archive reader
 that can inventory and can unpack:
 
 ```json
-{"ossuary-extractor": 1, "contract": "list", "source": "extractor:packed-list/0.1.0", "mimes": ["application/zip"]}
-{"ossuary-extractor": 1, "contract": "unpack", "source": "extractor:packed-unpack/0.1.0", "mimes": ["application/zip"], "derives": true}
+{"ossuary-extractor": 1, "contract": "list", "source": "extractor:packed-list/1", "mimes": ["application/zip"]}
+{"ossuary-extractor": 1, "contract": "unpack", "source": "extractor:packed-unpack/1", "mimes": ["application/zip"], "derives": true}
 ```
 
 - `ossuary-extractor` — the protocol version this extractor speaks,
@@ -50,12 +50,18 @@ that can inventory and can unpack:
   exactly as an extractor always was. Several lines must each name
   theirs, no name twice.
 - `source` — the contract's identity, in the claim format's source
-  grammar: `extractor:name/version`. Every claim it causes carries this
-  source, and the receipt under it is what keeps a file from being
-  examined twice — so a new version, being a new source, examines
-  everything again. That is intended: a new version may see more. Each
-  contract has a source of its own: to the worklist and the record,
-  that several live in one binary is invisible.
+  grammar: `extractor:name/generation`. Every claim it causes carries
+  this source, and the receipt under it is what keeps a file from being
+  examined twice — so a new generation, being a new source, examines
+  everything again. That is intended, and it is the whole meaning of
+  the number: the generation is raised when the contract's author says
+  it now sees more, or sees differently, than it did. It is not the
+  program's version and does not move with a build, a dependency or a
+  release, none of which change what the same bytes yield; a program
+  that reported its release number would write its entire record anew
+  each time it was released. Each contract has a source of its own: to
+  the worklist and the record, that several live in one binary is
+  invisible.
 - `mimes` — the exact MIME types this contract reads, as `file:mime`
   spells them. No patterns; name each one.
 - `derives` — `true` when this contract writes derived files — an
@@ -64,7 +70,7 @@ that can inventory and can unpack:
 
 A contract is cut by what is receipted together, not by format count:
 one text contract reading three kinds of document is one contract, and
-a new format there is a version bump, not a new contract.
+a new format there is a raised generation, not a new contract.
 
 ## Examination
 
@@ -143,7 +149,7 @@ again. After everything else it writes one receipt, on the examined
 file:
 
 ```json
-{"subject": "9f2a…", "attribute": "prov:examined", "value": true, "time": "…", "source": "extractor:mail/0.1.0"}
+{"subject": "9f2a…", "attribute": "prov:examined", "value": true, "time": "…", "source": "extractor:mail/1"}
 ```
 
 The receipt is the memory. What still needs examining is a fold over

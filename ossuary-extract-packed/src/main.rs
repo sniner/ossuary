@@ -42,6 +42,16 @@ use std::process::ExitCode;
 use serde_json::json;
 use zip::ZipArchive;
 
+/// The generation of what each contract writes: the number in its
+/// source, and so the memory of which files it has seen. Raised by hand
+/// when the findings change, when the same bytes would yield more or
+/// something different than before, and never for a build, a dependency
+/// or a release: a new generation examines every file again, and that
+/// is the only reason to have one. Two contracts, two numbers: what
+/// `list` learns to see says nothing about `unpack`.
+const LIST_GENERATION: u32 = 1;
+const UNPACK_GENERATION: u32 = 1;
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments
@@ -51,13 +61,12 @@ fn main() -> ExitCode {
         .as_slice()
     {
         ["--identify"] => {
-            let version = env!("CARGO_PKG_VERSION");
             println!(
                 "{}",
                 json!({
                     "ossuary-extractor": 1,
                     "contract": "list",
-                    "source": format!("extractor:packed-list/{version}"),
+                    "source": format!("extractor:packed-list/{LIST_GENERATION}"),
                     "mimes": ["application/zip"],
                 })
             );
@@ -66,7 +75,7 @@ fn main() -> ExitCode {
                 json!({
                     "ossuary-extractor": 1,
                     "contract": "unpack",
-                    "source": format!("extractor:packed-unpack/{version}"),
+                    "source": format!("extractor:packed-unpack/{UNPACK_GENERATION}"),
                     "mimes": ["application/zip"],
                     "derives": true,
                 })

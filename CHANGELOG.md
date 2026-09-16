@@ -29,6 +29,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Extractors say their generation, not their release.** The number in an extractor's source,
+  `extractor:mail/1` where it read `extractor:mail/0.2.0`, is now raised by hand and only when the
+  extractor sees more or differently than before; it no longer moves with each ossuary release,
+  which had every release write the whole extractor record anew. The next `ossuary extract`
+  examines every file once more under the new sources, and thereafter only when a generation is
+  raised. Every claim already written stands as it was said
 - **`ossuary audit`** now names a broken chain for what it is. A segment naming no predecessor,
   beyond the one the archive begins with, stands where the open head was lost and begun anew, and
   the lost head's claims went with it: a finding (`head-lost` under `--json`), where it was an

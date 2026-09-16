@@ -39,6 +39,14 @@ use mail_parser::parsers::MessageStream;
 use mail_parser::{HeaderValue, MessageParser, MessagePart, MimeHeaders as _};
 use serde_json::json;
 
+/// The generation of what this extractor writes: the number in its
+/// source, and so the memory of which files it has seen. Raised by hand
+/// when the findings change, when the same bytes would yield more or
+/// something different than before, and never for a build, a dependency
+/// or a release: a new generation examines every file again, and that
+/// is the only reason to have one.
+const GENERATION: u32 = 1;
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
@@ -47,7 +55,7 @@ fn main() -> ExitCode {
                 "{}",
                 json!({
                     "ossuary-extractor": 1,
-                    "source": format!("extractor:mail/{}", env!("CARGO_PKG_VERSION")),
+                    "source": format!("extractor:mail/{GENERATION}"),
                     "mimes": ["message/rfc822", "text/plain"],
                     "derives": true,
                 })
