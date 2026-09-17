@@ -24,7 +24,7 @@
 //! file. Four views are for a look with `sqlite3`, and nothing here
 //! reads them: `v_claims` and `v_standing` show both tables with the
 //! names in place of the ids, `v_places` every standing `file:path`
-//! unquoted, `v_runs` what each `prov:run` took in, `v_examinations`
+//! unquoted, `v_arrivals` what each `prov:run` took in, `v_examinations`
 //! what each extractor receipted — a run id stands only on what a run
 //! took in, so an extractor that derives nothing appears in the second
 //! view and not the first. What stays deliberately un-baked is *narrowing*:
@@ -120,7 +120,7 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          JOIN subjects su ON su.id = st.subject
          WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'file:path')
            AND json_type(st.value) = 'text';
-     CREATE VIEW IF NOT EXISTS v_runs AS
+     CREATE VIEW IF NOT EXISTS v_arrivals AS
          SELECT json_extract(c.value, '$') AS run, so.name AS source,
                 COUNT(DISTINCT c.subject) AS files, MIN(c.time) AS first, MAX(c.time) AS last
          FROM claims c
@@ -254,7 +254,7 @@ impl Index {
                 "DROP VIEW IF EXISTS v_claims;
                  DROP VIEW IF EXISTS v_standing;
                  DROP VIEW IF EXISTS v_places;
-                 DROP VIEW IF EXISTS v_runs;
+                 DROP VIEW IF EXISTS v_arrivals;
                  DROP VIEW IF EXISTS v_examinations;
                  DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS claims;
@@ -1700,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn places_and_runs_read_as_tables() {
+    fn places_and_arrivals_read_as_tables() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
@@ -1721,7 +1721,7 @@ mod tests {
 
         let run: (String, String, i64) = index
             .connection
-            .query_row("SELECT run, source, files FROM v_runs", [], |row| {
+            .query_row("SELECT run, source, files FROM v_arrivals", [], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .unwrap();
