@@ -165,6 +165,24 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
                 eprintln!("{count} file(s) named for {source}");
             }
         }
+        Event::Remarked {
+            subject,
+            name,
+            remark,
+            ..
+        } => {
+            // The extractor's words, with the file it could not name
+            // itself in front: narration, silenced by -q like the rest.
+            if !quiet {
+                let file = match name {
+                    Some(name) => format!("{subject} ({name})"),
+                    None => subject.to_string(),
+                };
+                for line in remark.lines() {
+                    eprintln!("  {file}: {line}");
+                }
+            }
+        }
         Event::Verdict {
             source,
             tally,

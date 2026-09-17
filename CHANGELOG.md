@@ -23,6 +23,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call of this version, and the next call folds it anew. An old file left in place fails with an
   SQLite error naming a missing column, which is the same message
 
+- **`ossuary extract` names the file an extractor speaks about.** What an extractor writes on
+  stderr — the PDF extractor's "mostly not text, discarded", say — used to pass through bare, and
+  no reader could tell which file it meant. Every line now comes with the file's digest and name in
+  front, the program's own name dropped where it prefixed the line; `-q` silences it like the rest
+  of the narration. When an extractor gives up on a file, what it said is the reason in the
+  failure list
+
 ### Fixed
 
 - **`find` with a single term** named a file once per standing value that matched, so a file

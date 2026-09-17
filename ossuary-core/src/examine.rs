@@ -81,6 +81,18 @@ pub enum Event<'a> {
         /// The files that would be taken in: name, MIME type, size.
         derived: &'a [(String, String, u64)],
     },
+    /// The extractor spoke on stderr about one file: narration or a
+    /// complaint, examination happened all the same. The lines come
+    /// without the program's own name in front, and with the file the
+    /// extractor could not know it was speaking about.
+    Remarked {
+        source: &'a Source,
+        subject: &'a Subject,
+        /// The file's standing `file:name`, when the record has one.
+        name: Option<&'a str>,
+        /// What was said, one or more lines.
+        remark: &'a str,
+    },
     /// A pass ended: the verdict's material, what failed included.
     Verdict {
         source: &'a Source,
@@ -547,11 +559,12 @@ fn run_one(
     for subject in worklist {
         if invocation.dry_run {
             match rehearse_one(invocation, run, &subject, scratch.as_deref()) {
-                Ok(nothing) => {
+                Ok((nothing, remarks)) => {
                     tally.examined += 1;
                     if nothing {
                         tally.nothing += 1;
                     }
+                    relay(invocation, index, source, &subject, &remarks)?;
                 }
                 Err(error) => failures.push((subject, error)),
             }
@@ -566,9 +579,10 @@ fn run_one(
             &invocation.run_id,
             scratch.as_deref(),
         ) {
-            Ok(written) => {
+            Ok((written, remarks)) => {
                 tally.add(&written);
                 invocation.examined.insert(memo_key(&subject, source));
+                relay(invocation, index, source, &subject, &remarks)?;
             }
             Err(error) => failures.push((subject, error)),
         }
@@ -763,22 +777,48 @@ fn examine_one(
     source: &Source,
     run_id: &str,
     scratch_parent: Option<&Path>,
-) -> Result<Examined> {
-    let (Harvest { findings, derived }, _scratch) =
+) -> Result<(Examined, String)> {
+    let (Harvest { findings, derived }, _scratch, remarks) =
         try_one(archive, program, contract, subject, scratch_parent)?;
-    record_examination(archive, subject, &findings, &derived, source, run_id)
+    let written = record_examination(archive, subject, &findings, &derived, source, run_id)?;
+    Ok((written, remarks))
+}
+
+/// What the extractor said on stderr about one file, told to the
+/// observer with the file named — the extractor never knew which file
+/// it had; the orchestrator does. Silence is nothing to tell.
+fn relay(
+    invocation: &mut Invocation,
+    index: &Index,
+    source: &Source,
+    subject: &Subject,
+    remarks: &str,
+) -> Result<()> {
+    if remarks.trim().is_empty() {
+        return Ok(());
+    }
+    let names = index.values(subject, &Attribute::parse("file:name")?)?;
+    let name = names.iter().find_map(Value::as_str);
+    invocation.observer.event(Event::Remarked {
+        source,
+        subject,
+        name,
+        remark: remarks,
+    });
+    Ok(())
 }
 
 /// One file under --dry-run: same run, same harvest, and the harvest
 /// is shown as [`Event::Rehearsed`] instead of recorded — dropped with
-/// the scratch. Answers whether the whole harvest was empty.
+/// the scratch. Answers whether the whole harvest was empty, and what
+/// the extractor said on stderr.
 fn rehearse_one(
     invocation: &mut Invocation,
     run: &Run,
     subject: &Subject,
     scratch: Option<&Path>,
-) -> Result<bool> {
-    let (Harvest { findings, derived }, _scratch) = try_one(
+) -> Result<(bool, String)> {
+    let (Harvest { findings, derived }, _scratch, remarks) = try_one(
         invocation.archive,
         &run.program,
         run.identity.contract.as_deref(),
@@ -799,19 +839,20 @@ fn rehearse_one(
         findings: &findings,
         derived: &derived,
     });
-    Ok(nothing)
+    Ok((nothing, remarks))
 }
 
 /// The examination itself, short of the record: the bytes handed over,
-/// the answer harvested. The scratch directory rides along so announced
-/// files still stand when the caller reads or records them.
+/// the answer harvested, the extractor's stderr kept as its remarks.
+/// The scratch directory rides along so announced files still stand
+/// when the caller reads or records them.
 fn try_one(
     archive: &Archive,
     program: &str,
     contract: Option<&str>,
     subject: &Subject,
     scratch_parent: Option<&Path>,
-) -> Result<(Harvest, Option<tempfile::TempDir>)> {
+) -> Result<(Harvest, Option<tempfile::TempDir>, String)> {
     let content = archive.content();
     // The examinee may be an original or itself derived — the PDF out of
     // a mail: content/ is asked first, derived/ second.
@@ -848,9 +889,31 @@ fn try_one(
     if let Some(scratch) = &scratch {
         command.arg(scratch.path());
     }
+    let (answer, remarks) = converse(&mut command, program, &mut reader)?;
+    let harvest = harvest(
+        program,
+        &answer,
+        scratch.as_ref().map(tempfile::TempDir::path),
+    )?;
+    Ok((harvest, scratch, remarks))
+}
+
+/// One exchange with an extractor: the bytes in, its answer and its
+/// remarks out. stdout is the answer; stderr is the extractor's to
+/// narrate or complain on, and comes back with the program's own name
+/// stripped from the front of each line, since the caller will say
+/// which file was meant and the program's name would only stand in
+/// the way. A non-zero exit is a refusal, and what stderr said is the
+/// reason.
+fn converse(
+    command: &mut Command,
+    program: &str,
+    reader: &mut impl Read,
+) -> Result<(String, String)> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| Error::Io {
             context: format!("running `{program}`"),
@@ -860,37 +923,43 @@ fn try_one(
     // stands whole in memory. The drop closes the pipe — the extractor's
     // end-of-file.
     let mut stdin = child.stdin.take().expect("stdin was piped");
-    std::io::copy(&mut reader, &mut stdin).map_err(|error| Error::Io {
+    std::io::copy(reader, &mut stdin).map_err(|error| Error::Io {
         context: "handing the bytes over".to_string(),
         source: error,
     })?;
     drop(stdin);
-    let mut answer = String::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout was piped")
-        .read_to_string(&mut answer)
-        .map_err(|error| Error::Io {
-            context: "reading the findings".to_string(),
-            source: error,
-        })?;
-    let status = child.wait().map_err(|error| Error::Io {
-        context: "waiting for the extractor".to_string(),
+    // Both pipes drained together: an extractor that complains at length
+    // while its findings wait must not block on either.
+    let output = child.wait_with_output().map_err(|error| Error::Io {
+        context: "reading the findings".to_string(),
         source: error,
     })?;
-    if !status.success() {
-        return Err(Error::Extract(format!(
-            "`{program}` gave up on it ({status})"
-        )));
+    let remarks = unprefixed(program, &String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        // The reason on one line, as a failure list wants it.
+        let complaint = remarks.lines().collect::<Vec<_>>().join("; ");
+        return Err(Error::Extract(if complaint.is_empty() {
+            format!("`{program}` gave up on it ({})", output.status)
+        } else {
+            format!("`{program}` gave up on it ({}): {complaint}", output.status)
+        }));
     }
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        remarks,
+    ))
+}
 
-    let harvest = harvest(
-        program,
-        &answer,
-        scratch.as_ref().map(tempfile::TempDir::path),
-    )?;
-    Ok((harvest, scratch))
+/// The lines of an extractor's stderr without `program: ` in front,
+/// where a line began with it; blank lines dropped.
+fn unprefixed(program: &str, stderr: &str) -> String {
+    let prefix = format!("{program}: ");
+    stderr
+        .lines()
+        .map(|line| line.strip_prefix(prefix.as_str()).unwrap_or(line))
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// An answer sorted: what stands on the examined file, and what became
@@ -993,6 +1062,47 @@ fn bare(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remarks_lose_the_program_prefix_and_blank_lines() {
+        assert_eq!(
+            unprefixed(
+                "ossuary-extract-pdf",
+                "ossuary-extract-pdf: mostly not text, discarded\n\nsomething else\n"
+            ),
+            "mostly not text, discarded\nsomething else"
+        );
+        assert_eq!(unprefixed("x", ""), "");
+    }
+
+    #[test]
+    fn a_conversation_keeps_answer_and_remarks_apart() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "cat > /dev/null; echo '{\"attribute\":\"a:b\",\"value\":1}'; echo 'sh: a remark' >&2",
+        ]);
+        let mut bytes: &[u8] = b"the file";
+        let (answer, remarks) = converse(&mut command, "sh", &mut bytes).unwrap();
+        assert_eq!(answer.trim(), "{\"attribute\":\"a:b\",\"value\":1}");
+        assert_eq!(remarks, "a remark");
+    }
+
+    #[test]
+    fn a_refusal_carries_what_stderr_said() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "cat > /dev/null; echo 'sh: cannot read this' >&2; exit 3",
+        ]);
+        let mut bytes: &[u8] = b"the file";
+        let error = converse(&mut command, "sh", &mut bytes).unwrap_err();
+        let spelled = error.to_string();
+        assert!(
+            spelled.contains("gave up on it") && spelled.contains("cannot read this"),
+            "{spelled}"
+        );
+    }
 
     #[test]
     fn a_bare_name_names_a_file_and_nothing_else() {

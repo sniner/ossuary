@@ -113,8 +113,13 @@ shapes:
 
 The order of the lines does not matter: the answer is read whole before
 anything is judged, so speaking about a file before announcing it is
-legal. stderr is the extractor's to narrate or complain on; it is
-passed through to the user.
+legal. stderr is the extractor's to narrate or complain on. The
+orchestrator relays every line to the user with the examined file in
+front of it — its name and its digest, which the extractor never had —
+and drops the program's own name where a line begins with it, so an
+extractor may keep prefixing its lines for the hand-run case without
+saying its name twice under `ossuary extract`. On a non-zero exit,
+what stderr said becomes the reason in the run's failure list.
 
 **Exit 0 means the examination happened**, findings or none — bytes the
 extractor cannot make sense of are an examination too, with nothing
