@@ -129,7 +129,7 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
            AND c.retract = 0
          GROUP BY c.value, c.source;
      CREATE VIEW IF NOT EXISTS v_examinations AS
-         SELECT CASE json_type(c.value) WHEN 'text' THEN json_extract(c.value, '$') ELSE c.value END AS extractor,
+         SELECT json_extract(c.value, '$') AS extractor,
                 COUNT(DISTINCT c.subject) AS files, MIN(c.time) AS first, MAX(c.time) AS last
          FROM claims c
          WHERE c.attribute = (SELECT id FROM attributes WHERE name = 'prov:examined')
