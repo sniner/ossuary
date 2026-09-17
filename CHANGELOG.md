@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-18
+
 ### Changed
 
 - **Verdicts read plainer.** `ossuary ingest` closes with `5 file(s) stored; 35 claim(s) written, run
