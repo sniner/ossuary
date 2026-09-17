@@ -90,7 +90,10 @@ need.
   "arrived together" is exact: ingest stamps it on every sighting,
   `ossuary extract` on every derived file it takes in, all rounds of
   one call under one id. What kind of run it was is the claim's
-  source, like everything about who was acting
+  source, like everything about who was acting. A run id stands only
+  on what a run took in: an extractor's findings and its receipt carry
+  none, so an extractor that derives no files leaves no run on the
+  record — which pass wrote a receipt is told by the receipt's moment
 - value: string, a UUID
 - written by: ingest; `ossuary extract`, on derived files;
   `ossuary mailvault`, on every message it takes in
