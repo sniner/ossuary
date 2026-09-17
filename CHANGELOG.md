@@ -17,8 +17,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tables of their own and appear in the claim history and the standing set as integer ids; the
   standing set carries each value's newest moment, so a mount without `--as-of` reads it instead of
   replaying the history; and the connection waits up to five seconds for a fold running beside it
-  instead of failing at once. Two views, `v_claims` and `v_standing`, show both tables with names
-  in place of the ids for a look with `sqlite3`. The cache is a cache: delete `cache/index.sqlite` before the first
+  instead of failing at once. Four views are for a look with `sqlite3`: `v_claims` and `v_standing` show both
+  tables with names in place of the ids, `v_places` every standing `file:path` bare, `v_runs` what
+  each run put on the record. The cache is a cache: delete `cache/index.sqlite` before the first
   call of this version, and the next call folds it anew. An old file left in place fails with an
   SQLite error naming a missing column, which is the same message
 

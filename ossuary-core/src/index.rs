@@ -21,9 +21,10 @@
 //! segments stand in tables of their own and appear in the two big
 //! tables as integer ids: a digest is 64 bytes and a segment name the
 //! same, and either repeated a quarter of a million times is most of a
-//! file. Two views, `v_claims` and `v_standing`, show both tables with
-//! the names in place of the ids, for a look with `sqlite3`; nothing
-//! here reads them. What stays deliberately un-baked is *narrowing*:
+//! file. Four views are for a look with `sqlite3`, and nothing here
+//! reads them: `v_claims` and `v_standing` show both tables with the
+//! names in place of the ids, `v_places` every standing `file:path`
+//! unquoted, `v_runs` what each `prov:run` put on the record. What stays deliberately un-baked is *narrowing*:
 //! which of several standing values a reader prefers is query-time
 //! policy, and the sets carry them all.
 //!
@@ -50,6 +51,80 @@ const SCHEMA: i64 = 1;
 /// every sealed segment so it sorts last wherever log order is asked.
 const HEAD: i64 = 0;
 const HEAD_SEQ: i64 = i64::MAX;
+
+/// The tables, indexes and views, created where missing.
+const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
+         id     INTEGER PRIMARY KEY,
+         digest TEXT NOT NULL UNIQUE
+     );
+     CREATE TABLE IF NOT EXISTS attributes (
+         id   INTEGER PRIMARY KEY,
+         name TEXT NOT NULL UNIQUE
+     );
+     CREATE TABLE IF NOT EXISTS sources (
+         id   INTEGER PRIMARY KEY,
+         name TEXT NOT NULL UNIQUE
+     );
+     CREATE TABLE IF NOT EXISTS segments (
+         id     INTEGER PRIMARY KEY,
+         digest TEXT NOT NULL UNIQUE,
+         first  TEXT,
+         seq    INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS claims (
+         id        INTEGER PRIMARY KEY,
+         subject   INTEGER NOT NULL,
+         attribute INTEGER NOT NULL,
+         value     TEXT,
+         time      TEXT NOT NULL,
+         source    INTEGER NOT NULL,
+         retract   INTEGER NOT NULL DEFAULT 0,
+         segment   INTEGER NOT NULL,
+         position  INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS claims_subject
+         ON claims (subject, attribute);
+     CREATE INDEX IF NOT EXISTS claims_attribute
+         ON claims (attribute, time);
+     CREATE INDEX IF NOT EXISTS claims_segment
+         ON claims (segment, position);
+     CREATE TABLE IF NOT EXISTS standing (
+         subject   INTEGER NOT NULL,
+         attribute INTEGER NOT NULL,
+         value     TEXT NOT NULL,
+         time      TEXT NOT NULL,
+         claim     INTEGER NOT NULL,
+         PRIMARY KEY (subject, attribute, value)
+     ) WITHOUT ROWID;
+     CREATE INDEX IF NOT EXISTS standing_lookup
+         ON standing (attribute, value);
+     CREATE VIEW IF NOT EXISTS v_claims AS
+         SELECT c.id, su.digest AS subject, a.name AS attribute, c.value, c.time,
+                so.name AS source, c.retract, s.digest AS segment, s.seq, c.position
+         FROM claims c
+         JOIN subjects su ON su.id = c.subject
+         JOIN attributes a ON a.id = c.attribute
+         JOIN sources so ON so.id = c.source
+         JOIN segments s ON s.id = c.segment;
+     CREATE VIEW IF NOT EXISTS v_standing AS
+         SELECT su.digest AS subject, a.name AS attribute, st.value, st.time, st.claim
+         FROM standing st
+         JOIN subjects su ON su.id = st.subject
+         JOIN attributes a ON a.id = st.attribute;
+     CREATE VIEW IF NOT EXISTS v_places AS
+         SELECT su.digest AS subject, json_extract(st.value, '$') AS path, st.time
+         FROM standing st
+         JOIN subjects su ON su.id = st.subject
+         WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'file:path')
+           AND json_type(st.value) = 'text';
+     CREATE VIEW IF NOT EXISTS v_runs AS
+         SELECT json_extract(c.value, '$') AS run, so.name AS source,
+                COUNT(DISTINCT c.subject) AS files, MIN(c.time) AS first, MAX(c.time) AS last
+         FROM claims c
+         JOIN sources so ON so.id = c.source
+         WHERE c.attribute = (SELECT id FROM attributes WHERE name = 'prov:run')
+           AND c.retract = 0
+         GROUP BY c.value, c.source;";
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +243,8 @@ impl Index {
             connection.execute_batch(&format!(
                 "DROP VIEW IF EXISTS v_claims;
                  DROP VIEW IF EXISTS v_standing;
+                 DROP VIEW IF EXISTS v_places;
+                 DROP VIEW IF EXISTS v_runs;
                  DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
@@ -183,66 +260,7 @@ impl Index {
         // are deleted and rewritten each fold while standing rows still
         // point at the old ones, until the same assertion, folded again,
         // points them at the new.
-        connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS subjects (
-                 id     INTEGER PRIMARY KEY,
-                 digest TEXT NOT NULL UNIQUE
-             );
-             CREATE TABLE IF NOT EXISTS attributes (
-                 id   INTEGER PRIMARY KEY,
-                 name TEXT NOT NULL UNIQUE
-             );
-             CREATE TABLE IF NOT EXISTS sources (
-                 id   INTEGER PRIMARY KEY,
-                 name TEXT NOT NULL UNIQUE
-             );
-             CREATE TABLE IF NOT EXISTS segments (
-                 id     INTEGER PRIMARY KEY,
-                 digest TEXT NOT NULL UNIQUE,
-                 first  TEXT,
-                 seq    INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS claims (
-                 id        INTEGER PRIMARY KEY,
-                 subject   INTEGER NOT NULL,
-                 attribute INTEGER NOT NULL,
-                 value     TEXT,
-                 time      TEXT NOT NULL,
-                 source    INTEGER NOT NULL,
-                 retract   INTEGER NOT NULL DEFAULT 0,
-                 segment   INTEGER NOT NULL,
-                 position  INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS claims_subject
-                 ON claims (subject, attribute);
-             CREATE INDEX IF NOT EXISTS claims_attribute
-                 ON claims (attribute, time);
-             CREATE INDEX IF NOT EXISTS claims_segment
-                 ON claims (segment, position);
-             CREATE TABLE IF NOT EXISTS standing (
-                 subject   INTEGER NOT NULL,
-                 attribute INTEGER NOT NULL,
-                 value     TEXT NOT NULL,
-                 time      TEXT NOT NULL,
-                 claim     INTEGER NOT NULL,
-                 PRIMARY KEY (subject, attribute, value)
-             ) WITHOUT ROWID;
-             CREATE INDEX IF NOT EXISTS standing_lookup
-                 ON standing (attribute, value);
-             CREATE VIEW IF NOT EXISTS v_claims AS
-                 SELECT c.id, su.digest AS subject, a.name AS attribute, c.value, c.time,
-                        so.name AS source, c.retract, s.digest AS segment, s.seq, c.position
-                 FROM claims c
-                 JOIN subjects su ON su.id = c.subject
-                 JOIN attributes a ON a.id = c.attribute
-                 JOIN sources so ON so.id = c.source
-                 JOIN segments s ON s.id = c.segment;
-             CREATE VIEW IF NOT EXISTS v_standing AS
-                 SELECT su.digest AS subject, a.name AS attribute, st.value, st.time, st.claim
-                 FROM standing st
-                 JOIN subjects su ON su.id = st.subject
-                 JOIN attributes a ON a.id = st.attribute;",
-        )?;
+        connection.execute_batch(DDL)?;
         connection.execute(
             "INSERT OR IGNORE INTO segments (id, digest, first, seq) VALUES (?1, 'head', NULL, ?2)",
             params![HEAD, HEAD_SEQ],
@@ -1668,6 +1686,35 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn places_and_runs_read_as_tables() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        for (attribute, value) in [
+            ("file:path", json!("/home/john/a.txt")),
+            ("prov:run", json!("run-a")),
+        ] {
+            log.append(&say(&subject(), attribute, value, "2026-09-01T10:00:00Z"))
+                .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        let path: String = index
+            .connection
+            .query_row("SELECT path FROM v_places", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(path, "/home/john/a.txt", "the path bare, not as JSON text");
+
+        let run: (String, String, i64) = index
+            .connection
+            .query_row("SELECT run, source, files FROM v_runs", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(run, ("run-a".to_string(), "user".to_string(), 1));
     }
 
     #[test]
