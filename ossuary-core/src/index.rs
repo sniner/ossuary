@@ -21,9 +21,11 @@
 //! segments stand in tables of their own and appear in the two big
 //! tables as integer ids: a digest is 64 bytes and a segment name the
 //! same, and either repeated a quarter of a million times is most of a
-//! file. What stays deliberately un-baked is *narrowing*: which of
-//! several standing values a reader prefers is query-time policy, and the
-//! sets carry them all.
+//! file. Two views, `v_claims` and `v_standing`, show both tables with
+//! the names in place of the ids, for a look with `sqlite3`; nothing
+//! here reads them. What stays deliberately un-baked is *narrowing*:
+//! which of several standing values a reader prefers is query-time
+//! policy, and the sets carry them all.
 //!
 //! Standing follows the log forward, the only direction a log moves; a
 //! `head.jsonl` edited backwards leaves it stale until the cache is
@@ -164,7 +166,9 @@ impl Index {
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version != SCHEMA {
             connection.execute_batch(&format!(
-                "DROP TABLE IF EXISTS standing;
+                "DROP VIEW IF EXISTS v_claims;
+                 DROP VIEW IF EXISTS v_standing;
+                 DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
                  DROP TABLE IF EXISTS subjects;
@@ -224,7 +228,20 @@ impl Index {
                  PRIMARY KEY (subject, attribute, value)
              ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS standing_lookup
-                 ON standing (attribute, value);",
+                 ON standing (attribute, value);
+             CREATE VIEW IF NOT EXISTS v_claims AS
+                 SELECT c.id, su.digest AS subject, a.name AS attribute, c.value, c.time,
+                        so.name AS source, c.retract, s.digest AS segment, s.seq, c.position
+                 FROM claims c
+                 JOIN subjects su ON su.id = c.subject
+                 JOIN attributes a ON a.id = c.attribute
+                 JOIN sources so ON so.id = c.source
+                 JOIN segments s ON s.id = c.segment;
+             CREATE VIEW IF NOT EXISTS v_standing AS
+                 SELECT su.digest AS subject, a.name AS attribute, st.value, st.time, st.claim
+                 FROM standing st
+                 JOIN subjects su ON su.id = st.subject
+                 JOIN attributes a ON a.id = st.attribute;",
         )?;
         connection.execute(
             "INSERT OR IGNORE INTO segments (id, digest, first, seq) VALUES (?1, 'head', NULL, ?2)",
@@ -1591,6 +1608,65 @@ mod tests {
             index.find(&[term("file:name", "*.jpg")], &[]).unwrap(),
             [subject()],
             "one term, two values matching it, one file: the answer is a set of files"
+        );
+    }
+
+    #[test]
+    fn the_views_show_the_tables_with_names_in_place_of_ids() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&tag("beach", "2026-09-01T21:14:04Z")).unwrap();
+        index.fold(&log).unwrap();
+
+        let rows: Vec<(String, String, String, String, String)> = index
+            .connection
+            .prepare("SELECT subject, attribute, value, source, segment FROM v_claims ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, subject().as_str());
+        assert_eq!(rows[0].1, "user:tag");
+        assert_eq!(rows[0].2, "\"holiday\"", "the value as stored: JSON text");
+        assert_eq!(rows[0].3, "user");
+        assert_eq!(rows[0].4.len(), 64, "the sealed segment by its digest");
+        assert_eq!(rows[1].4, "head");
+
+        let standing: Vec<(String, String, String)> = index
+            .connection
+            .prepare("SELECT subject, attribute, value FROM v_standing ORDER BY value")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            standing,
+            [
+                (
+                    subject().as_str().to_string(),
+                    "user:tag".to_string(),
+                    "\"beach\"".to_string()
+                ),
+                (
+                    subject().as_str().to_string(),
+                    "user:tag".to_string(),
+                    "\"holiday\"".to_string()
+                ),
+            ]
         );
     }
 
