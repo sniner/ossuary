@@ -24,10 +24,7 @@
 //! file. Four views are for a look with `sqlite3`, and nothing here
 //! reads them: `v_claims` and `v_standing` show both tables with the
 //! names in place of the ids, `v_places` every standing `file:path`
-//! unquoted, `v_arrivals` what each `prov:run` took in, `v_examinations`
-//! what each extractor receipted — a run id stands only on what a run
-//! took in, so an extractor that derives nothing appears in the second
-//! view and not the first. What stays deliberately un-baked is *narrowing*:
+//! unquoted, `v_arrivals` what each `prov:run` took in. What stays deliberately un-baked is *narrowing*:
 //! which of several standing values a reader prefers is query-time
 //! policy, and the sets carry them all.
 //!
@@ -127,14 +124,7 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          JOIN sources so ON so.id = c.source
          WHERE c.attribute = (SELECT id FROM attributes WHERE name = 'prov:run')
            AND c.retract = 0
-         GROUP BY c.value, c.source;
-     CREATE VIEW IF NOT EXISTS v_examinations AS
-         SELECT json_extract(c.value, '$') AS extractor,
-                COUNT(DISTINCT c.subject) AS files, MIN(c.time) AS first, MAX(c.time) AS last
-         FROM claims c
-         WHERE c.attribute = (SELECT id FROM attributes WHERE name = 'prov:examined')
-           AND c.retract = 0
-         GROUP BY c.value;";
+         GROUP BY c.value, c.source;";
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +245,6 @@ impl Index {
                  DROP VIEW IF EXISTS v_standing;
                  DROP VIEW IF EXISTS v_places;
                  DROP VIEW IF EXISTS v_arrivals;
-                 DROP VIEW IF EXISTS v_examinations;
                  DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
@@ -1726,51 +1715,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(run, ("run-a".to_string(), "user".to_string(), 1));
-    }
-
-    #[test]
-    fn examinations_count_receipts_per_extractor() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        let mut index = index_in(&dir);
-        let other =
-            Subject::parse("00000000000000000000000000000000000000000000000000000000000000ff")
-                .unwrap();
-        for (who, time) in [
-            (&subject(), "2026-09-01T10:00:00Z"),
-            (&other, "2026-09-01T10:00:07Z"),
-        ] {
-            log.append(
-                &Claim::assert(
-                    who.clone(),
-                    Attribute::parse("prov:examined").unwrap(),
-                    json!("extractor:image-exif/1"),
-                    Timestamp::parse(time).unwrap(),
-                    Source::parse("extractor:image-exif/1").unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        }
-        index.fold(&log).unwrap();
-
-        let row: (String, i64, String, String) = index
-            .connection
-            .query_row(
-                "SELECT extractor, files, first, last FROM v_examinations",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            row,
-            (
-                "extractor:image-exif/1".to_string(),
-                2,
-                "2026-09-01T10:00:00Z".to_string(),
-                "2026-09-01T10:00:07Z".to_string()
-            )
-        );
     }
 
     #[test]

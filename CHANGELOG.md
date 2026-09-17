@@ -19,7 +19,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   replaying the history; and the connection waits up to five seconds for a fold running beside it
   instead of failing at once. Four views are for a look with `sqlite3`: `v_claims` and `v_standing` show both
   tables with names in place of the ids, `v_places` every standing `file:path` bare, `v_arrivals` what
-  each run took in, `v_examinations` what each extractor receipted. The cache is a cache: delete `cache/index.sqlite` before the first
+  each run took in. The cache is a cache: delete `cache/index.sqlite` before the first
   call of this version, and the next call folds it anew. An old file left in place fails with an
   SQLite error naming a missing column, which is the same message
 
