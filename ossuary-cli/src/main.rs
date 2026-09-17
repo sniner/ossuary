@@ -808,50 +808,41 @@ fn ingest(
     // the count.
     if !quiet {
         for path in &run.archives {
-            eprintln!(
-                "{}: an ossuary archive, left whole, never taken in",
-                path.display()
-            );
+            eprintln!("{}: ossuary archive, skipped", path.display());
         }
     }
-    let mut verdict = vec![format!("{} file(s) new to the archive", run.stored)];
+    let mut verdict = vec![format!("{} file(s) stored", run.stored)];
     if run.known > 0 {
-        verdict.push(format!("{} already held", run.known));
+        verdict.push(format!("{} already stored", run.known));
     }
     if run.unchanged > 0 {
         verdict.push(if tags.is_empty() {
-            format!(
-                "{} unchanged since the last run and left in peace",
-                run.unchanged
-            )
+            format!("{} unchanged since the last run", run.unchanged)
         } else {
             // A tag rides only on what the run records; saying so here
             // beats a tree that looks tagged and is not.
             format!(
-                "{} unchanged since the last run and left in peace, untagged; --full tags them too",
+                "{} unchanged since the last run, not tagged (--full tags them too)",
                 run.unchanged
             )
         });
     }
     if run.excluded > 0 {
-        verdict.push(format!(
-            "{} path(s) left out as config.toml asks",
-            run.excluded
-        ));
+        verdict.push(format!("{} path(s) excluded by config.toml", run.excluded));
     }
     if !run.archives.is_empty() {
-        verdict.push(format!("{} archive(s) left whole", run.archives.len()));
+        verdict.push(format!("{} archive(s) skipped", run.archives.len()));
     }
     let record = if run.claims > 0 {
-        format!("{} claim(s) written as run {}", run.claims, run.run)
+        format!("{} claim(s) written, run {}", run.claims, run.run)
     } else {
-        "nothing new to record".to_string()
+        "0 claims written".to_string()
     };
     println!("{}; {record}", verdict.join(", "));
     if run.failed.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!("{} could not be taken in:", run.failed.len());
+        eprintln!("{} file(s) failed:", run.failed.len());
         for (path, error) in &run.failed {
             eprintln!("  {}: {}", path.display(), error.spelled());
         }
@@ -871,10 +862,7 @@ fn previewed(
     let run = ossuary_core::preview(paths, host, archive.config().excludes(), memory)?;
     if !quiet {
         for path in &run.archives {
-            eprintln!(
-                "{}: an ossuary archive, left whole, never taken in",
-                path.display()
-            );
+            eprintln!("{}: ossuary archive, skipped", path.display());
         }
     }
     let mut verdict = vec![format!(
@@ -883,19 +871,13 @@ fn previewed(
         output::human_bytes(run.bytes)
     )];
     if run.unchanged > 0 {
-        verdict.push(format!(
-            "{} unchanged since the last run and left in peace",
-            run.unchanged
-        ));
+        verdict.push(format!("{} unchanged since the last run", run.unchanged));
     }
     if run.excluded > 0 {
-        verdict.push(format!(
-            "{} path(s) left out as config.toml asks",
-            run.excluded
-        ));
+        verdict.push(format!("{} path(s) excluded by config.toml", run.excluded));
     }
     if !run.archives.is_empty() {
-        verdict.push(format!("{} archive(s) left whole", run.archives.len()));
+        verdict.push(format!("{} archive(s) skipped", run.archives.len()));
     }
     println!("{}; nothing written", verdict.join(", "));
     if run.failed.is_empty() {

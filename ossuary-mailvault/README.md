@@ -23,7 +23,7 @@ example.org: 2 folders
 example.org/INBOX: carrying on above UID 1180, 24 messages to fetch
 example.org/INBOX: 24 of 24 fetched
 example.org/Sent: carrying on above UID 310, 0 messages to fetch
-24 messages new to the archive; 96 claim(s) written as run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+24 messages stored; 96 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4
 ```
 
 `ossuary mailvault` is this program: an
@@ -116,8 +116,8 @@ archive /home/john/archive
 taking over the vault at /srv/mailvault/private
 reading the vault's log: where every message was seen
 131,504 messages in 3,207 log files, filed in 140,222 places
-taking over: 131,504 of 131,504 message(s), 131,504 new to the archive
-131,504 messages new to the archive; 543,502 claim(s) written as run 0c1e…
+taking over: 131,504 of 131,504 message(s), 131,504 stored
+131,504 messages stored; 543,502 claim(s) written, run 0c1e…
 ```
 
 Every message the vault's log names goes in with every place the log

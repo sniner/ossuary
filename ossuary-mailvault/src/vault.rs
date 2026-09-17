@@ -142,7 +142,7 @@ pub fn run(
         progress.update(
             done,
             &format!(
-                "taking over: {done} of {total} message(s), {} new to the archive",
+                "taking over: {done} of {total} message(s), {} stored",
                 tally.stored
             ),
         );

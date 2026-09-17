@@ -91,7 +91,7 @@ $ cd /home/john
 $ ossuary ingest photos mail docs
 archive /home/john/archive
 taking in 3 paths
-5 file(s) new to the archive; 35 claim(s) written as run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+5 file(s) stored; 35 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4
 ```
 
 Seven claims per file: its path, its name, the host, the run, its size,
@@ -101,7 +101,7 @@ twice:
 
 ```console
 $ ossuary ingest photos mail docs
-0 file(s) new to the archive, 5 unchanged since the last run and left in peace; nothing new to record
+0 file(s) stored, 5 unchanged since the last run; 0 claims written
 ```
 
 `--tag holiday` puts your own word on everything a run records, and

@@ -49,7 +49,7 @@ impl Tally {
     pub fn verdict(&self, dry_run: bool) -> String {
         if dry_run {
             let left = if self.left > 0 {
-                format!(", {} on the record before and left in peace", self.left)
+                format!(", {} already on record", self.left)
             } else {
                 String::new()
             };
@@ -60,22 +60,19 @@ impl Tally {
             );
         }
         let mut parts = vec![format!(
-            "{} new to the archive",
+            "{} stored",
             counted(self.stored, "message", "messages")
         )];
         if self.known > 0 {
-            parts.push(format!("{} already held", self.known));
+            parts.push(format!("{} already stored", self.known));
         }
         if self.left > 0 {
-            parts.push(format!(
-                "{} on the record before and left in peace",
-                self.left
-            ));
+            parts.push(format!("{} already on record", self.left));
         }
         let record = if self.claims > 0 {
-            format!("{} claim(s) written as run {}", self.claims, self.run)
+            format!("{} claim(s) written, run {}", self.claims, self.run)
         } else {
-            "nothing new to record".to_string()
+            "0 claims written".to_string()
         };
         format!("{}; {record}", parts.join(", "))
     }
@@ -103,25 +100,21 @@ mod tests {
         tally.left = 2;
         assert_eq!(
             tally.verdict(true),
-            "would fetch 1 message, 2 on the record before and left in peace; nothing written"
+            "would fetch 1 message, 2 already on record; nothing written"
         );
     }
 
     #[test]
     fn a_run_names_each_clean_outcome_and_its_run() {
         let mut tally = tally();
-        assert_eq!(
-            tally.verdict(false),
-            "0 messages new to the archive; nothing new to record"
-        );
+        assert_eq!(tally.verdict(false), "0 messages stored; 0 claims written");
         tally.stored = 2;
         tally.known = 1;
         tally.left = 4;
         tally.claims = 11;
         assert_eq!(
             tally.verdict(false),
-            "2 messages new to the archive, 1 already held, 4 on the record before and left in peace; \
-             11 claim(s) written as run run-0001"
+            "2 messages stored, 1 already stored, 4 already on record; 11 claim(s) written, run run-0001"
         );
     }
 }
