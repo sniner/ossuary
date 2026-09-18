@@ -95,7 +95,11 @@ enum Command {
     /// stays, and --as-of before the run still shows it where it was.
     /// What the walk did not cover it does not judge: a directory that
     /// would not open, a path config.toml excludes, a root that is a
-    /// single file. Not seen is not gone.
+    /// single file, and a directory it meets not one file under while
+    /// places stand on record there, which is what a mount point looks
+    /// like with nothing mounted. Not seen is not gone. --collect judges
+    /// nothing at all: for a directory that is emptied after every run,
+    /// an inbox, whose files are meant to live on in the archive.
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
@@ -110,6 +114,11 @@ enum Command {
         /// Look at every file anew, remembered or not
         #[arg(long)]
         full: bool,
+
+        /// Take in what is there and judge nothing gone; for a directory
+        /// that is emptied after it was taken in
+        #[arg(long)]
+        collect: bool,
 
         /// Count and measure what would go in and what would be taken
         /// back, and write nothing; the number a forgotten ISO shows up in
@@ -583,8 +592,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             paths,
             tags,
             full,
+            collect,
             dry_run,
-        } => ingest(&cli.archive, &paths, &tags, full, dry_run, quiet),
+        } => ingest(&cli.archive, &paths, &tags, full, collect, dry_run, quiet),
         Command::Extract {
             name,
             subjects,
@@ -790,11 +800,16 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "three switches of the verb and one of the run, each one flag the user set"
+)]
 fn ingest(
     root: &Path,
     paths: &[PathBuf],
     tags: &[String],
     full: bool,
+    collect: bool,
     dry_run: bool,
     quiet: bool,
 ) -> Result<ExitCode> {
@@ -821,15 +836,21 @@ fn ingest(
         Some(archive.ingest_memory()?)
     };
     // What the record stands by, caught up to the log: the places the
-    // walk holds what it met against.
-    let mut record = archive.index()?;
-    catch_up(&mut record, &archive, quiet)?;
+    // walk holds what it met against. Collecting holds nothing against
+    // anything, and needs no index for it.
+    let record = if collect {
+        None
+    } else {
+        let mut record = archive.index()?;
+        catch_up(&mut record, &archive, quiet)?;
+        Some(record)
+    };
     let sweep = Sweep {
         host: &host,
         tags,
         excludes: archive.config().excludes(),
         memory: memory.as_ref(),
-        record: Some(&record),
+        record: record.as_ref(),
     };
     if dry_run {
         return previewed(paths, &sweep, quiet);
@@ -837,10 +858,16 @@ fn ingest(
     let run = ossuary_core::ingest(archive.content(), archive.log(), paths, &sweep)?;
 
     // Each archive met is named where the run talks; the verdict keeps
-    // the count.
+    // the count. So is each root met empty.
     if !quiet {
         for path in &run.archives {
             eprintln!("{}: ossuary archive, skipped", path.display());
+        }
+        for path in &run.empty {
+            eprintln!(
+                "{}: no file met there, the places on record under it stay; a directory truly emptied is told from a mount with nothing mounted by the next run that meets a file, or by `ossuary retract`",
+                path.display()
+            );
         }
     }
     let mut verdict = vec![format!("{} file(s) stored", run.stored)];
@@ -866,6 +893,13 @@ fn ingest(
         verdict.push(format!(
             "{} no longer at their place, taken off the record",
             run.gone
+        ));
+    }
+    if !run.empty.is_empty() {
+        verdict.push(format!(
+            "{} director{} met empty, nothing judged there",
+            run.empty.len(),
+            if run.empty.len() == 1 { "y" } else { "ies" }
         ));
     }
     if !run.archives.is_empty() {
@@ -896,6 +930,12 @@ fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCo
         for path in &run.archives {
             eprintln!("{}: ossuary archive, skipped", path.display());
         }
+        for path in &run.empty {
+            eprintln!(
+                "{}: no file met there, the places on record under it would stay",
+                path.display()
+            );
+        }
     }
     let mut verdict = vec![format!(
         "would take in {} file(s), {}",
@@ -912,6 +952,13 @@ fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCo
         verdict.push(format!(
             "{} no longer at their place, would be taken off the record",
             run.gone.len()
+        ));
+    }
+    if !run.empty.is_empty() {
+        verdict.push(format!(
+            "{} director{} met empty, nothing would be judged there",
+            run.empty.len(),
+            if run.empty.len() == 1 { "y" } else { "ies" }
         ));
     }
     if !run.archives.is_empty() {

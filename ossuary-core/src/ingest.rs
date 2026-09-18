@@ -61,6 +61,10 @@ pub struct Ingested {
     /// Files no longer at a place the record stood by: their sightings
     /// taken back, one retraction each.
     pub gone: usize,
+    /// Directory roots the walk met no file under while the record
+    /// stands by places there — a mount point with nothing mounted,
+    /// most likely. Nothing under them was judged.
+    pub empty: Vec<PathBuf>,
     /// Archives the walk met and left whole, each counted at its root —
     /// an archive never takes in an archive.
     pub archives: Vec<PathBuf>,
@@ -90,7 +94,9 @@ pub struct Sweep<'a> {
     /// The record's standing places, caught up to the log — usually
     /// [`Archive::index`](crate::Archive::index) after a fold. What
     /// stands under a walked root and was not met is gone, and its
-    /// sighting is taken back. `None` looks for nothing gone.
+    /// sighting is taken back. `None` looks for nothing gone: the run
+    /// only collects, the way a directory emptied after every run
+    /// wants it.
     pub record: Option<&'a Index>,
 }
 
@@ -129,6 +135,7 @@ where
         unchanged: 0,
         excluded: 0,
         gone: 0,
+        empty: Vec::new(),
         archives: Vec::new(),
         failed: Vec::new(),
     };
@@ -138,10 +145,11 @@ where
     // here say only what was being done when it went wrong.
     let gathered = gather(roots, sweep.excludes)?;
     result.excluded = gathered.excluded;
-    let gone = match sweep.record {
-        Some(record) => gone(record, &gathered, sweep)?,
-        None => Vec::new(),
+    let Judged { gone, empty } = match sweep.record {
+        Some(record) => judge(record, &gathered, sweep)?,
+        None => Judged::default(),
     };
+    result.empty = empty;
     if let Some(memory) = sweep.memory {
         memory.begin()?;
     }
@@ -209,21 +217,40 @@ where
     Ok(result)
 }
 
+/// What holding the record against a walk found: the places to take
+/// back, and the roots that could not be judged.
+#[derive(Debug, Default)]
+struct Judged {
+    /// Places no file was met at, each with the file that stood there.
+    gone: Vec<(PathBuf, Subject)>,
+    /// Walked roots with places on record and not one file met.
+    empty: Vec<PathBuf>,
+}
+
 /// Every place the record stands by under a walked root where the walk
 /// met no file: what a run takes back. A place is left alone — not
 /// seen is not gone — when it lies under anything the walk could not
 /// read, under a path the excludes leave out, or when the record never
-/// saw the file on this host at all.
-fn gone(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Vec<(PathBuf, Subject)>> {
+/// saw the file on this host at all. And a root the walk met not one
+/// file under, while the record stands by places there, is not judged
+/// at all: that is what a mount point looks like with nothing mounted,
+/// and a directory truly emptied is told apart from it by the next run
+/// that meets a file, or by `retract`.
+fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judged> {
     let met: std::collections::BTreeSet<&Path> =
         gathered.files.iter().map(PathBuf::as_path).collect();
     let host = Value::String(sweep.host.to_string());
-    let mut gone = Vec::new();
+    let mut judged = Judged::default();
     for root in &gathered.walked {
         let Some(place) = root.to_str() else {
             continue;
         };
-        for (path, subject) in record.under(place)? {
+        let standing = record.under(place)?;
+        if !standing.is_empty() && !met.iter().any(|path| path.starts_with(root)) {
+            judged.empty.push(root.clone());
+            continue;
+        }
+        for (path, subject) in standing {
             let path = PathBuf::from(path);
             if met.contains(path.as_path()) {
                 continue;
@@ -249,10 +276,10 @@ fn gone(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Vec<(P
             {
                 continue;
             }
-            gone.push((path, subject));
+            judged.gone.push((path, subject));
         }
     }
-    Ok(gone)
+    Ok(judged)
 }
 
 /// Every named root gathered, before anything is read: the walks done,
@@ -357,6 +384,9 @@ pub struct Previewed {
     /// Files no longer at a place the record stands by — the sightings
     /// the run would take back.
     pub gone: Vec<PathBuf>,
+    /// Directory roots the walk met no file under while the record
+    /// stands by places there; nothing under them would be judged.
+    pub empty: Vec<PathBuf>,
     /// Archives the walk met — left whole, run or rehearsal alike.
     pub archives: Vec<PathBuf>,
     /// What could not even be looked at, and why.
@@ -380,19 +410,17 @@ where
     I::Item: AsRef<Path>,
 {
     let gathered = gather(roots, sweep.excludes)?;
-    let gone = match sweep.record {
-        Some(record) => gone(record, &gathered, sweep)?
-            .into_iter()
-            .map(|(path, _)| path)
-            .collect(),
-        None => Vec::new(),
+    let Judged { gone, empty } = match sweep.record {
+        Some(record) => judge(record, &gathered, sweep)?,
+        None => Judged::default(),
     };
     let mut result = Previewed {
         files: 0,
         bytes: 0,
         unchanged: 0,
         excluded: gathered.excluded,
-        gone,
+        gone: gone.into_iter().map(|(path, _)| path).collect(),
+        empty,
         archives: gathered.archives,
         failed: gathered.failed,
     };
@@ -1859,6 +1887,7 @@ mod tests {
         fs::create_dir_all(&tree).unwrap();
         let tree = tree.canonicalize().unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
         let host = "atlas.example.net";
         let excludes = none();
         ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
@@ -1868,6 +1897,55 @@ mod tests {
         let rehearsal = preview([&tree], &sweep(host, &excludes, None, Some(&record))).unwrap();
 
         assert_eq!(rehearsal.gone, vec![tree.join("a.txt")]);
-        assert_eq!(places_under(&log, &tree).len(), 1, "nothing written");
+        assert!(rehearsal.empty.is_empty());
+        assert_eq!(places_under(&log, &tree).len(), 2, "nothing written");
+    }
+
+    #[test]
+    fn a_root_met_empty_judges_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        // The walk resolves its roots; the test asks by the resolved name.
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
+        let host = "atlas.example.net";
+        let excludes = none();
+        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+
+        // What a mount point looks like with nothing mounted.
+        fs::remove_file(tree.join("a.txt")).unwrap();
+        fs::remove_file(tree.join("b.txt")).unwrap();
+        let record = record_of(&log);
+        let rehearsal = preview([&tree], &sweep(host, &excludes, None, Some(&record))).unwrap();
+        assert!(rehearsal.gone.is_empty());
+        assert_eq!(rehearsal.empty, vec![tree.clone()]);
+        let again = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, None, Some(&record)),
+        )
+        .unwrap();
+
+        assert_eq!(again.gone, 0, "not one file met: nothing judged");
+        assert_eq!(again.empty, vec![tree.clone()]);
+        assert_eq!(places_under(&log, &tree).len(), 2);
+
+        // One file back: the walk met something, and judges the rest.
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
+        let record = record_of(&log);
+        let later = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, None, Some(&record)),
+        )
+        .unwrap();
+        assert_eq!(later.gone, 1);
+        assert!(later.empty.is_empty());
+        assert_eq!(places_under(&log, &tree).len(), 1);
     }
 }
