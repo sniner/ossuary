@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use ossuary_core::{Audit, Cause, Chain, LogAudit, StoreAudit, Timestamp};
+use ossuary_core::{Audit, Cause, Chain, Fixity, LogAudit, StoreAudit, Timestamp};
 
 use crate::{open, say};
 
@@ -102,8 +102,55 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
             return Ok(());
         }
     }
+    if !twin_block(out, audit, verbose)? {
+        return Ok(());
+    }
     say(out, &verdict(audit))?;
     Ok(())
+}
+
+/// Files held by both stores: an observation with the way to tidy it,
+/// and — where the original is the damaged copy and the derived one
+/// sound — the way to make the original good again.
+fn twin_block(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<bool> {
+    if audit.twins.is_empty() {
+        return Ok(true);
+    }
+    let names: Vec<String> = audit
+        .twins
+        .iter()
+        .map(|twin| twin.digest.as_str().to_string())
+        .collect();
+    let heading = format!(
+        "{} file(s) held by both stores, not a finding; `ossuary maintain weed` takes the copy in derived/ out",
+        names.len()
+    );
+    if !listing(out, &heading, &names, verbose)? {
+        return Ok(false);
+    }
+    let repairable: Vec<String> = audit
+        .twins
+        .iter()
+        .filter(|twin| twin.repairable())
+        .map(|twin| twin.digest.as_str().to_string())
+        .collect();
+    if repairable.is_empty() {
+        return Ok(true);
+    }
+    let heading = format!(
+        "{} of them damaged in content/ and sound in derived/; `ossuary maintain weed --repair` stores the sound bytes in the original's place",
+        repairable.len()
+    );
+    listing(out, &heading, &repairable, verbose)
+}
+
+/// A copy's fixity as the one word the JSON answer uses for it.
+fn fixity_word(fixity: &Fixity) -> &'static str {
+    match fixity {
+        Fixity::Sound => "sound",
+        Fixity::Damaged => "damaged",
+        Fixity::Unreadable(_) => "unreadable",
+    }
 }
 
 /// The chain, when it is not one: every piece named with its ends and
@@ -418,6 +465,10 @@ fn listing(out: &mut impl Write, heading: &str, ids: &[String], verbose: bool) -
 
 /// One JSON object per finding or observation, ready for jq — a sound,
 /// fully recorded archive answers an empty stream.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one push per kind of finding, in the order the report reads; splitting it would only hide that order"
+)]
 fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     use serde_json::json;
 
@@ -462,6 +513,14 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
         for subject in unrecorded {
             lines.push(json!({"observation": "unrecorded", "store": place, "subject": subject}));
         }
+    }
+    for twin in &audit.twins {
+        lines.push(json!({
+            "observation": "twin",
+            "subject": twin.digest.as_str(),
+            "content": fixity_word(&twin.content),
+            "derived": fixity_word(&twin.derived),
+        }));
     }
     if audit.log.chains.len() > 1 {
         for (index, chain) in audit.log.chains.iter().enumerate() {

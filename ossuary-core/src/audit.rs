@@ -19,6 +19,14 @@
 //! a head was lost and begun anew, and the claims the lost head held
 //! went with it — a finding, though the chain cannot say how much.
 //!
+//! Bytes held by both stores are an observation of their own: a file
+//! that was won as a derived file first and taken in as an original
+//! later stands in `derived/` and `content/` alike, under the same name,
+//! and the log never says which store answers for it. Nothing is wrong
+//! with that; the audit notes each such twin with how both copies fared
+//! (a [`Twin`]), because the derived copy is the one thing an archive
+//! holds that it can let go of without loss, and `weed` does that.
+//!
 //! A break is closed by a mend, a segment of no claims that names the
 //! two ends it joins (`Log::mend`). The audit applies every mend it
 //! meets before it counts: a break with a mend in front of it is not a
@@ -61,8 +69,62 @@ pub struct StoreAudit {
     /// Every name the store holds, damaged or not — what the presence
     /// check runs against. A damaged entry is still held; it is already
     /// a finding once, and missing on top would count the same wound
-    /// twice.
-    held: BTreeSet<String>,
+    /// twice. Keyed by the name as the claims spell it, with the digest
+    /// it was walked under beside it.
+    held: BTreeMap<String, Digest>,
+}
+
+impl StoreAudit {
+    /// What the walk established about each entry that is not sound —
+    /// every name not in the map verified.
+    fn troubles(&self) -> BTreeMap<&str, Fixity> {
+        let mut troubles = BTreeMap::new();
+        for name in &self.damaged {
+            troubles.insert(name.as_str(), Fixity::Damaged);
+        }
+        for (name, error) in &self.unreadable {
+            troubles.insert(name.as_str(), Fixity::Unreadable(error.clone()));
+        }
+        troubles
+    }
+}
+
+/// What one look at one entry established: the bytes are what the name
+/// says, they are not, or nothing could be established at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fixity {
+    /// Read whole and re-hashed: the name is true of its bytes.
+    Sound,
+    /// Read whole and re-hashed: the name is not.
+    Damaged,
+    /// Not read, with what stood in the way. Not damaged: the entry
+    /// answers for its bytes, not for a permission.
+    Unreadable(String),
+}
+
+/// One content held by both stores: won as a derived file, and taken in
+/// as an original as well, in whichever order. The log speaks of the
+/// subject, never of a store, so the two copies are one file to it, and
+/// `content/` answers for it first. Which is why the derived copy can go
+/// — once both are known to be sound, or the one in `content/` is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Twin {
+    /// The name both copies are filed under.
+    pub digest: Digest,
+    /// How the copy in `content/` fared.
+    pub content: Fixity,
+    /// How the copy in `derived/` fared.
+    pub derived: Fixity,
+}
+
+impl Twin {
+    /// Whether the one in `content/` is the damaged copy and the one in
+    /// `derived/` the sound one: the case where `weed` with repair puts
+    /// the sound bytes back under the original's name.
+    #[must_use]
+    pub fn repairable(&self) -> bool {
+        self.content == Fixity::Damaged && self.derived == Fixity::Sound
+    }
 }
 
 /// Audit one blob store: walk it whole, verify every entry.
@@ -77,13 +139,13 @@ pub fn audit_store(store: &Store) -> Result<StoreAudit> {
         checked: 0,
         damaged: Vec::new(),
         unreadable: Vec::new(),
-        held: BTreeSet::new(),
+        held: BTreeMap::new(),
     };
     for entry in store.entries() {
         let entry = entry?;
         let name = entry.digest().as_str().to_string();
         report.checked += 1;
-        report.held.insert(name.clone());
+        report.held.insert(name.clone(), entry.digest().clone());
         match store.verify(&entry) {
             Ok(true) => {}
             Ok(false) => report.damaged.push(name),
@@ -659,6 +721,10 @@ pub struct Audit {
     /// Entries of `derived/` no claim speaks of. An observation, not a
     /// finding.
     pub unrecorded_derived: Vec<String>,
+    /// Contents held by both stores, each with how its two copies fared.
+    /// An observation, not a finding: what is wrong with either copy
+    /// already stands as one on its store.
+    pub twins: Vec<Twin>,
 }
 
 impl Audit {
@@ -670,21 +736,37 @@ impl Audit {
         let missing: Vec<String> = log
             .referenced
             .iter()
-            .filter(|name| !content.held.contains(*name) && !derived.held.contains(*name))
+            .filter(|name| !content.held.contains_key(*name) && !derived.held.contains_key(*name))
             .cloned()
             .collect();
         let unrecorded = |store: &StoreAudit| -> Vec<String> {
             store
                 .held
-                .iter()
+                .keys()
                 .filter(|name| !log.referenced.contains(*name))
                 .cloned()
                 .collect()
         };
+        let content_troubles = content.troubles();
+        let derived_troubles = derived.troubles();
+        let fixity = |troubles: &BTreeMap<&str, Fixity>, name: &str| {
+            troubles.get(name).cloned().unwrap_or(Fixity::Sound)
+        };
+        let twins = content
+            .held
+            .iter()
+            .filter(|(name, _)| derived.held.contains_key(*name))
+            .map(|(name, digest)| Twin {
+                digest: digest.clone(),
+                content: fixity(&content_troubles, name),
+                derived: fixity(&derived_troubles, name),
+            })
+            .collect();
         Audit {
             missing,
             unrecorded_content: unrecorded(&content),
             unrecorded_derived: unrecorded(&derived),
+            twins,
             content,
             derived,
             log,
@@ -1383,6 +1465,53 @@ mod tests {
         );
         assert!(audit.is_sound());
         assert!(audit.unrecorded_derived.is_empty());
+        assert!(audit.twins.is_empty());
+    }
+
+    #[test]
+    fn a_content_held_by_both_stores_is_a_twin_and_not_a_finding() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let subject = take(&archive, b"an attachment, later taken in");
+        archive
+            .derived()
+            .add(b"an attachment, later taken in")
+            .unwrap();
+
+        let audit = run(&archive);
+
+        assert!(audit.is_sound());
+        assert_eq!(
+            audit.twins,
+            vec![Twin {
+                digest: Digest::parse(subject.as_str()).unwrap(),
+                content: Fixity::Sound,
+                derived: Fixity::Sound,
+            }]
+        );
+        assert!(!audit.twins[0].repairable());
+    }
+
+    #[test]
+    fn a_twin_carries_how_each_copy_fared() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"sound where it was won");
+        let (_, derived) = archive.derived().add(b"sound where it was won").unwrap();
+        let content = archive
+            .content()
+            .find(derived.digest())
+            .unwrap()
+            .expect("taken in");
+        tamper(&content, b"sound where it was won?");
+
+        let audit = run(&archive);
+
+        assert_eq!(audit.findings(), 1, "the damage is the content store's");
+        assert_eq!(audit.twins.len(), 1);
+        assert_eq!(audit.twins[0].content, Fixity::Damaged);
+        assert_eq!(audit.twins[0].derived, Fixity::Sound);
+        assert!(audit.twins[0].repairable());
     }
 
     #[test]

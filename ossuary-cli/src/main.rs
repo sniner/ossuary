@@ -515,7 +515,9 @@ enum Command {
     /// joins the pieces afterwards, and a break so mended is noted, not
     /// counted. Files held that no claim speaks of are noted, not counted
     /// either: an interrupted run leaves such files, and the next arrival
-    /// records them. The answer counts what it finds; up to a handful of
+    /// records them. So are files held by both stores, won as a derived
+    /// file and taken in as an original too; `maintain weed` takes the
+    /// copy in derived/ out. The answer counts what it finds; up to a handful of
     /// names stands right there, --verbose spells out every one, and
     /// --json answers one object per finding for a script. Reading the
     /// whole archive takes the time it takes; that is the point. Exits 0
@@ -526,7 +528,8 @@ enum Command {
         #[arg(short, long)]
         json: bool,
     },
-    /// Repairs that add to the archive and rewrite nothing
+    /// Repairs that add to the archive and rewrite nothing, and the one
+    /// taking-out that loses nothing
     #[command(subcommand)]
     Maintain(maintain::Maintenance),
     // An outside verb: `ossuary NAME …` becomes `ossuary-NAME …` from
@@ -664,7 +667,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             quiet,
         ),
         Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
-        Command::Maintain(task) => maintain::run(&cli.archive, &task, quiet),
+        Command::Maintain(task) => maintain::run(&cli.archive, &task, cli.verbose, quiet),
         Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }
 }

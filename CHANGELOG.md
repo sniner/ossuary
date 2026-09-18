@@ -5,6 +5,20 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary maintain weed`** takes out of `derived/` what `content/` holds as well: a file won as
+  an attachment first and taken in as an original later stands in both stores under the same name,
+  and only the original ever answers. Both copies are read whole and proved against their name
+  before anything goes; a damaged derived copy of a sound original goes too. Where the original is
+  the damaged one and the derived copy sound, the file stays and says so, and `--repair` sets the
+  damaged original aside under its `.corrupt` name and stores the sound bytes in its place. Damaged
+  in both stores, or unreadable, it stays. `--dry-run` says what would go; `--verbose` names every
+  file taken out. Exits 1 when a file was left standing
+- **`ossuary audit` notes files held by both stores**, not as a finding, with the way to `maintain
+  weed`, and says how many of them have a damaged original beside a sound derived copy. `--json`
+  answers each as `{"observation":"twin", …}` with how both copies fared
+
 ## [0.4.1] - 2026-09-18
 
 ### Changed

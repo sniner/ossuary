@@ -92,7 +92,15 @@ do not mingle, so nothing that ever maintains `derived/` can reach the
 originals. The same bytes may lawfully stand in both stores — an invoice
 taken in as a file and won again as an attachment — and a subject names
 content wherever it lies; the log neither knows nor cares which store
-answers.
+answers. A reader asks `content/` first. So the copy in `derived/` of
+what `content/` holds is the one thing an archive can let go of without
+loss, and `ossuary maintain weed` does, after proving both copies
+against their name; the one way bytes ever travel from `derived/` into
+`content/` is the repair that same verb offers, when the original is
+the damaged copy and the derived one sound — the damaged original is
+set aside under its store's quarantine name, never deleted, and the
+proven bytes are stored under the name `content/` already answered
+for.
 
 Entries in both stores carry no suffix, because there is nothing truthful
 to write: the stores are heterogeneous by design, and what a blob *is*

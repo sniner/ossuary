@@ -124,6 +124,15 @@ pub enum Error {
     #[error("not a glob pattern: {pattern:?}; {trouble}")]
     Pattern { pattern: String, trouble: String },
 
+    /// The derived copy of a twin read back as other bytes while `weed`
+    /// was storing it in the damaged original's place. The original
+    /// stays set aside, and what was read stands in `content/` under its
+    /// own name, where the next audit notes it as unrecorded.
+    #[error(
+        "{0}: the copy in derived/ read back as other bytes; the damaged original stays set aside, what was read stands in content/ under its own name"
+    )]
+    TwinChanged(String),
+
     /// The archive is written in a generation this build does not know.
     ///
     /// Written by a newer ossuary, and healthy: a layout this build has
