@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
 ### Changed
 
 - **`ossuary ingest` notices what is gone.** A file no longer at a place the record stands by, under a
