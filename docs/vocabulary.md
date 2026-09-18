@@ -131,9 +131,18 @@ need.
 - meaning: the real place a file sat when it was taken in — absolute,
   symlinks and `..` resolved, the name included: one sighting, one
   atomic value. Places accrete; the machine each one is on is
-  `prov:host`, said in the same breath
+  `prov:host`, said in the same breath. A standing place is what makes
+  a file part of the present: `find` answers only with files a place
+  stands on, or that were won out of one (`derive:derived-from`);
+  `--all` asks for every file held
 - value: string, a path
 - written by: ingest
+- taken back by: ingest, when a later run over the same directory on
+  the same host meets no file there — the file no longer lies at that
+  place. What the run did not cover it does not judge: a directory
+  that would not open, a path the excludes leave out, a root named as
+  a single file. `--as-of` before the run still shows the file where
+  it was
 
 ### file:name
 
@@ -313,7 +322,8 @@ need.
   or a folder alone (`"/old mail"`, no account behind it). The
   server's numbering of a message is not here and nowhere on the
   record: it is temporary, and lives in the fetcher's own memory in
-  `cache/`
+  `cache/`. A standing place here makes a message part of the present
+  the way `file:path` makes a file one
 - value: string
 - written by: `ossuary mailvault`
 

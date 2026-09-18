@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
-use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, IngestMemory, Subject, Value};
+use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, Presence, Subject, Sweep, Value};
 
 mod audit;
 mod browse;
@@ -87,6 +87,15 @@ enum Command {
     /// --dry-run walks, counts and measures with the same excludes and
     /// the same memory, and writes nothing: the summed size is where a
     /// forgotten ISO shows itself before it is hashed.
+    ///
+    /// A run also notices what is gone. Every place the record stands by
+    /// under a named directory, where the walk met no file, is taken
+    /// back: the file no longer lies there, and the record says so from
+    /// now on. The bytes stay, everything else known about the file
+    /// stays, and --as-of before the run still shows it where it was.
+    /// What the walk did not cover it does not judge: a directory that
+    /// would not open, a path config.toml excludes, a root that is a
+    /// single file. Not seen is not gone.
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
@@ -102,8 +111,8 @@ enum Command {
         #[arg(long)]
         full: bool,
 
-        /// Count and measure what would go in, and write nothing; the
-        /// number a forgotten ISO shows up in
+        /// Count and measure what would go in and what would be taken
+        /// back, and write nothing; the number a forgotten ISO shows up in
         #[arg(long)]
         dry_run: bool,
     },
@@ -320,6 +329,13 @@ enum Command {
     /// full names alone, one per line, ready to pipe into `about`,
     /// `standing` or `get`; --json answers one JSON object per match, the
     /// values as lists.
+    ///
+    /// A file answers only while it still lies somewhere: a place of its
+    /// own on the record, or, for what a tool won out of another file,
+    /// its origin's place. A file taken in and later gone from every
+    /// place it was seen at is still held, and answers --as-of a day it
+    /// lay there, but not the present; --all asks for every file the
+    /// archive holds, at a place or not.
     Find {
         /// attribute=value; repeat to demand all of them at once. A bare
         /// attribute (or namespace:) picks what is shown instead
@@ -345,6 +361,10 @@ enum Command {
         /// day's end
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
+
+        /// Every file the archive holds, at a place or not
+        #[arg(long)]
+        all: bool,
     },
     /// Every attribute standing on the record, the words a question can
     /// be asked in
@@ -619,6 +639,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             id,
             json,
             as_of,
+            all,
         } => find(
             &cli.archive,
             &terms,
@@ -626,6 +647,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             id,
             json,
             as_of.as_deref(),
+            if all {
+                Presence::Held
+            } else {
+                Presence::Placed
+            },
             quiet,
         ),
         Command::Attributes {
@@ -794,18 +820,21 @@ fn ingest(
     } else {
         Some(archive.ingest_memory()?)
     };
-    if dry_run {
-        return previewed(&archive, paths, &host, memory.as_ref(), quiet);
-    }
-    let run = ossuary_core::ingest(
-        archive.content(),
-        archive.log(),
-        paths,
-        &host,
+    // What the record stands by, caught up to the log: the places the
+    // walk holds what it met against.
+    let mut record = archive.index()?;
+    catch_up(&mut record, &archive, quiet)?;
+    let sweep = Sweep {
+        host: &host,
         tags,
-        archive.config().excludes(),
-        memory.as_ref(),
-    )?;
+        excludes: archive.config().excludes(),
+        memory: memory.as_ref(),
+        record: Some(&record),
+    };
+    if dry_run {
+        return previewed(paths, &sweep, quiet);
+    }
+    let run = ossuary_core::ingest(archive.content(), archive.log(), paths, &sweep)?;
 
     // Each archive met is named where the run talks; the verdict keeps
     // the count.
@@ -833,6 +862,12 @@ fn ingest(
     if run.excluded > 0 {
         verdict.push(format!("{} path(s) excluded by config.toml", run.excluded));
     }
+    if run.gone > 0 {
+        verdict.push(format!(
+            "{} no longer at their place, taken off the record",
+            run.gone
+        ));
+    }
     if !run.archives.is_empty() {
         verdict.push(format!("{} archive(s) skipped", run.archives.len()));
     }
@@ -855,14 +890,8 @@ fn ingest(
 
 /// The --dry-run answer: [`ossuary_core::preview`]'s findings, worded
 /// like the run they spare.
-fn previewed(
-    archive: &Archive,
-    paths: &[PathBuf],
-    host: &str,
-    memory: Option<&IngestMemory>,
-    quiet: bool,
-) -> Result<ExitCode> {
-    let run = ossuary_core::preview(paths, host, archive.config().excludes(), memory)?;
+fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCode> {
+    let run = ossuary_core::preview(paths, sweep)?;
     if !quiet {
         for path in &run.archives {
             eprintln!("{}: ossuary archive, skipped", path.display());
@@ -878,6 +907,12 @@ fn previewed(
     }
     if run.excluded > 0 {
         verdict.push(format!("{} path(s) excluded by config.toml", run.excluded));
+    }
+    if !run.gone.is_empty() {
+        verdict.push(format!(
+            "{} no longer at their place, would be taken off the record",
+            run.gone.len()
+        ));
     }
     if !run.archives.is_empty() {
         verdict.push(format!("{} archive(s) skipped", run.archives.len()));
@@ -1429,6 +1464,10 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Project
     Ok((filters, projections))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every one is a switch the user set on the command line, passed through as it came"
+)]
 fn find(
     root: &Path,
     terms: &[String],
@@ -1436,6 +1475,7 @@ fn find(
     id_only: bool,
     json: bool,
     as_of: Option<&str>,
+    presence: Presence,
     quiet: bool,
 ) -> Result<ExitCode> {
     if id_only && json {
@@ -1453,9 +1493,9 @@ fn find(
     let index = index_at(&archive, as_of, quiet)?;
     // Only bare attributes asked: nothing narrows, every file answers.
     let subjects = if filters.is_empty() && missing.is_empty() {
-        index.subjects()?
+        index.subjects(presence)?
     } else {
-        index.find(&filters, missing)?
+        index.find(&filters, missing, presence)?
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();

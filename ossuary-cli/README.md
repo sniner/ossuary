@@ -30,14 +30,14 @@ making the run a failure.
 | | |
 |---|---|
 | `init` | begin an empty archive — or complete one already standing. `--algorithm` is the one choice made for good, and only when the archive begins |
-| `ingest` | take directory trees and single files in; everything of one call arrives as one run. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--dry-run` counts and measures what would go in and writes nothing |
+| `ingest` | take directory trees and single files in; everything of one call arrives as one run, and a file no longer at a place the record stands by has that place taken back. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--dry-run` counts and measures what would go in and what would be taken back, and writes nothing |
 | `extract` | run extractors over what they have not examined — see below. `--dry-run` shows what named files' examination would record, and writes nothing |
 | `annotate` | put `user:tag` and `user:comment` on files already on the record |
 | `retract` | take a statement back: it no longer stands, the record keeps it. Files and `attribute=value` pairs mix freely; `attribute=..` takes back every standing value; `--dry-run` says what would fall |
 | `seal` | close the open segment; its claims become part of the sealed log |
 | `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
 | `standing` | what stands on one file — the outcome after retractions, where `about` tells the story. Attributes or a `namespace:` narrow it; exactly one attribute answers its values bare, one per line. Exits 1 when nothing stands, so a script can test for it |
-| `find` | every file on which all the terms hold, shown with the fields the question named |
+| `find` | every file on which all the terms hold, shown with the fields the question named. Only files still lying somewhere answer; `--all` asks for every file held, `--as-of TIME` for a day's knowledge |
 | `attributes` | every attribute standing on the record, sorted, one per line — the words a question can be asked in. Namespaces like `exif:` narrow it; `--count` puts the number of files each stands on in front |
 | `ls`, `tree` | what stands at one place, one level of it — or everything below it |
 | `id` | the name a file would answer to, and whether the archive already holds it. Nothing is taken in |

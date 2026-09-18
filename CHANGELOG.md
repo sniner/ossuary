@@ -5,7 +5,23 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary ingest` notices what is gone.** A file no longer at a place the record stands by, under a
+  directory the run walked, has that `file:path` taken back: one retraction under the run's own
+  source, nothing erased. The bytes stay, everything else known about the file stays, and
+  `--as-of` before the run still shows it where it was. What the walk did not cover is not judged:
+  a directory that would not open, a path config.toml excludes, a root named as a single file, a
+  place last seen on another host. `--dry-run` counts what would be taken back. The verdict reads
+  `2 no longer at their place, taken off the record`
+- **`ossuary find` answers with the present.** Only files still lying somewhere answer: a
+  `file:path` or `mailbox:place` standing on them, or, for what a tool won out of another file, on
+  their origin. A file gone from every place it was seen at is still held and still answers
+  `--as-of` a day it lay there, but not a question about today
+
 ### Added
+
+- **`ossuary find --all`** asks for every file the archive holds, at a place or not
 
 - **`ossuary maintain weed`** takes out of `derived/` what `content/` holds as well: a file won as
   an attachment first and taken in as an original later stands in both stores under the same name,

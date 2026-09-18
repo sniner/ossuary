@@ -287,10 +287,13 @@ mod tests {
             archive.content(),
             archive.log(),
             [&file],
-            "atlas.example.net",
-            &[],
-            &crate::Excludes::none(),
-            None,
+            &crate::Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &crate::Excludes::none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
         Subject::parse(archive.content().algorithm().hash(bytes).as_str()).unwrap()

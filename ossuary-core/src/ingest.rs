@@ -14,6 +14,16 @@
 //! a file whose place, size and mtime the last run already saw is not
 //! read, not hashed, and gets no claims. The memory only ever informs the
 //! effort, never the truth — "I did not look again" is always allowed.
+//!
+//! A walk also notices what is gone. The record stands by every place a
+//! file was once seen at, and a place the walk covered whole and did not
+//! meet the file at is a place the file no longer lies at: the run takes
+//! that sighting back — a retraction of `file:path`, under the run's own
+//! source, one more claim in the log and never an erasure. The bytes stay,
+//! every other claim stays, and `--as-of` before the run still shows the
+//! file where it was. What the walk did not cover it does not judge: a
+//! directory that would not open, a path the excludes leave out, a root
+//! that is a single file — not seen is not gone.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,9 +34,10 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::accession::{Sighting, admit, known_attribute, record};
-use crate::claim::{Source, Timestamp};
+use crate::claim::{Claim, Source, Subject, Timestamp, Value};
 use crate::config::Excludes;
 use crate::error::{Error, Result};
+use crate::index::Index;
 use crate::log::Log;
 
 /// What one ingest run did.
@@ -47,6 +58,9 @@ pub struct Ingested {
     pub unchanged: usize,
     /// Paths the excludes left out — a directory counts once, unwalked.
     pub excluded: usize,
+    /// Files no longer at a place the record stood by: their sightings
+    /// taken back, one retraction each.
+    pub gone: usize,
     /// Archives the walk met and left whole, each counted at its root —
     /// an archive never takes in an archive.
     pub archives: Vec<PathBuf>,
@@ -56,72 +70,52 @@ pub struct Ingested {
     pub failed: Vec<(PathBuf, Error)>,
 }
 
+/// What a run knows besides its roots: whose machine this is, what the
+/// user said about the batch, what never goes in, what earlier runs
+/// remember, and what the record stands by.
+#[derive(Debug, Clone, Copy)]
+pub struct Sweep<'a> {
+    /// The machine the roots are on, as `prov:host` will say.
+    pub host: &'a str,
+    /// The user's word on the whole batch, a `user:tag` claim each.
+    pub tags: &'a [String],
+    /// What never goes in.
+    pub excludes: &'a Excludes,
+    /// The walk's memory of earlier runs — usually
+    /// [`Archive::ingest_memory`](crate::Archive::ingest_memory). A file
+    /// whose place, size and mtime it knows is not read, not hashed, and
+    /// gets no claims. `None` observes everything anew, and so does a
+    /// lost memory — the cost is a noisy run, never a wrong claim.
+    pub memory: Option<&'a IngestMemory>,
+    /// The record's standing places, caught up to the log — usually
+    /// [`Archive::index`](crate::Archive::index) after a fold. What
+    /// stands under a walked root and was not met is gone, and its
+    /// sighting is taken back. `None` looks for nothing gone.
+    pub record: Option<&'a Index>,
+}
+
 /// Take directory trees and single files — as many roots as named, in
 /// one run — into the archive: blobs into `content`, day-one claims
-/// into `log`. Every sighting of the call shares the one run id, so
-/// "arrived together" spans all of it; roots that overlap or repeat
-/// are harmless — a fact said again lands on the set element already
-/// standing, and the memory skips what it just recorded.
+/// into `log`. Every file's places are recorded, its bytes' size and
+/// kind on their first arrival, and the caller's tags on every file the
+/// run records. Then what is gone is noticed: every place the record
+/// stands by under a walked root, where the walk met no file, has its
+/// `file:path` sighting taken back — see [`Sweep::record`]. What
+/// [`Ingested`] counts is what happened.
 ///
-/// A blob new to the store gets the seven day-one claims, available for
-/// any format on its first day: `file:path` (the real place: absolute,
-/// `..` and symlinks resolved — claims are forever, so they name the
-/// place, not the way it was typed), `file:name` (the path's last
-/// element, so a name is askable without string surgery), `prov:host`,
-/// `prov:run`, `file:size`, `file:mime` — by magic bytes, with a
-/// UTF-8 look for plain text and `application/octet-stream` when nothing
-/// answers — and `file:modified` where the filesystem has an mtime to
-/// tell — repeated at the precision it was observed, fractional seconds
-/// and all.
-///
-/// Bytes the store already holds get their sighting only: place, name,
-/// host, run, mtime. Another place they sat is new knowledge; their size
-/// and kind describe the content, the log has them from the first
-/// sighting, and saying a deterministic thing twice adds nothing. Symlinks are not followed,
-/// hidden files are files, and the walk is sorted at every level, so the
-/// same tree ingests in the same order twice.
-///
-/// `host` is who this machine says it is — an FQDN where there is one; the
-/// caller knows, this crate does not ask around.
-///
-/// `tags` are the caller's own word on the batch: each becomes a
-/// `user:tag` claim under the source `user` — the human asserts, the
-/// walk is only the pen — on every file this run records, sightings of
-/// known bytes included. A file the memory skips gets no claims at all,
-/// tags among them: the memory knows no digest, and a claim never comes
-/// from a cache. Tagging what an earlier run already recorded means
-/// observing anew — `memory: None`.
-///
-/// `excludes` is the archive's word on what never goes in — usually
-/// [`Config::excludes`](crate::Config::excludes). What they match is
-/// counted in [`Ingested::excluded`] and otherwise left in peace: an
-/// excluded directory is not even walked. They speak about trees, though:
-/// a file named outright as a root goes in regardless — naming it is more
+/// Excludes are the archive's, from its config: a pattern matched
+/// against every path relative to its root, and a directory matched is
+/// left whole, unwalked. A named root is never excluded — naming is more
 /// deliberate than a pattern is.
-///
-/// `memory` is the walk's memory of earlier runs — usually
-/// [`Archive::ingest_memory`](crate::Archive::ingest_memory). A file whose
-/// place, size and mtime it knows is counted in [`Ingested::unchanged`]
-/// and otherwise skipped whole: not read, not hashed, no claims. `None`
-/// observes everything anew, and so does a lost memory — the cost is a
-/// noisy run, never a wrong claim.
 ///
 /// # Errors
 ///
-/// Whatever building the first claims can answer, the memory refusing
-/// to read or write, and [`Error::IngestsArchive`] when a named root is
-/// an archive or lies inside one. Per-file trouble is not an error here,
-/// and neither is a root that will not resolve: both are collected in
-/// [`Ingested::failed`] while the walk goes on.
-pub fn ingest<I>(
-    content: &Store,
-    log: &Log,
-    roots: I,
-    host: &str,
-    tags: &[String],
-    excludes: &Excludes,
-    memory: Option<&IngestMemory>,
-) -> Result<Ingested>
+/// Whatever building the first claims can answer, the memory or the
+/// record refusing to read or write, and [`Error::IngestsArchive`] when
+/// a named root is an archive or lies inside one. Per-file trouble is
+/// not an error here, and neither is a root that will not resolve: both
+/// are collected in [`Ingested::failed`] while the walk goes on.
+pub fn ingest<I>(content: &Store, log: &Log, roots: I, sweep: &Sweep<'_>) -> Result<Ingested>
 where
     I: IntoIterator,
     I::Item: AsRef<Path>,
@@ -134,6 +128,7 @@ where
         claims: 0,
         unchanged: 0,
         excluded: 0,
+        gone: 0,
         archives: Vec::new(),
         failed: Vec::new(),
     };
@@ -141,26 +136,36 @@ where
     // sweep, and a root that will not resolve costs only itself. The
     // failure list names the path beside each error, so the contexts
     // here say only what was being done when it went wrong.
-    let gathered = gather(roots, excludes)?;
+    let gathered = gather(roots, sweep.excludes)?;
     result.excluded = gathered.excluded;
-    result.archives = gathered.archives;
-    result.failed = gathered.failed;
-    let files = gathered.files;
-    if let Some(memory) = memory {
+    let gone = match sweep.record {
+        Some(record) => gone(record, &gathered, sweep)?,
+        None => Vec::new(),
+    };
+    if let Some(memory) = sweep.memory {
         memory.begin()?;
     }
-    for path in files {
+    for path in &gathered.files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
         // mid-read surfaces as a mismatch on the next sweep.
-        let seen = memory
-            .map(|memory| observe(memory, host, &path))
+        let seen = sweep
+            .memory
+            .map(|memory| observe(memory, sweep.host, path))
             .transpose()?;
         if let Some(Observation::Unchanged) = seen {
             result.unchanged += 1;
             continue;
         }
-        match take(content, log, &path, host, &result.run, &source, tags) {
+        match take(
+            content,
+            log,
+            path,
+            sweep.host,
+            &result.run,
+            &source,
+            sweep.tags,
+        ) {
             Ok((new, claims)) => {
                 if new {
                     result.stored += 1;
@@ -168,17 +173,86 @@ where
                     result.known += 1;
                 }
                 result.claims += claims;
-                if let (Some(memory), Some(Observation::Changed(size, mtime))) = (memory, seen) {
-                    memory.record(host, &path, size, mtime)?;
+                if let (Some(memory), Some(Observation::Changed(size, mtime))) =
+                    (sweep.memory, seen)
+                {
+                    memory.record(sweep.host, path, size, mtime)?;
                 }
             }
-            Err(error) => result.failed.push((path, error)),
+            Err(error) => result.failed.push((path.clone(), error)),
         }
     }
-    if let Some(memory) = memory {
+    // The sightings taken back, one claim each — and the memory forgets
+    // the place with them, so a file that comes back unchanged is
+    // observed anew and gets its place back on the record.
+    let time = Timestamp::now();
+    for (path, subject) in gone {
+        let claim = Claim::retract_value(
+            subject,
+            known_attribute("file:path"),
+            Value::String(path.to_string_lossy().into_owned()),
+            time.clone(),
+            source.clone(),
+        )?;
+        log.append(&claim)?;
+        result.claims += 1;
+        result.gone += 1;
+        if let Some(memory) = sweep.memory {
+            memory.forget(sweep.host, &path)?;
+        }
+    }
+    if let Some(memory) = sweep.memory {
         memory.commit()?;
     }
+    result.archives = gathered.archives;
+    result.failed.extend(gathered.failed);
     Ok(result)
+}
+
+/// Every place the record stands by under a walked root where the walk
+/// met no file: what a run takes back. A place is left alone — not
+/// seen is not gone — when it lies under anything the walk could not
+/// read, under a path the excludes leave out, or when the record never
+/// saw the file on this host at all.
+fn gone(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Vec<(PathBuf, Subject)>> {
+    let met: std::collections::BTreeSet<&Path> =
+        gathered.files.iter().map(PathBuf::as_path).collect();
+    let host = Value::String(sweep.host.to_string());
+    let mut gone = Vec::new();
+    for root in &gathered.walked {
+        let Some(place) = root.to_str() else {
+            continue;
+        };
+        for (path, subject) in record.under(place)? {
+            let path = PathBuf::from(path);
+            if met.contains(path.as_path()) {
+                continue;
+            }
+            if gathered
+                .failed
+                .iter()
+                .any(|(unread, _)| path.starts_with(unread))
+            {
+                continue;
+            }
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            if relative.ancestors().any(|ancestor| {
+                !ancestor.as_os_str().is_empty() && sweep.excludes.excluded(ancestor)
+            }) {
+                continue;
+            }
+            // The same absolute path on another machine is another place;
+            // only a file this host ever saw can be gone from here.
+            if !record
+                .values(&subject, &known_attribute("prov:host"))?
+                .contains(&host)
+            {
+                continue;
+            }
+            gone.push((path, subject));
+        }
+    }
+    Ok(gone)
 }
 
 /// Every named root gathered, before anything is read: the walks done,
@@ -188,6 +262,9 @@ struct Gathered {
     excluded: usize,
     archives: Vec<PathBuf>,
     failed: Vec<(PathBuf, Error)>,
+    /// Directory roots the walk went into, resolved — where what the
+    /// record stands by can be held against what was met.
+    walked: Vec<PathBuf>,
 }
 
 fn gather<I>(roots: I, excludes: &Excludes) -> Result<Gathered>
@@ -200,6 +277,7 @@ where
         excluded: 0,
         archives: Vec::new(),
         failed: Vec::new(),
+        walked: Vec::new(),
     };
     for given in roots {
         let root = match fs::canonicalize(given.as_ref()) {
@@ -231,7 +309,10 @@ where
         };
         match fs::metadata(&root) {
             Ok(metadata) if metadata.is_file() => walker.files.push(root.clone()),
-            Ok(metadata) if metadata.is_dir() => walker.walk(&root),
+            Ok(metadata) if metadata.is_dir() => {
+                walker.walk(&root);
+                gathered.walked.push(root.clone());
+            }
             // A socket, a pipe, a device: silently passed by in a walk, but a
             // run that was told to take one in must not look like it did.
             Ok(_) => walker.failed.push((
@@ -273,6 +354,9 @@ pub struct Previewed {
     pub unchanged: usize,
     /// Paths the excludes would leave out.
     pub excluded: usize,
+    /// Files no longer at a place the record stands by — the sightings
+    /// the run would take back.
+    pub gone: Vec<PathBuf>,
     /// Archives the walk met — left whole, run or rehearsal alike.
     pub archives: Vec<PathBuf>,
     /// What could not even be looked at, and why.
@@ -280,31 +364,35 @@ pub struct Previewed {
 }
 
 /// What [`ingest`] would do with these roots, without reading a byte of
-/// them: the same walk, the same excludes, the same memory — and the
-/// sizes the filesystem reports where the real run would hash. The
-/// answer to `--dry-run`.
+/// them: the same walk, the same excludes, the same memory, the same
+/// look for what is gone — and the sizes the filesystem reports where
+/// the real run would hash. The answer to `--dry-run`.
 ///
 /// # Errors
 ///
 /// [`Error::IngestsArchive`] when a named root is an archive or lies
-/// inside one, and the memory refusing to read. Per-file trouble is
-/// collected in [`Previewed::failed`], the way the real run collects it.
-pub fn preview<I>(
-    roots: I,
-    host: &str,
-    excludes: &Excludes,
-    memory: Option<&IngestMemory>,
-) -> Result<Previewed>
+/// inside one, and the memory or the record refusing to read. Per-file
+/// trouble is collected in [`Previewed::failed`], the way the real run
+/// collects it.
+pub fn preview<I>(roots: I, sweep: &Sweep<'_>) -> Result<Previewed>
 where
     I: IntoIterator,
     I::Item: AsRef<Path>,
 {
-    let gathered = gather(roots, excludes)?;
+    let gathered = gather(roots, sweep.excludes)?;
+    let gone = match sweep.record {
+        Some(record) => gone(record, &gathered, sweep)?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect(),
+        None => Vec::new(),
+    };
     let mut result = Previewed {
         files: 0,
         bytes: 0,
         unchanged: 0,
         excluded: gathered.excluded,
+        gone,
         archives: gathered.archives,
         failed: gathered.failed,
     };
@@ -322,8 +410,9 @@ where
                 continue;
             }
         };
-        let seen = memory
-            .map(|memory| observe(memory, host, &path))
+        let seen = sweep
+            .memory
+            .map(|memory| observe(memory, sweep.host, &path))
             .transpose()?;
         if let Some(Observation::Unchanged) = seen {
             result.unchanged += 1;
@@ -530,6 +619,16 @@ impl IngestMemory {
         Ok(found)
     }
 
+    /// Forget a place whose sighting was just taken back, so a file that
+    /// returns there unchanged is observed anew rather than passed by.
+    fn forget(&self, host: &str, path: &Path) -> Result<()> {
+        let mut statement = self
+            .connection
+            .prepare_cached("DELETE FROM seen WHERE host = ?1 AND path = ?2")?;
+        statement.execute(params![host, path.to_string_lossy()])?;
+        Ok(())
+    }
+
     /// Remember a sighting that just went on the record.
     fn record(&self, host: &str, path: &Path, size: i64, mtime: i64) -> Result<()> {
         let mut statement = self.connection.prepare_cached(
@@ -663,16 +762,35 @@ mod tests {
         fs::write(tree.join("b.bin"), [0u8; 4096]).unwrap();
         let memory = IngestMemory::open(dir.path().join("memory.sqlite")).unwrap();
 
-        let before = preview([&tree], "atlas.example.net", &none(), Some(&memory)).unwrap();
+        let before = preview(
+            [&tree],
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
+        )
+        .unwrap();
         assert_eq!(before.files, 2);
         assert_eq!(before.bytes, 11 + 4096);
         assert_eq!(before.unchanged, 0);
 
         assert!(
             log.head().unwrap().is_empty()
-                && preview([&tree], "atlas.example.net", &none(), Some(&memory))
-                    .unwrap()
-                    .files
+                && preview(
+                    [&tree],
+                    &Sweep {
+                        host: "atlas.example.net",
+                        tags: &[],
+                        excludes: &none(),
+                        memory: Some(&memory),
+                        record: None
+                    }
+                )
+                .unwrap()
+                .files
                     == 2,
             "a preview leaves no trace — not in the log, not in the memory"
         );
@@ -681,13 +799,26 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
-        let after = preview([&tree], "atlas.example.net", &none(), Some(&memory)).unwrap();
+        let after = preview(
+            [&tree],
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
+        )
+        .unwrap();
         assert_eq!(
             (after.files, after.bytes, after.unchanged),
             (0, 0, 2),
@@ -709,10 +840,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -738,10 +872,13 @@ mod tests {
             &content,
             &log,
             [&vault],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         );
         assert!(matches!(named_whole, Err(Error::IngestsArchive(_))));
 
@@ -749,10 +886,13 @@ mod tests {
             &content,
             &log,
             [vault.join("notes.txt")],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         );
         match named_inside {
             Err(Error::IngestsArchive(found)) => assert_eq!(
@@ -785,10 +925,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -847,10 +990,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &tags,
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &tags,
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
 
@@ -871,10 +1017,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &["latergreat".to_string()],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &["latergreat".to_string()],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
         assert_eq!(again.unchanged, 1);
@@ -890,10 +1039,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &["copies".to_string()],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &["copies".to_string()],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
         let copies = log
@@ -920,10 +1072,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -956,10 +1111,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -979,10 +1137,13 @@ mod tests {
             &content,
             &log,
             [tree.join("sub").join("..")],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1017,10 +1178,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &excludes,
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &excludes,
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1047,10 +1211,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &excludes,
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &excludes,
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1076,10 +1243,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &excludes,
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &excludes,
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1101,10 +1271,13 @@ mod tests {
             &content,
             &log,
             [&file],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1173,10 +1346,13 @@ mod tests {
             &content,
             &log,
             [&file],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1207,10 +1383,13 @@ mod tests {
             &content,
             &log,
             [&file],
-            "atlas.example.net",
-            &[],
-            &excludes,
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &excludes,
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1235,10 +1414,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
         assert_eq!(first.stored, 2);
@@ -1251,10 +1433,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1277,10 +1462,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
         // A different size settles "changed" whatever the clock says.
@@ -1290,10 +1478,13 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1315,20 +1506,26 @@ mod tests {
             &content,
             &log,
             [&tree],
-            "atlas.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
         let second = ingest(
             &content,
             &log,
             [&tree],
-            "rhea.example.net",
-            &[],
-            &none(),
-            Some(&memory),
+            &Sweep {
+                host: "rhea.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: Some(&memory),
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1351,10 +1548,13 @@ mod tests {
             &content,
             &log,
             [&tree, &single, &gone],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1388,10 +1588,13 @@ mod tests {
             &content,
             &log,
             [dir.path().join("no-such-tree")],
-            "atlas",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
 
@@ -1407,10 +1610,13 @@ mod tests {
             &content,
             &log,
             [&file],
-            "atlas.example.net",
-            &[],
-            &none(),
-            None,
+            &Sweep {
+                host: "atlas.example.net",
+                tags: &[],
+                excludes: &none(),
+                memory: None,
+                record: None,
+            },
         )
         .unwrap();
         log.head()
@@ -1443,5 +1649,225 @@ mod tests {
         let mut bytes = vec![b'a'; SNIFF - 1];
         bytes.extend_from_slice("ä und noch viel mehr Text".as_bytes());
         assert_eq!(recorded_mime(&dir, &bytes), json!("text/plain"));
+    }
+
+    /// The record as it stands: an index folded from the log, thrown
+    /// away with the test.
+    fn record_of(log: &Log) -> Index {
+        let mut index = Index::open(":memory:").unwrap();
+        index.fold(log).unwrap();
+        index
+    }
+
+    fn places_under(log: &Log, root: &Path) -> Vec<String> {
+        record_of(log)
+            .under(root.to_str().unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    fn sweep<'a>(
+        host: &'a str,
+        excludes: &'a Excludes,
+        memory: Option<&'a IngestMemory>,
+        record: Option<&'a Index>,
+    ) -> Sweep<'a> {
+        Sweep {
+            host,
+            tags: &[],
+            excludes,
+            memory,
+            record,
+        }
+    }
+
+    #[test]
+    fn a_file_gone_from_a_walked_tree_has_its_place_taken_back() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        // The walk resolves its roots; the test asks by the resolved name.
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
+        let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
+        let host = "atlas.example.net";
+        let excludes = none();
+        ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, Some(&memory), None),
+        )
+        .unwrap();
+        let a = tree.join("a.txt");
+        let metadata = fs::metadata(&a).unwrap();
+        let size = i64::try_from(metadata.len()).unwrap();
+        let mtime = unix_nanos(metadata.modified().unwrap()).unwrap();
+        assert!(memory.unchanged(host, &a, size, mtime).unwrap());
+        assert_eq!(places_under(&log, &tree).len(), 2);
+
+        fs::remove_file(&a).unwrap();
+        let record = record_of(&log);
+        let second = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, Some(&memory), Some(&record)),
+        )
+        .unwrap();
+
+        assert_eq!(second.gone, 1);
+        assert_eq!(second.claims, 1, "one retraction, nothing else");
+        assert_eq!(second.unchanged, 1);
+        assert_eq!(
+            places_under(&log, &tree),
+            vec![tree.join("b.txt").to_string_lossy().into_owned()],
+            "the place is taken back; the bytes and the rest stay"
+        );
+        assert!(
+            content
+                .contains(&Algorithm::Sha256.hash(b"hello world"))
+                .unwrap()
+        );
+        assert!(
+            !memory.unchanged(host, &a, size, mtime).unwrap(),
+            "the memory forgets the place with the sighting"
+        );
+
+        // Back where it was: observed anew, its place on the record again.
+        fs::write(&a, b"hello world").unwrap();
+        let record = record_of(&log);
+        let third = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, Some(&memory), Some(&record)),
+        )
+        .unwrap();
+        assert_eq!(third.gone, 0);
+        assert_eq!(third.known, 1);
+        assert_eq!(places_under(&log, &tree).len(), 2);
+    }
+
+    #[test]
+    fn a_place_under_an_unreadable_directory_is_not_gone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("sub")).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        let sub = tree.join("sub");
+        fs::write(sub.join("a.txt"), b"hello world").unwrap();
+        let host = "atlas.example.net";
+        let excludes = none();
+        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&sub).is_ok() {
+            // Root reads everything; the case cannot be played here.
+            fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let record = record_of(&log);
+        let again = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, None, Some(&record)),
+        );
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        let again = again.unwrap();
+
+        assert_eq!(again.failed.len(), 1, "the directory that would not open");
+        assert_eq!(again.gone, 0, "not seen is not gone");
+        assert_eq!(places_under(&log, &tree).len(), 1);
+    }
+
+    #[test]
+    fn a_place_the_excludes_leave_out_is_not_gone() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(tree.join("skip")).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        fs::write(tree.join("skip").join("a.txt"), b"hello world").unwrap();
+        let host = "atlas.example.net";
+        ingest(&content, &log, [&tree], &sweep(host, &none(), None, None)).unwrap();
+
+        let excludes = Excludes::compile(["skip"]).unwrap();
+        let record = record_of(&log);
+        let again = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep(host, &excludes, None, Some(&record)),
+        )
+        .unwrap();
+
+        assert_eq!(again.excluded, 1);
+        assert_eq!(again.gone, 0, "left out is not looked at");
+        assert_eq!(places_under(&log, &tree).len(), 1);
+    }
+
+    #[test]
+    fn a_place_on_another_host_is_not_gone() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        // The walk resolves its roots; the test asks by the resolved name.
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        let excludes = none();
+        ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep("atlas.example.net", &excludes, None, None),
+        )
+        .unwrap();
+
+        fs::remove_file(tree.join("a.txt")).unwrap();
+        let record = record_of(&log);
+        let elsewhere = ingest(
+            &content,
+            &log,
+            [&tree],
+            &sweep("borea.example.net", &excludes, None, Some(&record)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            elsewhere.gone, 0,
+            "the same path on another machine is another place"
+        );
+        assert_eq!(places_under(&log, &tree).len(), 1);
+    }
+
+    #[test]
+    fn a_preview_names_what_would_be_gone_and_takes_nothing_back() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        // The walk resolves its roots; the test asks by the resolved name.
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        let host = "atlas.example.net";
+        let excludes = none();
+        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+        fs::remove_file(tree.join("a.txt")).unwrap();
+        let record = record_of(&log);
+
+        let rehearsal = preview([&tree], &sweep(host, &excludes, None, Some(&record))).unwrap();
+
+        assert_eq!(rehearsal.gone, vec![tree.join("a.txt")]);
+        assert_eq!(places_under(&log, &tree).len(), 1, "nothing written");
     }
 }

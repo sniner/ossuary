@@ -135,10 +135,13 @@ fn the_skeleton_walks_from_disk() {
         &content,
         &log,
         [&tree],
-        "atlas.example.net",
-        &[],
-        &ossuary_core::Excludes::none(),
-        None,
+        &ossuary_core::Sweep {
+            host: "atlas.example.net",
+            tags: &[],
+            excludes: &ossuary_core::Excludes::none(),
+            memory: None,
+            record: None,
+        },
     )
     .unwrap();
     assert_eq!(run.stored, 2);

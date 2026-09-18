@@ -158,6 +158,36 @@ pub struct Standing {
 /// One row of `segments`: id, digest, first claim's time, rank.
 type SegmentRow = (i64, String, Option<String>, i64);
 
+/// Which files a question is about: those still lying somewhere, or
+/// every file the archive holds.
+///
+/// A file is *placed* while a place stands on it — a `file:path` from a
+/// walk, a `mailbox:place` from a fetch — or, for what a tool won out of
+/// another file, while its origin is placed, along `derive:derived-from`
+/// as far as it goes. A file whose every place was taken back is still
+/// held, and still answers `--as-of` a day it lay somewhere, but it is
+/// not part of the present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// Files at a place of their own, or won out of one that is.
+    Placed,
+    /// Every file the archive holds, at a place or not.
+    Held,
+}
+
+/// The recursive table of placed subjects, for a query to open with:
+/// every subject a place stands on, and every subject derived from one
+/// of those.
+const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
+        SELECT subject FROM standing
+         WHERE attribute IN (SELECT id FROM attributes WHERE name IN ('file:path', 'mailbox:place'))
+        UNION
+        SELECT st.subject FROM standing st
+          JOIN subjects su ON su.digest = json_extract(st.value, '$')
+          JOIN placed ON placed.subject = su.id
+         WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'derive:derived-from')
+    ) ";
+
 /// A disposable query index over a claim log.
 #[derive(Debug)]
 pub struct Index {
@@ -555,12 +585,20 @@ impl Index {
     /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
-    pub fn subjects(&self) -> Result<Vec<Subject>> {
-        let mut statement = self.connection.prepare(
+    pub fn subjects(&self, presence: Presence) -> Result<Vec<Subject>> {
+        let mut sql = String::new();
+        if presence == Presence::Placed {
+            sql.push_str(PLACED);
+        }
+        sql.push_str(
             "SELECT digest FROM subjects su
-             WHERE EXISTS (SELECT 1 FROM standing st WHERE st.subject = su.id)
-             ORDER BY digest",
-        )?;
+             WHERE EXISTS (SELECT 1 FROM standing st WHERE st.subject = su.id)",
+        );
+        if presence == Presence::Placed {
+            sql.push_str(" AND su.id IN (SELECT subject FROM placed)");
+        }
+        sql.push_str(" ORDER BY digest");
+        let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let mut subjects = Vec::new();
         for row in rows {
@@ -791,14 +829,21 @@ impl Index {
     ///
     /// Only *standing* values answer: a retracted value finds nothing,
     /// however long its claim stays in the log — this is where the set
-    /// semantics first faces a reader.
+    /// semantics first faces a reader. And only files of the asked
+    /// [`Presence`] answer: [`Presence::Placed`] leaves out every file
+    /// no place stands on any more.
     ///
     /// # Errors
     ///
     /// [`Error::Index`] from `SQLite`; an entry of `missing` that fits
     /// neither the attribute grammar nor `namespace:` is refused with the
     /// grammar's own error.
-    pub fn find(&self, terms: &[(Attribute, String)], missing: &[String]) -> Result<Vec<Subject>> {
+    pub fn find(
+        &self,
+        terms: &[(Attribute, String)],
+        missing: &[String],
+        presence: Presence,
+    ) -> Result<Vec<Subject>> {
         use rusqlite::types::Value as Sql;
         if terms.is_empty() && missing.is_empty() {
             return Ok(Vec::new());
@@ -815,7 +860,11 @@ impl Index {
             value.as_f64().map(Sql::Real)
         };
         // The terms meet as sets of subject ids; the names come last.
-        let mut sql = String::from("SELECT digest FROM subjects WHERE id IN (");
+        let mut sql = String::new();
+        if presence == Presence::Placed {
+            sql.push_str(PLACED);
+        }
+        sql.push_str("SELECT digest FROM subjects WHERE id IN (");
         let mut params: Vec<Sql> = Vec::new();
         if terms.is_empty() {
             sql.push_str("SELECT DISTINCT subject FROM standing");
@@ -892,22 +941,9 @@ impl Index {
                 }
             }
         }
-        for absent in missing {
-            sql.push_str(" EXCEPT SELECT subject FROM standing WHERE attribute IN (SELECT id FROM attributes WHERE ");
-            if let Some(namespace) = absent.strip_suffix(':') {
-                // The grammar has one door; a prefix walks through it
-                // wearing a dummy name.
-                Attribute::parse(&format!("{namespace}:a"))?;
-                // ';' is the character after ':', and no attribute
-                // contains one: the half-open range is the namespace.
-                sql.push_str("name >= ? AND name < ?)");
-                params.push(text(&format!("{namespace}:")));
-                params.push(text(&format!("{namespace};")));
-            } else {
-                let attribute = Attribute::parse(absent)?;
-                sql.push_str("name = ?)");
-                params.push(text(attribute.as_str()));
-            }
+        lacking(&mut sql, &mut params, missing)?;
+        if presence == Presence::Placed {
+            sql.push_str(" INTERSECT SELECT subject FROM placed");
         }
         sql.push_str(") ORDER BY digest");
         let mut statement = self.connection.prepare(&sql)?;
@@ -1304,6 +1340,36 @@ fn claim(
     }
 }
 
+/// The clause that takes every subject lacking nothing of `missing` out
+/// of a `find`: one `EXCEPT` per entry, an attribute by name or, ending
+/// in `:`, a whole namespace.
+fn lacking(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    missing: &[String],
+) -> Result<()> {
+    use rusqlite::types::Value as Sql;
+    let text = |s: &str| Sql::Text(s.to_string());
+    for absent in missing {
+        sql.push_str(" EXCEPT SELECT subject FROM standing WHERE attribute IN (SELECT id FROM attributes WHERE ");
+        if let Some(namespace) = absent.strip_suffix(':') {
+            // The grammar has one door; a prefix walks through it
+            // wearing a dummy name.
+            Attribute::parse(&format!("{namespace}:a"))?;
+            // ';' is the character after ':', and no attribute
+            // contains one: the half-open range is the namespace.
+            sql.push_str("name >= ? AND name < ?)");
+            params.push(text(&format!("{namespace}:")));
+            params.push(text(&format!("{namespace};")));
+        } else {
+            let attribute = Attribute::parse(absent)?;
+            sql.push_str("name = ?)");
+            params.push(text(attribute.as_str()));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use immure::Store;
@@ -1483,7 +1549,9 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
+            index
+                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .unwrap(),
             [subject()],
             "the set holds it once, however often it was said"
         );
@@ -1514,9 +1582,16 @@ mod tests {
         .unwrap();
         index.fold(&log).unwrap();
 
-        assert_eq!(index.find(&[term("user:tag", "holiday")], &[]).unwrap(), []);
         assert_eq!(
-            index.find(&[term("user:tag", "crete")], &[]).unwrap(),
+            index
+                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .unwrap(),
+            []
+        );
+        assert_eq!(
+            index
+                .find(&[term("user:tag", "crete")], &[], Presence::Held)
+                .unwrap(),
             [subject()],
             "the neighbour value stands untouched"
         );
@@ -1538,7 +1613,12 @@ mod tests {
         .unwrap();
         index.fold(&log).unwrap();
 
-        assert_eq!(index.find(&[term("user:tag", "crete")], &[]).unwrap(), []);
+        assert_eq!(
+            index
+                .find(&[term("user:tag", "crete")], &[], Presence::Held)
+                .unwrap(),
+            []
+        );
     }
 
     #[test]
@@ -1565,7 +1645,9 @@ mod tests {
         index.fold(&log).unwrap();
         index.fold(&log).unwrap();
         assert_eq!(
-            index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
+            index
+                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .unwrap(),
             [],
             "the sealed assertion is folded once and must not resurface"
         );
@@ -1623,7 +1705,9 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.find(&[term("file:name", "*.jpg")], &[]).unwrap(),
+            index
+                .find(&[term("file:name", "*.jpg")], &[], Presence::Held)
+                .unwrap(),
             [subject()],
             "one term, two values matching it, one file: the answer is a set of files"
         );
@@ -1748,7 +1832,7 @@ mod tests {
         );
         assert_eq!(
             index
-                .find(&[term("file:mime", "message/rfc822")], &[])
+                .find(&[term("file:mime", "message/rfc822")], &[], Presence::Held)
                 .unwrap(),
             [subject()],
             "and a search finds the file once"
@@ -1879,7 +1963,8 @@ mod tests {
             index
                 .find(
                     &[term("file:mime", "image/jpeg"), term("user:tag", "holiday")],
-                    &[]
+                    &[],
+                    Presence::Held
                 )
                 .unwrap(),
             [subject()],
@@ -1909,16 +1994,22 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.find(&[term("file:path", "*crete*")], &[]).unwrap(),
+            index
+                .find(&[term("file:path", "*crete*")], &[], Presence::Held)
+                .unwrap(),
             [subject()]
         );
         assert_eq!(
-            index.find(&[term("file:size", "20*")], &[]).unwrap(),
+            index
+                .find(&[term("file:size", "20*")], &[], Presence::Held)
+                .unwrap(),
             [],
             "numbers were promised no wildcards"
         );
         assert_eq!(
-            index.find(&[term("file:size", "2019")], &[]).unwrap(),
+            index
+                .find(&[term("file:size", "2019")], &[], Presence::Held)
+                .unwrap(),
             [subject()],
             "while the exact number answers"
         );
@@ -1958,7 +2049,7 @@ mod tests {
             "a namespace nothing stands in answers empty"
         );
         assert_eq!(
-            index.subjects().unwrap(),
+            index.subjects(Presence::Held).unwrap(),
             [subject()],
             "the record names every subject it speaks about"
         );
@@ -2043,13 +2134,19 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("file:mime", "image/jpeg")], &["exif:".to_string()])
+                .find(
+                    &[term("file:mime", "image/jpeg")],
+                    &["exif:".to_string()],
+                    Presence::Held
+                )
                 .unwrap(),
             std::slice::from_ref(&bare),
             "the namespace prefix names the lack"
         );
         assert_eq!(
-            index.find(&[], &["exif:make".to_string()]).unwrap(),
+            index
+                .find(&[], &["exif:make".to_string()], Presence::Held)
+                .unwrap(),
             [bare],
             "with no terms, missing is asked of every subject"
         );
@@ -2102,14 +2199,22 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("file:modified", "2026-09-01..")], &[])
+                .find(
+                    &[term("file:modified", "2026-09-01..")],
+                    &[],
+                    Presence::Held
+                )
                 .unwrap(),
             [december.clone(), both.clone()],
             "since: one standing value past the bound suffices"
         );
         assert_eq!(
             index
-                .find(&[term("file:modified", "2026-09-01..2026-10-01")], &[])
+                .find(
+                    &[term("file:modified", "2026-09-01..2026-10-01")],
+                    &[],
+                    Presence::Held
+                )
                 .unwrap(),
             [],
             "one range term wants a single value inside — nobody has one"
@@ -2121,7 +2226,8 @@ mod tests {
                         term("file:modified", "2026-09-01.."),
                         term("file:modified", "..2026-10-01"),
                     ],
-                    &[]
+                    &[],
+                    Presence::Held
                 )
                 .unwrap(),
             [both],
@@ -2154,7 +2260,9 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.find(&[term("user:rating", "1..10")], &[]).unwrap(),
+            index
+                .find(&[term("user:rating", "1..10")], &[], Presence::Held)
+                .unwrap(),
             [subject()],
             "numeric bounds speak about numbers; the worded rating is not seven"
         );
@@ -2178,7 +2286,8 @@ mod tests {
             index
                 .find(
                     &[term("exif:date-time-original", "2026:07:01..2026:08:01")],
-                    &[]
+                    &[],
+                    Presence::Held
                 )
                 .unwrap(),
             [subject()],
@@ -2186,7 +2295,11 @@ mod tests {
         );
         assert_eq!(
             index
-                .find(&[term("exif:date-time-original", "2026:08:01..")], &[])
+                .find(
+                    &[term("exif:date-time-original", "2026:08:01..")],
+                    &[],
+                    Presence::Held
+                )
                 .unwrap(),
             []
         );
@@ -2208,13 +2321,15 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:note", "\"see 3..4\"")], &[])
+                .find(&[term("user:note", "\"see 3..4\"")], &[], Presence::Held)
                 .unwrap(),
             [subject()],
             "quoted, the dots are just dots"
         );
         assert_eq!(
-            index.find(&[term("user:note", "\"see 3\"")], &[]).unwrap(),
+            index
+                .find(&[term("user:note", "\"see 3\"")], &[], Presence::Held)
+                .unwrap(),
             [],
             "and quoted means whole, not prefix"
         );
@@ -2239,7 +2354,9 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.find(&[term("user:tag", "..")], &[]).unwrap(),
+            index
+                .find(&[term("user:tag", "..")], &[], Presence::Held)
+                .unwrap(),
             [subject()],
             "the presence question, --missing turned around"
         );
@@ -2595,7 +2712,9 @@ mod tests {
         let folded = index.fold(&log).unwrap();
         assert_eq!(folded.segments, 1, "the emptied cache folds from scratch");
         assert_eq!(
-            index.find(&[term("user:tag", "holiday")], &[]).unwrap(),
+            index
+                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .unwrap(),
             [subject()]
         );
     }
@@ -2611,5 +2730,184 @@ mod tests {
             Subject::parse("00000000000000000000000000000000000000000000000000000000000000ff")
                 .unwrap();
         assert_eq!(index.about(&unknown).unwrap(), Vec::new());
+    }
+
+    fn other() -> Subject {
+        Subject::parse("aa2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e").unwrap()
+    }
+
+    fn said(subject: Subject, attribute: &str, value: Value, time: &str) -> Claim {
+        Claim::assert(
+            subject,
+            Attribute::parse(attribute).unwrap(),
+            value,
+            Timestamp::parse(time).unwrap(),
+            Source::parse("test").unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn taken_back(subject: Subject, attribute: &str, value: Value, time: &str) -> Claim {
+        Claim::retract_value(
+            subject,
+            Attribute::parse(attribute).unwrap(),
+            value,
+            Timestamp::parse(time).unwrap(),
+            Source::parse("test").unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_file_answers_only_while_a_place_stands_on_it() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let placed = subject();
+        let placeless = other();
+        log.append(&tag_about(
+            placed.clone(),
+            "holiday",
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        log.append(&said(
+            placed.clone(),
+            "file:path",
+            json!("/x/a"),
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        log.append(&tag_about(
+            placeless.clone(),
+            "holiday",
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let holiday = [term("user:tag", "holiday")];
+        assert_eq!(
+            index.find(&holiday, &[], Presence::Placed).unwrap(),
+            vec![placed.clone()],
+            "no place stands on the other"
+        );
+        assert_eq!(
+            index.find(&holiday, &[], Presence::Held).unwrap(),
+            vec![placed.clone(), placeless.clone()]
+        );
+        assert_eq!(
+            index.subjects(Presence::Placed).unwrap(),
+            vec![placed.clone()]
+        );
+
+        log.append(&taken_back(
+            placed.clone(),
+            "file:path",
+            json!("/x/a"),
+            "2026-09-02T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert!(
+            index
+                .find(&holiday, &[], Presence::Placed)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            index.find(&holiday, &[], Presence::Held).unwrap(),
+            vec![placed.clone(), placeless],
+            "held all the same"
+        );
+        let before = index.as_of("2026-09-01T23:59:59Z").unwrap();
+        assert_eq!(
+            before.find(&holiday, &[], Presence::Placed).unwrap(),
+            vec![placed],
+            "as of the day it lay there, it did"
+        );
+    }
+
+    #[test]
+    fn a_derived_file_is_placed_while_its_origin_is() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let origin = subject();
+        let derived = other();
+        log.append(&said(
+            origin.clone(),
+            "file:path",
+            json!("/x/mail.eml"),
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        log.append(&said(
+            derived.clone(),
+            "derive:derived-from",
+            json!(origin.as_str()),
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        log.append(&tag_about(
+            derived.clone(),
+            "invoice",
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let invoice = [term("user:tag", "invoice")];
+        assert_eq!(
+            index.find(&invoice, &[], Presence::Placed).unwrap(),
+            vec![derived.clone()],
+            "an attachment lies where its mail lies"
+        );
+
+        log.append(&taken_back(
+            origin,
+            "file:path",
+            json!("/x/mail.eml"),
+            "2026-09-02T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert!(
+            index
+                .find(&invoice, &[], Presence::Placed)
+                .unwrap()
+                .is_empty(),
+            "and goes where its mail goes"
+        );
+    }
+
+    #[test]
+    fn a_message_at_a_mailbox_place_is_placed() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let message = subject();
+        log.append(&said(
+            message.clone(),
+            "mailbox:place",
+            json!("example.org/INBOX"),
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        log.append(&tag_about(
+            message.clone(),
+            "holiday",
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(&[term("user:tag", "holiday")], &[], Presence::Placed)
+                .unwrap(),
+            vec![message]
+        );
     }
 }
