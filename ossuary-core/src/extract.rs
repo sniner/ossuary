@@ -293,6 +293,7 @@ mod tests {
                 excludes: &crate::Excludes::none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();

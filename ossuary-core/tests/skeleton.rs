@@ -141,6 +141,7 @@ fn the_skeleton_walks_from_disk() {
             excludes: &ossuary_core::Excludes::none(),
             memory: None,
             record: None,
+            emptied: false,
         },
     )
     .unwrap();

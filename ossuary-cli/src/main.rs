@@ -97,9 +97,12 @@ enum Command {
     /// would not open, a path config.toml excludes, a root that is a
     /// single file, and a directory it meets not one file under while
     /// places stand on record there, which is what a mount point looks
-    /// like with nothing mounted. Not seen is not gone. --collect judges
-    /// nothing at all: for a directory that is emptied after every run,
-    /// an inbox, whose files are meant to live on in the archive.
+    /// like with nothing mounted. Not seen is not gone. --emptied is the
+    /// word that it was: every place on record under the named
+    /// directories is taken back, however little the walk meets.
+    /// --collect judges nothing at all: for a directory that is emptied
+    /// after every run, an inbox, whose files are meant to live on in
+    /// the archive.
     Ingest {
         /// What to take in; several may be named
         #[arg(value_name = "PATH", required = true)]
@@ -117,8 +120,13 @@ enum Command {
 
         /// Take in what is there and judge nothing gone; for a directory
         /// that is emptied after it was taken in
-        #[arg(long)]
+        #[arg(long, conflicts_with = "emptied")]
         collect: bool,
+
+        /// The directories were emptied on purpose: take back every
+        /// place on record under them, however little the walk meets
+        #[arg(long)]
+        emptied: bool,
 
         /// Count and measure what would go in and what would be taken
         /// back, and write nothing; the number a forgotten ISO shows up in
@@ -593,8 +601,20 @@ fn run(cli: Cli) -> Result<ExitCode> {
             tags,
             full,
             collect,
+            emptied,
             dry_run,
-        } => ingest(&cli.archive, &paths, &tags, full, collect, dry_run, quiet),
+        } => ingest(
+            &cli.archive,
+            &paths,
+            &tags,
+            Switches {
+                full,
+                collect,
+                emptied,
+                dry_run,
+            },
+            quiet,
+        ),
         Command::Extract {
             name,
             subjects,
@@ -800,19 +820,32 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     }
 }
 
+/// The switches of `ingest`, as the user set them.
+#[derive(Clone, Copy)]
 #[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "three switches of the verb and one of the run, each one flag the user set"
+    clippy::struct_excessive_bools,
+    reason = "four flags of one verb, carried together as they were set"
 )]
+struct Switches {
+    full: bool,
+    collect: bool,
+    emptied: bool,
+    dry_run: bool,
+}
+
 fn ingest(
     root: &Path,
     paths: &[PathBuf],
     tags: &[String],
-    full: bool,
-    collect: bool,
-    dry_run: bool,
+    switches: Switches,
     quiet: bool,
 ) -> Result<ExitCode> {
+    let Switches {
+        full,
+        collect,
+        emptied,
+        dry_run,
+    } = switches;
     if let Some(empty) = tags.iter().find(|tag| tag.trim().is_empty()) {
         return Err(anyhow!(
             "{empty:?} is not a tag; give it a word or leave it off"
@@ -851,6 +884,7 @@ fn ingest(
         excludes: archive.config().excludes(),
         memory: memory.as_ref(),
         record: record.as_ref(),
+        emptied,
     };
     if dry_run {
         return previewed(paths, &sweep, quiet);
@@ -865,11 +899,26 @@ fn ingest(
         }
         for path in &run.empty {
             eprintln!(
-                "{}: no file met there, the places on record under it stay; a directory truly emptied is told from a mount with nothing mounted by the next run that meets a file, or by `ossuary retract`",
+                "{}: no file met there, the places on record under it stay; if it was emptied on purpose, `ossuary ingest --emptied` takes them back",
                 path.display()
             );
         }
     }
+    println!("{}", ingest_verdict(&run, tags));
+    if run.failed.is_empty() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        eprintln!("{} file(s) failed:", run.failed.len());
+        for (path, error) in &run.failed {
+            eprintln!("  {}: {}", path.display(), error.spelled());
+        }
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+/// The last line of a run: what it did, count by count, and what went
+/// on the record.
+fn ingest_verdict(run: &ossuary_core::Ingested, tags: &[String]) -> String {
     let mut verdict = vec![format!("{} file(s) stored", run.stored)];
     if run.known > 0 {
         verdict.push(format!("{} already stored", run.known));
@@ -910,16 +959,7 @@ fn ingest(
     } else {
         "0 claims written".to_string()
     };
-    println!("{}; {record}", verdict.join(", "));
-    if run.failed.is_empty() {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        eprintln!("{} file(s) failed:", run.failed.len());
-        for (path, error) in &run.failed {
-            eprintln!("  {}: {}", path.display(), error.spelled());
-        }
-        Ok(ExitCode::FAILURE)
-    }
+    format!("{}; {record}", verdict.join(", "))
 }
 
 /// The --dry-run answer: [`ossuary_core::preview`]'s findings, worded
@@ -932,7 +972,7 @@ fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCo
         }
         for path in &run.empty {
             eprintln!(
-                "{}: no file met there, the places on record under it would stay",
+                "{}: no file met there, the places on record under it would stay; if it was emptied on purpose, `ossuary ingest --emptied` takes them back",
                 path.display()
             );
         }

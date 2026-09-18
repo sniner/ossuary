@@ -141,9 +141,10 @@ need.
   the same host meets no file there — the file no longer lies at that
   place. What the run did not cover it does not judge: a directory
   that would not open, a path the excludes leave out, a root named as
-  a single file, a directory met with not one file under it. A run
-  told to collect (`--collect`) judges nothing. `--as-of` before the
-  run still shows the file where it was
+  a single file, a directory met with not one file under it unless
+  the run is told it was emptied on purpose (`--emptied`). A run told
+  to collect (`--collect`) judges nothing. `--as-of` before the run
+  still shows the file where it was
 
 ### file:name
 

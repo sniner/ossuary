@@ -98,6 +98,10 @@ pub struct Sweep<'a> {
     /// only collects, the way a directory emptied after every run
     /// wants it.
     pub record: Option<&'a Index>,
+    /// The caller's word that the roots were emptied on purpose: every
+    /// place on record under them is taken back, however little the
+    /// walk meets — the veto against leaving a root met empty unjudged.
+    pub emptied: bool,
 }
 
 /// Take directory trees and single files — as many roots as named, in
@@ -235,7 +239,7 @@ struct Judged {
 /// file under, while the record stands by places there, is not judged
 /// at all: that is what a mount point looks like with nothing mounted,
 /// and a directory truly emptied is told apart from it by the next run
-/// that meets a file, or by `retract`.
+/// that meets a file, or by the caller's word ([`Sweep::emptied`]).
 fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judged> {
     let met: std::collections::BTreeSet<&Path> =
         gathered.files.iter().map(PathBuf::as_path).collect();
@@ -246,7 +250,8 @@ fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judge
             continue;
         };
         let standing = record.under(place)?;
-        if !standing.is_empty() && !met.iter().any(|path| path.starts_with(root)) {
+        if !sweep.emptied && !standing.is_empty() && !met.iter().any(|path| path.starts_with(root))
+        {
             judged.empty.push(root.clone());
             continue;
         }
@@ -798,6 +803,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -814,7 +820,8 @@ mod tests {
                         tags: &[],
                         excludes: &none(),
                         memory: Some(&memory),
-                        record: None
+                        record: None,
+                        emptied: false,
                     }
                 )
                 .unwrap()
@@ -833,6 +840,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -844,6 +852,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -874,6 +883,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -906,6 +916,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         );
         assert!(matches!(named_whole, Err(Error::IngestsArchive(_))));
@@ -920,6 +931,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         );
         match named_inside {
@@ -959,6 +971,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1024,6 +1037,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1051,6 +1065,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1073,6 +1088,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1106,6 +1122,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1145,6 +1162,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1171,6 +1189,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1212,6 +1231,7 @@ mod tests {
                 excludes: &excludes,
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1245,6 +1265,7 @@ mod tests {
                 excludes: &excludes,
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1277,6 +1298,7 @@ mod tests {
                 excludes: &excludes,
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1305,6 +1327,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1380,6 +1403,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1417,6 +1441,7 @@ mod tests {
                 excludes: &excludes,
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1448,6 +1473,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1467,6 +1493,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1496,6 +1523,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1512,6 +1540,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1540,6 +1569,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1553,6 +1583,7 @@ mod tests {
                 excludes: &none(),
                 memory: Some(&memory),
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1582,6 +1613,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1622,6 +1654,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1644,6 +1677,7 @@ mod tests {
                 excludes: &none(),
                 memory: None,
                 record: None,
+                emptied: false,
             },
         )
         .unwrap();
@@ -1708,6 +1742,7 @@ mod tests {
             excludes,
             memory,
             record,
+            emptied: false,
         }
     }
 
@@ -1947,5 +1982,35 @@ mod tests {
         assert_eq!(later.gone, 1);
         assert!(later.empty.is_empty());
         assert_eq!(places_under(&log, &tree).len(), 1);
+    }
+
+    #[test]
+    fn the_word_emptied_takes_back_every_place_under_a_root_met_empty() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        // The walk resolves its roots; the test asks by the resolved name.
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let tree = tree.canonicalize().unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        fs::write(tree.join("b.txt"), b"more content").unwrap();
+        let host = "atlas.example.net";
+        let excludes = none();
+        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+        fs::remove_file(tree.join("a.txt")).unwrap();
+        fs::remove_file(tree.join("b.txt")).unwrap();
+        let record = record_of(&log);
+        let mut emptied = sweep(host, &excludes, None, Some(&record));
+        emptied.emptied = true;
+
+        let rehearsal = preview([&tree], &emptied).unwrap();
+        assert_eq!(rehearsal.gone.len(), 2);
+        assert!(rehearsal.empty.is_empty());
+
+        let run = ingest(&content, &log, [&tree], &emptied).unwrap();
+
+        assert_eq!(run.gone, 2);
+        assert!(run.empty.is_empty());
+        assert!(places_under(&log, &tree).is_empty());
     }
 }

@@ -108,6 +108,26 @@ $ ossuary ingest photos mail docs
 `ossuary id FILE` answers what a file would be called — and whether the
 archive already holds it — without taking anything in.
 
+A run also notices what is gone. Delete two of the files and run again:
+
+```console
+$ ossuary ingest photos mail docs
+0 file(s) stored, 3 unchanged since the last run, 2 no longer at their place, taken off the record; 2 claim(s) written, run 9c1d0f3e-…
+```
+
+The files are still in the archive, with everything ever recorded about
+them, and `--as-of` before that run still shows them where they were —
+only their *place* was taken back, one more claim in the log, so
+questions about today no longer answer with them. Not seen is not gone:
+a directory that would not open, a path `config.toml` excludes, and a
+directory the walk meets not one file under — what a mount point looks
+like with nothing mounted — are left as they are, and the run says so.
+If you did empty that directory on purpose, `ingest --emptied DIR` is
+the word for it and takes every place under it back. And a directory
+you empty after every run, an inbox whose files are meant to live on in
+the archive, is taken in with `ingest --collect`, which judges nothing
+gone.
+
 ## Looking inside: extractors
 
 Extractors are separate programs, one per format family, speaking a
@@ -189,8 +209,12 @@ e9ed6104
 `*` and `?` match within text values, `low..high` asks for a value in a
 range with either side open (`file:modified=2026-01-01..` is "changed
 since New Year"), and `--missing exif:` turns the question around:
-which photos have no EXIF on record. The attachment from the mail above
-is found like any other file, with its origin one term away:
+which photos have no EXIF on record. Only files that still lie
+somewhere answer — a place of their own on the record, or their
+origin's, for what a tool won out of another file; a file gone from
+every place it was seen at is still held, answers `--as-of` a day it
+lay there, and answers today with `--all`. The attachment from the mail
+above is found like any other file, with its origin one term away:
 
 ```console
 $ ossuary find 'file:name=*.pdf' derive:derived-from

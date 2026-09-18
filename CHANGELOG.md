@@ -26,6 +26,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary find --all`** asks for every file the archive holds, at a place or not
 - **`ossuary ingest --collect`** takes in what is there and judges nothing gone: for a directory
   that is emptied after every run, an inbox, whose files are meant to live on in the archive
+- **`ossuary ingest --emptied`** is the word that the named directories were emptied on purpose:
+  every place on record under them is taken back, however little the walk meets
 
 - **`ossuary maintain weed`** takes out of `derived/` what `content/` holds as well: a file won as
   an attachment first and taken in as an original later stands in both stores under the same name,
