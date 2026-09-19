@@ -30,7 +30,7 @@ making the run a failure.
 | | |
 |---|---|
 | `init` | begin an empty archive — or complete one already standing. `--algorithm` is the one choice made for good, and only when the archive begins |
-| `ingest` | take directory trees and single files in; everything of one call arrives as one run, and a file no longer at a place the record stands by has that place taken back. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--collect` judges nothing gone (for an inbox emptied after every run), `--emptied` takes back every place under a directory emptied on purpose, `--dry-run` counts and measures what would go in and what would be taken back, and writes nothing |
+| `ingest` | take directory trees and single files in; everything of one call arrives as one run, and a file no longer at a place the record stands by has that place taken back. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--collect` judges nothing gone (for an inbox emptied after every run), `--emptied` takes back every place under a directory emptied on purpose or gone altogether, `--dry-run` counts and measures what would go in and what would be taken back, and writes nothing |
 | `extract` | run extractors over what they have not examined — see below. `--dry-run` shows what named files' examination would record, and writes nothing |
 | `annotate` | put `user:tag` and `user:comment` on files already on the record |
 | `retract` | take a statement back: it no longer stands, the record keeps it. Files and `attribute=value` pairs mix freely; `attribute=..` takes back every standing value; `--dry-run` says what would fall |

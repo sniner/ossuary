@@ -123,7 +123,8 @@ a directory that would not open, a path `config.toml` excludes, and a
 directory the walk meets not one file under — what a mount point looks
 like with nothing mounted — are left as they are, and the run says so.
 If you did empty that directory on purpose, `ingest --emptied DIR` is
-the word for it and takes every place under it back. And a directory
+the word for it and takes every place under it back, a directory that
+is no more included. And a directory
 you empty after every run, an inbox whose files are meant to live on in
 the archive, is taken in with `ingest --collect`, which judges nothing
 gone.

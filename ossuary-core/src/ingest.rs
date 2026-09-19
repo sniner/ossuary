@@ -146,7 +146,7 @@ where
     // sweep, and a root that will not resolve costs only itself. The
     // failure list names the path beside each error, so the contexts
     // here say only what was being done when it went wrong.
-    let gathered = gather(roots, sweep.excludes)?;
+    let gathered = gather(roots, sweep.excludes, sweep.emptied)?;
     result.excluded = gathered.excluded;
     let Judged { gone, empty } = match sweep.record {
         Some(record) => judge(record, &gathered, sweep)?,
@@ -303,7 +303,7 @@ struct Gathered {
     walked: Vec<PathBuf>,
 }
 
-fn gather<I>(roots: I, excludes: &Excludes) -> Result<Gathered>
+fn gather<I>(roots: I, excludes: &Excludes, emptied: bool) -> Result<Gathered>
 where
     I: IntoIterator,
     I::Item: AsRef<Path>,
@@ -318,6 +318,26 @@ where
     for given in roots {
         let root = match fs::canonicalize(given.as_ref()) {
             Ok(root) => root,
+            // A directory that is no more is the plainest case of the
+            // word emptied: the walk meets nothing under it, and every
+            // place on record there is taken back all the same.
+            Err(error) if emptied && error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(root) = absent(given.as_ref()) {
+                    if let Some(found) = enclosing_archive(&root) {
+                        return Err(Error::IngestsArchive(found));
+                    }
+                    gathered.walked.push(root);
+                    continue;
+                }
+                gathered.failed.push((
+                    given.as_ref().to_path_buf(),
+                    Error::Io {
+                        context: "resolving".to_string(),
+                        source: error,
+                    },
+                ));
+                continue;
+            }
             Err(error) => {
                 gathered.failed.push((
                     given.as_ref().to_path_buf(),
@@ -418,7 +438,7 @@ where
     I: IntoIterator,
     I::Item: AsRef<Path>,
 {
-    let gathered = gather(roots, sweep.excludes)?;
+    let gathered = gather(roots, sweep.excludes, sweep.emptied)?;
     let Judged { gone, empty } = match sweep.record {
         Some(record) => judge(record, &gathered, sweep)?,
         None => Judged::default(),
@@ -680,6 +700,20 @@ impl IngestMemory {
 
 /// The archive root at or above a path, if any: the mark is looked for
 /// at the path itself first, then upward.
+/// Where a path that is no more would stand, resolved as far as it
+/// exists: the nearest ancestor that does, canonical, with the rest of
+/// the path beneath it — so the place it names is the one the record
+/// spells, symlinked temp directories and all. `None` when not even
+/// the root of the filesystem answers.
+fn absent(given: &Path) -> Option<PathBuf> {
+    let given = std::path::absolute(given).ok()?;
+    given.ancestors().skip(1).find_map(|ancestor| {
+        let base = fs::canonicalize(ancestor).ok()?;
+        let rest = given.strip_prefix(ancestor).ok()?;
+        Some(base.join(rest))
+    })
+}
+
 fn enclosing_archive(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .find(|dir| crate::archive::is_archive(dir))
@@ -2016,6 +2050,47 @@ mod tests {
 
         assert_eq!(run.gone, 2);
         assert!(run.empty.is_empty());
+        assert!(places_under(&log, &tree).is_empty());
+    }
+
+    #[test]
+    fn the_word_emptied_takes_back_every_place_under_a_root_that_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let given = dir.path().join("inbox");
+        fs::create_dir_all(&given).unwrap();
+        // The record spells the resolved place; the call names the
+        // directory as the shell would, symlinked temp directory and all.
+        let tree = given.canonicalize().unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        let host = "atlas.example.net";
+        let excludes = none();
+        ingest(
+            &content,
+            &log,
+            [&given],
+            &sweep(host, &excludes, None, None),
+        )
+        .unwrap();
+        fs::remove_dir_all(&given).unwrap();
+        let record = record_of(&log);
+
+        let mut plain = sweep(host, &excludes, None, Some(&record));
+        let run = ingest(&content, &log, [&given], &plain).unwrap();
+        assert_eq!(
+            run.gone, 0,
+            "without the word, a directory that is no more is a failure"
+        );
+        assert_eq!(run.failed.len(), 1);
+        assert_eq!(places_under(&log, &tree).len(), 1);
+
+        plain.emptied = true;
+        let rehearsal = preview([&given], &plain).unwrap();
+        assert_eq!(rehearsal.gone.len(), 1);
+        assert!(rehearsal.failed.is_empty());
+        let run = ingest(&content, &log, [&given], &plain).unwrap();
+        assert_eq!(run.gone, 1);
+        assert!(run.failed.is_empty(), "{:?}", run.failed);
         assert!(places_under(&log, &tree).is_empty());
     }
 }

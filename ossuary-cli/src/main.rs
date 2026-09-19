@@ -101,7 +101,8 @@ enum Command {
     /// places stand on record there, which is what a mount point looks
     /// like with nothing mounted. Not seen is not gone. --emptied is the
     /// word that it was: every place on record under the named
-    /// directories is taken back, however little the walk meets.
+    /// directories is taken back, however little the walk meets, and a
+    /// directory that is no more is taken as emptied whole.
     /// --collect judges nothing at all: for a directory that is emptied
     /// after every run, an inbox, whose files are meant to live on in
     /// the archive.
@@ -125,8 +126,9 @@ enum Command {
         #[arg(long, conflicts_with = "emptied")]
         collect: bool,
 
-        /// The directories were emptied on purpose: take back every
-        /// place on record under them, however little the walk meets
+        /// The directories were emptied on purpose, or are no more: take
+        /// back every place on record under them, however little the
+        /// walk meets
         #[arg(long)]
         emptied: bool,
 

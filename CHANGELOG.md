@@ -15,6 +15,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`export RUN` and `extract RUN` no longer deny a run that named no file.** A run of retractions,
   tags or findings alone is on the record, and `history` lists it; both now say the run named no
   file, and keep "no run on the record" for an id no claim carries
+- **`ingest --emptied DIR` takes a directory that is no more.** It used to fail on resolving the
+  name and take nothing back; the word now covers the plainest case, and every place on record
+  under the vanished directory is taken back
 
 ## [0.6.0] - 2026-09-19
 
