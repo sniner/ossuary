@@ -179,6 +179,60 @@ impl Timestamp {
         Ok(Timestamp(s.to_string()))
     }
 
+    /// The moment a friendlier spelling names, read as the end of what
+    /// it names: a date alone is that day's last second, a full moment
+    /// is itself, with or without the trailing `Z`. "As of the first"
+    /// means the first has happened; a range up to a day includes the
+    /// day.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timestamp`] for any other shape, and for a date or time
+    /// that does not exist.
+    pub fn closing(given: &str) -> Result<Self> {
+        Self::friendly(given, "T23:59:59")
+    }
+
+    /// The moment a friendlier spelling names, read as the beginning of
+    /// what it names: a date alone is that day's first second, a full
+    /// moment is itself, with or without the trailing `Z`. A range from
+    /// a day begins with the day.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timestamp`] for any other shape, and for a date or time
+    /// that does not exist.
+    pub fn opening(given: &str) -> Result<Self> {
+        Self::friendly(given, "T00:00:00")
+    }
+
+    /// Whether `given` is a date alone — the shape a friendlier spelling
+    /// widens to a whole day.
+    #[must_use]
+    pub fn is_date(given: &str) -> bool {
+        let bytes = given.as_bytes();
+        bytes.len() == 10
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(at, byte)| matches!(at, 4 | 7) || byte.is_ascii_digit())
+    }
+
+    /// The friendlier spellings, with a date alone widened by `edge`.
+    /// The error names what was given, not what it was widened to.
+    fn friendly(given: &str, edge: &str) -> Result<Self> {
+        let mut spelled = given.trim().to_string();
+        if Self::is_date(&spelled) {
+            spelled.push_str(edge);
+        }
+        if spelled.len() == 19 && !spelled.ends_with('Z') {
+            spelled.push('Z');
+        }
+        Self::parse(&spelled).map_err(|_| Error::Timestamp(given.to_string()))
+    }
+
     /// The timestamp of a moment in Unix time — seconds since the epoch,
     /// negative for the years before it.
     ///
@@ -900,6 +954,43 @@ mod tests {
         let earlier = Timestamp::parse("2026-09-01T21:14:03Z").unwrap();
         let later = Timestamp::parse("2026-09-01T21:14:04Z").unwrap();
         assert!(earlier < later);
+    }
+
+    #[test]
+    fn a_friendlier_spelling_closes_at_the_end_and_opens_at_the_start() {
+        assert_eq!(
+            Timestamp::closing("2026-09-01").unwrap().as_str(),
+            "2026-09-01T23:59:59Z"
+        );
+        assert_eq!(
+            Timestamp::opening("2026-09-01").unwrap().as_str(),
+            "2026-09-01T00:00:00Z"
+        );
+        for whole in [
+            "2026-09-01T08:00:00Z",
+            "2026-09-01T08:00:00",
+            " 2026-09-01T08:00:00 ",
+        ] {
+            assert_eq!(
+                Timestamp::closing(whole).unwrap().as_str(),
+                "2026-09-01T08:00:00Z",
+                "{whole:?} names one moment, closing or opening"
+            );
+            assert_eq!(
+                Timestamp::opening(whole).unwrap().as_str(),
+                "2026-09-01T08:00:00Z"
+            );
+        }
+        assert!(Timestamp::is_date("2026-09-01"));
+        assert!(!Timestamp::is_date("2026-09-01T"));
+        assert!(!Timestamp::is_date("2026-09-0a"));
+
+        for wrong in ["2026-02-30", "2026-09", "yesterday", "2026-09-01T25:00:00"] {
+            assert!(
+                matches!(Timestamp::closing(wrong), Err(Error::Timestamp(given)) if given == wrong),
+                "{wrong:?} names no moment, and the error names what was given"
+            );
+        }
     }
 
     #[test]

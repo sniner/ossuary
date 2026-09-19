@@ -5,6 +5,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A date alone means the same at every door.** `ossuary-mount --as-of 2026-09-01` read the date
+  as the day's start where `ossuary --as-of` closes at its end; both now close at the end, and the
+  mount takes a run id in place of the time, as the README already said. `find time=` reads a date
+  the same way: `time=..2026-09-01` now includes the first, `time=2026-09-01` is the whole day, and a
+  bound that names no moment is refused instead of compared as text
+
 ## [0.6.0] - 2026-09-19
 
 ### Breaking changes

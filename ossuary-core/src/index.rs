@@ -540,6 +540,35 @@ impl Index {
         Ok(Some(replayed))
     }
 
+    /// The record as it stood when `given` names, and the moment that
+    /// is: a time in the friendlier spellings — a date alone closes at
+    /// that day's end, "as of the first" meaning the first has
+    /// happened — or a run id, closing after that run's last claim.
+    /// The one door `--as-of` goes through, whichever program holds it.
+    /// `None` for a run the record has no claim of.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timestamp`] when `given` is neither a run id nor a
+    /// moment; [`Error::Index`] from `SQLite`.
+    pub fn at(&self, given: &str) -> Result<Option<(Index, Timestamp)>> {
+        if Run::spelled(given) {
+            let run = Run::parse(given)?;
+            let Some(replayed) = self.as_of_run(&run)? else {
+                return Ok(None);
+            };
+            let closed: String = self.connection.query_row(
+                "SELECT MAX(c.time) FROM claims c
+                 WHERE c.run = (SELECT id FROM runs WHERE name = ?1)",
+                params![run.as_str()],
+                |row| row.get(0),
+            )?;
+            return Ok(Some((replayed, Timestamp::parse(&closed)?)));
+        }
+        let closing = Timestamp::closing(given)?;
+        Ok(Some((self.as_of(closing.as_str())?, closing)))
+    }
+
     /// Every claim the `until` clause admits — spoken of `c`, the claim,
     /// and `s`, its segment — replayed in log order into a throwaway
     /// in-memory index.
@@ -1712,6 +1741,40 @@ fn text_clause(
     }
 }
 
+/// The pattern of a time term, appended to `sql` as a condition on
+/// `c.time`: in claim time's friendlier spellings, the ones `--as-of`
+/// takes. A date alone is the whole day, a range from a date opens with
+/// the day, one up to a date closes with it, and a moment without its
+/// `Z` is the moment. A quoted literal and a glob read as written.
+fn time_clause(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    pattern: &str,
+) -> Result<()> {
+    use rusqlite::types::Value as Sql;
+    let quoted = pattern.starts_with('"') && pattern.ends_with('"') && pattern.len() >= 2;
+    if quoted || pattern.contains('*') || pattern.contains('?') {
+        text_clause(sql, params, "c.time", pattern);
+    } else if let Some((low, high)) = pattern.split_once("..") {
+        if !low.is_empty() {
+            sql.push_str(" AND c.time >= ?");
+            params.push(Sql::Text(Timestamp::opening(low)?.as_str().to_string()));
+        }
+        if !high.is_empty() {
+            sql.push_str(" AND c.time <= ?");
+            params.push(Sql::Text(Timestamp::closing(high)?.as_str().to_string()));
+        }
+    } else if Timestamp::is_date(pattern) {
+        sql.push_str(" AND c.time BETWEEN ? AND ?");
+        params.push(Sql::Text(Timestamp::opening(pattern)?.as_str().to_string()));
+        params.push(Sql::Text(Timestamp::closing(pattern)?.as_str().to_string()));
+    } else {
+        sql.push_str(" AND c.time = ?");
+        params.push(Sql::Text(Timestamp::closing(pattern)?.as_str().to_string()));
+    }
+    Ok(())
+}
+
 /// One field term as a condition on the claim `c`, appended to `sql`.
 fn field_clause(
     sql: &mut String,
@@ -1741,7 +1804,7 @@ fn field_clause(
             text_clause(sql, params, "name", pattern);
             sql.push(')');
         }
-        Field::Time => text_clause(sql, params, "c.time", pattern),
+        Field::Time => time_clause(sql, params, pattern)?,
         Field::Value => value_clause(sql, params, "c.value", pattern),
         Field::Retract => {
             let flag = match pattern.trim_matches('"') {
@@ -2075,6 +2138,42 @@ mod tests {
         );
         assert_eq!(
             index
+                .find(
+                    &[field(Field::Time, "..2026-09-01"), name()],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            std::slice::from_ref(&a),
+            "a range up to a date closes with the day, as --as-of does"
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Time, "2026-09-02")], &[], Scope::Held)
+                .unwrap(),
+            [a.clone(), b.clone()],
+            "a date alone is the whole day"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Time, "2026-09-01T10:00:00")],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            std::slice::from_ref(&a),
+            "a moment without its Z is the moment"
+        );
+        assert!(
+            matches!(
+                index.find(&[field(Field::Time, "..yesterday")], &[], Scope::Held),
+                Err(Error::Timestamp(given)) if given == "yesterday"
+            ),
+            "a bound that names no moment is refused, not compared as text"
+        );
+        assert_eq!(
+            index
                 .find(&[field(Field::Subject, "aa*"), name()], &[], Scope::Held)
                 .unwrap(),
             std::slice::from_ref(&b),
@@ -2383,6 +2482,29 @@ mod tests {
             index.as_of_run(&run_x('c')).unwrap().is_none(),
             "a run no claim carries is no cutoff"
         );
+
+        // The one door: a run id or a moment, and the moment it closes at.
+        let (view, closed) = index.at(run_x('a').as_str()).unwrap().unwrap();
+        assert_eq!(
+            view.values(&subject(), &tag, Scope::Held).unwrap(),
+            [json!("first")]
+        );
+        assert_eq!(closed.as_str(), when, "a run closes at its last claim");
+        let (view, closed) = index.at("2026-09-01").unwrap().unwrap();
+        assert_eq!(
+            view.values(&subject(), &tag, Scope::Held).unwrap(),
+            [json!("first"), json!("second")]
+        );
+        assert_eq!(
+            closed.as_str(),
+            "2026-09-01T23:59:59Z",
+            "a date alone closes at the day's end"
+        );
+        assert!(index.at(run_x('c').as_str()).unwrap().is_none());
+        assert!(matches!(
+            index.at("last week"),
+            Err(Error::Timestamp(given)) if given == "last week"
+        ));
     }
 
     #[test]

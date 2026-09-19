@@ -44,10 +44,13 @@ $ ossuary mount ~/last-year --as-of 2026-01-01
 ```
 
 `--as-of TIME` is the record as it was known at that moment, UTC —
-`2026-01-01` or `2026-01-01T08:00:00`, a trailing `Z` welcome. Files
-since retracted stand again, files since arrived are absent, and a place
-whose file changed shows the old bytes. Two mounts side by side are two
-moments side by side, comparable with any tool that reads files.
+`2026-01-01T08:00:00`, a trailing `Z` welcome, or `2026-01-01`, which
+closes at that day's end, as it does everywhere `ossuary` takes it. A
+run id in place of the time, as `ossuary history` lists them, closes
+the view after that run's last claim. Files since retracted stand
+again, files since arrived are absent, and a place whose file changed
+shows the old bytes. Two mounts side by side are two moments side by
+side, comparable with any tool that reads files.
 
 ## Where the view narrows
 

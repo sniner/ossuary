@@ -24,7 +24,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
-use ossuary_core::{Archive, Error, Standing, Timestamp, Value};
+use ossuary_core::{Archive, Error, Index, Standing, Timestamp, Value};
 
 mod forest;
 mod record;
@@ -62,8 +62,9 @@ struct Cli {
     mountpoint: PathBuf,
 
     /// Show the record as it stood at this moment, UTC: what was known
-    /// then, including what was retracted since. 2026-01-01 or
-    /// 2026-01-01T08:00:00, a trailing Z welcome
+    /// then, including what was retracted since. 2026-01-01 closes at
+    /// that day's end, 2026-01-01T08:00:00 at the second, a trailing Z
+    /// welcome; a run id closes after that run's last claim
     #[arg(long, value_name = "TIME")]
     as_of: Option<String>,
 
@@ -89,14 +90,22 @@ fn run(cli: Cli) -> Result<ExitCode> {
         as_of,
         quiet,
     } = cli;
-    let cutoff = as_of.as_deref().map(closing).transpose()?;
     let archive = open(&archive)?;
-    let view = grown_view(&archive, cutoff.as_deref(), quiet)?;
-
-    let moment = cutoff
-        .clone()
-        .unwrap_or_else(|| Timestamp::now().as_str().to_string());
-    let view_time = forest::clamped(forest::epoch(&moment)).unwrap_or(0);
+    let index = caught_up(&archive, quiet)?;
+    let (index, moment, stood) = match as_of.as_deref() {
+        None => (index, Timestamp::now(), None),
+        Some(given) => {
+            let (view, closed) = at(&index, given)?;
+            let stood = if ossuary_core::Run::spelled(given) {
+                format!(", as it stood after run {given}, at {}", closed.as_str())
+            } else {
+                format!(", as it stood at {}", closed.as_str())
+            };
+            (view, closed, Some(stood))
+        }
+    };
+    let view = grown_view(&index)?;
+    let view_time = forest::clamped(forest::epoch(moment.as_str())).unwrap_or(0);
 
     let made = !mountpoint.exists();
     std::fs::create_dir_all(&mountpoint)
@@ -111,7 +120,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let (files, folders) = counted(&view);
     let room = Room {
         place: mountpoint.display().to_string(),
-        cutoff: cutoff.as_deref(),
+        stood: stood.as_deref(),
         files,
         folders,
         quiet,
@@ -133,7 +142,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
 /// every door.
 pub struct Room<'a> {
     place: String,
-    cutoff: Option<&'a str>,
+    /// The moment the view answers for, as a clause of the opening
+    /// line; `None` for the mount's own.
+    stood: Option<&'a str>,
     files: usize,
     folders: usize,
     quiet: bool,
@@ -151,15 +162,12 @@ impl Room<'_> {
     pub fn opened(&self) {
         let Room {
             place,
-            cutoff,
+            stood,
             files,
             folders,
             ..
         } = self;
-        let stood = match cutoff {
-            Some(moment) => format!(", as it stood at {moment}"),
-            None => String::new(),
-        };
+        let stood = stood.unwrap_or("");
         self.tell(format_args!(
             "the record stands at {place}, read-only, {files} file(s) in {folders} folder(s){stood}; Ctrl-C gives it back"
         ));
@@ -185,8 +193,8 @@ fn open(root: &Path) -> Result<Archive> {
     })
 }
 
-/// The view, grown from the record as it stood at `cutoff`.
-fn grown_view(archive: &Archive, cutoff: Option<&str>, quiet: bool) -> Result<Forest> {
+/// The archive's index, caught up with its log.
+fn caught_up(archive: &Archive, quiet: bool) -> Result<Index> {
     let mut index = archive.index()?;
     let folded = index.fold(archive.log())?;
     if folded.segments > 0 && !quiet {
@@ -195,9 +203,28 @@ fn grown_view(archive: &Archive, cutoff: Option<&str>, quiet: bool) -> Result<Fo
             folded.segments
         );
     }
+    Ok(index)
+}
 
+/// The record as it stood when `--as-of` names, and the moment that
+/// is — [`Index::at`], with `ossuary`'s own words for what it refuses.
+fn at(index: &Index, given: &str) -> Result<(Index, Timestamp)> {
+    match index.at(given) {
+        Ok(Some(view)) => Ok(view),
+        Ok(None) => Err(anyhow!(
+            "no run {given} on the record; `ossuary history` lists the runs"
+        )),
+        Err(Error::Timestamp(_)) => Err(anyhow!(
+            "{given:?} is not a time; RFC 3339 like 2026-01-01T12:00:00Z, the date alone, or a run id"
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The view, grown from the record `index` holds.
+fn grown_view(index: &Index) -> Result<Forest> {
     let mut places = Vec::new();
-    for standing in index.standing_as_of("file:path", cutoff)? {
+    for standing in index.standing_as_of("file:path", None)? {
         let Value::String(path) = standing.value else {
             continue;
         };
@@ -210,13 +237,13 @@ fn grown_view(archive: &Archive, cutoff: Option<&str>, quiet: bool) -> Result<Fo
     }
 
     let mut sizes = BTreeMap::new();
-    for (subject, value) in newest(index.standing_as_of("file:size", cutoff)?) {
+    for (subject, value) in newest(index.standing_as_of("file:size", None)?) {
         if let Some(size) = value.as_u64() {
             sizes.insert(subject, size);
         }
     }
     let mut modified = BTreeMap::new();
-    for (subject, value) in newest(index.standing_as_of("file:modified", cutoff)?) {
+    for (subject, value) in newest(index.standing_as_of("file:modified", None)?) {
         if let Value::String(moment) = value {
             if let Some(seconds) = forest::clamped(forest::epoch(&moment)) {
                 modified.insert(subject, seconds);
@@ -255,21 +282,4 @@ fn counted(view: &Forest) -> (usize, usize) {
         .count();
     let folders = view.entries.len() - files - 1;
     (files, folders)
-}
-
-/// The cutoff in claim time's own spelling, from friendlier forms.
-fn closing(given: &str) -> Result<String> {
-    let mut spelled = given.trim().to_string();
-    if spelled.len() == 10 {
-        spelled.push_str("T00:00:00");
-    }
-    if !spelled.ends_with('Z') {
-        spelled.push('Z');
-    }
-    match Timestamp::parse(&spelled) {
-        Ok(moment) => Ok(moment.as_str().to_string()),
-        Err(_) => Err(anyhow!(
-            "{given:?} names no moment; the record reads UTC: 2026-01-01 or 2026-01-01T08:00:00, a trailing Z welcome"
-        )),
-    }
 }

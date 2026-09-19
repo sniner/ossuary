@@ -76,7 +76,8 @@ A name without a colon is a field of the claim itself — `subject`,
 term asks about the claim behind a value, for every attribute term at
 once: `find run=RUN file:name` is what a run named, `find source=user
 user:tag` what you tagged yourself, `find time=2026-09-01..` what was
-written since September — and `retract=true file:path=*` a path that
+written since September, a date read as `--as-of` reads it, the whole
+day — and `retract=true file:path=*` a path that
 was taken back, where `retract=true file:path` is any retraction with
 the paths shown. A field term shows nothing of itself; a bare field
 name shows the field. `--all` asks the record instead of the standing

@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{
-    Algorithm, Archive, Attribute, Error, Field, Index, Run, Scope, Subject, Sweep, Term, Value,
+    Algorithm, Archive, Attribute, Error, Field, Index, Scope, Subject, Sweep, Term, Value,
 };
 
 mod audit;
@@ -338,7 +338,9 @@ enum Command {
     /// asks about the claim behind a value: `find run=RUN file:name=*`
     /// is what a run named, `find source=user user:tag` what you tagged
     /// yourself, `find time=2026-09-01..` what was written since
-    /// September. A field term holds for every attribute term at once,
+    /// September, a date read as --as-of reads it: the whole day, a
+    /// range from it opening with the day, one up to it closing with
+    /// it. A field term holds for every attribute term at once,
     /// so `retract=true file:path=*` asks for a path that was taken
     /// back, where `retract=true file:path` asks for any retraction and
     /// shows the paths. The values it reads are the standing ones: a
@@ -1357,33 +1359,19 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
 pub(crate) fn index_at(archive: &Archive, as_of: Option<&str>, quiet: bool) -> Result<Index> {
     let mut index = archive.index()?;
     catch_up(&mut index, archive, quiet)?;
-    match as_of {
-        None => Ok(index),
-        Some(given) if Run::spelled(given) => {
-            let run = Run::parse(given)?;
-            index.as_of_run(&run)?.ok_or_else(|| {
-                anyhow!("no run {given} on the record; `ossuary history` lists the runs")
-            })
-        }
-        Some(given) => Ok(index.as_of(&cutoff(given)?)?),
-    }
-}
-
-/// The --as-of moment as claim time spells it: RFC 3339 UTC. A date
-/// alone closes at that day's end — "as of the first" means the first
-/// has happened.
-fn cutoff(given: &str) -> Result<String> {
-    let spelled = if given.len() == 10 && !given.contains('T') {
-        format!("{given}T23:59:59Z")
-    } else {
-        given.to_string()
+    let Some(given) = as_of else {
+        return Ok(index);
     };
-    if ossuary_core::Timestamp::parse(&spelled).is_err() {
-        return Err(anyhow!(
+    match index.at(given) {
+        Ok(Some((view, _))) => Ok(view),
+        Ok(None) => Err(anyhow!(
+            "no run {given} on the record; `ossuary history` lists the runs"
+        )),
+        Err(Error::Timestamp(_)) => Err(anyhow!(
             "{given:?} is not a time; RFC 3339 like 2026-01-01T12:00:00Z, the date alone, or a run id"
-        ));
+        )),
+        Err(error) => Err(error.into()),
     }
-    Ok(spelled)
 }
 
 /// The subject as the log spells it, from whatever the user typed —
