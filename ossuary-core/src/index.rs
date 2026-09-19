@@ -1364,6 +1364,24 @@ impl Index {
         Ok(found)
     }
 
+    /// Whether any claim on the record carries `run`. A run of
+    /// retractions or tags alone is on the record and names no file,
+    /// which [`run_sightings`](Index::run_sightings) cannot tell from a
+    /// run that never was.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`.
+    pub fn has_run(&self, run: &Run) -> Result<bool> {
+        let found: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM claims c
+                           WHERE c.run = (SELECT id FROM runs WHERE name = ?1))",
+            params![run.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(found)
+    }
+
     /// Every sighting one run put on the record, with where it saw the
     /// file: one pair per place, the same content seen at two places in
     /// one run answering twice. An ingest sighting answers with its
@@ -3600,6 +3618,26 @@ mod tests {
             [(subject(), Placement::Path("/mnt/nas/a.txt".to_string()))]
         );
         assert_eq!(index.run_sightings(&run_x('c')).unwrap(), []);
+
+        // A run that only took something back is on the record and names
+        // no file; only has_run tells it from a run that never was.
+        let run = run_x('d');
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("file:path").unwrap(),
+                json!("/home/s/a.txt"),
+                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
+                Source::parse("ingest").unwrap(),
+                run.clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(index.run_sightings(&run).unwrap(), []);
+        assert!(index.has_run(&run).unwrap());
+        assert!(!index.has_run(&run_x('c')).unwrap());
     }
 
     #[test]

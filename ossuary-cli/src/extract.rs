@@ -85,11 +85,16 @@ fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>>
     let mut names: Vec<String> = Vec::new();
     for id in ids {
         if Run::spelled(id) {
-            let sightings = index.run_sightings(&Run::parse(id)?)?;
+            let run = Run::parse(id)?;
+            let sightings = index.run_sightings(&run)?;
             if sightings.is_empty() {
-                return Err(anyhow!(
-                    "no run {id} on the record; `ossuary history` lists the runs; nothing was examined"
-                ));
+                return Err(if index.has_run(&run)? {
+                    anyhow!("run {id} named no file; nothing was examined")
+                } else {
+                    anyhow!(
+                        "no run {id} on the record; `ossuary history` lists the runs; nothing was examined"
+                    )
+                });
             }
             for (subject, _) in sightings {
                 let name = subject.as_str().to_string();

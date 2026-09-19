@@ -12,6 +12,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mount takes a run id in place of the time, as the README already said. `find time=` reads a date
   the same way: `time=..2026-09-01` now includes the first, `time=2026-09-01` is the whole day, and a
   bound that names no moment is refused instead of compared as text
+- **`export RUN` and `extract RUN` no longer deny a run that named no file.** A run of retractions,
+  tags or findings alone is on the record, and `history` lists it; both now say the run named no
+  file, and keep "no run on the record" for an id no claim carries
 
 ## [0.6.0] - 2026-09-19
 

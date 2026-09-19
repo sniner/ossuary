@@ -116,11 +116,16 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
     let mut pairs: Vec<(Subject, Placement)> = Vec::new();
     for id in ids {
         if Run::spelled(id) {
-            let sightings = index.run_sightings(&Run::parse(id)?)?;
+            let run = Run::parse(id)?;
+            let sightings = index.run_sightings(&run)?;
             if sightings.is_empty() {
-                return Err(anyhow!(
-                    "no run {id} on the record; `ossuary history` lists the runs; nothing was exported"
-                ));
+                return Err(if index.has_run(&run)? {
+                    anyhow!("run {id} named no file; nothing was exported")
+                } else {
+                    anyhow!(
+                        "no run {id} on the record; `ossuary history` lists the runs; nothing was exported"
+                    )
+                });
             }
             pairs.extend(sightings);
         } else if id.contains('=') {
