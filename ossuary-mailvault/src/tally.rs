@@ -9,8 +9,8 @@ pub struct Tally {
     /// What the run does to a message, for the dry run's verdict:
     /// "fetch" or "take over".
     act: &'static str,
-    /// The run's id, as every `prov:run` claim of it says.
-    pub run: String,
+    /// The run's id, as every claim of it carries in its `run` field.
+    pub run: ossuary_core::Run,
     /// Messages whose bytes were new to the archive.
     pub stored: usize,
     /// Messages the archive already held — their place went on the
@@ -33,7 +33,7 @@ impl Tally {
     pub fn new(act: &'static str) -> Self {
         Self {
             act,
-            run: ossuary_core::run_id(),
+            run: ossuary_core::Run::new(),
             stored: 0,
             known: 0,
             left: 0,
@@ -84,7 +84,7 @@ mod tests {
 
     fn tally() -> Tally {
         let mut tally = Tally::new("fetch");
-        tally.run = "run-0001".to_string();
+        tally.run = ossuary_core::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap();
         tally
     }
 
@@ -114,7 +114,7 @@ mod tests {
         tally.claims = 11;
         assert_eq!(
             tally.verdict(false),
-            "2 messages stored, 1 already stored, 4 already on record; 11 claim(s) written, run run-0001"
+            "2 messages stored, 1 already stored, 4 already on record; 11 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4"
         );
     }
 }

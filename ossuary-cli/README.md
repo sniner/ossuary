@@ -37,8 +37,9 @@ making the run a failure.
 | `seal` | close the open segment; its claims become part of the sealed log |
 | `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
 | `standing` | what stands on one file — the outcome after retractions, where `about` tells the story. Attributes or a `namespace:` narrow it; exactly one attribute answers its values bare, one per line. Exits 1 when nothing stands, so a script can test for it |
-| `find` | every file on which all the terms hold, shown with the fields the question named. Only files still lying somewhere answer; `--all` asks for every file held, `--as-of TIME` for a day's knowledge |
+| `find` | every file on which all the terms hold, shown with the fields the question named. A name without a colon is a field of the claim — `run`, `source`, `time`, `retract`. Only files still lying somewhere answer; `--all` asks the record, every claim ever written, retractions included; `--as-of TIME` a day's knowledge |
 | `attributes` | every attribute standing on the record, sorted, one per line — the words a question can be asked in. Namespaces like `exif:` narrow it; `--count` puts the number of files each stands on in front |
+| `history` | every run on the record, oldest first: when it closed, its id, what it wrote, who spoke in it — the moments `--as-of` can be asked for, and the ids `export`, `extract` and `--as-of` take |
 | `ls`, `tree` | what stands at one place, one level of it — or everything below it |
 | `id` | the name a file would answer to, and whether the archive already holds it. Nothing is taken in |
 | `get` | one file's bytes to stdout, or to `--output FILE` |
@@ -47,12 +48,13 @@ making the run a failure.
 | `maintain mend` | join the pieces of a broken chain of sealed segments, and keep the break on the record. Nothing sealed is rewritten; `--dry-run` says what would be mended. Exits 1 when a break was left open |
 | `maintain weed` | take out of `derived/` what `content/` holds as well, both copies proved against their name first. `--repair` mends a damaged original from its sound derived copy, the damaged one set aside; `--dry-run` says what would go. Exits 1 when a file was left standing |
 
-`--json` on `about`, `standing`, `find`, `attributes`, `ls` and `audit`
-keeps the JSON spelling, one object per line, for `jq`. `--as-of TIME` on
-`find`, `attributes`, `ls`, `tree`, `standing`, `about` and `export`
-answers with what the archive
-knew at TIME — the axis is claim time, never the file's own, and a date
-alone closes at that day's end.
+`--json` on `about`, `standing`, `find`, `attributes`, `history`, `ls`
+and `audit` keeps the JSON spelling, one object per line, for `jq`.
+`--as-of TIME` on `find`, `attributes`, `history`, `ls`, `tree`,
+`standing`, `about` and `export` answers with what the archive knew at
+TIME — the axis is claim time, never the file's own, and a date alone
+closes at that day's end. A run id in place of the time closes the view
+after that run's last claim.
 
 Files are named by the hex digest of their content. A beginning of it is
 enough wherever a name is asked for, as long as it names only one file.
@@ -68,6 +70,15 @@ attribute stands at all, and a value in double quotes is literal — no
 glob, no range. `--missing exif:` turns the question around: which files
 have no EXIF on record. Only standing values answer; what was retracted
 no longer counts.
+
+A name without a colon is a field of the claim itself — `subject`,
+`attribute`, `value`, `time`, `source`, `run`, `retract` — and a field
+term asks about the claim behind a value, for every attribute term at
+once: `find run=RUN file:name` is what a run named, `find source=user
+user:tag` what you tagged yourself, `find time=2026-09-01..` what was
+written since September. `--all` asks the record instead of the
+standing set — every claim ever written, retractions included — and is
+the one way to `retract=true`, what was ever taken back.
 
 `--id` prints the full names alone, ready to pipe into `about`, `get`,
 `annotate` or `export`.
@@ -92,8 +103,8 @@ nothing new — so mail → attachment → text runs to its end in one call.
 Naming subjects runs no rounds: the named files are examined once, now,
 and a named file is handed over even when its kind is not one the
 extractor reads. A whole run's files are named by its dashed id — runs
-and files mix freely, the grammar `export` speaks — and whenever files
-were derived, the closing line names the call's own run id. `--dry-run`
+and files mix freely, the grammar `export` speaks — and the closing line
+names the call's own run id, which every claim it wrote carries. `--dry-run`
 shows what the named files' examination would record — claims, and each
 derived file with name, kind and size — and writes nothing, receipt
 included. `--full` ignores standing receipts; `--temp-dir` moves the

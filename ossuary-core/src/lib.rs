@@ -41,14 +41,14 @@ pub use archive::{Archive, is_archive};
 pub use audit::{
     Audit, Break, Cause, Chain, Fixity, LogAudit, Mended, StoreAudit, Twin, audit_log, audit_store,
 };
-pub use claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
+pub use claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
 pub use config::{Config, Excludes};
 pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
 pub use export::{Placed, Placement, lay_out};
-pub use extract::{Derivation, EXAMINED, Examined, record_examination, run_id};
+pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::{Algorithm, Digest};
-pub use index::{Folded, Index, Presence, Standing};
+pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{Contents, GENERATION, Log, Mend, Segment};
 pub use manifest::{Manifest, Manifests};

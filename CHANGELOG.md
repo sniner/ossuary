@@ -5,6 +5,51 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Every claim names its run.** A claim gains a seventh field, `run`: the id of the call that wrote
+  it, the same dashed id the verdicts have always named. Ingest, extract, mailvault, annotate and
+  retract all stamp it, on assertions and retractions alike, so "arrived together" and "taken back
+  in one sweep" are exact for every kind of call. The `prov:run` attribute is no longer written; it
+  said the same thing, for files a run took in only. Claims written before this version have no
+  `run`, read as they always did, and still carry their `prov:run` where they had one — but no
+  `run=` term and no `history` line reaches them; `find prov:run=ID` does, as before. The index
+  cache has a new column: delete `cache/index.sqlite`, and the next call folds it anew
+- **`ossuary find --all` asks the record.** It used to ask the standing set for every file held, at
+  a place or not; it now asks every claim ever written, retractions included, on every file held. A
+  value taken back answers again under `--all`, and a shown pair is a value once said, standing or
+  not; `about` tells which
+
+### Added
+
+- **`ossuary history`** lists every run on the record, oldest first: the moment it closed, spelled
+  the way `--as-of` takes it, its id, how many files and claims it wrote, how many of them took
+  something back, and who spoke in it. `--json` answers one object per run, `--as-of` narrows it to
+  the runs closed by then
+- **Field terms in `ossuary find`.** A term whose name has no colon names a field of the claim —
+  `subject`, `attribute`, `value`, `time`, `source`, `run`, `retract` — and asks about the claim
+  behind a value, for every attribute term at once: `find run=ID file:name` is what a run named,
+  `find source=user user:tag` what you tagged yourself, `find time=2026-09-01..` what was written
+  since September, `find --all retract=true file:path` what was ever taken back. Patterns read like
+  attribute patterns, in the field's own spelling; a bare field name shows the field's values on
+  each match. Under the standing set a value said twice answers for the run that said it last;
+  `retract` is refused without `--all`, because a retraction never stands
+- **`--as-of RUN`** wherever `--as-of` stands: a run id in place of the time closes the view after
+  that run's last claim, so two runs within one second still come apart
+
+### Changed
+
+- **`ossuary about`** ends each line with the claim's run, `[ingest]  run 315e…`; a claim from
+  before runs ends with its source as before. `--json` carries the field as the log spells it
+- **Every writing verb names its run.** `extract` closes with `2 file(s) examined in all, 1 derived
+  file(s) taken in; run …` whenever it examined something, where it used to name the run only when
+  files were derived; `annotate` and `retract` close with `…, run …` too
+- **`export RUN` and `extract RUN`** read the run field: a run's files are the ones whose place or
+  name it wrote, exactly as before for runs of this version. A run from before this version is not
+  found by them; `find --id prov:run=ID | xargs ossuary export DIR` still is
+- **The index cache's view of runs** is `v_runs`, one row per run with first and last moment, file
+  and claim counts and retractions, where `v_arrivals` counted `prov:run` claims
+
 ## [0.5.0] - 2026-09-18
 
 ### Changed

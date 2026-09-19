@@ -33,7 +33,7 @@ use std::io::Read;
 use immure::Store;
 use serde_json::json;
 
-use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
+use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::Result;
 use crate::log::Log;
 
@@ -84,8 +84,9 @@ impl Admitted {
 pub struct Sighting<'a> {
     /// Who is taking in — `ingest`, or a tool's own name.
     pub source: &'a Source,
-    /// The run this arrival belongs to: what `prov:run` will say.
-    pub run: &'a str,
+    /// The call this arrival belongs to: what every claim of it says
+    /// in its `run` field.
+    pub run: &'a Run,
     /// What the bytes are, in the taker's own words — a fetcher holding
     /// a message knows, and says so on every sighting. `None` takes what
     /// [`admit`] saw, on the bytes' first day only.
@@ -118,10 +119,10 @@ pub fn admit(content: &Store, bytes: impl Read) -> Result<Admitted> {
     })
 }
 
-/// Put an admission on the record: the taker's facts, the run, the
-/// tags, the kind in the taker's words where it has them — and for
-/// bytes new to the store their size, and the sniffed kind where the
-/// taker had no word. Every claim of one call carries one moment.
+/// Put an admission on the record: the taker's facts, the tags, the
+/// kind in the taker's words where it has them — and for bytes new to
+/// the store their size, and the sniffed kind where the taker had no
+/// word. Every claim of one call carries one moment and one run.
 /// Answers how many claims went in.
 ///
 /// # Errors
@@ -140,15 +141,9 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usi
             value.clone(),
             &time,
             said.source,
+            said.run,
         )?);
     }
-    claims.push(claim(
-        subject,
-        known_attribute("prov:run"),
-        json!(said.run),
-        &time,
-        said.source,
-    )?);
     for tag in said.tags {
         claims.push(claim(
             subject,
@@ -156,6 +151,7 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usi
             json!(tag),
             &time,
             &word,
+            said.run,
         )?);
     }
     // Size and sniffed kind describe the content, not the sighting: the
@@ -169,6 +165,7 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usi
             json!(admitted.size),
             &time,
             said.source,
+            said.run,
         )?);
     }
     let kind = match said.mime {
@@ -183,6 +180,7 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usi
             json!(kind),
             &time,
             said.source,
+            said.run,
         )?);
     }
     for claim in &claims {
@@ -198,6 +196,7 @@ fn claim(
     value: Value,
     time: &Timestamp,
     source: &Source,
+    run: &Run,
 ) -> Result<Claim> {
     Claim::assert(
         subject.clone(),
@@ -205,6 +204,7 @@ fn claim(
         value,
         time.clone(),
         source.clone(),
+        run.clone(),
     )
 }
 
@@ -332,6 +332,9 @@ mod tests {
 
     use super::*;
 
+    static RUN: std::sync::LazyLock<Run> =
+        std::sync::LazyLock::new(|| Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap());
+
     fn archive(dir: &TempDir) -> (Store, Log) {
         let content = Store::builder(dir.path().join("content"))
             .suffix("")
@@ -390,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn record_writes_the_takers_facts_the_run_and_the_day_one_facts() {
+    fn record_writes_the_takers_facts_and_the_day_one_facts() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
         let source = source();
@@ -405,7 +408,7 @@ mod tests {
             &admitted,
             &Sighting {
                 source: &source,
-                run: "run-0001",
+                run: &RUN,
                 mime: Some("message/rfc822"),
                 facts: &facts,
                 tags: &[],
@@ -413,7 +416,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(written, 4);
+        assert_eq!(written, 3);
         let head = log.head().unwrap();
         let spelled: Vec<(&str, Value)> = head
             .iter()
@@ -423,11 +426,14 @@ mod tests {
             spelled,
             vec![
                 ("mailbox:place", json!("example.org/INBOX")),
-                ("prov:run", json!("run-0001")),
                 ("file:size", json!(28)),
                 ("file:mime", json!("message/rfc822")),
             ],
-            "the taker's facts first, the run, then what any content has — the kind in the taker's words"
+            "the taker's facts first, then what any content has — the kind in the taker's words"
+        );
+        assert!(
+            head.iter().all(|claim| claim.run() == Some(&RUN)),
+            "every claim of the sighting carries the call's run"
         );
         assert!(
             head.iter()
@@ -443,7 +449,7 @@ mod tests {
         let source = source();
         let said = |facts| Sighting {
             source: &source,
-            run: "run-0001",
+            run: &RUN,
             mime: None,
             facts,
             tags: &[],
@@ -457,13 +463,13 @@ mod tests {
         let written = record(&log, &again, &said(&second)).unwrap();
 
         assert_eq!(
-            written, 2,
-            "the place and the run — size and kind were said on day one"
+            written, 1,
+            "the place alone — size and kind were said on day one"
         );
         let head = log.head().unwrap();
-        assert_eq!(head.len(), 6);
-        assert_eq!(head[4].attribute().as_str(), "mailbox:place");
-        assert_eq!(head[4].value(), Some(&json!("b/INBOX")));
+        assert_eq!(head.len(), 4);
+        assert_eq!(head[3].attribute().as_str(), "mailbox:place");
+        assert_eq!(head[3].value(), Some(&json!("b/INBOX")));
     }
 
     #[test]
@@ -473,7 +479,7 @@ mod tests {
         let source = source();
         let told = Sighting {
             source: &source,
-            run: "run-0001",
+            run: &RUN,
             mime: Some("message/rfc822"),
             facts: &[],
             tags: &[],
@@ -484,8 +490,8 @@ mod tests {
         let written = record(&log, &again, &told).unwrap();
 
         assert_eq!(
-            written, 2,
-            "the run and the kind — the size the log has from day one"
+            written, 1,
+            "the kind alone — the size the log has from day one"
         );
         let kinds = log
             .head()
@@ -510,7 +516,7 @@ mod tests {
             &admitted,
             &Sighting {
                 source: &source,
-                run: "run-0001",
+                run: &RUN,
                 mime: None,
                 facts: &[],
                 tags: &[],
@@ -539,7 +545,7 @@ mod tests {
             &admitted,
             &Sighting {
                 source: &source,
-                run: "run-0001",
+                run: &RUN,
                 mime: None,
                 facts: &[],
                 tags: &tags,

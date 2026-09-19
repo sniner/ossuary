@@ -409,7 +409,7 @@ mod tests {
         let tally = fetch(&bench, &mut inbox, false, false);
 
         assert_eq!((tally.stored, tally.known), (3, 0));
-        assert_eq!(tally.claims, 12, "place, run, size, kind — each message");
+        assert_eq!(tally.claims, 9, "place, size, kind — each message");
         assert!(tally.failed.is_empty());
         assert_eq!(
             point(&bench),
@@ -460,8 +460,8 @@ mod tests {
 
         assert_eq!((tally.stored, tally.known), (0, 2), "the bytes are held");
         assert_eq!(
-            tally.claims, 6,
-            "place, run and the told kind, each message — the size the log has"
+            tally.claims, 4,
+            "place and the told kind, each message — the size the log has"
         );
         assert_eq!(point(&bench), Some(at(7, 5)));
     }

@@ -24,6 +24,20 @@ pub enum Error {
     #[error("not a source: {0:?}")]
     Source(String),
 
+    /// The run is not a dashed lowercase UUID.
+    #[error("not a run id: {0:?}")]
+    Run(String),
+
+    /// A term without a colon named no field of a claim.
+    #[error(
+        "no field {0:?}; a term without a colon names a field of the claim: subject, attribute, value, time, source, run or retract"
+    )]
+    Field(String),
+
+    /// A `retract` term asked for something other than true or false.
+    #[error("retract={0:?} asks nothing; retract is true or false")]
+    Retract(String),
+
     /// `null` stood where a value belongs.
     ///
     /// A value may be any JSON type but this one: a claim that asserts

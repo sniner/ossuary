@@ -52,7 +52,9 @@ in its source.
 ## Namespaces
 
 - `prov:` — provenance: the archive's own acts — who took content in,
-  in which run, what has looked at it and what the looking remarked
+  what has looked at it and what the looking remarked. In which call a
+  claim was written is not an attribute but the claim's own `run`
+  field, spelled in the [format](format.md)
 - `file:` — the file as observed: its places, names, size, kind and
   mtimes — what any format has on day one
 - `derive:` — relations between content: what came from what
@@ -83,20 +85,6 @@ need.
   one
 - value: string
 - written by: ingest
-
-### prov:run
-
-- meaning: the run a record arrived in — one UUID per invocation, so
-  "arrived together" is exact: ingest stamps it on every sighting,
-  `ossuary extract` on every derived file it takes in, all rounds of
-  one call under one id. What kind of run it was is the claim's
-  source, like everything about who was acting. A run id stands only
-  on what a run took in: an extractor's findings and its receipt carry
-  none, so an extractor that derives no files leaves no run on the
-  record — which pass wrote a receipt is told by the receipt's moment
-- value: string, a UUID
-- written by: ingest; `ossuary extract`, on derived files;
-  `ossuary mailvault`, on every message it takes in
 
 ### prov:examined
 

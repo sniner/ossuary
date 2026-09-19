@@ -620,6 +620,7 @@ mod tests {
             json!(tag),
             Timestamp::parse(time).unwrap(),
             Source::parse("user").unwrap(),
+            crate::claim::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
         .unwrap()
     }

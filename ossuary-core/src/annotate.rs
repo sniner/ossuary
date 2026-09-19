@@ -9,7 +9,7 @@
 
 use serde_json::json;
 
-use crate::claim::{Attribute, Claim, Source, Subject, Timestamp};
+use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Written};
 use crate::error::Result;
 use crate::log::Log;
 
@@ -19,7 +19,7 @@ use crate::log::Log;
 /// only the pen. One moment for the whole call: everything said
 /// together carries the same time.
 ///
-/// Answers how many claims were written. Subjects are taken as given —
+/// Answers what was written, the call's run included. Subjects are taken as given —
 /// resolving a spelling to a subject is the caller's business, done
 /// *before* anything is written.
 ///
@@ -32,9 +32,10 @@ pub fn annotate(
     subjects: &[Subject],
     comments: &[String],
     tags: &[String],
-) -> Result<usize> {
+) -> Result<Written> {
     let word = Source::parse("user")?;
     let time = Timestamp::now();
+    let run = Run::new();
     let comment = Attribute::parse("user:comment")?;
     let tag = Attribute::parse("user:tag")?;
     let mut written = 0usize;
@@ -46,6 +47,7 @@ pub fn annotate(
                 json!(text),
                 time.clone(),
                 word.clone(),
+                run.clone(),
             )?)?;
             written += 1;
         }
@@ -56,11 +58,15 @@ pub fn annotate(
                 json!(label),
                 time.clone(),
                 word.clone(),
+                run.clone(),
             )?)?;
             written += 1;
         }
     }
-    Ok(written)
+    Ok(Written {
+        claims: written,
+        run,
+    })
 }
 
 #[cfg(test)]
@@ -93,7 +99,7 @@ mod tests {
 
         let written = annotate(&log, &subjects, &comments, &tags).unwrap();
 
-        assert_eq!(written, 6, "three words on two files");
+        assert_eq!(written.claims, 6, "three words on two files");
         let head = log.head().unwrap();
         assert_eq!(head.len(), 6);
         assert!(
@@ -120,7 +126,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
 
-        assert_eq!(annotate(&log, &[subject('a')], &[], &[]).unwrap(), 0);
+        assert_eq!(annotate(&log, &[subject('a')], &[], &[]).unwrap().claims, 0);
         assert_eq!(log.head().unwrap().len(), 0);
     }
 }

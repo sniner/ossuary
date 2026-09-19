@@ -2,21 +2,24 @@
 //!
 //! All metadata in an ossuary archive is claims — small, self-describing,
 //! append-only facts, one JSON object per line. The shape is fixed by
-//! generation 1 of the format (`docs/format.md`): six fields and no seventh,
-//! `subject`, `attribute`, `value`, `time`, `source` and `retract`. Nothing
-//! is ever updated or deleted in place; a correction is a newer claim, a
-//! deletion is a retraction, and the log only grows.
+//! generation 1 of the format (`docs/format.md`): seven fields and no
+//! eighth, `subject`, `attribute`, `value`, `time`, `source`, `run` and
+//! `retract`. Nothing is ever updated or deleted in place; a correction is
+//! a newer claim, a deletion is a retraction, and the log only grows. Every
+//! claim this crate writes names its run; a claim written before there was
+//! a run to name reads like any other, and has none.
 //!
 //! Every field with rules of its own is a type of its own, and parsing
-//! validates: a [`Subject`], [`Attribute`], [`Timestamp`] or [`Source`] in
-//! hand is always well-formed, and a [`Claim`] read back from a line is one
-//! this crate could have written.
+//! validates: a [`Subject`], [`Attribute`], [`Timestamp`], [`Source`] or
+//! [`Run`] in hand is always well-formed, and a [`Claim`] read back from a
+//! line is one this crate could have written.
 
 use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
 
@@ -289,7 +292,78 @@ impl Source {
     }
 }
 
-/// One fact: an attribute of a subject has a value — who says so, and when.
+/// The call a claim was written in: one id per invocation of whatever
+/// writes — an ingest, an extract, a fetch, an annotation, a retraction —
+/// stamped on every claim of that call, its rounds included.
+///
+/// Where [`Source`] says who was speaking and [`Timestamp`] when, the run
+/// says in which breath: "arrived together", "taken back in the same
+/// sweep" are exact because of it, and a moment in the log can be named
+/// by the call that closed it. A UUID in its dashed form, so that a run's
+/// name is never mistaken for a subject's.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct Run(String);
+
+impl Run {
+    /// A fresh id for one call.
+    #[must_use]
+    pub fn new() -> Self {
+        Run(Uuid::new_v4().to_string())
+    }
+
+    /// Validate a run id: the dashed UUID, lowercase, whole.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Run`] for any other shape.
+    pub fn parse(s: &str) -> Result<Self> {
+        if !Run::spelled(s) {
+            return Err(Error::Run(s.to_string()));
+        }
+        Ok(Run(s.to_string()))
+    }
+
+    /// Whether `s` has the shape of a run id — the grammar alone, for a
+    /// caller telling a run from a subject before either is looked up.
+    #[must_use]
+    pub fn spelled(s: &str) -> bool {
+        let bytes = s.as_bytes();
+        bytes.len() == 36
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(position, byte)| match position {
+                    8 | 13 | 18 | 23 => *byte == b'-',
+                    _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
+                })
+    }
+
+    /// The id as the log spells it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for Run {
+    fn default() -> Self {
+        Run::new()
+    }
+}
+
+/// What one call put on the record: how many claims, and under which
+/// run — so a verdict can name the run every one of them carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// Claims appended to the log.
+    pub claims: usize,
+    /// The run they were written in.
+    pub run: Run,
+}
+
+/// One fact: an attribute of a subject has a value — who says so, when,
+/// and in which call.
 ///
 /// Three shapes and no fourth, enforced at construction and again at
 /// parsing:
@@ -309,6 +383,8 @@ pub struct Claim {
     value: Option<Value>,
     time: Timestamp,
     source: Source,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<Run>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     retract: bool,
 }
@@ -325,6 +401,7 @@ impl Claim {
         value: Value,
         time: Timestamp,
         source: Source,
+        run: Run,
     ) -> Result<Self> {
         if value.is_null() {
             return Err(Error::NullValue);
@@ -335,6 +412,7 @@ impl Claim {
             value: Some(value),
             time,
             source,
+            run: Some(run),
             retract: false,
         })
     }
@@ -354,6 +432,7 @@ impl Claim {
         value: Value,
         time: Timestamp,
         source: Source,
+        run: Run,
     ) -> Result<Self> {
         if value.is_null() {
             return Err(Error::NullValue);
@@ -364,6 +443,7 @@ impl Claim {
             value: Some(value),
             time,
             source,
+            run: Some(run),
             retract: true,
         })
     }
@@ -375,6 +455,7 @@ impl Claim {
         attribute: Attribute,
         time: Timestamp,
         source: Source,
+        run: Run,
     ) -> Self {
         Claim {
             subject,
@@ -382,8 +463,37 @@ impl Claim {
             value: None,
             time,
             source,
+            run: Some(run),
             retract: true,
         }
+    }
+
+    /// A claim as the record holds it, run and all — for reading rows
+    /// back from an index, where a claim from before runs has none.
+    /// The three shapes are enforced as at every other door.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NullValue`] and [`Error::ValueRequired`] when the shape
+    /// is not one of the three.
+    pub(crate) fn recorded(
+        subject: Subject,
+        attribute: Attribute,
+        value: Option<Value>,
+        time: Timestamp,
+        source: Source,
+        run: Option<Run>,
+        retract: bool,
+    ) -> Result<Self> {
+        Claim::try_from(RawClaim {
+            subject,
+            attribute,
+            value,
+            time,
+            source,
+            run,
+            retract,
+        })
     }
 
     /// Read one line of the log back.
@@ -447,6 +557,13 @@ impl Claim {
         &self.source
     }
 
+    /// In which call it was said — `None` on a claim from before runs
+    /// were written down, which reads like any other and has none.
+    #[must_use]
+    pub fn run(&self) -> Option<&Run> {
+        self.run.as_ref()
+    }
+
     /// Whether this claim retracts rather than asserts.
     #[must_use]
     pub fn is_retraction(&self) -> bool {
@@ -458,7 +575,7 @@ impl Claim {
 ///
 /// `deny_unknown_fields` is the closed field set of generation 1 in code: an
 /// unknown member is a format violation, not an extension point — anything
-/// that would add a seventh field is a new generation.
+/// that would add an eighth field is a new generation.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawClaim {
@@ -468,6 +585,8 @@ struct RawClaim {
     value: Option<Value>,
     time: Timestamp,
     source: Source,
+    #[serde(default)]
+    run: Option<Run>,
     #[serde(default)]
     retract: bool,
 }
@@ -495,6 +614,7 @@ impl TryFrom<RawClaim> for Claim {
                 value: raw.value,
                 time: raw.time,
                 source: raw.source,
+                run: raw.run,
                 retract: raw.retract,
             }),
         }
@@ -535,6 +655,7 @@ string_newtype!(Subject);
 string_newtype!(Attribute);
 string_newtype!(Timestamp);
 string_newtype!(Source);
+string_newtype!(Run);
 
 #[cfg(test)]
 mod tests {
@@ -550,6 +671,10 @@ mod tests {
         Timestamp::parse("2026-09-01T21:14:03Z").unwrap()
     }
 
+    fn run() -> Run {
+        Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap()
+    }
+
     #[test]
     fn an_assertion_serialises_in_the_order_of_the_format_document() {
         let claim = Claim::assert(
@@ -558,12 +683,13 @@ mod tests {
             json!(4_194_304),
             time(),
             Source::parse("ingest").unwrap(),
+            run(),
         )
         .unwrap();
 
         assert_eq!(
             claim.to_line(),
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
             "a number is a number, and an assertion carries no retract key"
         );
     }
@@ -572,11 +698,11 @@ mod tests {
     fn the_example_lines_of_the_format_document_round_trip() {
         // The examples from docs/format.md, with the digest at full length.
         let lines = [
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}"#,
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7"}"#,
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}"#,
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","retract":true}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4","retract":true}"#,
         ];
         for line in lines {
             let claim = Claim::parse_line(line).unwrap();
@@ -592,6 +718,7 @@ mod tests {
             json!("holiday"),
             time(),
             Source::parse("user").unwrap(),
+            run(),
         )
         .unwrap();
 
@@ -607,6 +734,7 @@ mod tests {
             Attribute::parse("user:note").unwrap(),
             time(),
             Source::parse("user").unwrap(),
+            run(),
         );
 
         assert!(claim.is_retraction());
@@ -627,32 +755,61 @@ mod tests {
                 Value::Null,
                 time(),
                 Source::parse("user").unwrap(),
+                run(),
             ),
             Err(Error::NullValue)
         ));
 
-        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user"}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::NullValue)));
 
         // `"value": null` on a retraction is not the same line as no value
         // key: it must be refused, not read as a whole-attribute retraction.
-        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user","retract":true}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4","retract":true}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::NullValue)));
     }
 
     #[test]
     fn an_assertion_without_a_value_says_nothing() {
-        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","time":"2026-09-01T21:14:03Z","source":"user"}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","time":"2026-09-01T21:14:03Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::ValueRequired)));
     }
 
     #[test]
     fn the_field_set_is_closed() {
-        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-09-01T21:14:03Z","source":"user","confidence":0.9}"#;
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-09-01T21:14:03Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4","confidence":0.9}"#;
         assert!(
             matches!(Claim::parse_line(line), Err(Error::Line(_))),
-            "a seventh field is a new generation, not an extension point"
+            "an eighth field is a new generation, not an extension point"
         );
+    }
+
+    #[test]
+    fn a_claim_from_before_runs_reads_like_any_other_and_has_none() {
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-09-01T21:14:03Z","source":"user"}"#;
+        let claim = Claim::parse_line(line).unwrap();
+        assert_eq!(claim.run(), None);
+        assert_eq!(claim.to_line(), line, "and writes back as it was");
+    }
+
+    #[test]
+    fn a_run_is_the_dashed_lowercase_uuid_whole() {
+        assert!(Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").is_ok());
+        assert!(
+            Run::spelled(Run::new().as_str()),
+            "a fresh id passes its own grammar"
+        );
+        for wrong in [
+            "315e360b020e48be8f2df2002a2ea9b4",
+            "315E360B-020E-48BE-8F2D-F2002A2EA9B4",
+            "315e360b-020e-48be-8f2d-f2002a2ea9b",
+            "",
+        ] {
+            assert!(
+                matches!(Run::parse(wrong), Err(Error::Run(_))),
+                "{wrong:?} is not a run id"
+            );
+        }
     }
 
     #[test]

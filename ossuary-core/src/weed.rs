@@ -169,6 +169,7 @@ mod tests {
             json!(bytes.len()),
             Timestamp::parse("2026-09-18T12:00:00Z").unwrap(),
             Source::parse("test").unwrap(),
+            crate::claim::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
         .unwrap();
         archive.log().append(&claim).unwrap();

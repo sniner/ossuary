@@ -502,7 +502,11 @@ mod tests {
         index.fold(bench.archive.log()).unwrap();
         let subject = Subject::parse(Algorithm::Sha256.hash(bytes).as_str()).unwrap();
         index
-            .values(&subject, &Attribute::parse(attribute).unwrap())
+            .values(
+                &subject,
+                &Attribute::parse(attribute).unwrap(),
+                ossuary_core::Scope::Held,
+            )
             .unwrap()
     }
 
@@ -570,10 +574,7 @@ mod tests {
             (0, 1, 1),
             "read again, held already: the store answers, not the memo"
         );
-        assert_eq!(
-            tally.claims, 4,
-            "the place, its date, the run, the told kind"
-        );
+        assert_eq!(tally.claims, 3, "the place, its date, the told kind");
         assert!(tally.failed.is_empty());
         assert_eq!(
             standing(&bench, TWO, "mailbox:place"),

@@ -129,11 +129,11 @@ All metadata is claims: small, self-describing, append-only facts. One claim
 is one JSON object on one line — UTF-8, LF, no line breaks within a claim:
 
 ```json
-{"subject":"9f2ac41e…","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest"}
-{"subject":"9f2ac41e…","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest"}
-{"subject":"9f2ac41e…","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7"}
-{"subject":"9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user"}
-{"subject":"9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","retract":true}
+{"subject":"9f2ac41e…","attribute":"file:path","value":"/photos/2019/crete/beach.jpg","time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}
+{"subject":"9f2ac41e…","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}
+{"subject":"9f2ac41e…","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7","run":"c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31"}
+{"subject":"9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user","run":"a3f8c2e1-5d47-4b9a-9e02-7c1d3b6f8a54"}
+{"subject":"9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","run":"0b9d4e7a-2c31-4f58-b6a0-e5d7f1c2a983","retract":true}
 ```
 
 *(Digests shortened here for legibility; real ones are full-length hex.)*
@@ -145,9 +145,10 @@ is one JSON object on one line — UTF-8, LF, no line breaks within a claim:
 | `value`     | see note | Any JSON value except `null`                                  |
 | `time`      | yes      | When it was said: RFC 3339, UTC, `Z`, whole seconds           |
 | `source`    | yes      | Who says so — a flat string, `kind:name/version`              |
+| `run`       | see note | In which call it was said — a UUID, dashed, lowercase         |
 | `retract`   | no       | `true` on a retraction; absent otherwise                      |
 
-These six fields are the complete set in generation 1. Nothing is ever
+These seven fields are the complete set in generation 1. Nothing is ever
 updated or deleted in place: a correction is a newer claim, a deletion is a
 retraction, and the log only grows. That a claim was once made remains true
 forever — which is what makes "what did I know about this in 2027?" a valid
@@ -164,6 +165,17 @@ order within a segment, segment order across them.
 **Source** is `ingest`, `user`, or `kind:name/version` for tooling —
 `extractor:exif-rs/0.7`. The grammar stays flat so a fold can supersede by
 prefix: "everything from `extractor:exif-rs/` older than 2.0".
+
+**Run** is the call the claim was written in: one id per invocation of
+whatever writes — an ingest, an extractor pass, a fetch, a word or a
+retraction from the user — stamped on every claim of that call. Where
+`source` says who spoke and `time` when, `run` says in which breath, so
+"arrived together" and "taken back in one sweep" are exact, and a moment
+in the log can be named by the call that closed it. A dashed lowercase
+UUID, a shape no subject has. Every claim this software writes carries
+one; a claim from before runs were recorded carries none and reads like
+any other — it belongs to no run, and a question by run does not reach
+it.
 
 **Retraction.** A claim with `retract: true` and a `value` retracts exactly
 that value of that attribute; with the `value` field absent entirely, it
@@ -287,7 +299,7 @@ answers "what do I know about this blob".
 ## Evolution
 
 Generation 1 is this document. Anything that would change how these files
-are *read* — a claim field beyond the six, a header member a reader must
+are *read* — a claim field beyond the seven, a header member a reader must
 understand to read the claims after it, a changed layout — is a new
 generation: the mark and the segment header exist so that a reader refuses
 what it does not know instead of guessing. What may grow freely without a

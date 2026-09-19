@@ -17,28 +17,29 @@
 //! folded answer: one row per standing (subject, attribute, value), the
 //! set semantics as a primary key — an assertion is an upsert that
 //! renews the row's moment, a retraction a `DELETE` — and what
-//! [`find`](Index::find) reads. Subjects, attributes, sources and
+//! [`find`](Index::find) reads. Subjects, attributes, sources, runs and
 //! segments stand in tables of their own and appear in the two big
 //! tables as integer ids: a digest is 64 bytes and a segment name the
 //! same, and either repeated a quarter of a million times is most of a
 //! file. Four views are for a look with `sqlite3`, and nothing here
 //! reads them: `v_claims` and `v_standing` show both tables with the
 //! names in place of the ids, `v_places` every standing `file:path`
-//! unquoted, `v_arrivals` what each `prov:run` took in. What stays deliberately un-baked is *narrowing*:
-//! which of several standing values a reader prefers is query-time
-//! policy, and the sets carry them all.
+//! unquoted, `v_runs` what each run wrote. What stays deliberately
+//! un-baked is *narrowing*: which of several standing values a reader
+//! prefers is query-time policy, and the sets carry them all.
 //!
 //! Standing follows the log forward, the only direction a log moves; a
 //! `head.jsonl` edited backwards leaves it stale until the cache is
 //! deleted and refolded — the cure every cache here has.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension as _, params};
 
-use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
+use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::export::Placement;
 use crate::log::Log;
@@ -65,6 +66,10 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          id   INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE
      );
+     CREATE TABLE IF NOT EXISTS runs (
+         id   INTEGER PRIMARY KEY,
+         name TEXT NOT NULL UNIQUE
+     );
      CREATE TABLE IF NOT EXISTS segments (
          id     INTEGER PRIMARY KEY,
          digest TEXT NOT NULL UNIQUE,
@@ -78,6 +83,7 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          value     TEXT,
          time      TEXT NOT NULL,
          source    INTEGER NOT NULL,
+         run       INTEGER,
          retract   INTEGER NOT NULL DEFAULT 0,
          segment   INTEGER NOT NULL,
          position  INTEGER NOT NULL
@@ -88,6 +94,8 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          ON claims (attribute, time);
      CREATE INDEX IF NOT EXISTS claims_segment
          ON claims (segment, position);
+     CREATE INDEX IF NOT EXISTS claims_run
+         ON claims (run);
      CREATE TABLE IF NOT EXISTS standing (
          subject   INTEGER NOT NULL,
          attribute INTEGER NOT NULL,
@@ -100,11 +108,12 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          ON standing (attribute, value);
      CREATE VIEW IF NOT EXISTS v_claims AS
          SELECT c.id, su.digest AS subject, a.name AS attribute, c.value, c.time,
-                so.name AS source, c.retract, s.digest AS segment, s.seq, c.position
+                so.name AS source, r.name AS run, c.retract, s.digest AS segment, s.seq, c.position
          FROM claims c
          JOIN subjects su ON su.id = c.subject
          JOIN attributes a ON a.id = c.attribute
          JOIN sources so ON so.id = c.source
+         LEFT JOIN runs r ON r.id = c.run
          JOIN segments s ON s.id = c.segment;
      CREATE VIEW IF NOT EXISTS v_standing AS
          SELECT su.digest AS subject, a.name AS attribute, st.value, st.time, st.claim
@@ -117,14 +126,13 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          JOIN subjects su ON su.id = st.subject
          WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'file:path')
            AND json_type(st.value) = 'text';
-     CREATE VIEW IF NOT EXISTS v_arrivals AS
-         SELECT json_extract(c.value, '$') AS run, so.name AS source,
-                COUNT(DISTINCT c.subject) AS files, MIN(c.time) AS first, MAX(c.time) AS last
+     CREATE VIEW IF NOT EXISTS v_runs AS
+         SELECT r.name AS run, MIN(c.time) AS first, MAX(c.time) AS last,
+                COUNT(DISTINCT c.subject) AS files, COUNT(*) AS claims,
+                SUM(c.retract) AS retractions
          FROM claims c
-         JOIN sources so ON so.id = c.source
-         WHERE c.attribute = (SELECT id FROM attributes WHERE name = 'prov:run')
-           AND c.retract = 0
-         GROUP BY c.value, c.source;";
+         JOIN runs r ON r.id = c.run
+         GROUP BY c.run;";
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -158,21 +166,114 @@ pub struct Standing {
 /// One row of `segments`: id, digest, first claim's time, rank.
 type SegmentRow = (i64, String, Option<String>, i64);
 
-/// Which files a question is about: those still lying somewhere, or
-/// every file the archive holds.
+/// What a question reads: the present, the standing set whole, or the
+/// record.
 ///
-/// A file is *placed* while a place stands on it — a `file:path` from a
-/// walk, a `mailbox:place` from a fetch — or, for what a tool won out of
-/// another file, while its origin is placed, along `derive:derived-from`
-/// as far as it goes. A file whose every place was taken back is still
-/// held, and still answers `--as-of` a day it lay somewhere, but it is
-/// not part of the present.
+/// The standing set is the outcome — retractions applied, repeats
+/// collapsed. A file is *placed* while a place stands on it — a
+/// `file:path` from a walk, a `mailbox:place` from a fetch — or, for
+/// what a tool won out of another file, while its origin is placed,
+/// along `derive:derived-from` as far as it goes. A file whose every
+/// place was taken back is still held, and still answers `--as-of` a
+/// day it lay somewhere, but it is not part of the present. The record
+/// is the history itself: every claim ever written, retractions
+/// included, so what was said and since taken back answers too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Presence {
-    /// Files at a place of their own, or won out of one that is.
-    Placed,
-    /// Every file the archive holds, at a place or not.
+pub enum Scope {
+    /// The standing set, files at a place of their own or won out of
+    /// one that is.
+    Present,
+    /// The standing set, every file the archive holds.
     Held,
+    /// Every claim on the record, standing or not.
+    Record,
+}
+
+/// A field of the claim, named in a term without a colon — the way an
+/// attribute is named with one. What a claim is made of, as
+/// `docs/format.md` lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// The file the claim is about.
+    Subject,
+    /// What the claim says something about.
+    Attribute,
+    /// What it says, in the log's own JSON spelling.
+    Value,
+    /// When it was written.
+    Time,
+    /// Who wrote it.
+    Source,
+    /// In which call it was written.
+    Run,
+    /// Whether it takes back rather than asserts: `true` or `false`.
+    Retract,
+}
+
+impl Field {
+    /// The field a term names, by its spelling in the format document.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Field`] for any other word.
+    pub fn parse(name: &str) -> Result<Self> {
+        Ok(match name {
+            "subject" => Field::Subject,
+            "attribute" => Field::Attribute,
+            "value" => Field::Value,
+            "time" => Field::Time,
+            "source" => Field::Source,
+            "run" => Field::Run,
+            "retract" => Field::Retract,
+            other => return Err(Error::Field(other.to_string())),
+        })
+    }
+
+    /// The field's name, as the format document spells it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Field::Subject => "subject",
+            Field::Attribute => "attribute",
+            Field::Value => "value",
+            Field::Time => "time",
+            Field::Source => "source",
+            Field::Run => "run",
+            Field::Retract => "retract",
+        }
+    }
+}
+
+/// One narrowing term of a [`find`](Index::find): what is asked of, and
+/// the pattern asked. An attribute term speaks about a standing value or
+/// a claim's value; a field term about the claim that carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Term {
+    /// `attribute=pattern`.
+    Attribute(Attribute, String),
+    /// `field=pattern`.
+    Field(Field, String),
+}
+
+/// One run as the record tells it: what one call wrote, from its first
+/// claim to its last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Episode {
+    /// The run's id.
+    pub run: Run,
+    /// The moment of its first claim, in claim time's own spelling.
+    pub first: String,
+    /// The moment of its last claim.
+    pub last: String,
+    /// Who spoke in it, sorted — an ingest with tags speaks as `ingest`
+    /// and `user`, a bare `extract` as every extractor that ran.
+    pub sources: Vec<Source>,
+    /// Files it wrote something about.
+    pub files: u64,
+    /// Claims it wrote.
+    pub claims: u64,
+    /// Of them, retractions.
+    pub retractions: u64,
 }
 
 /// The recursive table of placed subjects, for a query to open with:
@@ -203,6 +304,7 @@ struct Ids {
     subjects: HashMap<String, i64>,
     attributes: HashMap<String, i64>,
     sources: HashMap<String, i64>,
+    runs: HashMap<String, i64>,
 }
 
 impl Ids {
@@ -216,6 +318,10 @@ impl Ids {
 
     fn source(&mut self, connection: &Connection, name: &str) -> Result<i64> {
         intern(connection, &mut self.sources, "sources", "name", name)
+    }
+
+    fn run(&mut self, connection: &Connection, name: &str) -> Result<i64> {
+        intern(connection, &mut self.runs, "runs", "name", name)
     }
 }
 
@@ -274,18 +380,19 @@ impl Index {
                 "DROP VIEW IF EXISTS v_claims;
                  DROP VIEW IF EXISTS v_standing;
                  DROP VIEW IF EXISTS v_places;
-                 DROP VIEW IF EXISTS v_arrivals;
+                 DROP VIEW IF EXISTS v_runs;
                  DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
                  DROP TABLE IF EXISTS subjects;
                  DROP TABLE IF EXISTS attributes;
                  DROP TABLE IF EXISTS sources;
+                 DROP TABLE IF EXISTS runs;
                  PRAGMA user_version = {SCHEMA};"
             ))?;
         }
         // The integer columns of `claims` and `standing` are ids into the
-        // four name tables; `standing.claim` is a row of `claims`. None of
+        // five name tables; `standing.claim` is a row of `claims`. None of
         // it is declared a foreign key on purpose: the head's claim rows
         // are deleted and rewritten each fold while standing rows still
         // point at the old ones, until the same assertion, folded again,
@@ -390,6 +497,53 @@ impl Index {
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
     pub fn as_of(&self, cutoff: &str) -> Result<Index> {
+        use rusqlite::types::Value as Sql;
+        self.replay_until("c.time <= ?1", &[Sql::Text(cutoff.to_string())])
+    }
+
+    /// The archive's knowledge as of the end of one run: every claim up
+    /// to and including the run's last, in log order — a
+    /// [`as_of`](Index::as_of) that cuts at a claim instead of a second,
+    /// so two runs within one second still come apart. `None` when no
+    /// claim carries the run.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`, as for [`as_of`](Index::as_of).
+    pub fn as_of_run(&self, run: &Run) -> Result<Option<Index>> {
+        use rusqlite::types::Value as Sql;
+        let last = self
+            .connection
+            .query_row(
+                "SELECT c.time, s.seq, c.position
+                 FROM claims c JOIN segments s ON s.id = c.segment
+                 WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
+                 ORDER BY c.time DESC, s.seq DESC, c.position DESC
+                 LIMIT 1",
+                params![run.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((time, seq, position)) = last else {
+            return Ok(None);
+        };
+        let replayed = self.replay_until(
+            "c.time < ?1 OR (c.time = ?1 AND (s.seq < ?2 OR (s.seq = ?2 AND c.position <= ?3)))",
+            &[Sql::Text(time), Sql::Integer(seq), Sql::Integer(position)],
+        )?;
+        Ok(Some(replayed))
+    }
+
+    /// Every claim the `until` clause admits — spoken of `c`, the claim,
+    /// and `s`, its segment — replayed in log order into a throwaway
+    /// in-memory index.
+    fn replay_until(&self, until: &str, params: &[rusqlite::types::Value]) -> Result<Index> {
         let mut replayed = Index::open(":memory:")?;
         // The segments' own order rides along: `about` breaks time ties
         // by it, and the replayed record must read like the original.
@@ -400,17 +554,19 @@ impl Index {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
             .collect();
-        let mut statement = self.connection.prepare(
-            "SELECT su.digest, a.name, c.value, c.time, so.name, c.retract, c.segment, c.position
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT su.digest, a.name, c.value, c.time, so.name, r.name, c.retract,
+                    c.segment, c.position
              FROM claims c
              JOIN subjects su ON su.id = c.subject
              JOIN attributes a ON a.id = c.attribute
              JOIN sources so ON so.id = c.source
+             LEFT JOIN runs r ON r.id = c.run
              JOIN segments s ON s.id = c.segment
-             WHERE c.time <= ?1
-             ORDER BY c.time, s.seq, c.position",
-        )?;
-        let rows = statement.query_map(params![cutoff], |row| {
+             WHERE {until}
+             ORDER BY c.time, s.seq, c.position"
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 (
                     row.get::<_, String>(0)?,
@@ -418,10 +574,11 @@ impl Index {
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, bool>(5)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, bool>(6)?,
                 ),
-                row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
             ))
         })?;
         let Index { connection, ids } = &mut replayed;
@@ -452,11 +609,12 @@ impl Index {
     /// for rows a fold wrote, but are propagated rather than sworn away.
     pub fn about(&self, subject: &Subject) -> Result<Vec<Claim>> {
         let mut statement = self.connection.prepare(
-            "SELECT su.digest, a.name, c.value, c.time, so.name, c.retract
+            "SELECT su.digest, a.name, c.value, c.time, so.name, r.name, c.retract
              FROM claims c
              JOIN subjects su ON su.id = c.subject
              JOIN attributes a ON a.id = c.attribute
              JOIN sources so ON so.id = c.source
+             LEFT JOIN runs r ON r.id = c.run
              JOIN segments s ON s.id = c.segment
              WHERE su.digest = ?1
              ORDER BY c.time, s.seq, c.position",
@@ -468,7 +626,8 @@ impl Index {
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, bool>(5)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, bool>(6)?,
             ))
         })?;
         let mut claims = Vec::new();
@@ -478,27 +637,37 @@ impl Index {
         Ok(claims)
     }
 
-    /// One subject's standing values for one attribute, sorted by their
-    /// stored spelling — as of the last [`fold`](Index::fold), the open
-    /// head included.
+    /// One subject's values for one attribute, sorted by their stored
+    /// spelling — as of the last [`fold`](Index::fold), the open head
+    /// included.
     ///
-    /// Where [`about`](Index::about) answers with the history, this
-    /// answers with the outcome: retractions already applied, repeats
+    /// Under [`Scope::Present`] and [`Scope::Held`] the standing values:
+    /// where [`about`](Index::about) answers with the history, this
+    /// answers with the outcome, retractions already applied, repeats
     /// already collapsed. Which of several standing values a reader
-    /// prefers stays query-time policy, so they all come back.
+    /// prefers stays query-time policy, so they all come back. Under
+    /// [`Scope::Record`] every value ever said, asserted or taken back,
+    /// each once.
     ///
     /// # Errors
     ///
     /// [`Error::Index`] from `SQLite`; a value that does not parse back
     /// cannot happen for rows a fold wrote, but is propagated rather than
     /// sworn away.
-    pub fn values(&self, subject: &Subject, attribute: &Attribute) -> Result<Vec<Value>> {
-        let mut statement = self.connection.prepare(
-            "SELECT value FROM standing
+    pub fn values(
+        &self,
+        subject: &Subject,
+        attribute: &Attribute,
+        scope: Scope,
+    ) -> Result<Vec<Value>> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT DISTINCT value FROM {}
              WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
                AND attribute = (SELECT id FROM attributes WHERE name = ?2)
+               AND value IS NOT NULL
              ORDER BY value",
-        )?;
+            rows_of(scope)
+        ))?;
         let rows = statement.query_map(params![subject.as_str(), attribute.as_str()], |row| {
             row.get::<_, String>(0)
         })?;
@@ -509,27 +678,35 @@ impl Index {
         Ok(values)
     }
 
-    /// What currently stands on one subject across a whole namespace:
-    /// every standing `(attribute, value)` whose attribute begins
-    /// `namespace:`, ordered by attribute and value — as of the last
-    /// [`fold`](Index::fold), the open head included. The namespace comes
-    /// bare, without its colon.
+    /// What one subject holds across a whole namespace: every
+    /// `(attribute, value)` whose attribute begins `namespace:`, ordered
+    /// by attribute and value — as of the last [`fold`](Index::fold), the
+    /// open head included. The namespace comes bare, without its colon.
+    /// The [`Scope`] reads as in [`values`](Index::values): the standing
+    /// pairs, or every pair ever said.
     ///
     /// # Errors
     ///
     /// [`Error::Index`] from `SQLite`; a row that does not parse back
     /// cannot happen for rows a fold wrote, but is propagated rather than
     /// sworn away.
-    pub fn values_in(&self, subject: &Subject, namespace: &str) -> Result<Vec<(Attribute, Value)>> {
-        let mut statement = self.connection.prepare(
+    pub fn values_in(
+        &self,
+        subject: &Subject,
+        namespace: &str,
+        scope: Scope,
+    ) -> Result<Vec<(Attribute, Value)>> {
+        let mut statement = self.connection.prepare(&format!(
             // ';' is the character after ':', and no attribute contains
             // one: the half-open range is the namespace.
-            "SELECT a.name, st.value
-             FROM standing st JOIN attributes a ON a.id = st.attribute
+            "SELECT DISTINCT a.name, st.value
+             FROM {} st JOIN attributes a ON a.id = st.attribute
              WHERE st.subject = (SELECT id FROM subjects WHERE digest = ?1)
                AND a.name >= ?2 AND a.name < ?3
+               AND st.value IS NOT NULL
              ORDER BY a.name, st.value",
-        )?;
+            rows_of(scope)
+        ))?;
         let rows = statement.query_map(
             params![
                 subject.as_str(),
@@ -585,16 +762,18 @@ impl Index {
     /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
-    pub fn subjects(&self, presence: Presence) -> Result<Vec<Subject>> {
+    pub fn subjects(&self, scope: Scope) -> Result<Vec<Subject>> {
         let mut sql = String::new();
-        if presence == Presence::Placed {
+        if scope == Scope::Present {
             sql.push_str(PLACED);
         }
-        sql.push_str(
+        let _ = write!(
+            sql,
             "SELECT digest FROM subjects su
-             WHERE EXISTS (SELECT 1 FROM standing st WHERE st.subject = su.id)",
+             WHERE EXISTS (SELECT 1 FROM {} st WHERE st.subject = su.id)",
+            rows_of(scope)
         );
-        if presence == Presence::Placed {
+        if scope == Scope::Present {
             sql.push_str(" AND su.id IN (SELECT subject FROM placed)");
         }
         sql.push_str(" ORDER BY digest");
@@ -805,144 +984,113 @@ impl Index {
         Ok(standing)
     }
 
-    /// Every subject on which all `terms` stand and none of `missing` does,
+    /// Every subject on which all `terms` hold and none of `missing` does,
     /// sorted — as of the last [`fold`](Index::fold), the open head
     /// included.
     ///
-    /// A term is an attribute and a value, and the value is read in this
-    /// order: wrapped in double quotes it is *literal* — exactly that
-    /// string, the way to name a value that looks like a glob or a range;
-    /// with `*` or `?` it is a glob, matching within string values only;
-    /// with `..` it is a range, `low..high` with either side open —
-    /// bounds compare in the attribute's own spelling, lexicographically
-    /// for strings and numerically for numbers, the low end inclusive,
-    /// and a bare `..` asks only that the attribute stands at all;
-    /// otherwise it is exact — a string, or the bare JSON scalar for
-    /// numbers and booleans, either spelling answering. Every term must
-    /// hold, each on *some* standing value: two ranged terms on one
-    /// attribute may be satisfied by two different values, where one
-    /// `low..high` term speaks about a single value lying between.
+    /// An attribute term is an attribute and a pattern, and the pattern
+    /// is read in this order: wrapped in double quotes it is *literal* —
+    /// exactly that string, the way to name a value that looks like a
+    /// glob or a range; with `*` or `?` it is a glob, matching within
+    /// string values only; with `..` it is a range, `low..high` with
+    /// either side open — bounds compare in the attribute's own spelling,
+    /// lexicographically for strings and numerically for numbers, the low
+    /// end inclusive, and a bare `..` asks only that the attribute stands
+    /// at all; otherwise it is exact — a string, or the bare JSON scalar
+    /// for numbers and booleans, either spelling answering. Every term
+    /// must hold, each on *some* value: two ranged terms on one attribute
+    /// may be satisfied by two different values, where one `low..high`
+    /// term speaks about a single value lying between.
+    ///
+    /// A field term speaks about the claim that carries a value — who
+    /// wrote it, when, in which run — and holds for every attribute term
+    /// at once: `run=X file:name=abc` is a name said in run X, and with
+    /// a second attribute term both must have been said in X, by two
+    /// claims of the same run. Field patterns read like attribute
+    /// patterns, in the field's own spelling: a run id, a source, a
+    /// digest, a time to the second; `retract` is `true` or `false`.
+    /// A claim from before runs were written has none, and no `run`
+    /// term reaches it.
     ///
     /// Each entry of `missing` names an attribute the subject must lack;
     /// ending in `:` it names a whole namespace. With no terms at all,
     /// `missing` is asked of every subject the log speaks about.
     ///
-    /// Only *standing* values answer: a retracted value finds nothing,
-    /// however long its claim stays in the log — this is where the set
-    /// semantics first faces a reader. And only files of the asked
-    /// [`Presence`] answer: [`Presence::Placed`] leaves out every file
-    /// no place stands on any more.
+    /// Under [`Scope::Present`] and [`Scope::Held`] only *standing*
+    /// values answer, and a field term speaks about the claim that
+    /// stands for the value — the newest one to say it: a retracted
+    /// value finds nothing, however long its claim stays in the log,
+    /// and a value said again answers for its latest run only. Under
+    /// [`Scope::Record`] every claim ever written answers, retractions
+    /// included, which is the one way to `retract=true`.
     ///
     /// # Errors
     ///
     /// [`Error::Index`] from `SQLite`; an entry of `missing` that fits
     /// neither the attribute grammar nor `namespace:` is refused with the
-    /// grammar's own error.
-    pub fn find(
-        &self,
-        terms: &[(Attribute, String)],
-        missing: &[String],
-        presence: Presence,
-    ) -> Result<Vec<Subject>> {
+    /// grammar's own error; [`Error::Retract`] for a `retract` pattern
+    /// that is neither true nor false.
+    pub fn find(&self, terms: &[Term], missing: &[String], scope: Scope) -> Result<Vec<Subject>> {
         use rusqlite::types::Value as Sql;
         if terms.is_empty() && missing.is_empty() {
             return Ok(Vec::new());
         }
-        let text = |s: &str| Sql::Text(s.to_string());
-        let quoted = |s: &str| text(&Value::String(s.to_string()).to_string());
-        // A bound spelled as a JSON number, typed so SQLite compares
-        // numerically instead of by storage class.
-        let number = |bound: &str| -> Option<Sql> {
-            let value: Value = serde_json::from_str(bound).ok()?;
-            if let Some(whole) = value.as_i64() {
-                return Some(Sql::Integer(whole));
-            }
-            value.as_f64().map(Sql::Real)
+        let attributes: Vec<(&Attribute, &str)> = terms
+            .iter()
+            .filter_map(|term| match term {
+                Term::Attribute(attribute, pattern) => Some((attribute, pattern.as_str())),
+                Term::Field(..) => None,
+            })
+            .collect();
+        let fields: Vec<(Field, &str)> = terms
+            .iter()
+            .filter_map(|term| match term {
+                Term::Field(field, pattern) => Some((*field, pattern.as_str())),
+                Term::Attribute(..) => None,
+            })
+            .collect();
+        // Under the standing scopes a row is a standing value with the
+        // claim that stands for it alongside; under the record it is the
+        // claim itself. Either way `c` is the claim a field term asks
+        // about and `st` the row an attribute term asks about.
+        let rows = match scope {
+            Scope::Record => "claims c",
+            Scope::Present | Scope::Held => "standing st JOIN claims c ON c.id = st.claim",
+        };
+        let row = match scope {
+            Scope::Record => "c",
+            Scope::Present | Scope::Held => "st",
         };
         // The terms meet as sets of subject ids; the names come last.
         let mut sql = String::new();
-        if presence == Presence::Placed {
+        if scope == Scope::Present {
             sql.push_str(PLACED);
         }
         sql.push_str("SELECT digest FROM subjects WHERE id IN (");
         let mut params: Vec<Sql> = Vec::new();
-        if terms.is_empty() {
-            sql.push_str("SELECT DISTINCT subject FROM standing");
+        if attributes.is_empty() {
+            let _ = write!(sql, "SELECT c.subject FROM {rows} WHERE 1");
+            for (field, pattern) in &fields {
+                field_clause(&mut sql, &mut params, *field, pattern)?;
+            }
         }
-        for (position, (attribute, pattern)) in terms.iter().enumerate() {
+        for (position, (attribute, pattern)) in attributes.iter().enumerate() {
             if position > 0 {
                 sql.push_str(" INTERSECT ");
             }
-            sql.push_str(
-                "SELECT subject FROM standing
-                 WHERE attribute = (SELECT id FROM attributes WHERE name = ?)",
+            let _ = write!(
+                sql,
+                "SELECT c.subject FROM {rows}
+                 WHERE {row}.attribute = (SELECT id FROM attributes WHERE name = ?)"
             );
-            params.push(text(attribute.as_str()));
-            if let Some(literal) = pattern
-                .strip_prefix('"')
-                .and_then(|rest| rest.strip_suffix('"'))
-            {
-                // Wrapped in quotes: exactly this string, nothing read
-                // into it — the door for values that look like globs or
-                // ranges.
-                sql.push_str(" AND value = ?");
-                params.push(quoted(literal));
-            } else if pattern.contains('*') || pattern.contains('?') {
-                // The stored string spelling is quoted JSON, so a pattern
-                // globbed inside quotes matches string values and nothing
-                // else — numbers were promised no wildcards.
-                sql.push_str(" AND value GLOB ?");
-                params.push(text(&format!("\"{pattern}\"")));
-            } else if let Some((low, high)) = pattern.split_once("..") {
-                let numeric = [low, high]
-                    .iter()
-                    .filter(|bound| !bound.is_empty())
-                    .all(|bound| number(bound).is_some());
-                if low.is_empty() && high.is_empty() {
-                    // A bare "..": any standing value at all.
-                } else if numeric {
-                    sql.push_str(" AND json_type(value) IN ('integer', 'real')");
-                    if let Some(bound) = number(low) {
-                        sql.push_str(" AND json_extract(value, '$') >= ?");
-                        params.push(bound);
-                    }
-                    if let Some(bound) = number(high) {
-                        sql.push_str(" AND json_extract(value, '$') <= ?");
-                        params.push(bound);
-                    }
-                } else {
-                    // Bounds compare in the value's own spelling; the
-                    // type guard keeps numbers out, whose storage sorts
-                    // below every quoted string.
-                    sql.push_str(" AND json_type(value) = 'text'");
-                    if !low.is_empty() {
-                        sql.push_str(" AND value >= ?");
-                        params.push(quoted(low));
-                    }
-                    if !high.is_empty() {
-                        sql.push_str(" AND value <= ?");
-                        params.push(quoted(high));
-                    }
-                }
-            } else {
-                match serde_json::from_str::<Value>(pattern) {
-                    // The bare word is a JSON scalar — a number, a
-                    // boolean: it may stand as itself or as a string, and
-                    // either spelling answers.
-                    Ok(scalar) if !scalar.is_string() => {
-                        sql.push_str(" AND value IN (?, ?)");
-                        params.push(text(&scalar.to_string()));
-                        params.push(quoted(pattern));
-                    }
-                    _ => {
-                        sql.push_str(" AND value = ?");
-                        params.push(quoted(pattern));
-                    }
-                }
+            params.push(Sql::Text(attribute.as_str().to_string()));
+            value_clause(&mut sql, &mut params, &format!("{row}.value"), pattern);
+            for (field, pattern) in &fields {
+                field_clause(&mut sql, &mut params, *field, pattern)?;
             }
         }
-        lacking(&mut sql, &mut params, missing)?;
-        if presence == Presence::Placed {
+        lacking(&mut sql, &mut params, missing, rows_of(scope))?;
+        if scope == Scope::Present {
             sql.push_str(" INTERSECT SELECT subject FROM placed");
         }
         sql.push_str(") ORDER BY digest");
@@ -955,6 +1103,126 @@ impl Index {
             subjects.push(Subject::parse(&row?)?);
         }
         Ok(subjects)
+    }
+
+    /// The distinct values one field takes over one subject's claims,
+    /// sorted — as of the last [`fold`](Index::fold), the open head
+    /// included. Under the standing scopes the claims that stand for
+    /// the subject's standing values; under [`Scope::Record`] every
+    /// claim about it. A string field answers strings, `value` the
+    /// values themselves, `retract` booleans; a claim from before runs
+    /// contributes nothing to `run`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; a value that does not parse back
+    /// cannot happen for rows a fold wrote, but is propagated rather than
+    /// sworn away.
+    pub fn field_values(
+        &self,
+        subject: &Subject,
+        field: Field,
+        scope: Scope,
+    ) -> Result<Vec<Value>> {
+        let rows = match scope {
+            Scope::Record => "claims c",
+            Scope::Present | Scope::Held => "claims c JOIN standing st ON st.claim = c.id",
+        };
+        let (expression, join) = match field {
+            Field::Subject => ("su.digest", " JOIN subjects su ON su.id = c.subject"),
+            Field::Attribute => ("a.name", " JOIN attributes a ON a.id = c.attribute"),
+            Field::Value => ("c.value", ""),
+            Field::Time => ("c.time", ""),
+            Field::Source => ("so.name", " JOIN sources so ON so.id = c.source"),
+            Field::Run => ("r.name", " JOIN runs r ON r.id = c.run"),
+            Field::Retract => ("c.retract", ""),
+        };
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT DISTINCT {expression} FROM {rows}{join}
+             WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
+               AND {expression} IS NOT NULL
+             ORDER BY 1"
+        ))?;
+        let rows = statement.query_map(params![subject.as_str()], |row| {
+            row.get::<_, rusqlite::types::Value>(0)
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(match (field, row?) {
+                (Field::Value, rusqlite::types::Value::Text(json)) => serde_json::from_str(&json)?,
+                (Field::Retract, rusqlite::types::Value::Integer(flag)) => Value::Bool(flag != 0),
+                (_, rusqlite::types::Value::Text(text)) => Value::String(text),
+                // The columns above are text or the retract flag; another
+                // storage class would be SQLite's own surprise.
+                (_, other) => Value::String(format!("{other:?}")),
+            });
+        }
+        Ok(values)
+    }
+
+    /// Every run on the record, in log order: what each call wrote, from
+    /// its first claim to its last — as of the last [`fold`](Index::fold),
+    /// the open head included. Claims from before runs were written
+    /// belong to no episode.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-run errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than
+    /// sworn away.
+    pub fn history(&self) -> Result<Vec<Episode>> {
+        let mut statement = self.connection.prepare(
+            "SELECT r.name, MIN(c.time), MAX(c.time), COUNT(DISTINCT c.subject), COUNT(*),
+                    SUM(c.retract)
+             FROM claims c
+             JOIN runs r ON r.id = c.run
+             JOIN segments s ON s.id = c.segment
+             GROUP BY c.run
+             ORDER BY MIN(c.time), MIN(s.seq), MIN(c.position)",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        let mut episodes = Vec::new();
+        for row in rows {
+            let (run, first, last, files, claims, retractions) = row?;
+            episodes.push(Episode {
+                run: Run::parse(&run)?,
+                first,
+                last,
+                sources: Vec::new(),
+                files: counted(files)?,
+                claims: counted(claims)?,
+                retractions: counted(retractions)?,
+            });
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT r.name, so.name
+             FROM claims c
+             JOIN runs r ON r.id = c.run
+             JOIN sources so ON so.id = c.source
+             ORDER BY so.name",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (run, source) = row?;
+            if let Some(episode) = episodes
+                .iter_mut()
+                .find(|episode| episode.run.as_str() == run)
+            {
+                episode.sources.push(Source::parse(&source)?);
+            }
+        }
+        Ok(episodes)
     }
 
     /// Every subject still waiting for an extractor: standing `file:mime`
@@ -1071,12 +1339,10 @@ impl Index {
     /// file: one pair per place, the same content seen at two places in
     /// one run answering twice. An ingest sighting answers with its
     /// `file:path`; a sighting without one — a derived file never sat
-    /// anywhere — answers with its `file:name`, every name the sighting
-    /// spelled.
+    /// anywhere — answers with its `file:name`, every name the run
+    /// spelled. Empty when no claim carries the run.
     ///
-    /// This asks the history, not the standing set: which place belongs
-    /// to which run is told by the claims written together — a sighting
-    /// speaks with one moment and one source — and a run's record stays
+    /// This asks the history, not the standing set: a run's record stays
     /// its record, later retractions notwithstanding.
     ///
     /// # Errors
@@ -1084,78 +1350,46 @@ impl Index {
     /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
-    pub fn run_sightings(&self, run: &str) -> Result<Vec<(Subject, Placement)>> {
-        let quoted = Value::String(run.to_string()).to_string();
+    pub fn run_sightings(&self, run: &Run) -> Result<Vec<(Subject, Placement)>> {
         let mut statement = self.connection.prepare(
-            "SELECT su.digest, a.name, c.value, c.time, so.name
+            "SELECT DISTINCT su.digest, a.name, json_extract(c.value, '$')
              FROM claims c
              JOIN subjects su ON su.id = c.subject
              JOIN attributes a ON a.id = c.attribute
-             JOIN sources so ON so.id = c.source
-             WHERE c.retract = 0
-               AND a.name IN ('prov:run', 'file:path', 'file:name')
-               AND c.subject IN (
-                   SELECT subject FROM claims
-                    WHERE attribute = (SELECT id FROM attributes WHERE name = 'prov:run')
-                      AND value = ?1 AND retract = 0)
-             ORDER BY su.digest, c.time, so.name",
+             WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
+               AND c.retract = 0
+               AND a.name IN ('file:path', 'file:name')
+               AND json_type(c.value) = 'text'
+             ORDER BY su.digest, a.name DESC, c.value",
         )?;
-        let rows = statement.query_map(params![quoted], |row| {
+        let rows = statement.query_map(params![run.as_str()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
             ))
         })?;
-        let mut claims = Vec::new();
-        for row in rows {
-            claims.push(row?);
-        }
         let mut sightings: Vec<(Subject, Placement)> = Vec::new();
-        let mut start = 0;
-        while start < claims.len() {
-            // One sighting: the rows sharing subject, moment and source.
-            let key = |row: &(String, String, String, String, String)| {
-                (row.0.clone(), row.3.clone(), row.4.clone())
-            };
-            let opening = key(&claims[start]);
-            let mut end = start;
-            while end < claims.len() && key(&claims[end]) == opening {
-                end += 1;
-            }
-            let group = &claims[start..end];
-            start = end;
-            if !group
-                .iter()
-                .any(|(_, attribute, value, _, _)| attribute == "prov:run" && *value == quoted)
-            {
-                continue;
-            }
-            let subject = Subject::parse(&group[0].0)?;
-            let spelled = |wanted: &str| -> Vec<String> {
-                group
-                    .iter()
-                    .filter(|(_, attribute, _, _, _)| attribute == wanted)
-                    .filter_map(|(_, _, value, _, _)| {
-                        serde_json::from_str::<Value>(value)
-                            .ok()
-                            .as_ref()
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
-                    .collect()
-            };
-            let paths = spelled("file:path");
-            if paths.is_empty() {
-                for name in spelled("file:name") {
-                    sightings.push((subject.clone(), Placement::Name(name)));
+        let mut current: Option<(Subject, bool)> = None;
+        for row in rows {
+            let (digest, attribute, spelled) = row?;
+            let subject = match &current {
+                Some((subject, _)) if subject.as_str() == digest => subject.clone(),
+                _ => {
+                    let subject = Subject::parse(&digest)?;
+                    current = Some((subject.clone(), false));
+                    subject
                 }
-            } else {
-                for path in paths {
-                    sightings.push((subject.clone(), Placement::Path(path)));
-                }
+            };
+            // Paths are ordered before names, so the first path of a
+            // subject is met before any of its names; a subject with a
+            // path answers with its paths alone.
+            let placed = current.as_ref().is_some_and(|(_, placed)| *placed);
+            if attribute == "file:path" {
+                current = Some((subject.clone(), true));
+                sightings.push((subject, Placement::Path(spelled)));
+            } else if !placed {
+                sightings.push((subject, Placement::Name(spelled)));
             }
         }
         Ok(sightings)
@@ -1260,11 +1494,15 @@ fn replay(
     let subject = ids.subject(transaction, claim.subject().as_str())?;
     let attribute = ids.attribute(transaction, claim.attribute().as_str())?;
     let source = ids.source(transaction, claim.source().as_str())?;
+    let run = match claim.run() {
+        Some(run) => Some(ids.run(transaction, run.as_str())?),
+        None => None,
+    };
     let value = claim.value().map(Value::to_string);
     let mut history = transaction.prepare_cached(
         "INSERT INTO claims
-             (subject, attribute, value, time, source, retract, segment, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (subject, attribute, value, time, source, run, retract, segment, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
     history.execute(params![
         subject,
@@ -1272,6 +1510,7 @@ fn replay(
         value,
         claim.time().as_str(),
         source,
+        run,
         claim.is_retraction(),
         segment,
         position,
@@ -1315,12 +1554,13 @@ fn replay(
 /// A row back into the claim it was — through the validating constructors,
 /// so the index cannot smuggle in what the log could not have held.
 fn claim(
-    (subject, attribute, value, time, source, retract): (
+    (subject, attribute, value, time, source, run, retract): (
         String,
         String,
         Option<String>,
         String,
         String,
+        Option<String>,
         bool,
     ),
 ) -> Result<Claim> {
@@ -1328,30 +1568,211 @@ fn claim(
     let attribute = Attribute::parse(&attribute)?;
     let time = Timestamp::parse(&time)?;
     let source = Source::parse(&source)?;
+    let run = run.as_deref().map(Run::parse).transpose()?;
     let value = value
         .as_deref()
         .map(serde_json::from_str::<Value>)
         .transpose()?;
-    match (value, retract) {
-        (Some(value), false) => Claim::assert(subject, attribute, value, time, source),
-        (Some(value), true) => Claim::retract_value(subject, attribute, value, time, source),
-        (None, true) => Ok(Claim::retract_attribute(subject, attribute, time, source)),
-        (None, false) => Err(Error::ValueRequired),
+    Claim::recorded(subject, attribute, value, time, source, run, retract)
+}
+
+/// The rows a [`Scope`] reads: the standing set, or the claims.
+fn rows_of(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Present | Scope::Held => "standing",
+        Scope::Record => "claims",
     }
+}
+
+/// A count out of `SQLite` as the unsigned number it is.
+fn counted(count: i64) -> Result<u64> {
+    u64::try_from(count)
+        .map_err(|_| Error::Index(rusqlite::Error::IntegralValueOutOfRange(0, count)))
+}
+
+/// The pattern of an attribute term, appended to `sql` as a condition
+/// on `column`, a value in the log's JSON spelling: literal in quotes,
+/// glob, range, or exact.
+fn value_clause(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    column: &str,
+    pattern: &str,
+) {
+    use rusqlite::types::Value as Sql;
+    let text = |s: &str| Sql::Text(s.to_string());
+    let quoted = |s: &str| text(&Value::String(s.to_string()).to_string());
+    // A bound spelled as a JSON number, typed so SQLite compares
+    // numerically instead of by storage class.
+    let number = |bound: &str| -> Option<Sql> {
+        let value: Value = serde_json::from_str(bound).ok()?;
+        if let Some(whole) = value.as_i64() {
+            return Some(Sql::Integer(whole));
+        }
+        value.as_f64().map(Sql::Real)
+    };
+    if let Some(literal) = pattern
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        // Wrapped in quotes: exactly this string, nothing read into it
+        // — the door for values that look like globs or ranges.
+        let _ = write!(sql, " AND {column} = ?");
+        params.push(quoted(literal));
+    } else if pattern.contains('*') || pattern.contains('?') {
+        // The stored string spelling is quoted JSON, so a pattern
+        // globbed inside quotes matches string values and nothing else
+        // — numbers were promised no wildcards.
+        let _ = write!(sql, " AND {column} GLOB ?");
+        params.push(text(&format!("\"{pattern}\"")));
+    } else if let Some((low, high)) = pattern.split_once("..") {
+        let numeric = [low, high]
+            .iter()
+            .filter(|bound| !bound.is_empty())
+            .all(|bound| number(bound).is_some());
+        if low.is_empty() && high.is_empty() {
+            // A bare "..": any value at all.
+            let _ = write!(sql, " AND {column} IS NOT NULL");
+        } else if numeric {
+            let _ = write!(sql, " AND json_type({column}) IN ('integer', 'real')");
+            if let Some(bound) = number(low) {
+                let _ = write!(sql, " AND json_extract({column}, '$') >= ?");
+                params.push(bound);
+            }
+            if let Some(bound) = number(high) {
+                let _ = write!(sql, " AND json_extract({column}, '$') <= ?");
+                params.push(bound);
+            }
+        } else {
+            // Bounds compare in the value's own spelling; the type guard
+            // keeps numbers out, whose storage sorts below every quoted
+            // string.
+            let _ = write!(sql, " AND json_type({column}) = 'text'");
+            if !low.is_empty() {
+                let _ = write!(sql, " AND {column} >= ?");
+                params.push(quoted(low));
+            }
+            if !high.is_empty() {
+                let _ = write!(sql, " AND {column} <= ?");
+                params.push(quoted(high));
+            }
+        }
+    } else {
+        match serde_json::from_str::<Value>(pattern) {
+            // The bare word is a JSON scalar — a number, a boolean: it
+            // may stand as itself or as a string, and either spelling
+            // answers.
+            Ok(scalar) if !scalar.is_string() => {
+                let _ = write!(sql, " AND {column} IN (?, ?)");
+                params.push(text(&scalar.to_string()));
+                params.push(quoted(pattern));
+            }
+            _ => {
+                let _ = write!(sql, " AND {column} = ?");
+                params.push(quoted(pattern));
+            }
+        }
+    }
+}
+
+/// The pattern of a field term over a plain text column — a digest, a
+/// name, a time, a run id — appended to `sql` as a condition on
+/// `column`: literal in quotes, glob, range in the column's own
+/// spelling, or exact.
+fn text_clause(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    column: &str,
+    pattern: &str,
+) {
+    use rusqlite::types::Value as Sql;
+    let text = |s: &str| Sql::Text(s.to_string());
+    if let Some(literal) = pattern
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        let _ = write!(sql, " AND {column} = ?");
+        params.push(text(literal));
+    } else if pattern.contains('*') || pattern.contains('?') {
+        let _ = write!(sql, " AND {column} GLOB ?");
+        params.push(text(pattern));
+    } else if let Some((low, high)) = pattern.split_once("..") {
+        let _ = write!(sql, " AND {column} IS NOT NULL");
+        if !low.is_empty() {
+            let _ = write!(sql, " AND {column} >= ?");
+            params.push(text(low));
+        }
+        if !high.is_empty() {
+            let _ = write!(sql, " AND {column} <= ?");
+            params.push(text(high));
+        }
+    } else {
+        let _ = write!(sql, " AND {column} = ?");
+        params.push(text(pattern));
+    }
+}
+
+/// One field term as a condition on the claim `c`, appended to `sql`.
+fn field_clause(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    field: Field,
+    pattern: &str,
+) -> Result<()> {
+    use rusqlite::types::Value as Sql;
+    match field {
+        Field::Subject => {
+            sql.push_str(" AND c.subject IN (SELECT id FROM subjects WHERE 1");
+            text_clause(sql, params, "digest", pattern);
+            sql.push(')');
+        }
+        Field::Attribute => {
+            sql.push_str(" AND c.attribute IN (SELECT id FROM attributes WHERE 1");
+            text_clause(sql, params, "name", pattern);
+            sql.push(')');
+        }
+        Field::Source => {
+            sql.push_str(" AND c.source IN (SELECT id FROM sources WHERE 1");
+            text_clause(sql, params, "name", pattern);
+            sql.push(')');
+        }
+        Field::Run => {
+            sql.push_str(" AND c.run IN (SELECT id FROM runs WHERE 1");
+            text_clause(sql, params, "name", pattern);
+            sql.push(')');
+        }
+        Field::Time => text_clause(sql, params, "c.time", pattern),
+        Field::Value => value_clause(sql, params, "c.value", pattern),
+        Field::Retract => {
+            let flag = match pattern.trim_matches('"') {
+                "true" => 1,
+                "false" => 0,
+                _ => return Err(Error::Retract(pattern.to_string())),
+            };
+            sql.push_str(" AND c.retract = ?");
+            params.push(Sql::Integer(flag));
+        }
+    }
+    Ok(())
 }
 
 /// The clause that takes every subject lacking nothing of `missing` out
 /// of a `find`: one `EXCEPT` per entry, an attribute by name or, ending
-/// in `:`, a whole namespace.
+/// in `:`, a whole namespace — asked of `rows`, the standing set or the
+/// claims.
 fn lacking(
     sql: &mut String,
     params: &mut Vec<rusqlite::types::Value>,
     missing: &[String],
+    rows: &str,
 ) -> Result<()> {
     use rusqlite::types::Value as Sql;
     let text = |s: &str| Sql::Text(s.to_string());
     for absent in missing {
-        sql.push_str(" EXCEPT SELECT subject FROM standing WHERE attribute IN (SELECT id FROM attributes WHERE ");
+        let _ = write!(
+            sql,
+            " EXCEPT SELECT subject FROM {rows} WHERE attribute IN (SELECT id FROM attributes WHERE "
+        );
         if let Some(namespace) = absent.strip_suffix(':') {
             // The grammar has one door; a prefix walks through it
             // wearing a dummy name.
@@ -1408,6 +1829,7 @@ mod tests {
             json!(tag),
             Timestamp::parse(time).unwrap(),
             Source::parse("user").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
         .unwrap()
     }
@@ -1480,6 +1902,7 @@ mod tests {
                 json!("holiday"),
                 Timestamp::parse("2030-04-01T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -1531,12 +1954,435 @@ mod tests {
             value,
             Timestamp::parse(time).unwrap(),
             Source::parse("user").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
         .unwrap()
     }
 
-    fn term(attribute: &str, pattern: &str) -> (Attribute, String) {
-        (Attribute::parse(attribute).unwrap(), pattern.to_string())
+    fn term(attribute: &str, pattern: &str) -> Term {
+        Term::Attribute(Attribute::parse(attribute).unwrap(), pattern.to_string())
+    }
+
+    /// A run id per letter, so a test can tell its runs apart.
+    fn run_x(letter: char) -> Run {
+        Run::parse(&format!("315e360b-020e-48be-8f2d-f2002a2ea9b{letter}")).unwrap()
+    }
+
+    /// One claim with its run chosen, the way a writer of this version
+    /// writes one.
+    fn said_in(subject: &Subject, attribute: &str, value: Value, time: &str, run: &Run) -> Claim {
+        Claim::assert(
+            subject.clone(),
+            Attribute::parse(attribute).unwrap(),
+            value,
+            Timestamp::parse(time).unwrap(),
+            Source::parse("ingest").unwrap(),
+            run.clone(),
+        )
+        .unwrap()
+    }
+
+    fn field(field: Field, pattern: &str) -> Term {
+        Term::Field(field, pattern.to_string())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one scene, asked seven ways")]
+    fn a_field_term_asks_about_the_claim_behind_a_value() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let (a, b) = (subject(), other());
+        // Run a names file a; run b names file b and tags file a.
+        log.append(&said_in(
+            &a,
+            "file:name",
+            json!("abc"),
+            "2026-09-01T10:00:00Z",
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(&said_in(
+            &b,
+            "file:name",
+            json!("abc"),
+            "2026-09-02T10:00:00Z",
+            &run_x('b'),
+        ))
+        .unwrap();
+        log.append(&said_in(
+            &a,
+            "user:tag",
+            json!("beach"),
+            "2026-09-02T10:00:00Z",
+            &run_x('b'),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let name = || term("file:name", "abc");
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Run, run_x('a').as_str()), name()],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            std::slice::from_ref(&a),
+            "the name claim itself must come from the run"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Run, run_x('b').as_str()), name()],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            std::slice::from_ref(&b),
+            "file a was touched by run b, but its name was not said there"
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Run, run_x('b').as_str())], &[], Scope::Held)
+                .unwrap(),
+            [a.clone(), b.clone()],
+            "a field term alone: every file with a standing value from that run"
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Time, "2026-09-02..")], &[], Scope::Held)
+                .unwrap(),
+            [a.clone(), b.clone()],
+            "time ranges read like attribute ranges, in claim time's spelling"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Time, "..2026-09-01T23:59:59Z"), name()],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            std::slice::from_ref(&a)
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Source, "ing*")], &[], Scope::Held)
+                .unwrap(),
+            [a.clone(), b.clone()]
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Subject, "aa*"), name()], &[], Scope::Held)
+                .unwrap(),
+            std::slice::from_ref(&b),
+            "subject is a field like any other, a beginning globbed"
+        );
+        assert_eq!(
+            index.field_values(&a, Field::Run, Scope::Held).unwrap(),
+            [json!(run_x('a').as_str()), json!(run_x('b').as_str())],
+            "a bare field shows every run that stands behind a value"
+        );
+        assert!(matches!(
+            index.find(&[field(Field::Retract, "maybe")], &[], Scope::Record),
+            Err(Error::Retract(_))
+        ));
+    }
+
+    #[test]
+    fn a_value_said_again_answers_for_the_run_that_said_it_last() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&said_in(
+            &subject(),
+            "file:name",
+            json!("abc"),
+            "2026-09-01T10:00:00Z",
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(&said_in(
+            &subject(),
+            "file:name",
+            json!("abc"),
+            "2026-09-02T10:00:00Z",
+            &run_x('b'),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let name = term("file:name", "abc");
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Run, run_x('a').as_str()), name.clone()],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            [],
+            "the standing row points at the newest sayer"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Run, run_x('a').as_str()), name],
+                    &[],
+                    Scope::Record
+                )
+                .unwrap(),
+            [subject()],
+            "the record still knows who said it first"
+        );
+    }
+
+    #[test]
+    fn the_record_answers_for_what_was_taken_back() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&said_in(
+            &subject(),
+            "file:path",
+            json!("/home/s/a.txt"),
+            "2026-09-01T10:00:00Z",
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(
+            &Claim::retract_value(
+                subject(),
+                Attribute::parse("file:path").unwrap(),
+                json!("/home/s/a.txt"),
+                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
+                Source::parse("ingest").unwrap(),
+                run_x('c'),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let path = term("file:path", "*");
+        assert_eq!(
+            index
+                .find(std::slice::from_ref(&path), &[], Scope::Present)
+                .unwrap(),
+            []
+        );
+        assert_eq!(
+            index
+                .find(std::slice::from_ref(&path), &[], Scope::Held)
+                .unwrap(),
+            []
+        );
+        assert_eq!(
+            index
+                .find(std::slice::from_ref(&path), &[], Scope::Record)
+                .unwrap(),
+            [subject()],
+            "the record keeps the path, standing or not"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[field(Field::Retract, "true"), path.clone()],
+                    &[],
+                    Scope::Record
+                )
+                .unwrap(),
+            [subject()],
+            "what was ever taken back, by the retraction claim itself"
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Retract, "true"), path], &[], Scope::Held)
+                .unwrap(),
+            [],
+            "a retraction never stands"
+        );
+        assert_eq!(
+            index
+                .values(
+                    &subject(),
+                    &Attribute::parse("file:path").unwrap(),
+                    Scope::Record
+                )
+                .unwrap(),
+            [json!("/home/s/a.txt")],
+            "under the record a value said and taken back shows once"
+        );
+        assert_eq!(index.subjects(Scope::Record).unwrap(), [subject()]);
+        assert_eq!(index.subjects(Scope::Held).unwrap(), []);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one record, three runs and a runless claim"
+    )]
+    fn history_tells_each_run_from_its_first_claim_to_its_last() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&said_in(
+            &subject(),
+            "file:name",
+            json!("a.txt"),
+            "2026-09-01T10:00:00Z",
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(&said_in(
+            &other(),
+            "file:name",
+            json!("b.txt"),
+            "2026-09-01T10:00:07Z",
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(
+            &Claim::assert(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("beach"),
+                Timestamp::parse("2026-09-01T10:00:07Z").unwrap(),
+                Source::parse("user").unwrap(),
+                run_x('a'),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        log.append(
+            &Claim::retract_value(
+                other(),
+                Attribute::parse("file:name").unwrap(),
+                json!("b.txt"),
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                Source::parse("ingest").unwrap(),
+                run_x('b'),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // A claim from before runs were written belongs to no run.
+        log.append(
+            &Claim::recorded(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                Some(json!("old")),
+                Timestamp::parse("2026-08-01T10:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.history().unwrap(),
+            [
+                Episode {
+                    run: run_x('a'),
+                    first: "2026-09-01T10:00:00Z".to_string(),
+                    last: "2026-09-01T10:00:07Z".to_string(),
+                    sources: vec![
+                        Source::parse("ingest").unwrap(),
+                        Source::parse("user").unwrap()
+                    ],
+                    files: 2,
+                    claims: 3,
+                    retractions: 0,
+                },
+                Episode {
+                    run: run_x('b'),
+                    first: "2026-09-02T10:00:00Z".to_string(),
+                    last: "2026-09-02T10:00:00Z".to_string(),
+                    sources: vec![Source::parse("ingest").unwrap()],
+                    files: 1,
+                    claims: 1,
+                    retractions: 1,
+                },
+            ],
+            "in log order, the runless claim in no episode"
+        );
+        assert_eq!(
+            index
+                .find(&[field(Field::Run, "*")], &[], Scope::Held)
+                .unwrap(),
+            [subject()],
+            "every file with a standing value from a run; file b's name was taken back, and the runless tag counts for nothing"
+        );
+        assert_eq!(
+            index
+                .field_values(&subject(), Field::Run, Scope::Held)
+                .unwrap(),
+            [json!(run_x('a').as_str())],
+            "the runless tag contributes nothing to run"
+        );
+        assert_eq!(
+            index
+                .field_values(&subject(), Field::Attribute, Scope::Held)
+                .unwrap(),
+            [json!("file:name"), json!("user:tag")]
+        );
+    }
+
+    #[test]
+    fn as_of_a_run_closes_after_its_last_claim() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        // Two runs within one second: a time cutoff cannot tell them apart.
+        let when = "2026-09-01T10:00:00Z";
+        log.append(&said_in(
+            &subject(),
+            "user:tag",
+            json!("first"),
+            when,
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(&said_in(
+            &subject(),
+            "user:tag",
+            json!("second"),
+            when,
+            &run_x('b'),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let tag = Attribute::parse("user:tag").unwrap();
+        let after_a = index.as_of_run(&run_x('a')).unwrap().unwrap();
+        assert_eq!(
+            after_a.values(&subject(), &tag, Scope::Held).unwrap(),
+            [json!("first")],
+            "the view closes after run a's last claim, run b is not yet"
+        );
+        let after_b = index.as_of_run(&run_x('b')).unwrap().unwrap();
+        assert_eq!(
+            after_b.values(&subject(), &tag, Scope::Held).unwrap(),
+            [json!("first"), json!("second")]
+        );
+        assert_eq!(
+            index
+                .as_of(when)
+                .unwrap()
+                .values(&subject(), &tag, Scope::Held)
+                .unwrap(),
+            [json!("first"), json!("second")],
+            "the second holds both; only the run tells them apart"
+        );
+        assert!(
+            index.as_of_run(&run_x('c')).unwrap().is_none(),
+            "a run no claim carries is no cutoff"
+        );
     }
 
     #[test]
@@ -1550,7 +2396,7 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .find(&[term("user:tag", "holiday")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "the set holds it once, however often it was said"
@@ -1576,6 +2422,7 @@ mod tests {
                 json!("holiday"),
                 Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -1584,13 +2431,13 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .find(&[term("user:tag", "holiday")], &[], Scope::Held)
                 .unwrap(),
             []
         );
         assert_eq!(
             index
-                .find(&[term("user:tag", "crete")], &[], Presence::Held)
+                .find(&[term("user:tag", "crete")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "the neighbour value stands untouched"
@@ -1609,13 +2456,14 @@ mod tests {
             Attribute::parse("user:tag").unwrap(),
             Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
             Source::parse("user").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         ))
         .unwrap();
         index.fold(&log).unwrap();
 
         assert_eq!(
             index
-                .find(&[term("user:tag", "crete")], &[], Presence::Held)
+                .find(&[term("user:tag", "crete")], &[], Scope::Held)
                 .unwrap(),
             []
         );
@@ -1637,6 +2485,7 @@ mod tests {
                 json!("holiday"),
                 Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -1646,7 +2495,7 @@ mod tests {
         index.fold(&log).unwrap();
         assert_eq!(
             index
-                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .find(&[term("user:tag", "holiday")], &[], Scope::Held)
                 .unwrap(),
             [],
             "the sealed assertion is folded once and must not resurface"
@@ -1669,6 +2518,7 @@ mod tests {
                 json!("holiday"),
                 Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -1677,13 +2527,17 @@ mod tests {
 
         let tags = Attribute::parse("user:tag").unwrap();
         assert_eq!(
-            index.values(&subject(), &tags).unwrap(),
+            index.values(&subject(), &tags, Scope::Held).unwrap(),
             [json!("beach"), json!("crete")],
             "said twice stands once, retracted stands not at all; sorted by spelling"
         );
         assert_eq!(
             index
-                .values(&subject(), &Attribute::parse("exif:model").unwrap())
+                .values(
+                    &subject(),
+                    &Attribute::parse("exif:model").unwrap(),
+                    Scope::Held
+                )
                 .unwrap(),
             Vec::<Value>::new(),
             "an attribute never claimed has nothing standing"
@@ -1706,7 +2560,7 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("file:name", "*.jpg")], &[], Presence::Held)
+                .find(&[term("file:name", "*.jpg")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "one term, two values matching it, one file: the answer is a set of files"
@@ -1773,13 +2627,13 @@ mod tests {
     }
 
     #[test]
-    fn places_and_arrivals_read_as_tables() {
+    fn places_and_runs_read_as_tables() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
         for (attribute, value) in [
             ("file:path", json!("/home/john/a.txt")),
-            ("prov:run", json!("run-a")),
+            ("file:name", json!("a.txt")),
         ] {
             log.append(&say(&subject(), attribute, value, "2026-09-01T10:00:00Z"))
                 .unwrap();
@@ -1792,13 +2646,16 @@ mod tests {
             .unwrap();
         assert_eq!(path, "/home/john/a.txt", "the path bare, not as JSON text");
 
-        let run: (String, String, i64) = index
+        let run: (String, i64, i64) = index
             .connection
-            .query_row("SELECT run, source, files FROM v_arrivals", [], |row| {
+            .query_row("SELECT run, files, claims FROM v_runs", [], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .unwrap();
-        assert_eq!(run, ("run-a".to_string(), "user".to_string(), 1));
+        assert_eq!(
+            run,
+            ("315e360b-020e-48be-8f2d-f2002a2ea9b4".to_string(), 1, 2)
+        );
     }
 
     #[test]
@@ -1818,6 +2675,7 @@ mod tests {
                     json!("message/rfc822"),
                     Timestamp::parse(time).unwrap(),
                     Source::parse(source).unwrap(),
+                    Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
                 )
                 .unwrap(),
             )
@@ -1826,13 +2684,13 @@ mod tests {
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.values(&subject(), &mime).unwrap(),
+            index.values(&subject(), &mime, Scope::Held).unwrap(),
             [json!("message/rfc822")],
             "who says it is the claim's business; the standing set holds the value once"
         );
         assert_eq!(
             index
-                .find(&[term("file:mime", "message/rfc822")], &[], Presence::Held)
+                .find(&[term("file:mime", "message/rfc822")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "and a search finds the file once"
@@ -1853,6 +2711,7 @@ mod tests {
                 json!("holiday"),
                 Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -1863,7 +2722,7 @@ mod tests {
         let tags = Attribute::parse("user:tag").unwrap();
         let early = index.as_of("2026-09-02T00:00:00Z").unwrap();
         assert_eq!(
-            early.values(&subject(), &tags).unwrap(),
+            early.values(&subject(), &tags, Scope::Held).unwrap(),
             [json!("holiday")],
             "on the second, holiday stood and nothing had been taken back"
         );
@@ -1875,12 +2734,12 @@ mod tests {
 
         let late = index.as_of("2026-09-03T12:00:00Z").unwrap();
         assert_eq!(
-            late.values(&subject(), &tags).unwrap(),
+            late.values(&subject(), &tags, Scope::Held).unwrap(),
             Vec::<Value>::new(),
             "after the retraction nothing stands, and beach has not arrived yet"
         );
         assert_eq!(
-            index.values(&subject(), &tags).unwrap(),
+            index.values(&subject(), &tags, Scope::Held).unwrap(),
             [json!("beach")],
             "the index itself keeps answering for today"
         );
@@ -1908,6 +2767,7 @@ mod tests {
                 json!("holiday"),
                 Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -1964,7 +2824,7 @@ mod tests {
                 .find(
                     &[term("file:mime", "image/jpeg"), term("user:tag", "holiday")],
                     &[],
-                    Presence::Held
+                    Scope::Held
                 )
                 .unwrap(),
             [subject()],
@@ -1995,20 +2855,20 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("file:path", "*crete*")], &[], Presence::Held)
+                .find(&[term("file:path", "*crete*")], &[], Scope::Held)
                 .unwrap(),
             [subject()]
         );
         assert_eq!(
             index
-                .find(&[term("file:size", "20*")], &[], Presence::Held)
+                .find(&[term("file:size", "20*")], &[], Scope::Held)
                 .unwrap(),
             [],
             "numbers were promised no wildcards"
         );
         assert_eq!(
             index
-                .find(&[term("file:size", "2019")], &[], Presence::Held)
+                .find(&[term("file:size", "2019")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "while the exact number answers"
@@ -2030,7 +2890,7 @@ mod tests {
         index.fold(&log).unwrap();
 
         let spelled: Vec<(String, Value)> = index
-            .values_in(&subject(), "exif")
+            .values_in(&subject(), "exif", Scope::Held)
             .unwrap()
             .into_iter()
             .map(|(attribute, value)| (attribute.as_str().to_string(), value))
@@ -2044,12 +2904,12 @@ mod tests {
             "the namespace whole, ordered by attribute"
         );
         assert_eq!(
-            index.values_in(&subject(), "user").unwrap(),
+            index.values_in(&subject(), "user", Scope::Held).unwrap(),
             [],
             "a namespace nothing stands in answers empty"
         );
         assert_eq!(
-            index.subjects(Presence::Held).unwrap(),
+            index.subjects(Scope::Held).unwrap(),
             [subject()],
             "the record names every subject it speaks about"
         );
@@ -2081,6 +2941,7 @@ mod tests {
                 json!("Google"),
                 Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -2137,7 +2998,7 @@ mod tests {
                 .find(
                     &[term("file:mime", "image/jpeg")],
                     &["exif:".to_string()],
-                    Presence::Held
+                    Scope::Held
                 )
                 .unwrap(),
             std::slice::from_ref(&bare),
@@ -2145,7 +3006,7 @@ mod tests {
         );
         assert_eq!(
             index
-                .find(&[], &["exif:make".to_string()], Presence::Held)
+                .find(&[], &["exif:make".to_string()], Scope::Held)
                 .unwrap(),
             [bare],
             "with no terms, missing is asked of every subject"
@@ -2199,11 +3060,7 @@ mod tests {
 
         assert_eq!(
             index
-                .find(
-                    &[term("file:modified", "2026-09-01..")],
-                    &[],
-                    Presence::Held
-                )
+                .find(&[term("file:modified", "2026-09-01..")], &[], Scope::Held)
                 .unwrap(),
             [december.clone(), both.clone()],
             "since: one standing value past the bound suffices"
@@ -2213,7 +3070,7 @@ mod tests {
                 .find(
                     &[term("file:modified", "2026-09-01..2026-10-01")],
                     &[],
-                    Presence::Held
+                    Scope::Held
                 )
                 .unwrap(),
             [],
@@ -2227,7 +3084,7 @@ mod tests {
                         term("file:modified", "..2026-10-01"),
                     ],
                     &[],
-                    Presence::Held
+                    Scope::Held
                 )
                 .unwrap(),
             [both],
@@ -2261,7 +3118,7 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:rating", "1..10")], &[], Presence::Held)
+                .find(&[term("user:rating", "1..10")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "numeric bounds speak about numbers; the worded rating is not seven"
@@ -2287,7 +3144,7 @@ mod tests {
                 .find(
                     &[term("exif:date-time-original", "2026:07:01..2026:08:01")],
                     &[],
-                    Presence::Held
+                    Scope::Held
                 )
                 .unwrap(),
             [subject()],
@@ -2298,7 +3155,7 @@ mod tests {
                 .find(
                     &[term("exif:date-time-original", "2026:08:01..")],
                     &[],
-                    Presence::Held
+                    Scope::Held
                 )
                 .unwrap(),
             []
@@ -2321,14 +3178,14 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:note", "\"see 3..4\"")], &[], Presence::Held)
+                .find(&[term("user:note", "\"see 3..4\"")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "quoted, the dots are just dots"
         );
         assert_eq!(
             index
-                .find(&[term("user:note", "\"see 3\"")], &[], Presence::Held)
+                .find(&[term("user:note", "\"see 3\"")], &[], Scope::Held)
                 .unwrap(),
             [],
             "and quoted means whole, not prefix"
@@ -2355,7 +3212,7 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:tag", "..")], &[], Presence::Held)
+                .find(&[term("user:tag", "..")], &[], Scope::Held)
                 .unwrap(),
             [subject()],
             "the presence question, --missing turned around"
@@ -2440,6 +3297,7 @@ mod tests {
                 json!("/home/john/a.txt"),
                 Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -2473,6 +3331,7 @@ mod tests {
                 place.clone(),
                 Timestamp::parse("2026-02-01T00:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
             )
             .unwrap(),
         )
@@ -2525,6 +3384,7 @@ mod tests {
             Attribute::parse("user:tag").unwrap(),
             Timestamp::parse("2026-01-04T00:00:00Z").unwrap(),
             Source::parse("user").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         ))
         .unwrap();
         index.fold(&log).unwrap();
@@ -2552,15 +3412,11 @@ mod tests {
 
     /// One sighting the way ingest writes one: place, name and run
     /// with one moment and one source.
-    fn sight(log: &Log, subject: &Subject, run: &str, path: &str, time: &str) {
+    fn sight(log: &Log, subject: &Subject, run: &Run, path: &str, time: &str) {
         let time = Timestamp::parse(time).unwrap();
         let source = Source::parse("ingest").unwrap();
         let name = path.rsplit('/').next().unwrap();
-        for (attribute, value) in [
-            ("file:path", json!(path)),
-            ("file:name", json!(name)),
-            ("prov:run", json!(run)),
-        ] {
+        for (attribute, value) in [("file:path", json!(path)), ("file:name", json!(name))] {
             log.append(
                 &Claim::assert(
                     subject.clone(),
@@ -2568,6 +3424,7 @@ mod tests {
                     value,
                     time.clone(),
                     source.clone(),
+                    run.clone(),
                 )
                 .unwrap(),
             )
@@ -2586,14 +3443,14 @@ mod tests {
         sight(
             &log,
             &subject(),
-            "run-a",
+            &run_x('a'),
             "/home/s/a.txt",
             "2026-09-01T10:00:00Z",
         );
         sight(
             &log,
             &moved,
-            "run-a",
+            &run_x('a'),
             "/home/s/b.txt",
             "2026-09-01T10:00:01Z",
         );
@@ -2602,14 +3459,14 @@ mod tests {
         sight(
             &log,
             &subject(),
-            "run-b",
+            &run_x('b'),
             "/mnt/nas/a.txt",
             "2026-09-02T10:00:00Z",
         );
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.run_sightings("run-a").unwrap(),
+            index.run_sightings(&run_x('a')).unwrap(),
             [
                 (moved, Placement::Path("/home/s/b.txt".to_string())),
                 (subject(), Placement::Path("/home/s/a.txt".to_string())),
@@ -2617,10 +3474,10 @@ mod tests {
             "each run answers with the places it recorded itself, by subject"
         );
         assert_eq!(
-            index.run_sightings("run-b").unwrap(),
+            index.run_sightings(&run_x('b')).unwrap(),
             [(subject(), Placement::Path("/mnt/nas/a.txt".to_string()))]
         );
-        assert_eq!(index.run_sightings("run-c").unwrap(), []);
+        assert_eq!(index.run_sightings(&run_x('c')).unwrap(), []);
     }
 
     #[test]
@@ -2631,21 +3488,21 @@ mod tests {
         sight(
             &log,
             &subject(),
-            "run-a",
+            &run_x('a'),
             "/home/s/a.txt",
             "2026-09-01T10:00:00Z",
         );
         sight(
             &log,
             &subject(),
-            "run-a",
+            &run_x('a'),
             "/home/s/copy/a.txt",
             "2026-09-01T10:00:02Z",
         );
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.run_sightings("run-a").unwrap(),
+            index.run_sightings(&run_x('a')).unwrap(),
             [
                 (subject(), Placement::Path("/home/s/a.txt".to_string())),
                 (subject(), Placement::Path("/home/s/copy/a.txt".to_string())),
@@ -2661,26 +3518,22 @@ mod tests {
         let mut index = index_in(&dir);
         let time = Timestamp::parse("2026-09-01T10:00:00Z").unwrap();
         let source = Source::parse("extractor:mail/0.1.0").unwrap();
-        for (attribute, value) in [
-            ("file:name", json!("invoice.pdf")),
-            ("prov:run", json!("run-x")),
-        ] {
-            log.append(
-                &Claim::assert(
-                    subject(),
-                    Attribute::parse(attribute).unwrap(),
-                    value,
-                    time.clone(),
-                    source.clone(),
-                )
-                .unwrap(),
+        log.append(
+            &Claim::assert(
+                subject(),
+                Attribute::parse("file:name").unwrap(),
+                json!("invoice.pdf"),
+                time.clone(),
+                source.clone(),
+                run_x('e'),
             )
-            .unwrap();
-        }
+            .unwrap(),
+        )
+        .unwrap();
         index.fold(&log).unwrap();
 
         assert_eq!(
-            index.run_sightings("run-x").unwrap(),
+            index.run_sightings(&run_x('e')).unwrap(),
             [(subject(), Placement::Name("invoice.pdf".to_string()))],
             "a derived file never sat anywhere, so its name answers"
         );
@@ -2713,7 +3566,7 @@ mod tests {
         assert_eq!(folded.segments, 1, "the emptied cache folds from scratch");
         assert_eq!(
             index
-                .find(&[term("user:tag", "holiday")], &[], Presence::Held)
+                .find(&[term("user:tag", "holiday")], &[], Scope::Held)
                 .unwrap(),
             [subject()]
         );
@@ -2743,6 +3596,7 @@ mod tests {
             value,
             Timestamp::parse(time).unwrap(),
             Source::parse("test").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
         .unwrap()
     }
@@ -2754,6 +3608,7 @@ mod tests {
             value,
             Timestamp::parse(time).unwrap(),
             Source::parse("test").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
         .unwrap()
     }
@@ -2788,16 +3643,16 @@ mod tests {
 
         let holiday = [term("user:tag", "holiday")];
         assert_eq!(
-            index.find(&holiday, &[], Presence::Placed).unwrap(),
+            index.find(&holiday, &[], Scope::Present).unwrap(),
             vec![placed.clone()],
             "no place stands on the other"
         );
         assert_eq!(
-            index.find(&holiday, &[], Presence::Held).unwrap(),
+            index.find(&holiday, &[], Scope::Held).unwrap(),
             vec![placed.clone(), placeless.clone()]
         );
         assert_eq!(
-            index.subjects(Presence::Placed).unwrap(),
+            index.subjects(Scope::Present).unwrap(),
             vec![placed.clone()]
         );
 
@@ -2812,18 +3667,18 @@ mod tests {
 
         assert!(
             index
-                .find(&holiday, &[], Presence::Placed)
+                .find(&holiday, &[], Scope::Present)
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
-            index.find(&holiday, &[], Presence::Held).unwrap(),
+            index.find(&holiday, &[], Scope::Held).unwrap(),
             vec![placed.clone(), placeless],
             "held all the same"
         );
         let before = index.as_of("2026-09-01T23:59:59Z").unwrap();
         assert_eq!(
-            before.find(&holiday, &[], Presence::Placed).unwrap(),
+            before.find(&holiday, &[], Scope::Present).unwrap(),
             vec![placed],
             "as of the day it lay there, it did"
         );
@@ -2860,7 +3715,7 @@ mod tests {
 
         let invoice = [term("user:tag", "invoice")];
         assert_eq!(
-            index.find(&invoice, &[], Presence::Placed).unwrap(),
+            index.find(&invoice, &[], Scope::Present).unwrap(),
             vec![derived.clone()],
             "an attachment lies where its mail lies"
         );
@@ -2875,7 +3730,7 @@ mod tests {
         index.fold(&log).unwrap();
         assert!(
             index
-                .find(&invoice, &[], Presence::Placed)
+                .find(&invoice, &[], Scope::Present)
                 .unwrap()
                 .is_empty(),
             "and goes where its mail goes"
@@ -2905,7 +3760,7 @@ mod tests {
 
         assert_eq!(
             index
-                .find(&[term("user:tag", "holiday")], &[], Presence::Placed)
+                .find(&[term("user:tag", "holiday")], &[], Scope::Present)
                 .unwrap(),
             vec![message]
         );

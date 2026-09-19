@@ -33,7 +33,7 @@ use serde::Deserialize;
 use crate::archive::Archive;
 use crate::claim::{Attribute, Source, Subject, Value};
 use crate::error::{Error, Result};
-use crate::extract::{Derivation, Examined, record_examination, run_id};
+use crate::extract::{Derivation, Examined, record_examination};
 use crate::index::Index;
 
 /// One thing the orchestration did or found, told as it happens. The
@@ -132,10 +132,9 @@ pub struct Settlement {
     /// Derived files taken in, across all rounds — bytes new to the
     /// archive and bytes it already held alike.
     pub derived: usize,
-    /// The call's run id: what stands as `prov:run` on every derived
-    /// file's sighting. On the record only where `derived` counted
-    /// something — a call that derived nothing left no trace of it.
-    pub run: String,
+    /// The call's run id: what every claim this call wrote carries,
+    /// findings, receipts and derived files' sightings alike.
+    pub run: crate::claim::Run,
 }
 
 /// One line of the answer to `--identify` — one contract. Unknown keys
@@ -258,7 +257,7 @@ pub fn examine(
     let mut troubled = skipped > 0;
     let mut invocation = Invocation {
         archive,
-        run_id: run_id(),
+        run_id: crate::claim::Run::new(),
         full,
         dry_run,
         temp_dir,
@@ -448,9 +447,9 @@ fn prepare(listed: &str) -> Result<Vec<Run>> {
 /// What one [`examine`] call carries through all its rounds.
 struct Invocation<'a> {
     archive: &'a Archive,
-    /// The run anchor: stamped as `prov:run` on every derived file this
-    /// call takes in, rounds included — they are the call's insides.
-    run_id: String,
+    /// The run: what every claim of this call carries, rounds included
+    /// — they are the call's insides.
+    run_id: crate::claim::Run,
     full: bool,
     /// Run the extractors, record nothing: harvests become
     /// [`Event::Rehearsed`] and are dropped.
@@ -775,7 +774,7 @@ fn examine_one(
     contract: Option<&str>,
     subject: &Subject,
     source: &Source,
-    run_id: &str,
+    run_id: &crate::claim::Run,
     scratch_parent: Option<&Path>,
 ) -> Result<(Examined, String)> {
     let (Harvest { findings, derived }, _scratch, remarks) =
@@ -797,7 +796,11 @@ fn relay(
     if remarks.trim().is_empty() {
         return Ok(());
     }
-    let names = index.values(subject, &Attribute::parse("file:name")?)?;
+    let names = index.values(
+        subject,
+        &Attribute::parse("file:name")?,
+        crate::index::Scope::Held,
+    )?;
     let name = names.iter().find_map(Value::as_str);
     invocation.observer.event(Event::Remarked {
         source,

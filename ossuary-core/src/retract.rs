@@ -5,7 +5,7 @@
 //! the story, and a later assertion may honestly put the value back —
 //! a retraction is an event, not a curse.
 
-use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
+use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
 use crate::error::Result;
 use crate::log::Log;
 
@@ -22,7 +22,7 @@ pub enum Taking {
 /// source `user` — the human takes back, this function is only the pen.
 /// One moment for the whole call.
 ///
-/// Answers how many retractions were written. Takings are taken as
+/// Answers what was written, the call's run included. Takings are taken as
 /// given — resolving spellings to subjects, and checking that what is
 /// named actually stands, is the caller's business, done *before*
 /// anything is written.
@@ -31,9 +31,10 @@ pub enum Taking {
 ///
 /// Whatever appending to the log can answer, and [`crate::Error::NullValue`]
 /// for a `null` taking, which the claim grammar refuses.
-pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<usize> {
+pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<Written> {
     let word = Source::parse("user")?;
     let time = Timestamp::now();
+    let run = Run::new();
     let mut written = 0usize;
     for (subject, attribute, taking) in takings {
         let claim = match taking {
@@ -43,18 +44,23 @@ pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<us
                 value.clone(),
                 time.clone(),
                 word.clone(),
+                run.clone(),
             )?,
             Taking::All => Claim::retract_attribute(
                 subject.clone(),
                 attribute.clone(),
                 time.clone(),
                 word.clone(),
+                run.clone(),
             ),
         };
         log.append(&claim)?;
         written += 1;
     }
-    Ok(written)
+    Ok(Written {
+        claims: written,
+        run,
+    })
 }
 
 #[cfg(test)]
@@ -100,19 +106,21 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(written, 2, "one claim per taking, All is one claim");
+        assert_eq!(written.claims, 2, "one claim per taking, All is one claim");
 
         let cache = dir.path().join("cache");
         std::fs::create_dir_all(&cache).unwrap();
         let mut index = crate::Index::open(cache.join("index.sqlite")).unwrap();
         index.fold(&log).unwrap();
         assert_eq!(
-            index.values(&subject(), &tag).unwrap(),
+            index.values(&subject(), &tag, crate::Scope::Held).unwrap(),
             Vec::<Value>::new(),
             "the tag no longer stands"
         );
         assert_eq!(
-            index.values(&subject(), &comment).unwrap(),
+            index
+                .values(&subject(), &comment, crate::Scope::Held)
+                .unwrap(),
             Vec::<Value>::new(),
             "All emptied both comments with one claim"
         );

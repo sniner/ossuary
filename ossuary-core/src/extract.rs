@@ -29,26 +29,15 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::archive::Archive;
-use crate::claim::{Attribute, Claim, Source, Subject, Timestamp, Value};
+use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::log::Log;
 
 /// The receipt attribute: this blob was examined by the claim's source,
 /// which the value names again.
 pub const EXAMINED: &str = "prov:examined";
-
-/// A fresh run id: what one `ossuary extract` invocation stamps as
-/// `prov:run` on every derived file it takes in — all its rounds
-/// included, they are the invocation's insides. The same spelling as
-/// ingest's own run, so "arrived together" means the same thing on both
-/// sides of the archive.
-#[must_use]
-pub fn run_id() -> String {
-    Uuid::new_v4().to_string()
-}
 
 /// One derived file, as the extractor announced it: the bare name and the
 /// MIME type in the extractor's own words, where the bytes wait, and
@@ -88,7 +77,7 @@ pub struct Examined {
 ///
 /// A derived file is content with a record like any other, and the log
 /// says so: its `file:mime` and `file:name` in the extractor's words, its
-/// origin as `derive:derived-from`, its `prov:run`, and — for bytes new
+/// origin as `derive:derived-from`, and — for bytes new
 /// to the store — its `file:size`, the way ingest says it: a fact of the
 /// content, once.
 /// Findings the extractor made about a derived file stand on it, not on
@@ -103,9 +92,9 @@ pub struct Examined {
 /// lies. Only bytes the archive knows purely as harvest go into
 /// `derived/`.
 ///
-/// `run` is the invocation's anchor — one id, minted by [`run_id`] per
-/// `ossuary extract` call — stamped as `prov:run` on every derived
-/// file's sighting, the way ingest stamps its own runs. The receipt's
+/// `run` is the invocation's own — one [`Run`] per `ossuary extract`
+/// call — and every claim written here carries it, findings, receipt
+/// and derived files' sightings alike. The receipt's
 /// value is the source itself, said again: the standing set keeps one
 /// element per subject, attribute and value and knows nothing of who
 /// said it, so the value is what tells one extractor's receipt from
@@ -125,7 +114,7 @@ pub fn record_examination(
     findings: &[(Attribute, Value)],
     derivations: &[Derivation],
     source: &Source,
-    run: &str,
+    run: &Run,
 ) -> Result<Examined> {
     let log = archive.log();
     let time = Timestamp::now();
@@ -135,7 +124,7 @@ pub fn record_examination(
         known: 0,
     };
     for (attribute, value) in findings {
-        append(log, subject, attribute, value, &time, source)?;
+        append(log, subject, attribute, value, &time, source, run)?;
         examined.claims += 1;
     }
     for derivation in derivations {
@@ -150,6 +139,7 @@ pub fn record_examination(
         json!(source.as_str()),
         time,
         source.clone(),
+        run.clone(),
     )?;
     log.append(&receipt)?;
     examined.claims += 1;
@@ -165,7 +155,7 @@ fn take(
     derivation: &Derivation,
     time: &Timestamp,
     source: &Source,
-    run: &str,
+    run: &Run,
 ) -> Result<Examined> {
     let content = archive.content();
     let derived = archive.derived();
@@ -203,13 +193,13 @@ fn take(
         }
         // The size describes the content and is said on the bytes' first
         // day, the way ingest says it — and ingest already said it for
-        // everything content/ holds. Kind, name, origin and run belong
-        // to this derivation: another extractor, another mail may know
+        // everything content/ holds. Kind, name and origin belong to
+        // this derivation: another extractor, another mail may know
         // the same bytes under other words, and every word stands in
         // the set.
         if status.is_new() {
             let attribute = known_attribute("file:size");
-            append(log, &subject, &attribute, &json!(size), time, source)?;
+            append(log, &subject, &attribute, &json!(size), time, source, run)?;
             examined.claims += 1;
             examined.stored += 1;
         } else {
@@ -225,14 +215,13 @@ fn take(
             known_attribute("derive:derived-from"),
             json!(origin.as_str()),
         ),
-        (known_attribute("prov:run"), json!(run)),
     ];
     for (attribute, value) in &told {
-        append(log, &subject, attribute, value, time, source)?;
+        append(log, &subject, attribute, value, time, source, run)?;
         examined.claims += 1;
     }
     for (attribute, value) in &derivation.findings {
-        append(log, &subject, attribute, value, time, source)?;
+        append(log, &subject, attribute, value, time, source, run)?;
         examined.claims += 1;
     }
     Ok(examined)
@@ -246,6 +235,7 @@ fn append(
     value: &Value,
     time: &Timestamp,
     source: &Source,
+    run: &Run,
 ) -> Result<()> {
     let claim = Claim::assert(
         subject.clone(),
@@ -253,6 +243,7 @@ fn append(
         value.clone(),
         time.clone(),
         source.clone(),
+        run.clone(),
     )?;
     log.append(&claim)
 }
@@ -269,10 +260,13 @@ mod tests {
 
     use super::*;
     use crate::index::Index;
+    use crate::index::Scope;
 
     /// The run anchor tests stamp; any string does, the archive keeps
     /// the caller's word.
-    const RUN: &str = "test-run-0001";
+    fn run() -> Run {
+        Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap()
+    }
 
     fn archive(dir: &TempDir) -> (Archive, Index) {
         let archive = Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap();
@@ -333,7 +327,7 @@ mod tests {
             "the jpeg waits, the text was never its business"
         );
 
-        let written = record_examination(&archive, &jpeg, &[], &[], &source(), RUN).unwrap();
+        let written = record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         assert_eq!(written.claims, 1, "nothing found is still one receipt");
         index.fold(archive.log()).unwrap();
         assert_eq!(
@@ -350,7 +344,7 @@ mod tests {
         let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
 
-        record_examination(&archive, &jpeg, &[], &[], &source(), RUN).unwrap();
+        record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         index.fold(archive.log()).unwrap();
 
         assert_eq!(
@@ -383,6 +377,7 @@ mod tests {
                     value,
                     Timestamp::now(),
                     Source::parse("user").unwrap(),
+                    Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
                 )
                 .unwrap(),
             )
@@ -427,7 +422,7 @@ mod tests {
         let (archive, mut index) = archive(&dir);
         let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
-        record_examination(&archive, &jpeg, &[], &[], &source(), RUN).unwrap();
+        record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         index.fold(archive.log()).unwrap();
         assert_eq!(index.worklist(&mimes, &source()).unwrap(), []);
         assert!(index.examined(&jpeg, &source()).unwrap());
@@ -458,7 +453,7 @@ mod tests {
         let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
 
-        record_examination(&archive, &jpeg, &[], &[], &source(), RUN).unwrap();
+        record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         index.fold(archive.log()).unwrap();
 
         let newer = Source::parse("extractor:exif/3.0").unwrap();
@@ -479,7 +474,8 @@ mod tests {
             Attribute::parse("exif:date-time-original").unwrap(),
             serde_json::json!("2019:07:14 11:02:41"),
         )];
-        let written = record_examination(&archive, &jpeg, &findings, &[], &source(), RUN).unwrap();
+        let written =
+            record_examination(&archive, &jpeg, &findings, &[], &source(), &run()).unwrap();
         assert_eq!(written.claims, 2);
 
         index.fold(archive.log()).unwrap();
@@ -514,12 +510,12 @@ mod tests {
         ));
 
         let written =
-            record_examination(&archive, &mail, &[], &[attachment], &source(), RUN).unwrap();
+            record_examination(&archive, &mail, &[], &[attachment], &source(), &run()).unwrap();
         assert_eq!(written.stored, 1, "the bytes were new to the store");
         assert_eq!(written.known, 0);
         assert_eq!(
-            written.claims, 7,
-            "size, kind, name, origin, run and the finding on the derived file, then the receipt"
+            written.claims, 6,
+            "size, kind, name, origin and the finding on the derived file, then the receipt"
         );
 
         let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF-1.7").as_str()).unwrap();
@@ -535,7 +531,7 @@ mod tests {
         index.fold(archive.log()).unwrap();
         let value = |attribute: &str| {
             index
-                .values(&pdf, &Attribute::parse(attribute).unwrap())
+                .values(&pdf, &Attribute::parse(attribute).unwrap(), Scope::Held)
                 .unwrap()
         };
         assert_eq!(value("file:size"), [serde_json::json!(8)]);
@@ -546,10 +542,13 @@ mod tests {
             [serde_json::json!(mail.as_str())],
             "the derived file points at its origin"
         );
-        assert_eq!(
-            value("prov:run"),
-            [serde_json::json!(RUN)],
-            "the derivation carries its run anchor, the way an ingest sighting does"
+        assert!(
+            index
+                .about(&pdf)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.run() == Some(&run())),
+            "the derivation's claims carry the call's run, the way an ingest sighting's do"
         );
         assert_eq!(
             value("mail:content-id"),
@@ -558,14 +557,14 @@ mod tests {
         );
         assert_eq!(
             index
-                .values(&mail, &Attribute::parse(EXAMINED).unwrap())
+                .values(&mail, &Attribute::parse(EXAMINED).unwrap(), Scope::Held)
                 .unwrap(),
             [serde_json::json!(source().as_str())],
             "the receipt stands on the examined file, and names who looked"
         );
         assert!(
             index
-                .values(&pdf, &Attribute::parse(EXAMINED).unwrap())
+                .values(&pdf, &Attribute::parse(EXAMINED).unwrap(), Scope::Held)
                 .unwrap()
                 .is_empty(),
             "the derived file was not examined, only made"
@@ -593,7 +592,7 @@ mod tests {
                 b"%PDF",
             )],
             &source(),
-            RUN,
+            &run(),
         )
         .unwrap();
         assert_eq!(written.stored, 1);
@@ -608,24 +607,28 @@ mod tests {
                 b"%PDF",
             )],
             &source(),
-            RUN,
+            &run(),
         )
         .unwrap();
         assert_eq!(written.stored, 0);
         assert_eq!(written.known, 1, "the bytes were already held");
         assert_eq!(
-            written.claims, 5,
-            "kind, name, origin and run again — the size is a fact of the content, said once"
+            written.claims, 4,
+            "kind, name and origin again — the size is a fact of the content, said once"
         );
 
         let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF").as_str()).unwrap();
         index.fold(archive.log()).unwrap();
         let names = index
-            .values(&pdf, &Attribute::parse("file:name").unwrap())
+            .values(&pdf, &Attribute::parse("file:name").unwrap(), Scope::Held)
             .unwrap();
         assert_eq!(names.len(), 2, "both names stand in the set");
         let origins = index
-            .values(&pdf, &Attribute::parse("derive:derived-from").unwrap())
+            .values(
+                &pdf,
+                &Attribute::parse("derive:derived-from").unwrap(),
+                Scope::Held,
+            )
             .unwrap();
         assert_eq!(origins.len(), 2, "and both origins");
         let sizes = index
@@ -658,7 +661,7 @@ mod tests {
                 b"%PDF-saved",
             )],
             &source(),
-            RUN,
+            &run(),
         )
         .unwrap();
 
@@ -678,7 +681,11 @@ mod tests {
         index.fold(archive.log()).unwrap();
         assert_eq!(
             index
-                .values(&saved, &Attribute::parse("derive:derived-from").unwrap())
+                .values(
+                    &saved,
+                    &Attribute::parse("derive:derived-from").unwrap(),
+                    Scope::Held
+                )
                 .unwrap(),
             [serde_json::json!(mail.as_str())],
             "the record grew all the same — a subject names content wherever it lies"
@@ -704,13 +711,13 @@ mod tests {
             findings: Vec::new(),
         };
 
-        let result = record_examination(&archive, &mail, &[], &[gone], &source(), RUN);
+        let result = record_examination(&archive, &mail, &[], &[gone], &source(), &run());
         assert!(result.is_err());
 
         index.fold(archive.log()).unwrap();
         assert!(
             index
-                .values(&mail, &Attribute::parse(EXAMINED).unwrap())
+                .values(&mail, &Attribute::parse(EXAMINED).unwrap(), Scope::Held)
                 .unwrap()
                 .is_empty(),
             "no receipt — the file will be offered again"

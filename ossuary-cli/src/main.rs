@@ -9,7 +9,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
-use ossuary_core::{Algorithm, Archive, Attribute, Error, Index, Presence, Subject, Sweep, Value};
+use ossuary_core::{
+    Algorithm, Archive, Attribute, Error, Field, Index, Run, Scope, Subject, Sweep, Term, Value,
+};
 
 mod audit;
 mod browse;
@@ -26,7 +28,7 @@ mod output;
     after_help = "The verbs, by family:
   custody       init, audit, maintain
   taking in     ingest, extract, annotate, retract, seal
-  asking        about, standing, find, attributes, ls, tree, id
+  asking        about, standing, find, attributes, history, ls, tree, id
   handing back  get, export
 
 A verb not listed runs as its own program: `ossuary mount` finds
@@ -272,7 +274,7 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -307,11 +309,11 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
-    /// Every file on which all the terms stand, shown with the fields the
+    /// Every file on which all the terms hold, shown with the fields the
     /// question named
     ///
     /// A term is attribute=value, and every term must hold: `find
@@ -330,6 +332,17 @@ enum Command {
     /// file:mime=image/jpeg --missing exif:` is "which photos have no
     /// EXIF on record". Only standing values answer; what was retracted
     /// no longer counts.
+    ///
+    /// A name without a colon is a field of the claim itself — subject,
+    /// attribute, value, time, source, run, retract — and a field term
+    /// asks about the claim behind a value: `find run=RUN file:name=*`
+    /// is what a run named, `find source=user user:tag` what you tagged
+    /// yourself, `find time=2026-09-01..` what was written since
+    /// September. A field term holds for every attribute term at once,
+    /// and the values it reads are the standing ones: a value said
+    /// twice answers for the run that said it last, and a claim from
+    /// before runs were written answers no run= at all. Field patterns
+    /// read like attribute patterns, in the field's own spelling.
     ///
     /// Each match answers as a block: the file's name on a line of its
     /// own, shortened to the shortest prefix that names it alone, and the
@@ -351,11 +364,16 @@ enum Command {
     /// own on the record, or, for what a tool won out of another file,
     /// its origin's place. A file taken in and later gone from every
     /// place it was seen at is still held, and answers --as-of a day it
-    /// lay there, but not the present; --all asks for every file the
-    /// archive holds, at a place or not.
+    /// lay there, but not the present. --all asks the record instead:
+    /// every claim ever written, on every file held, retractions
+    /// included — a value taken back answers again, and `retract=true`
+    /// is the term for what was ever taken back, which only --all can
+    /// answer. A shown pair under --all is a value once said, standing
+    /// or not; `about` tells which.
     Find {
-        /// attribute=value; repeat to demand all of them at once. A bare
-        /// attribute (or namespace:) picks what is shown instead
+        /// attribute=value, or field=value for a field of the claim;
+        /// repeat to demand all of them at once. A bare attribute (or
+        /// namespace:, or field) picks what is shown instead
         #[arg(value_name = "TERM")]
         terms: Vec<String>,
 
@@ -375,11 +393,12 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
 
-        /// Every file the archive holds, at a place or not
+        /// Ask the record: every claim ever written, on every file held,
+        /// retractions included
         #[arg(long)]
         all: bool,
     },
@@ -412,7 +431,32 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
+        #[arg(long, value_name = "TIME")]
+        as_of: Option<String>,
+    },
+    /// Every run on the record, oldest first: when the archive's
+    /// knowledge changed, and by whose hand
+    ///
+    /// One line per run — every call that wrote to the record: an
+    /// ingest, an extract, a fetch, an annotation, a retraction. The
+    /// line names the moment the run closed, in the spelling --as-of
+    /// takes, so "what did the archive know before this" is one paste
+    /// away; the run's id, which export, extract and --as-of take; what
+    /// it wrote, files and claims, and how many of the claims took
+    /// something back; and who spoke in it. `find run=ID …` asks what a
+    /// run wrote about. Claims from before runs were written belong to
+    /// no run and stand in no line here. --json answers one object per
+    /// run, first and last moment apart.
+    History {
+        /// One JSON object per run: id, first and last moment, counts,
+        /// sources
+        #[arg(short, long)]
+        json: bool,
+
+        /// Runs closed by TIME, on the axis of claim time; a date alone
+        /// closes at that day's end, and a run id closes after that
+        /// run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -441,7 +485,7 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -460,7 +504,7 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -526,7 +570,7 @@ enum Command {
 
         /// Answer from what the archive knew at TIME, on the axis of
         /// claim time, never the file's own; a date alone closes at that
-        /// day's end
+        /// day's end, and a run id closes after that run's last claim
         #[arg(long, value_name = "TIME")]
         as_of: Option<String>,
     },
@@ -677,11 +721,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             id,
             json,
             as_of.as_deref(),
-            if all {
-                Presence::Held
-            } else {
-                Presence::Placed
-            },
+            if all { Scope::Record } else { Scope::Present },
             quiet,
         ),
         Command::Attributes {
@@ -697,6 +737,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             as_of.as_deref(),
             quiet,
         ),
+        Command::History { json, as_of } => history(&cli.archive, json, as_of.as_deref(), quiet),
         Command::Ls { place, json, as_of } => browse::ls(
             &cli.archive,
             place.as_deref(),
@@ -1056,8 +1097,10 @@ fn annotate(
     }
     let written = ossuary_core::annotate(archive.log(), &subjects, comments, tags)?;
     println!(
-        "{} file(s) annotated, {written} claim(s) written",
-        subjects.len()
+        "{} file(s) annotated, {} claim(s) written, run {}",
+        subjects.len(),
+        written.claims,
+        written.run
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -1131,12 +1174,12 @@ fn matched(
     pairs: &[(Attribute, Asked)],
 ) -> Result<(
     Vec<(Subject, Attribute, ossuary_core::Taking)>,
-    Vec<(Attribute, Vec<Value>)>,
+    Vec<(String, Vec<Value>)>,
 )> {
     let mut takings = Vec::new();
-    let mut falling: Vec<(Attribute, Vec<Value>)> = Vec::new();
+    let mut falling: Vec<(String, Vec<Value>)> = Vec::new();
     for (attribute, what) in pairs {
-        let standing = index.values(subject, attribute)?;
+        let standing = index.values(subject, attribute, Scope::Held)?;
         match what {
             Asked::All => {
                 if standing.is_empty() {
@@ -1146,7 +1189,7 @@ fn matched(
                         shorten(index, subject)?
                     ));
                 }
-                falling.push((attribute.clone(), standing));
+                falling.push((attribute.as_str().to_string(), standing));
                 takings.push((
                     subject.clone(),
                     attribute.clone(),
@@ -1171,9 +1214,12 @@ fn matched(
                         attribute.clone(),
                         ossuary_core::Taking::Value(value.clone()),
                     ));
-                    match falling.iter_mut().find(|(known, _)| known == attribute) {
+                    match falling
+                        .iter_mut()
+                        .find(|(known, _)| known == attribute.as_str())
+                    {
                         Some((_, seen)) => seen.push(value),
-                        None => falling.push((attribute.clone(), vec![value])),
+                        None => falling.push((attribute.as_str().to_string(), vec![value])),
                     }
                 }
             }
@@ -1267,8 +1313,10 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
     }
     let written = ossuary_core::retract(archive.log(), &takings)?;
     println!(
-        "{values} value(s) no longer stand on {} file(s); {written} retraction(s) written",
-        subjects.len()
+        "{values} value(s) no longer stand on {} file(s); {} retraction(s) written, run {}",
+        subjects.len(),
+        written.claims,
+        written.run
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -1299,12 +1347,19 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
 
 /// The index a question asks: the archive's cache caught up — or,
 /// under --as-of, a throwaway replay of everything recorded by then,
-/// so the same door answers with that day's knowledge.
+/// so the same door answers with that day's knowledge. A run id in
+/// place of a time closes after that run's last claim.
 pub(crate) fn index_at(archive: &Archive, as_of: Option<&str>, quiet: bool) -> Result<Index> {
     let mut index = archive.index()?;
     catch_up(&mut index, archive, quiet)?;
     match as_of {
         None => Ok(index),
+        Some(given) if Run::spelled(given) => {
+            let run = Run::parse(given)?;
+            index.as_of_run(&run)?.ok_or_else(|| {
+                anyhow!("no run {given} on the record; `ossuary history` lists the runs")
+            })
+        }
         Some(given) => Ok(index.as_of(&cutoff(given)?)?),
     }
 }
@@ -1320,7 +1375,7 @@ fn cutoff(given: &str) -> Result<String> {
     };
     if ossuary_core::Timestamp::parse(&spelled).is_err() {
         return Err(anyhow!(
-            "{given:?} is not a time; RFC 3339 like 2026-01-01T12:00:00Z, or the date alone"
+            "{given:?} is not a time; RFC 3339 like 2026-01-01T12:00:00Z, the date alone, or a run id"
         ));
     }
     Ok(spelled)
@@ -1443,7 +1498,7 @@ fn standing(
     let shown = if projections.is_empty() {
         grouped(index.standing(&subject)?)
     } else {
-        gather(&index, &subject, &projections)?
+        gather(&index, &subject, &projections, Scope::Held)?
     };
     if shown.is_empty() {
         if !quiet {
@@ -1482,34 +1537,33 @@ fn standing(
 
 /// Rows ordered by attribute, folded into the shape an answer shows:
 /// each attribute once, its standing values together.
-fn grouped(rows: Vec<(Attribute, Value)>) -> Vec<(Attribute, Vec<Value>)> {
-    let mut shown: Vec<(Attribute, Vec<Value>)> = Vec::new();
+fn grouped(rows: Vec<(Attribute, Value)>) -> Vec<(String, Vec<Value>)> {
+    let mut shown: Vec<(String, Vec<Value>)> = Vec::new();
     for (attribute, value) in rows {
         match shown.last_mut() {
-            Some((known, values)) if *known == attribute => values.push(value),
-            _ => shown.push((attribute, vec![value])),
+            Some((known, values)) if *known == attribute.as_str() => values.push(value),
+            _ => shown.push((attribute.as_str().to_string(), vec![value])),
         }
     }
     shown
 }
 
-/// One thing a `find` match shows: an attribute, or a whole namespace.
-/// The question is the projection — the filters show themselves until a
-/// bare attribute stands among the terms; then explicit beats implicit,
-/// and only the bare ones show.
+/// One thing a `find` match shows: an attribute, a whole namespace, or
+/// a field of the claims. The question is the projection — the filters
+/// show themselves until a bare name stands among the terms; then
+/// explicit beats implicit, and only the bare ones show.
 #[derive(Debug, PartialEq)]
 enum Projection {
     Attribute(Attribute),
     Namespace(String),
+    Field(Field),
 }
-
-/// One narrowing term: the attribute and the pattern asked of it.
-type Filter = (Attribute, String);
 
 /// The question taken apart: what narrows, and what is shown. Filter
 /// terms show their own attributes only while no bare attribute stands
-/// among the terms — naming one takes the showing over.
-fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Projection>)> {
+/// among the terms — naming one takes the showing over. A name without
+/// a colon is a field of the claim.
+fn question(terms: &[String], id_only: bool) -> Result<(Vec<Term>, Vec<Projection>)> {
     let mut filters = Vec::new();
     let mut asked: Vec<Projection> = Vec::new();
     let mut implied: Vec<Projection> = Vec::new();
@@ -1519,10 +1573,16 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Project
         }
     };
     for word in terms {
-        if let Some((attribute, value)) = word.split_once('=') {
-            let attribute = Attribute::parse(attribute)?;
-            remember(Projection::Attribute(attribute.clone()), &mut implied);
-            filters.push((attribute, value.to_string()));
+        if let Some((name, value)) = word.split_once('=') {
+            if name.contains(':') {
+                let attribute = Attribute::parse(name)?;
+                remember(Projection::Attribute(attribute.clone()), &mut implied);
+                filters.push(Term::Attribute(attribute, value.to_string()));
+            } else {
+                let field = Field::parse(name)?;
+                remember(Projection::Field(field), &mut implied);
+                filters.push(Term::Field(field, value.to_string()));
+            }
         } else if let Some(namespace) = word.strip_suffix(':') {
             // The grammar has one door; a prefix walks through it
             // wearing a dummy name.
@@ -1542,9 +1602,13 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Filter>, Vec<Project
             }
             remember(Projection::Attribute(attribute), &mut asked);
         } else {
-            return Err(anyhow!(
-                "{word:?} is not a term; attribute=value asks for it, a bare attribute (or a namespace, like exif:) is shown on each match"
-            ));
+            let field = Field::parse(word)?;
+            if id_only {
+                return Err(anyhow!(
+                    "{word:?} names what to show, and --id shows the names alone; drop one of them"
+                ));
+            }
+            remember(Projection::Field(field), &mut asked);
         }
     }
     let projections = if asked.is_empty() { implied } else { asked };
@@ -1562,7 +1626,7 @@ fn find(
     id_only: bool,
     json: bool,
     as_of: Option<&str>,
-    presence: Presence,
+    scope: Scope,
     quiet: bool,
 ) -> Result<ExitCode> {
     if id_only && json {
@@ -1576,13 +1640,23 @@ fn find(
             "nothing asked; name a TERM as attribute=value, an attribute to show, or --missing ATTRIBUTE"
         ));
     }
+    // A retraction never stands, so only the record can answer for it.
+    let asks_retract = filters
+        .iter()
+        .any(|term| matches!(term, Term::Field(Field::Retract, _)))
+        || projections.contains(&Projection::Field(Field::Retract));
+    if asks_retract && scope != Scope::Record {
+        return Err(anyhow!(
+            "retract asks about what was taken back, and only the record has it; add --all"
+        ));
+    }
     let archive = open(root)?;
     let index = index_at(&archive, as_of, quiet)?;
-    // Only bare attributes asked: nothing narrows, every file answers.
+    // Only bare names asked: nothing narrows, every file answers.
     let subjects = if filters.is_empty() && missing.is_empty() {
-        index.subjects(presence)?
+        index.subjects(scope)?
     } else {
-        index.find(&filters, missing, presence)?
+        index.find(&filters, missing, scope)?
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1590,7 +1664,7 @@ fn find(
         let line = if id_only {
             subject.as_str().to_string()
         } else {
-            let shown = gather(&index, subject, &projections)?;
+            let shown = gather(&index, subject, &projections, scope)?;
             if json {
                 output::json_line(subject.as_str(), &shown)
             } else {
@@ -1604,10 +1678,50 @@ fn find(
     // The matches alone stay on stdout, ready to pipe; the count is the
     // run's word on how it went.
     if !quiet {
-        match subjects.len() {
-            0 => eprintln!("nothing standing matches"),
-            n => eprintln!("{n} file(s)"),
+        match (subjects.len(), scope) {
+            (0, Scope::Record) => eprintln!("nothing on the record matches"),
+            (0, _) => eprintln!("nothing standing matches"),
+            (n, _) => eprintln!("{n} file(s)"),
         }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn history(root: &Path, json: bool, as_of: Option<&str>, quiet: bool) -> Result<ExitCode> {
+    let archive = open(root)?;
+    let index = index_at(&archive, as_of, quiet)?;
+    let episodes = index.history()?;
+    if episodes.is_empty() {
+        // The calm zero answer: under --json it leaves stdout an empty
+        // stream, the way about's do.
+        let sentence = if as_of.is_some() {
+            "no run on the record by then"
+        } else {
+            "no run on the record; `ossuary ingest DIR` begins one"
+        };
+        if json {
+            if !quiet {
+                eprintln!("{sentence}");
+            }
+        } else {
+            println!("{sentence}");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for episode in &episodes {
+        let line = if json {
+            output::episode_line(episode)
+        } else {
+            output::episode(episode)
+        };
+        if !say(&mut out, &line)? {
+            break;
+        }
+    }
+    if !quiet {
+        eprintln!("{} run(s)", episodes.len());
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1702,39 +1816,51 @@ fn attributes(
     Ok(ExitCode::SUCCESS)
 }
 
-/// What one match shows: the projected attributes with their standing
-/// values, in the question's order, each attribute once and only when
-/// something stands.
+/// What one match shows: the projected attributes and fields with
+/// their values under the scope, in the question's order, each name
+/// once and only when something is there to show.
 fn gather(
     index: &Index,
     subject: &Subject,
     projections: &[Projection],
-) -> Result<Vec<(Attribute, Vec<ossuary_core::Value>)>> {
-    let mut shown: Vec<(Attribute, Vec<ossuary_core::Value>)> = Vec::new();
+    scope: Scope,
+) -> Result<Vec<(String, Vec<ossuary_core::Value>)>> {
+    let mut shown: Vec<(String, Vec<ossuary_core::Value>)> = Vec::new();
     for projection in projections {
         match projection {
             Projection::Attribute(attribute) => {
-                if shown.iter().any(|(known, _)| known == attribute) {
+                if shown.iter().any(|(known, _)| known == attribute.as_str()) {
                     continue;
                 }
-                let values = index.values(subject, attribute)?;
+                let values = index.values(subject, attribute, scope)?;
                 if !values.is_empty() {
-                    shown.push((attribute.clone(), values));
+                    shown.push((attribute.as_str().to_string(), values));
                 }
             }
             Projection::Namespace(namespace) => {
                 // An attribute an earlier projection already shows would
                 // repeat its whole set — its namespace rows are skipped.
-                let already: Vec<Attribute> =
-                    shown.iter().map(|(known, _)| known.clone()).collect();
-                for (attribute, value) in index.values_in(subject, namespace)? {
-                    if already.contains(&attribute) {
+                let already: Vec<String> = shown.iter().map(|(known, _)| known.clone()).collect();
+                for (attribute, value) in index.values_in(subject, namespace, scope)? {
+                    if already.contains(&attribute.as_str().to_string()) {
                         continue;
                     }
-                    match shown.iter_mut().find(|(known, _)| *known == attribute) {
+                    match shown
+                        .iter_mut()
+                        .find(|(known, _)| *known == attribute.as_str())
+                    {
                         Some((_, values)) => values.push(value),
-                        None => shown.push((attribute, vec![value])),
+                        None => shown.push((attribute.as_str().to_string(), vec![value])),
                     }
+                }
+            }
+            Projection::Field(field) => {
+                if shown.iter().any(|(known, _)| known == field.as_str()) {
+                    continue;
+                }
+                let values = index.field_values(subject, *field, scope)?;
+                if !values.is_empty() {
+                    shown.push((field.as_str().to_string(), values));
                 }
             }
         }
@@ -1879,6 +2005,40 @@ mod tests {
                 Projection::Attribute(Attribute::parse("user:tag").unwrap()),
             ],
             "no bare attribute among the terms: the filters are the projection"
+        );
+    }
+
+    #[test]
+    fn a_name_without_a_colon_is_a_field_of_the_claim() {
+        let (filters, projections) = question(
+            &words(&["run=315e360b-020e-48be-8f2d-f2002a2ea9b4", "file:name"]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            filters,
+            [Term::Field(
+                Field::Run,
+                "315e360b-020e-48be-8f2d-f2002a2ea9b4".to_string()
+            )]
+        );
+        assert_eq!(
+            projections,
+            [Projection::Attribute(
+                Attribute::parse("file:name").unwrap()
+            )],
+            "the bare attribute takes the showing over, from a field term too"
+        );
+        let (filters, projections) = question(&words(&["source=user", "run"]), false).unwrap();
+        assert_eq!(filters, [Term::Field(Field::Source, "user".to_string())]);
+        assert_eq!(
+            projections,
+            [Projection::Field(Field::Run)],
+            "a bare field name shows the field"
+        );
+        assert!(
+            question(&words(&["bogus=1"]), false).is_err(),
+            "a word without a colon must be one of the seven fields"
         );
     }
 

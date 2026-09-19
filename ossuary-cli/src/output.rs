@@ -1,8 +1,12 @@
 //! How answers read on a terminal.
 
-use ossuary_core::{Attribute, Claim, Value};
+use std::fmt::Write as _;
 
-/// One claim as one line: when it was recorded, what it says, who says so.
+use ossuary_core::{Attribute, Claim, Episode, Source, Value};
+
+/// One claim as one line: when it was recorded, what it says, who says
+/// so, and in which run — a claim from before runs were written ends
+/// with its source.
 ///
 /// Values read as JSON — a string keeps its quotes, a number stands bare —
 /// so what the reader sees is what the log holds, type and all.
@@ -10,11 +14,57 @@ pub fn line(claim: &Claim) -> String {
     let time = claim.time().as_str();
     let attribute = claim.attribute().as_str();
     let source = claim.source().as_str();
+    let run = claim
+        .run()
+        .map(|run| format!("  run {}", run.as_str()))
+        .unwrap_or_default();
     match (claim.value(), claim.is_retraction()) {
-        (Some(value), false) => format!("{time}  {attribute} = {value}  [{source}]"),
-        (Some(value), true) => format!("{time}  retracted: {attribute} = {value}  [{source}]"),
-        (None, _) => format!("{time}  retracted: {attribute}, every value  [{source}]"),
+        (Some(value), false) => format!("{time}  {attribute} = {value}  [{source}]{run}"),
+        (Some(value), true) => {
+            format!("{time}  retracted: {attribute} = {value}  [{source}]{run}")
+        }
+        (None, _) => format!("{time}  retracted: {attribute}, every value  [{source}]{run}"),
     }
+}
+
+/// One run of the record as one line: when it closed, its id, what it
+/// wrote, and who spoke in it — the time in the spelling `--as-of`
+/// takes, the id the spelling `export`, `extract` and `--as-of` take.
+pub fn episode(episode: &Episode) -> String {
+    let mut wrote = format!(
+        "{} file(s), {} claim(s)",
+        episode.files,
+        episode.claims - episode.retractions
+    );
+    if episode.retractions > 0 {
+        let _ = write!(wrote, ", {} taken back", episode.retractions);
+    }
+    let sources: Vec<&str> = episode.sources.iter().map(Source::as_str).collect();
+    format!(
+        "{}  {}  {wrote}  [{}]",
+        episode.last,
+        episode.run.as_str(),
+        sources.join(", ")
+    )
+}
+
+/// One run as one JSON object, ready for `jq`.
+pub fn episode_line(episode: &Episode) -> String {
+    let sources: Vec<Value> = episode
+        .sources
+        .iter()
+        .map(|source| Value::String(source.as_str().to_string()))
+        .collect();
+    format!(
+        "{{\"run\":{},\"first\":{},\"last\":{},\"files\":{},\"claims\":{},\"retractions\":{},\"sources\":{}}}",
+        Value::String(episode.run.as_str().to_string()),
+        Value::String(episode.first.clone()),
+        Value::String(episode.last.clone()),
+        episode.files,
+        episode.claims,
+        episode.retractions,
+        Value::Array(sources)
+    )
 }
 
 /// One `find` match as one block: the file's short name on a line of
@@ -26,7 +76,7 @@ pub fn line(claim: &Claim) -> String {
 /// mean *literal* in a query, and a pasted pair finds exactly this
 /// file again. Several standing values repeat the attribute: the set,
 /// not a choice. Other types keep their JSON spelling.
-pub fn match_block(name: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
+pub fn match_block(name: &str, shown: &[(String, Vec<Value>)]) -> String {
     let mut block = name.to_string();
     for (attribute, values) in shown {
         for value in values {
@@ -40,11 +90,11 @@ pub fn match_block(name: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
 /// One `find` match as one JSON object: the full subject, then each
 /// shown attribute with every standing value as a list. One object per
 /// line, ready for `jq`.
-pub fn json_line(subject: &str, shown: &[(Attribute, Vec<Value>)]) -> String {
+pub fn json_line(subject: &str, shown: &[(String, Vec<Value>)]) -> String {
     let mut line = format!("{{\"subject\":{}", Value::String(subject.to_string()));
     for (attribute, values) in shown {
         line.push(',');
-        line.push_str(&Value::String(attribute.as_str().to_string()).to_string());
+        line.push_str(&Value::String(attribute.clone()).to_string());
         line.push(':');
         line.push_str(&Value::Array(values.clone()).to_string());
     }
@@ -64,7 +114,7 @@ pub fn attribute_line(attribute: &Attribute, files: u64) -> String {
 /// What `standing` answers without a heading: every pair on a line of
 /// its own, the same query spelling a `find` block indents — the name
 /// is absent because the asker typed it themselves.
-pub fn pairs(shown: &[(Attribute, Vec<Value>)]) -> String {
+pub fn pairs(shown: &[(String, Vec<Value>)]) -> String {
     let mut lines = Vec::new();
     for (attribute, values) in shown {
         for value in values {
@@ -100,12 +150,12 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// One shown attribute and value, spelled as a query term.
-pub(crate) fn pair(attribute: &Attribute, value: &Value) -> String {
+/// One shown attribute or field and its value, spelled as a query term.
+pub(crate) fn pair(name: &str, value: &Value) -> String {
     match value {
-        Value::String(text) if plain(text) => format!("{}={text}", attribute.as_str()),
-        Value::String(text) => format!("{}=\"{text}\"", attribute.as_str()),
-        other => format!("{}={other}", attribute.as_str()),
+        Value::String(text) if plain(text) => format!("{name}={text}"),
+        Value::String(text) => format!("{name}=\"{text}\""),
+        other => format!("{name}={other}"),
     }
 }
 
@@ -125,8 +175,33 @@ mod tests {
 
     use super::*;
 
-    fn attribute(name: &str) -> Attribute {
-        Attribute::parse(name).unwrap()
+    fn attribute(name: &str) -> String {
+        Attribute::parse(name).unwrap().as_str().to_string()
+    }
+
+    #[test]
+    fn an_episode_reads_as_one_line_in_the_spellings_the_verbs_take() {
+        let episode = Episode {
+            run: ossuary_core::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+            first: "2026-09-18T21:26:35Z".to_string(),
+            last: "2026-09-18T21:27:05Z".to_string(),
+            sources: vec![
+                Source::parse("ingest").unwrap(),
+                Source::parse("user").unwrap(),
+            ],
+            files: 29,
+            claims: 210,
+            retractions: 7,
+        };
+        assert_eq!(
+            self::episode(&episode),
+            "2026-09-18T21:27:05Z  315e360b-020e-48be-8f2d-f2002a2ea9b4  29 file(s), 203 claim(s), 7 taken back  [ingest, user]",
+            "the closing moment, the id, what was written, who spoke"
+        );
+        assert_eq!(
+            episode_line(&episode),
+            r#"{"run":"315e360b-020e-48be-8f2d-f2002a2ea9b4","first":"2026-09-18T21:26:35Z","last":"2026-09-18T21:27:05Z","files":29,"claims":210,"retractions":7,"sources":["ingest","user"]}"#
+        );
     }
 
     #[test]
@@ -150,14 +225,11 @@ mod tests {
             "nothing shown is the name alone"
         );
         assert_eq!(
-            pair(&attribute("user:tag"), &json!("a..b")),
+            pair("user:tag", &json!("a..b")),
             "user:tag=\"a..b\"",
             "a value that reads as a range is quoted back to literal"
         );
-        assert_eq!(
-            pair(&attribute("user:tag"), &json!("v*")),
-            "user:tag=\"v*\""
-        );
+        assert_eq!(pair("user:tag", &json!("v*")), "user:tag=\"v*\"");
     }
 
     #[test]

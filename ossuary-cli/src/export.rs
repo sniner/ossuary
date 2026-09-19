@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
-use ossuary_core::{Algorithm, Archive, Attribute, Index, Placed, Placement, Subject};
+use ossuary_core::{Algorithm, Archive, Attribute, Index, Placed, Placement, Run, Scope, Subject};
 
 use crate::{index_at, open, resolve, say, shorten};
 
@@ -115,11 +115,11 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
     let file_name = Attribute::parse("file:name")?;
     let mut pairs: Vec<(Subject, Placement)> = Vec::new();
     for id in ids {
-        if run_id(id) {
-            let sightings = index.run_sightings(id)?;
+        if Run::spelled(id) {
+            let sightings = index.run_sightings(&Run::parse(id)?)?;
             if sightings.is_empty() {
                 return Err(anyhow!(
-                    "no run {id} on the record; `ossuary about FILE prov:run` names the runs a file arrived in; nothing was exported"
+                    "no run {id} on the record; `ossuary history` lists the runs; nothing was exported"
                 ));
             }
             pairs.extend(sightings);
@@ -244,11 +244,11 @@ fn places(
             .filter_map(|value| value.as_str().map(str::to_string))
             .collect()
     };
-    let paths = spelled(index.values(subject, file_path)?);
+    let paths = spelled(index.values(subject, file_path, Scope::Held)?);
     if !paths.is_empty() {
         return Ok(paths.into_iter().map(Placement::Path).collect());
     }
-    let names = spelled(index.values(subject, file_name)?);
+    let names = spelled(index.values(subject, file_name, Scope::Held)?);
     Ok(names.into_iter().map(Placement::Name).collect())
 }
 
@@ -359,23 +359,9 @@ fn forgotten_destination(destination: &Path) -> bool {
     let Some(name) = destination.to_str() else {
         return false;
     };
-    run_id(name)
+    Run::spelled(name)
         || (matches!(name.len(), 64 | 96 | 128)
             && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
-
-/// A run id as the verdicts spell one: the dashed UUID, whole. Anything
-/// else a caller names is a file.
-pub(crate) fn run_id(id: &str) -> bool {
-    let bytes = id.as_bytes();
-    bytes.len() == 36
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(position, byte)| match position {
-                8 | 13 | 18 | 23 => *byte == b'-',
-                _ => byte.is_ascii_hexdigit(),
-            })
 }
 
 #[cfg(test)]
@@ -392,17 +378,6 @@ mod tests {
             "the standing prefix resolves, the not-yet-made rest rides along"
         );
         assert_eq!(resolved(&real), real, "a standing path is itself");
-    }
-
-    #[test]
-    fn a_run_id_is_the_dashed_uuid_whole() {
-        assert!(run_id("71ffc940-4b1e-417b-87a3-3c7847461e0b"));
-        assert!(!run_id("71ffc940"), "a beginning is a file name");
-        assert!(
-            !run_id("71ffc9404b1e417b87a33c7847461e0b"),
-            "undashed hex is a file name"
-        );
-        assert!(!run_id("71ffc940-4b1e-417b-87a3-3c7847461e0g"));
     }
 
     #[test]

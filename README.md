@@ -91,13 +91,13 @@ $ cd /home/john
 $ ossuary ingest photos mail docs
 archive /home/john/archive
 taking in 3 paths
-5 file(s) stored; 35 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+5 file(s) stored; 30 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4
 ```
 
-Seven claims per file: its path, its name, the host, the run, its size,
-its kind (sniffed from the bytes, not the file name), and when it last
-changed. Files are only ever read. Run it again and nothing happens
-twice:
+Six claims per file: its path, its name, the host, its size, its kind
+(sniffed from the bytes, not the file name), and when it last changed —
+and every claim carries the run it was written in. Files are only ever
+read. Run it again and nothing happens twice:
 
 ```console
 $ ossuary ingest photos mail docs
@@ -138,10 +138,12 @@ say goes on the record under their own name and generation:
 ```console
 $ ossuary extract mail
 2 file(s) waiting for extractor:mail/1
-2 file(s) examined by extractor:mail/1, 13 claim(s) written; 1 derived file(s) taken in; 1 had nothing to tell
+2 file(s) examined by extractor:mail/1, 12 claim(s) written; 1 derived file(s) taken in; 1 had nothing to tell
+2 file(s) examined in all, 1 derived file(s) taken in; run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
 $ ossuary extract packed:list
 1 file(s) waiting for extractor:packed-list/1
 1 file(s) examined by extractor:packed-list/1, 3 claim(s) written
+1 file(s) examined in all, 0 derived file(s) taken in; run 8d2f6b1c-4a7e-4c93-b5d0-1e9a3f7c2b64
 ```
 
 The mail extractor read both files that sniff as text, recognised one
@@ -169,23 +171,22 @@ beginning of the name is enough while it names only one file:
 
 ```console
 $ ossuary about e9ed6104
-2026-09-06T15:23:40Z  file:path = "/home/john/mail/2026-03-10-quarterly.eml"  [ingest]
-2026-09-06T15:23:40Z  file:name = "2026-03-10-quarterly.eml"  [ingest]
-2026-09-06T15:23:40Z  prov:host = "atlas.example.net"  [ingest]
-2026-09-06T15:23:40Z  prov:run = "315e360b-020e-48be-8f2d-f2002a2ea9b4"  [ingest]
-2026-09-06T15:23:40Z  file:size = 491  [ingest]
-2026-09-06T15:23:40Z  file:mime = "text/plain"  [ingest]
-2026-09-06T15:23:40Z  file:modified = "2026-09-06T15:23:40.89362092Z"  [ingest]
-2026-09-06T15:23:40Z  file:mime = "message/rfc822"  [extractor:mail/1]
-2026-09-06T15:23:40Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/1]
-2026-09-06T15:23:40Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/1]
-2026-09-06T15:23:40Z  mail:subject = "Quarterly figures"  [extractor:mail/1]
-2026-09-06T15:23:40Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1]
-2026-09-06T15:23:40Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1]
-2026-09-06T15:23:40Z  prov:examined = "extractor:mail/1"  [extractor:mail/1]
+2026-09-06T15:23:40Z  file:path = "/home/john/mail/2026-03-10-quarterly.eml"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+2026-09-06T15:23:40Z  file:name = "2026-03-10-quarterly.eml"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+2026-09-06T15:23:40Z  prov:host = "atlas.example.net"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+2026-09-06T15:23:40Z  file:size = 491  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+2026-09-06T15:23:40Z  file:mime = "text/plain"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+2026-09-06T15:23:40Z  file:modified = "2026-09-06T15:23:40.89362092Z"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
+2026-09-06T15:25:02Z  file:mime = "message/rfc822"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:25:02Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:25:02Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:25:02Z  mail:subject = "Quarterly figures"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:25:02Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:25:02Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:25:02Z  prov:examined = "extractor:mail/1"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
 ```
 
-Every line says who said it and when — the sniffed `text/plain` and the
+Every line says who said it, when, and in which run — the sniffed `text/plain` and the
 mail extractor's sharper `message/rfc822` both stand, because the
 record keeps every word and choosing between them is the reader's
 business, not the archive's. Naming attributes narrows the answer:
@@ -213,13 +214,33 @@ which photos have no EXIF on record. Only files that still lie
 somewhere answer — a place of their own on the record, or their
 origin's, for what a tool won out of another file; a file gone from
 every place it was seen at is still held, answers `--as-of` a day it
-lay there, and answers today with `--all`. The attachment from the mail
+lay there, and answers `--all`, which asks the record itself: every
+claim ever written, retractions included. The attachment from the mail
 above is found like any other file, with its origin one term away:
 
 ```console
 $ ossuary find 'file:name=*.pdf' derive:derived-from
 b5743276
   derive:derived-from=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
+1 file(s)
+```
+
+A name without a colon is a field of the claim itself — `run`,
+`source`, `time`, `retract` — and asks about the claim behind a value:
+what a run named, what you tagged yourself, what was written since a
+date, what was ever taken back:
+
+```console
+$ ossuary find run=315e360b-020e-48be-8f2d-f2002a2ea9b4 file:name
+719aac93
+  file:name=notes.txt
+bd84e795
+  file:name=DSC_1042.jpg
+…
+5 file(s)
+$ ossuary find --all retract=true file:path
+6ca81e7a
+  file:path=/home/john/photos/DSC_1043.jpg
 1 file(s)
 ```
 
@@ -248,6 +269,29 @@ file, where `about` tells the whole story, retractions included;
 `--json` on `about`, `standing`, `find`, `attributes` and `ls` keeps the
 JSON spelling for `jq`; and `-q` silences the narration everywhere. Every verb and
 every flag stands in [`ossuary-cli`](ossuary-cli/README.md).
+
+## When the archive changed
+
+`history` is the record's own timeline: one line per run — every call
+that wrote, an ingest, an extract, a fetch, your own words, a
+retraction — with the moment it closed, its id, what it wrote and who
+spoke in it:
+
+```console
+$ ossuary history
+2026-09-06T15:23:40Z  315e360b-020e-48be-8f2d-f2002a2ea9b4  5 file(s), 30 claim(s)  [ingest]
+2026-09-06T15:25:02Z  c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31  3 file(s), 18 claim(s)  [extractor:mail/1]
+2026-09-06T15:26:11Z  8d2f6b1c-4a7e-4c93-b5d0-1e9a3f7c2b64  1 file(s), 3 claim(s)  [extractor:packed-list/1]
+2026-09-07T09:02:55Z  9c1d0f3e-6b2a-4d81-a7f4-3e5c8d1b0a26  2 file(s), 2 taken back  [ingest]
+4 run(s)
+```
+
+The time is spelled the way `--as-of` takes it, and so is the id:
+`--as-of` accepts either, and a run closes the view after its last
+claim — `ossuary ls --as-of 315e360b-020e-48be-8f2d-f2002a2ea9b4` is the archive as it stood when
+the first ingest finished, two runs in the same second notwithstanding.
+The id is also what `export` and `extract` take for a whole run, and
+`find run=ID` asks what a run wrote about.
 
 ## Looking around
 

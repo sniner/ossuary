@@ -31,10 +31,9 @@ use std::path::{Path, PathBuf};
 use immure::Store;
 use rusqlite::{Connection, params};
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::accession::{Sighting, admit, known_attribute, record};
-use crate::claim::{Claim, Source, Subject, Timestamp, Value};
+use crate::claim::{Claim, Run, Source, Subject, Timestamp, Value};
 use crate::config::Excludes;
 use crate::error::{Error, Result};
 use crate::index::Index;
@@ -43,9 +42,9 @@ use crate::log::Log;
 /// What one ingest run did.
 #[derive(Debug)]
 pub struct Ingested {
-    /// The run's id, as it stands in every `prov:run` claim: what
-    /// "arrived together" means, made exact.
-    pub run: String,
+    /// The run's id, as every claim of it carries in its `run` field:
+    /// what "arrived together" means, made exact.
+    pub run: Run,
     /// Blobs this run added to the store.
     pub stored: usize,
     /// Files whose bytes the store already held. Their provenance was
@@ -132,7 +131,7 @@ where
 {
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
-        run: Uuid::new_v4().to_string(),
+        run: Run::new(),
         stored: 0,
         known: 0,
         claims: 0,
@@ -205,6 +204,7 @@ where
             Value::String(path.to_string_lossy().into_owned()),
             time.clone(),
             source.clone(),
+            result.run.clone(),
         )?;
         log.append(&claim)?;
         result.claims += 1;
@@ -276,7 +276,11 @@ fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judge
             // The same absolute path on another machine is another place;
             // only a file this host ever saw can be gone from here.
             if !record
-                .values(&subject, &known_attribute("prov:host"))?
+                .values(
+                    &subject,
+                    &known_attribute("prov:host"),
+                    crate::index::Scope::Held,
+                )?
                 .contains(&host)
             {
                 continue;
@@ -497,7 +501,7 @@ fn take(
     log: &Log,
     path: &Path,
     host: &str,
-    run: &str,
+    run: &Run,
     source: &Source,
     tags: &[String],
 ) -> Result<(bool, usize)> {
@@ -949,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_goes_in_with_its_seven_facts_each() {
+    fn a_tree_goes_in_with_its_six_facts_each() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
         let tree = dir.path().join("tree");
@@ -978,16 +982,16 @@ mod tests {
 
         assert_eq!(result.stored, 2);
         assert_eq!(result.known, 0);
-        assert_eq!(result.claims, 14, "seven facts per file, mtime included");
+        assert_eq!(result.claims, 12, "six facts per file, mtime included");
         assert!(result.failed.is_empty());
 
         let head = log.head().unwrap();
-        assert_eq!(head.len(), 14);
+        assert_eq!(head.len(), 12);
         let about_a: Vec<_> = head
             .iter()
             .filter(|claim| claim.subject().as_str() == hello_subject())
             .collect();
-        assert_eq!(about_a.len(), 7);
+        assert_eq!(about_a.len(), 6);
         let value = |attribute: &str| {
             about_a
                 .iter()
@@ -999,7 +1003,10 @@ mod tests {
         assert_eq!(value("file:size"), Some(json!(11)));
         assert_eq!(value("file:name"), Some(json!("a.txt")));
         assert_eq!(value("prov:host"), Some(json!("atlas.example.net")));
-        assert_eq!(value("prov:run"), Some(json!(result.run)));
+        assert!(
+            head.iter().all(|claim| claim.run() == Some(&result.run)),
+            "every claim of the call carries its run"
+        );
         let path = value("file:path").unwrap();
         assert!(path.as_str().unwrap().ends_with("/tree/a.txt"));
 
@@ -1130,7 +1137,7 @@ mod tests {
         assert_eq!(result.stored, 1, "one content");
         assert_eq!(result.known, 1, "met again under the second name");
         assert_eq!(
-            result.claims, 12,
+            result.claims, 10,
             "both places it sat are on the record; size and kind only once"
         );
         let described = log
@@ -1333,7 +1340,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.stored, 1, "a file is not a tree, and goes in");
-        assert_eq!(result.claims, 7);
+        assert_eq!(result.claims, 6);
         assert!(result.failed.is_empty());
         let path = log
             .head()
@@ -1547,7 +1554,7 @@ mod tests {
 
         assert_eq!(second.stored, 1, "the new bytes go in");
         assert_eq!(second.unchanged, 1, "the untouched neighbour does not");
-        assert_eq!(second.claims, 7, "and only the change is on the record");
+        assert_eq!(second.claims, 6, "and only the change is on the record");
     }
 
     #[test]
@@ -1624,13 +1631,11 @@ mod tests {
             1,
             "the root that is not there is named, and costs only itself"
         );
-        let runs: std::collections::HashSet<String> = log
+        let runs: std::collections::HashSet<Run> = log
             .head()
             .unwrap()
             .iter()
-            .filter(|claim| claim.attribute().as_str() == "prov:run")
-            .filter_map(|claim| claim.value().and_then(|value| value.as_str()))
-            .map(str::to_string)
+            .filter_map(|claim| claim.run().cloned())
             .collect();
         assert_eq!(
             runs,

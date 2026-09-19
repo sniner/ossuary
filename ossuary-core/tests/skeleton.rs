@@ -28,6 +28,7 @@ fn claim(attribute: &str, value: Value, time: &str, source: &str) -> Claim {
         value,
         Timestamp::parse(time).unwrap(),
         Source::parse(source).unwrap(),
+        ossuary_core::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
     )
     .unwrap()
 }
@@ -152,7 +153,7 @@ fn the_skeleton_walks_from_disk() {
     index.fold(&log).unwrap();
     let subject = Subject::parse(immure::Algorithm::Sha256.hash(b"hello world").as_str()).unwrap();
     let answer = index.about(&subject).unwrap();
-    assert_eq!(answer.len(), 7, "the seven day-one facts");
+    assert_eq!(answer.len(), 6, "the six day-one facts");
 
     // And the subject leads back to the bytes: the archive holds content
     // and everything known about it, and either finds the other.

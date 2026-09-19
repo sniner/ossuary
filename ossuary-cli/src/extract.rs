@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use ossuary_core::{Archive, Event, Source, Tally};
+use ossuary_core::{Archive, Event, Run, Source, Tally};
 
 pub fn extract(
     root: &Path,
@@ -56,13 +56,13 @@ pub fn extract(
             settlement.rounds, settlement.examinations
         );
     }
-    // The call's own run id, said once for the whole call — but only
-    // when something carries it: a call that derived nothing put no
-    // prov:run on the record, and naming one would point at nothing.
-    if settlement.derived > 0 {
+    // The call's own run id, said once for the whole call: every claim
+    // it wrote carries it, so a call that examined nothing has none to
+    // name.
+    if settlement.examinations > 0 {
         println!(
-            "{} derived file(s) in all, taken in as run {}",
-            settlement.derived, settlement.run
+            "{} file(s) examined in all, {} derived file(s) taken in; run {}",
+            settlement.examinations, settlement.derived, settlement.run
         );
     }
     Ok(if settlement.clean {
@@ -77,18 +77,18 @@ pub fn extract(
 /// names pass through as given, for core to resolve. Whole before
 /// anything runs: an unknown run refuses the call, not its third pass.
 fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>> {
-    if !ids.iter().any(|id| crate::export::run_id(id)) {
+    if !ids.iter().any(|id| Run::spelled(id)) {
         return Ok(ids.to_vec());
     }
     let mut index = archive.index()?;
     crate::catch_up(&mut index, archive, quiet)?;
     let mut names: Vec<String> = Vec::new();
     for id in ids {
-        if crate::export::run_id(id) {
-            let sightings = index.run_sightings(id)?;
+        if Run::spelled(id) {
+            let sightings = index.run_sightings(&Run::parse(id)?)?;
             if sightings.is_empty() {
                 return Err(anyhow!(
-                    "no run {id} on the record; `ossuary about FILE prov:run` names the runs a file arrived in; nothing was examined"
+                    "no run {id} on the record; `ossuary history` lists the runs; nothing was examined"
                 ));
             }
             for (subject, _) in sightings {
@@ -120,7 +120,7 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
             let mut block = subject.to_string();
             for (attribute, value) in *findings {
                 block.push_str("\n  ");
-                block.push_str(&crate::output::pair(attribute, value));
+                block.push_str(&crate::output::pair(attribute.as_str(), value));
             }
             for (name, mime, bytes) in *derived {
                 write!(
