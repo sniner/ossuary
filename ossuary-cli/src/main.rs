@@ -339,10 +339,14 @@ enum Command {
     /// is what a run named, `find source=user user:tag` what you tagged
     /// yourself, `find time=2026-09-01..` what was written since
     /// September. A field term holds for every attribute term at once,
-    /// and the values it reads are the standing ones: a value said
-    /// twice answers for the run that said it last, and a claim from
-    /// before runs were written answers no run= at all. Field patterns
-    /// read like attribute patterns, in the field's own spelling.
+    /// so `retract=true file:path=*` asks for a path that was taken
+    /// back, where `retract=true file:path` asks for any retraction and
+    /// shows the paths. The values it reads are the standing ones: a
+    /// value said twice answers for the run that said it last, and a
+    /// claim from before runs were written answers no run= at all.
+    /// Field patterns read like attribute patterns, in the field's own
+    /// spelling. A field term shows nothing of itself; a bare field
+    /// name shows the field on each match, `find run=RUN run` included.
     ///
     /// Each match answers as a block: the file's name on a line of its
     /// own, shortened to the shortest prefix that names it alone, and the
@@ -373,7 +377,8 @@ enum Command {
     Find {
         /// attribute=value, or field=value for a field of the claim;
         /// repeat to demand all of them at once. A bare attribute (or
-        /// namespace:, or field) picks what is shown instead
+        /// namespace:, or field) picks what is shown instead; a field
+        /// term shows nothing by itself
         #[arg(value_name = "TERM")]
         terms: Vec<String>,
 
@@ -1579,8 +1584,10 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Term>, Vec<Projectio
                 remember(Projection::Attribute(attribute.clone()), &mut implied);
                 filters.push(Term::Attribute(attribute, value.to_string()));
             } else {
+                // A field term shows nothing of itself: it asks about the
+                // claim, and the answer would only echo the question. A
+                // bare field name is what shows a field.
                 let field = Field::parse(name)?;
-                remember(Projection::Field(field), &mut implied);
                 filters.push(Term::Field(field, value.to_string()));
             }
         } else if let Some(namespace) = word.strip_suffix(':') {
@@ -2035,6 +2042,13 @@ mod tests {
             projections,
             [Projection::Field(Field::Run)],
             "a bare field name shows the field"
+        );
+        let (filters, projections) = question(&words(&["retract=true"]), false).unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(
+            projections,
+            [],
+            "a field term shows nothing of itself; the answer would echo the question"
         );
         assert!(
             question(&words(&["bogus=1"]), false).is_err(),

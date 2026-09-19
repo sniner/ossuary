@@ -30,10 +30,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `subject`, `attribute`, `value`, `time`, `source`, `run`, `retract` — and asks about the claim
   behind a value, for every attribute term at once: `find run=ID file:name` is what a run named,
   `find source=user user:tag` what you tagged yourself, `find time=2026-09-01..` what was written
-  since September, `find --all retract=true file:path` what was ever taken back. Patterns read like
-  attribute patterns, in the field's own spelling; a bare field name shows the field's values on
-  each match. Under the standing set a value said twice answers for the run that said it last;
-  `retract` is refused without `--all`, because a retraction never stands
+  since September, `find --all retract=true file:path` what was ever taken back, the paths shown.
+  Patterns read like attribute patterns, in the field's own spelling. A field term shows nothing of
+  itself; a bare field name shows the field's values on each match. Under the standing set a value
+  said twice answers for the run that said it last; `retract` is refused without `--all`, because a
+  retraction never stands
 - **`--as-of RUN`** wherever `--as-of` stands: a run id in place of the time closes the view after
   that run's last claim, so two runs within one second still come apart
 
