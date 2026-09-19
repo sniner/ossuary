@@ -238,11 +238,22 @@ bd84e795
   file:name=DSC_1042.jpg
 …
 5 file(s)
-$ ossuary find --all retract=true file:path
+$ ossuary find --all retract=true file:path=*
 6ca81e7a
   file:path=/home/john/photos/DSC_1043.jpg
 1 file(s)
 ```
+
+The last one is the question "show me the files that are gone", and
+it has a catch. A field term holds for every attribute term at once,
+so `retract=true file:path=*` asks for a *path* that was taken back —
+which is what a gone file has on the record, because `ingest` takes
+back the place it no longer finds, not the name. `retract=true
+file:name=*` asks for a name that was taken back, and finds nothing:
+no name ever was. A bare `file:name` beside `retract=true` narrows
+nothing and only shows the names of files with any retraction on
+record. A field term shows nothing of itself; a bare field name does,
+so `find run=… run` lists the runs a file was written in.
 
 Which words there are to ask in at all is a question of its own —
 `attributes` lists every one standing on the record, sorted, and a
