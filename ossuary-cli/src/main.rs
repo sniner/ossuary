@@ -1653,7 +1653,14 @@ fn find(
     let subjects = if filters.is_empty() && missing.is_empty() {
         index.subjects(scope)?
     } else {
-        index.find(&filters, missing, scope)?
+        index
+            .find(&filters, missing, scope)
+            .map_err(|error| match error {
+                Error::Timestamp(given) => anyhow!(
+                    "{given:?} is not a time; a time= term reads RFC 3339 like 2026-01-01T12:00:00Z, or the date alone"
+                ),
+                other => other.into(),
+            })?
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
