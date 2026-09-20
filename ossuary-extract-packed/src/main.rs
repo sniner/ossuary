@@ -510,8 +510,6 @@ fn uniquify(wanted: String, taken: &mut HashSet<String>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
     use tempfile::TempDir;
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
