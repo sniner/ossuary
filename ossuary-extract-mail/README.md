@@ -40,8 +40,9 @@ of. Announced with the kind the mail itself declared — not a guess from
 the bytes — and under the name the mail spelled, flattened to a bare file
 name. A forwarded message nobody named gets `message.eml`, a nameless
 attachment `attachment`. Where two names collide a counter slips in
-before the extension, and the name the mail spelled goes on the record as
-`file:name` beside it. An attachment's `mail:content-id` is recorded on
+before the extension, a name longer than a filesystem takes is cut to
+fit, and the name the mail spelled goes on the record as `file:name`
+beside it either way. An attachment's `mail:content-id` is recorded on
 the attachment, not on the mail.
 
 Body parts without a name stay inside: they are the mail speaking, not

@@ -18,6 +18,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ingest --emptied DIR` takes a directory that is no more.** It used to fail on resolving the
   name and take nothing back; the word now covers the plainest case, and every place on record
   under the vanished directory is taken back
+- **A carried file's name no longer fails the whole examination.** An attachment or zip entry
+  named longer than a filesystem takes, or with control characters in its name, made
+  `ossuary-extract-mail` and `ossuary-extract-packed` fail the mail or zip on every run. The file
+  now waits under a name cut to fit, and the spelled name goes on the record as `file:name`, the
+  way a name that had to yield to a collision always did
+- **`ossuary-extract-packed` streams each entry** into its file instead of holding it in memory
+  whole, and an entry that unpacks to more than 1 GiB stays inside with the reason on the record,
+  like an encrypted one
+- **`ossuary mailvault` gives up a server that falls silent.** A connection that accepts and then
+  says nothing held the run for good; a read or write that gets nothing for five minutes now fails,
+  and the folder is named in the tally
 
 ## [0.6.0] - 2026-09-19
 

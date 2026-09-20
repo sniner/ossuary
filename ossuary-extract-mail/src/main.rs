@@ -150,17 +150,23 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
         } else {
             "attachment"
         };
-        let announced = uniquify(
-            wanted.clone().unwrap_or_else(|| fallback.to_string()),
-            &mut taken,
-        );
+        // A name too long for the filesystem, or one nothing is left of,
+        // must not fail the whole mail every run; the file waits under
+        // a name that fits, and the spelled name goes on the record.
+        let wearable = wanted
+            .as_deref()
+            .map(fits)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| fallback.to_string());
+        let announced = uniquify(wearable, &mut taken);
         std::fs::write(directory.join(&announced), part.contents()).map_err(|error| {
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
         lines.push(json!({ "file": &announced, "mime": kind(part) }));
         if let Some(name) = wanted.filter(|name| *name != announced) {
-            // The announcement had to yield to a name already taken; the
-            // name the mail spelled goes on the record beside it.
+            // The announcement had to yield to a name already taken, or
+            // to what a filesystem takes; the name the mail spelled goes
+            // on the record beside it.
             lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
         }
         if let Some(id) = part.content_id() {
@@ -323,6 +329,31 @@ fn basename(spelled: &str) -> Option<String> {
     (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
 }
 
+/// The most bytes an announced name may have: what a filesystem takes
+/// in one name, with room left for the counter `uniquify` slips in.
+const NAME_AT_MOST: usize = 240;
+
+/// The name as a file can wear it: control characters dropped, the
+/// whole cut to what a filesystem takes in one name — at a character
+/// boundary, the extension kept when it is one. The spelled name goes
+/// on the record whole; this is only the name the file waits under.
+/// Empty when nothing wearable is left.
+fn fits(spelled: &str) -> String {
+    let name: String = spelled.chars().filter(|c| !c.is_control()).collect();
+    if name.len() <= NAME_AT_MOST {
+        return name;
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= 16 => name.split_at(dot),
+        _ => (name.as_str(), ""),
+    };
+    let mut cut = NAME_AT_MOST - extension.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{extension}", &stem[..cut])
+}
+
 /// The wanted name, or the nearest free one: a counter slips in before
 /// the extension until nothing collides — case-insensitively, because
 /// the directory the files wait in may not tell Report from report.
@@ -428,6 +459,53 @@ mod tests {
         assert_eq!(uniquify("image.png".to_string(), &mut taken), "image-3.png");
         assert_eq!(uniquify("noext".to_string(), &mut taken), "noext");
         assert_eq!(uniquify("noext".to_string(), &mut taken), "noext-2");
+    }
+
+    #[test]
+    fn a_name_the_filesystem_would_refuse_is_cut_to_fit_and_spelled_whole_on_the_record() {
+        let long = format!("{}.pdf", "ä".repeat(200));
+        let fitting = fits(&long);
+        assert!(fitting.len() <= NAME_AT_MOST);
+        assert_eq!(
+            &fitting[fitting.len() - 4..],
+            ".pdf",
+            "the extension is kept"
+        );
+        assert!(fitting.starts_with("ääää"), "cut at a character boundary");
+        assert_eq!(fits("a\u{0}b\tc.txt"), "abc.txt", "control characters drop");
+        assert_eq!(fits(""), "");
+
+        let dir = TempDir::new().unwrap();
+        let mail = format!(
+            concat!(
+                "From: alice@example.com\r\n",
+                "To: bob@example.org\r\n",
+                "MIME-Version: 1.0\r\n",
+                "Content-Type: multipart/mixed; boundary=\"cut\"\r\n",
+                "\r\n",
+                "--cut\r\n",
+                "Content-Type: application/pdf\r\n",
+                "Content-Disposition: attachment; filename=\"{long}\"\r\n",
+                "\r\n",
+                "%PDF-1.4\r\n",
+                "--cut--\r\n",
+            ),
+            long = "x".repeat(300)
+        );
+
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+
+        let announced = "x".repeat(NAME_AT_MOST);
+        assert!(
+            lines.contains(&json!({ "file": &announced, "mime": "application/pdf" })),
+            "the file waits under a name that fits; got {lines:#?}"
+        );
+        assert!(lines.contains(&json!({
+            "file": &announced,
+            "attribute": "file:name",
+            "value": "x".repeat(300),
+        })));
+        assert!(dir.path().join(&announced).is_file());
     }
 
     #[test]

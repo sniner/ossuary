@@ -22,20 +22,25 @@
 //! read as a zip at all are an examination with nothing found.
 //!
 //! Unpacked entries lose their inner paths — an announced name is
-//! bare — so colliding names yield to a counter, the true name goes on
-//! the record as `file:name`, and every file's full entry path as
+//! bare — so colliding names yield to a counter, a name longer than a
+//! filesystem takes is cut to fit, the true name goes on the record as
+//! `file:name` either way, and every file's full entry path as
 //! `zip:path`. A zip declares no kinds, so each announcement carries
-//! the same magic-bytes-then-UTF-8 look ingest would take. An entry
-//! that will not come out — encrypted, damaged, a spelling with no file
-//! name in it — stays inside, and the reason goes on the record as a
-//! `prov:note` finding beside a line on stderr: a zip that unpacked
-//! incompletely must not read like one that unpacked whole. There is no
-//! password to offer, and a receipt beats being offered the same locked
-//! door every run. A symlink stays inside silently — its bytes are a
-//! name rather than content, and nothing is lost.
+//! the same magic-bytes-then-UTF-8 look ingest would take, taken on the
+//! way out: an entry streams into its file, never through memory
+//! whole, and one that unpacks to more than [`UNPACKED_AT_MOST`] stays
+//! inside — a zip bomb is a deterministic reason, not a failure to try
+//! again. An entry that will not come out — encrypted, damaged, a
+//! spelling with no file name in it, too large — stays inside, and the
+//! reason goes on the record as a `prov:note` finding beside a line on
+//! stderr: a zip that unpacked incompletely must not read like one that
+//! unpacked whole. There is no password to offer, and a receipt beats
+//! being offered the same locked door every run. A symlink stays inside
+//! silently — its bytes are a name rather than content, and nothing is
+//! lost.
 
 use std::collections::HashSet;
-use std::io::{Cursor, Read, Seek};
+use std::io::{Cursor, Read, Seek, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -51,6 +56,15 @@ use zip::ZipArchive;
 /// `list` learns to see says nothing about `unpack`.
 const LIST_GENERATION: u32 = 1;
 const UNPACK_GENERATION: u32 = 1;
+
+/// The most an entry may unpack to. A zip bomb's whole point is bytes
+/// out of nowhere; beyond this, the entry stays inside with the reason
+/// on the record.
+const UNPACKED_AT_MOST: u64 = 1 << 30;
+
+/// How much of an entry's beginning the kind is read from: what
+/// `infer` needs, and then some.
+const HEAD: usize = 8 * 1024;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -150,6 +164,7 @@ fn harvest(
         Contract::Unpack => unpack(
             &mut archive,
             directory.expect("unpack is called with a directory"),
+            UNPACKED_AT_MOST,
         ),
     }
 }
@@ -238,6 +253,7 @@ fn list<R: Read + Seek>(archive: &ZipArchive<R>) -> Vec<serde_json::Value> {
 fn unpack<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     directory: &Path,
+    at_most: u64,
 ) -> std::io::Result<Vec<serde_json::Value>> {
     let mut lines = Vec::new();
     let mut taken = HashSet::new();
@@ -276,28 +292,152 @@ fn unpack<R: Read + Seek>(
             continue;
         }
         let spelled = file.name().to_string();
-        let mut bytes = Vec::new();
-        if let Err(error) = file.read_to_end(&mut bytes) {
-            lines.push(stays_inside(&spelled, &error.to_string()));
-            continue;
-        }
         let Some(name) = basename(&spelled) else {
             lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
             continue;
         };
-        let announced = uniquify(name.clone(), &mut taken);
-        std::fs::write(directory.join(&announced), &bytes).map_err(|error| {
+        // A name too long for the filesystem must not fail the whole zip
+        // every run; the file waits under a name that fits, and the
+        // spelled name goes on the record.
+        let wearable = fits(&name);
+        if wearable.is_empty() {
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            continue;
+        }
+        let announced = uniquify(wearable, &mut taken);
+        let target = directory.join(&announced);
+        let opened = std::fs::File::create(&target).map_err(|error| {
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
-        lines.push(json!({ "file": &announced, "mime": sniff(&bytes) }));
+        // The entry streams into its file, the look at its kind taken on
+        // the way; one byte past the bound tells too large from exactly
+        // as large.
+        let mut look = Look::new(opened);
+        let copied = std::io::copy(&mut file.by_ref().take(at_most + 1), &mut look);
+        match copied {
+            Ok(_) if look.written > at_most => {
+                let _ = std::fs::remove_file(&target);
+                lines.push(stays_inside(
+                    &spelled,
+                    &format!("larger than {}", human_bytes(at_most)),
+                ));
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = std::fs::remove_file(&target);
+                if look.failed {
+                    // The directory would not take it: this run's
+                    // trouble, not the entry's.
+                    return Err(std::io::Error::new(
+                        error.kind(),
+                        format!("writing {announced}: {error}"),
+                    ));
+                }
+                lines.push(stays_inside(&spelled, &error.to_string()));
+                continue;
+            }
+        }
+        lines.push(json!({ "file": &announced, "mime": look.kind() }));
         if name != announced {
-            // The announcement had to yield to a name already taken; the
-            // name the zip spelled goes on the record beside it.
+            // The announcement had to yield to a name already taken, or
+            // to what a filesystem takes; the name the zip spelled goes
+            // on the record beside it.
             lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
         }
         lines.push(json!({ "file": &announced, "attribute": "zip:path", "value": spelled }));
     }
     Ok(lines)
+}
+
+/// The writer an entry streams through on its way into its file: the
+/// beginning kept for the magic bytes, the whole watched for being
+/// UTF-8, so the kind is known once the copy is done without the bytes
+/// ever being held together.
+struct Look<W: Write> {
+    inner: W,
+    head: Vec<u8>,
+    /// Still UTF-8 as far as written.
+    text: bool,
+    /// The tail of the last chunk that was an incomplete sequence — a
+    /// character cut by the chunk boundary, judged with the next chunk.
+    carry: Vec<u8>,
+    written: u64,
+    /// Whether it was the file, not the entry, that failed.
+    failed: bool,
+}
+
+impl<W: Write> Look<W> {
+    fn new(inner: W) -> Self {
+        Look {
+            inner,
+            head: Vec::with_capacity(HEAD),
+            text: true,
+            carry: Vec::new(),
+            written: 0,
+            failed: false,
+        }
+    }
+
+    /// What the bytes say they are — a zip declares no kinds, so this
+    /// is the look ingest would take: magic bytes first, a UTF-8 look
+    /// for plain text second, and the honest shrug when nothing
+    /// answers.
+    fn kind(&self) -> String {
+        infer::get(&self.head)
+            .map(|kind| kind.mime_type().to_string())
+            .or_else(|| {
+                (self.written > 0 && self.text && self.carry.is_empty())
+                    .then(|| "text/plain".to_string())
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    }
+
+    /// Whether the bytes so far, this chunk included, are still UTF-8 —
+    /// an incomplete sequence at the chunk's end carried over, not
+    /// judged yet.
+    fn still_text(&mut self, chunk: &[u8]) -> bool {
+        let mut bytes = std::mem::take(&mut self.carry);
+        bytes.extend_from_slice(chunk);
+        let Err(error) = std::str::from_utf8(&bytes) else {
+            return true;
+        };
+        if error.error_len().is_some() {
+            return false;
+        }
+        self.carry = bytes[error.valid_up_to()..].to_vec();
+        true
+    }
+}
+
+impl<W: Write> Write for Look<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let taken = self.inner.write(buf).inspect_err(|_| self.failed = true)?;
+        let chunk = &buf[..taken];
+        let room = HEAD - self.head.len();
+        self.head.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if self.text {
+            self.text = self.still_text(chunk);
+        }
+        self.written += taken as u64;
+        Ok(taken)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush().inspect_err(|_| self.failed = true)
+    }
+}
+
+/// A byte count as a person reads it — the bound, said once.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+    let mut unit = 0;
+    let mut count = bytes;
+    while count >= 1024 && count % 1024 == 0 && unit < UNITS.len() - 1 {
+        count /= 1024;
+        unit += 1;
+    }
+    format!("{count} {}", UNITS[unit])
 }
 
 /// An entry the examination could not bring out, said twice from one
@@ -310,19 +450,6 @@ fn stays_inside(spelled: &str, reason: &str) -> serde_json::Value {
     json!({ "attribute": "prov:note", "value": sentence })
 }
 
-/// What the bytes say they are — a zip declares no kinds, so this is
-/// the look ingest would take: magic bytes first, a UTF-8 look for
-/// plain text second, and the honest shrug when nothing answers.
-fn sniff(bytes: &[u8]) -> String {
-    infer::get(bytes)
-        .map(|kind| kind.mime_type().to_string())
-        .or_else(|| {
-            (!bytes.is_empty() && std::str::from_utf8(bytes).is_ok())
-                .then(|| "text/plain".to_string())
-        })
-        .unwrap_or_else(|| "application/octet-stream".to_string())
-}
-
 /// The bare file name inside an entry's path: the last element past
 /// either separator, because an announced name names a file, never a
 /// place. A spelling with no name left in it answers nothing.
@@ -333,6 +460,31 @@ fn basename(spelled: &str) -> Option<String> {
         .unwrap_or_default()
         .trim();
     (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
+}
+
+/// The most bytes an announced name may have: what a filesystem takes
+/// in one name, with room left for the counter `uniquify` slips in.
+const NAME_AT_MOST: usize = 240;
+
+/// The name as a file can wear it: control characters dropped, the
+/// whole cut to what a filesystem takes in one name — at a character
+/// boundary, the extension kept when it is one. The spelled name goes
+/// on the record whole; this is only the name the file waits under.
+/// Empty when nothing wearable is left.
+fn fits(spelled: &str) -> String {
+    let name: String = spelled.chars().filter(|c| !c.is_control()).collect();
+    if name.len() <= NAME_AT_MOST {
+        return name;
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= 16 => name.split_at(dot),
+        _ => (name.as_str(), ""),
+    };
+    let mut cut = NAME_AT_MOST - extension.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{extension}", &stem[..cut])
 }
 
 /// The wanted name, or the nearest free one: a counter slips in before
@@ -648,5 +800,98 @@ mod tests {
         assert_eq!(uniquify("a.txt".to_string(), &mut taken), "a.txt");
         assert_eq!(uniquify("A.txt".to_string(), &mut taken), "A-2.txt");
         assert_eq!(uniquify("a.txt".to_string(), &mut taken), "a-3.txt");
+    }
+
+    #[test]
+    fn an_entry_streams_out_with_its_kind_read_on_the_way() {
+        let dir = TempDir::new().unwrap();
+        // A character cut by the copy's chunk boundary is still text;
+        // a byte that is no UTF-8 far past the head is not.
+        let straddling = format!("{}ä{}", "a".repeat(HEAD - 1), "b".repeat(100));
+        let mut spoiled = "c".repeat(HEAD + 800).into_bytes();
+        spoiled.push(0xff);
+        let bytes = packed(&[
+            ("straddling.txt", straddling.as_bytes()),
+            ("spoiled.bin", &spoiled),
+            ("empty", b""),
+        ]);
+
+        let lines = harvest(&bytes, Contract::Unpack, Some(dir.path())).unwrap();
+
+        assert!(lines.contains(&json!({ "file": "straddling.txt", "mime": "text/plain" })));
+        assert!(
+            lines.contains(&json!({ "file": "spoiled.bin", "mime": "application/octet-stream" }))
+        );
+        assert!(lines.contains(&json!({ "file": "empty", "mime": "application/octet-stream" })));
+        assert_eq!(
+            std::fs::read(dir.path().join("straddling.txt")).unwrap(),
+            straddling.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("spoiled.bin")).unwrap(),
+            spoiled
+        );
+    }
+
+    #[test]
+    fn an_entry_larger_than_the_bound_stays_inside_with_the_reason_on_the_record() {
+        let dir = TempDir::new().unwrap();
+        let bytes = packed(&[("fits.txt", &[b'x'; 16]), ("bomb.txt", &[b'x'; 17])]);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+
+        let lines = unpack(&mut archive, dir.path(), 16).unwrap();
+
+        assert!(lines.contains(&json!({ "file": "fits.txt", "mime": "text/plain" })));
+        assert!(
+            lines.contains(&json!({
+                "attribute": "prov:note",
+                "value": "entry bomb.txt stayed inside: larger than 16 bytes",
+            })),
+            "got {lines:#?}"
+        );
+        assert!(!lines.iter().any(|line| line["file"] == "bomb.txt"));
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "nothing half-written waits in the directory"
+        );
+        assert_eq!(human_bytes(UNPACKED_AT_MOST), "1 GiB");
+    }
+
+    #[test]
+    fn a_name_the_filesystem_would_refuse_is_cut_to_fit_and_spelled_whole_on_the_record() {
+        let long = format!("{}.pdf", "ä".repeat(200));
+        let fitting = fits(&long);
+        assert!(fitting.len() <= NAME_AT_MOST);
+        assert_eq!(
+            &fitting[fitting.len() - 4..],
+            ".pdf",
+            "the extension is kept"
+        );
+        assert!(fitting.starts_with("ääää"), "cut at a character boundary");
+        assert_eq!(fits("a\u{0}b\tc.txt"), "abc.txt", "control characters drop");
+
+        let dir = TempDir::new().unwrap();
+        let spelled = format!("deep/{}", "x".repeat(300));
+        let bytes = packed(&[(spelled.as_str(), b"content")]);
+
+        let lines = harvest(&bytes, Contract::Unpack, Some(dir.path())).unwrap();
+
+        let announced = "x".repeat(NAME_AT_MOST);
+        assert!(
+            lines.contains(&json!({ "file": &announced, "mime": "text/plain" })),
+            "the file waits under a name that fits; got {lines:#?}"
+        );
+        assert!(lines.contains(&json!({
+            "file": &announced,
+            "attribute": "file:name",
+            "value": "x".repeat(300),
+        })));
+        assert!(lines.contains(&json!({
+            "file": &announced,
+            "attribute": "zip:path",
+            "value": spelled,
+        })));
+        assert!(dir.path().join(&announced).is_file());
     }
 }

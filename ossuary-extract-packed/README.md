@@ -39,9 +39,11 @@ zip:entry = "notes.txt"
 with `derive:derived-from` naming the zip. An announced name is bare, so
 inner paths are flattened and the full path goes on the record as
 `zip:path`; where two names collide a counter slips in before the
-extension and the name the zip spelled stands beside it as `file:name`.
-A zip declares no kinds, so each announcement carries the same
-magic-bytes-then-UTF-8 look ingest would take.
+extension, a name longer than a filesystem takes is cut to fit, and the
+name the zip spelled stands beside it as `file:name` either way. A zip
+declares no kinds, so each announcement carries the same
+magic-bytes-then-UTF-8 look ingest would take. An entry streams into
+its file as it is read; none is held in memory whole.
 
 ## Not every zip is an archive
 
@@ -63,10 +65,13 @@ found.
 * **An encrypted entry.** There is no password to offer, and a receipt
   beats being offered the same locked door every run.
 * **A damaged entry**, or one whose spelling holds no file name.
+* **An entry that unpacks to more than 1 GiB.** A zip bomb's whole point
+  is bytes out of nowhere; the bound is where the program stops taking
+  them.
 * **A symlink**, silently — its bytes are a name rather than content, and
   nothing is lost.
 
-For the first two the reason goes on the record as a `prov:note` finding
+For all but the symlink the reason goes on the record as a `prov:note` finding
 and onto stderr in the same words: a zip that unpacked incompletely must
 not read like one that unpacked whole. One refused entry costs no other
 entry its examination.

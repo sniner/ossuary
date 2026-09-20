@@ -9,6 +9,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use imap::Session;
@@ -91,14 +92,7 @@ impl Remote {
         let stream: Box<dyn Stream> = if account.tls {
             Box::new(tls(account)?)
         } else {
-            Box::new(
-                TcpStream::connect((account.host.as_str(), account.port)).with_context(|| {
-                    format!(
-                        "{}: {}:{} did not answer",
-                        account.name, account.host, account.port
-                    )
-                })?,
-            )
+            Box::new(reached(account)?)
         };
         let mut client = imap::Client::new(stream);
         client
@@ -158,13 +152,28 @@ fn tls(account: &Account) -> Result<StreamOwned<ClientConnection, TcpStream>> {
         .with_context(|| format!("{}: {:?} is not a host name", account.name, account.host))?;
     let connection = ClientConnection::new(Arc::new(config), name)
         .with_context(|| format!("{}: TLS could not be set up", account.name))?;
+    Ok(StreamOwned::new(connection, reached(account)?))
+}
+
+/// The most a server may keep quiet, once connected, before the run
+/// gives it up: a load balancer that accepts and says nothing, a
+/// network gone without a word, would otherwise hold the run for good.
+const SILENT_AT_MOST: Duration = Duration::from_secs(300);
+
+/// The account's server, connected, and bound to answer: a read or a
+/// write that gets nothing within [`SILENT_AT_MOST`] fails, and the
+/// folder is named in the tally instead of the run standing still.
+fn reached(account: &Account) -> Result<TcpStream> {
     let tcp = TcpStream::connect((account.host.as_str(), account.port)).with_context(|| {
         format!(
             "{}: {}:{} did not answer",
             account.name, account.host, account.port
         )
     })?;
-    Ok(StreamOwned::new(connection, tcp))
+    tcp.set_read_timeout(Some(SILENT_AT_MOST))
+        .and_then(|()| tcp.set_write_timeout(Some(SILENT_AT_MOST)))
+        .with_context(|| format!("{}: the connection takes no timeout", account.name))?;
+    Ok(tcp)
 }
 
 impl Mailbox for Remote {
