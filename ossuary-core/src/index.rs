@@ -1201,13 +1201,25 @@ impl Index {
     /// sworn away.
     pub fn history(&self) -> Result<Vec<Episode>> {
         let mut statement = self.connection.prepare(
-            "SELECT r.name, MIN(c.time), MAX(c.time), COUNT(DISTINCT c.subject), COUNT(*),
+            // Runs in order of their first claim: the lowest segment
+            // and the lowest position taken apart would put a run that
+            // went on past a seal before one that began earlier.
+            "WITH first AS (
+                 SELECT run, seq, position FROM (
+                     SELECT c.run, s.seq, c.position,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY c.run ORDER BY c.time, s.seq, c.position
+                            ) AS rank
+                     FROM claims c JOIN segments s ON s.id = c.segment
+                     WHERE c.run IS NOT NULL)
+                 WHERE rank = 1)
+             SELECT r.name, MIN(c.time), MAX(c.time), COUNT(DISTINCT c.subject), COUNT(*),
                     SUM(c.retract)
              FROM claims c
              JOIN runs r ON r.id = c.run
-             JOIN segments s ON s.id = c.segment
+             JOIN first f ON f.run = c.run
              GROUP BY c.run
-             ORDER BY MIN(c.time), MIN(s.seq), MIN(c.position)",
+             ORDER BY MIN(c.time), f.seq, f.position",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -2334,6 +2346,48 @@ mod tests {
         );
         assert_eq!(index.subjects(Scope::Record).unwrap(), [subject()]);
         assert_eq!(index.subjects(Scope::Held).unwrap(), []);
+    }
+
+    #[test]
+    fn history_orders_runs_by_their_first_claim_across_a_seal() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        // Three runs within one second, begun c, b, a — and a goes on
+        // past a seal, so its lowest position lies in a later segment.
+        let when = "2026-09-01T10:00:00Z";
+        for (letter, value) in [('c', "c"), ('b', "b"), ('a', "a")] {
+            log.append(&said_in(
+                &subject(),
+                "user:tag",
+                json!(value),
+                when,
+                &run_x(letter),
+            ))
+            .unwrap();
+        }
+        log.seal().unwrap().unwrap();
+        log.append(&said_in(
+            &subject(),
+            "user:tag",
+            json!("a again"),
+            when,
+            &run_x('a'),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        let runs: Vec<Run> = index
+            .history()
+            .unwrap()
+            .into_iter()
+            .map(|episode| episode.run)
+            .collect();
+        assert_eq!(
+            runs,
+            [run_x('c'), run_x('b'), run_x('a')],
+            "log order of the first claim, not the lowest segment and position apart"
+        );
     }
 
     #[test]

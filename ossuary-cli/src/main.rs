@@ -75,10 +75,10 @@ enum Command {
     /// Take files in: directory trees and single files, any mix
     ///
     /// Every regular file goes in, minus what the archive's config.toml
-    /// excludes; a file named outright goes in regardless. Seven claims
-    /// go on the record for each: where it came from, what it is called,
-    /// on which machine, with which run, how large, what kind, and when
-    /// it last changed. Everything of one call arrives in one run;
+    /// excludes; a file named outright goes in regardless. Six claims go
+    /// on the record for each: where it came from, what it is called, on
+    /// which machine, how large, what kind, and when it last changed.
+    /// Everything of one call arrives in one run;
     /// `ossuary ingest *.pdf` keeps what a glob matched together, and
     /// "arrived together" stays an askable fact. What is taken in is only
     /// read. A repeated run remembers what it already observed and leaves

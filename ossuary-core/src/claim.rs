@@ -362,6 +362,10 @@ pub struct Run(String);
 impl Run {
     /// A fresh id for one call.
     #[must_use]
+    #[allow(
+        clippy::new_without_default,
+        reason = "a fresh id is the opposite of a default value"
+    )]
     pub fn new() -> Self {
         Run(Uuid::new_v4().to_string())
     }
@@ -397,12 +401,6 @@ impl Run {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl Default for Run {
-    fn default() -> Self {
-        Run::new()
     }
 }
 

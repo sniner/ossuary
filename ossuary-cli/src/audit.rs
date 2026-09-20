@@ -95,7 +95,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
             continue;
         }
         let heading = format!(
-            "{} file(s) held in {place} that no claim speaks of, not a finding; the next arrival records them",
+            "{} file(s) held in {place} that no claim speaks of; the next arrival records them",
             unrecorded.len()
         );
         if !listing(out, &heading, unrecorded, verbose)? {
@@ -122,7 +122,7 @@ fn twin_block(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<bool
         .map(|twin| twin.digest.as_str().to_string())
         .collect();
     let heading = format!(
-        "{} file(s) held by both stores, not a finding; `ossuary maintain weed` takes the copy in derived/ out",
+        "{} file(s) held by both stores; `ossuary maintain weed` takes the copy in derived/ out",
         names.len()
     );
     if !listing(out, &heading, &names, verbose)? {

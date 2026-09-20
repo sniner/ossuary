@@ -31,13 +31,9 @@ pub fn line(claim: &Claim) -> String {
 /// wrote, and who spoke in it — the time in the spelling `--as-of`
 /// takes, the id the spelling `export`, `extract` and `--as-of` take.
 pub fn episode(episode: &Episode) -> String {
-    let mut wrote = format!(
-        "{} file(s), {} claim(s)",
-        episode.files,
-        episode.claims - episode.retractions
-    );
+    let mut wrote = format!("{} file(s), {} claim(s)", episode.files, episode.claims);
     if episode.retractions > 0 {
-        let _ = write!(wrote, ", {} taken back", episode.retractions);
+        let _ = write!(wrote, ", {} of them taken back", episode.retractions);
     }
     let sources: Vec<&str> = episode.sources.iter().map(Source::as_str).collect();
     format!(
@@ -195,7 +191,7 @@ mod tests {
         };
         assert_eq!(
             self::episode(&episode),
-            "2026-09-18T21:27:05Z  315e360b-020e-48be-8f2d-f2002a2ea9b4  29 file(s), 203 claim(s), 7 taken back  [ingest, user]",
+            "2026-09-18T21:27:05Z  315e360b-020e-48be-8f2d-f2002a2ea9b4  29 file(s), 210 claim(s), 7 of them taken back  [ingest, user]",
             "the closing moment, the id, what was written, who spoke"
         );
         assert_eq!(

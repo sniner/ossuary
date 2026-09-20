@@ -148,8 +148,9 @@ need.
 
 ### file:size
 
-- meaning: the content's size in bytes — a fact of the bytes, said once,
-  on the blob's first day
+- meaning: the content's size in bytes — a fact of the bytes, said on
+  the bytes' first day in a store; bytes that reach `derived/` first and
+  `content/` later are said twice, and the set holds one
 - value: number
 - written by: ingest; `ossuary mailvault`
 

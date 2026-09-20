@@ -132,7 +132,16 @@ pub fn run(
     }
     for (store_id, places) in &gathered.places {
         done += 1;
-        takeover.take(store_id, places, options.dry_run, &mut tally)?;
+        if let Err(error) = takeover.take(store_id, places, options.dry_run, &mut tally) {
+            // What landed before the trouble stays remembered either
+            // way: the messages are on the record, and the memo must
+            // not offer them again.
+            let closed = takeover.memo.map_or(Ok(()), Memo::commit);
+            return Err(match closed {
+                Ok(()) => error,
+                Err(more) => error.context(format!("and the memo did not commit: {more:#}")),
+            });
+        }
         if let Some(memo) = takeover.memo {
             if done % COMMIT_EVERY == 0 {
                 memo.commit()?;

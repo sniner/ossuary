@@ -60,6 +60,16 @@ fn default_tls() -> bool {
     true
 }
 
+/// Whether the host is this machine itself — the one place plaintext
+/// IMAP is not a password on the wire.
+fn loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 impl Config {
     /// Read the file at `root`, strictly.
     ///
@@ -98,6 +108,14 @@ impl Config {
                     "{}: two accounts named {:?}; every mailbox needs a name of its own",
                     path.display(),
                     account.name
+                );
+            }
+            if !account.tls && !loopback(&account.host) {
+                bail!(
+                    "{}: {}: tls = false would send the password to {} in the clear; plaintext is for a bridge on loopback only, so drop tls = false or point the account at localhost",
+                    path.display(),
+                    account.name,
+                    account.host
                 );
             }
         }
@@ -206,6 +224,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE_NAME), text).unwrap();
         Config::load(dir.path())
+    }
+
+    #[test]
+    fn plaintext_is_for_loopback_only() {
+        for host in ["127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.2"] {
+            assert!(
+                load(&format!(
+                    "[[account]]\nname = \"a\"\nhost = \"{host}\"\ntls = false\nuser = \"u\"\n"
+                ))
+                .is_ok(),
+                "{host} is this machine"
+            );
+        }
+        let refused = load(
+            "[[account]]\nname = \"a\"\nhost = \"imap.example.org\"\ntls = false\nuser = \"u\"\n",
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("in the clear"), "{refused:#}");
     }
 
     #[test]

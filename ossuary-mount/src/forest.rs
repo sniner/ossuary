@@ -105,7 +105,9 @@ fn plant(root: &mut BTreeMap<String, Node>, sighting: &Sighting) {
         .path
         .trim_start_matches('/')
         .split('/')
-        .filter(|part| !part.is_empty())
+        // A place from another host, or a claim written by hand, may
+        // carry what a filesystem never lists as a name of its own.
+        .filter(|part| !part.is_empty() && *part != "." && *part != "..")
         .peekable();
     while let Some(part) = components.next() {
         let last = components.peek().is_none();
@@ -313,6 +315,24 @@ mod tests {
             ["b", "b-12345678"],
             "the folder wears the name; the file carries its digest"
         );
+    }
+
+    #[test]
+    fn a_dot_or_a_double_dot_in_a_place_is_never_planted_as_a_name() {
+        let forest = grown(
+            &[sighting(
+                "/a/./b/../c.txt",
+                "1234567812345678",
+                "2026-01-01T00:00:00Z",
+                0,
+            )],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let a = 1;
+        assert_eq!(names(&forest, a), ["b"]);
+        let b = 2;
+        assert_eq!(names(&forest, b), ["c.txt"]);
     }
 
     #[test]

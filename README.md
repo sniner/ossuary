@@ -294,7 +294,7 @@ $ ossuary history
 2026-09-06T15:23:40Z  315e360b-020e-48be-8f2d-f2002a2ea9b4  5 file(s), 30 claim(s)  [ingest]
 2026-09-06T15:25:02Z  c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31  3 file(s), 18 claim(s)  [extractor:mail/1]
 2026-09-06T15:26:11Z  8d2f6b1c-4a7e-4c93-b5d0-1e9a3f7c2b64  1 file(s), 3 claim(s)  [extractor:packed-list/1]
-2026-09-07T09:02:55Z  9c1d0f3e-6b2a-4d81-a7f4-3e5c8d1b0a26  2 file(s), 2 taken back  [ingest]
+2026-09-07T09:02:55Z  9c1d0f3e-6b2a-4d81-a7f4-3e5c8d1b0a26  2 file(s), 2 claim(s), 2 of them taken back  [ingest]
 4 run(s)
 ```
 

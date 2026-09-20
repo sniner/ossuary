@@ -29,6 +29,19 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary mailvault` gives up a server that falls silent.** A connection that accepts and then
   says nothing held the run for good; a read or write that gets nothing for five minutes now fails,
   and the folder is named in the tally
+- **`ossuary history` counts claims one way.** The line said "203 claim(s), 7 taken back" where the
+  JSON said 210 claims; the line now reads "210 claim(s), 7 of them taken back", the JSON's reading.
+  Two runs begun in the same second are listed in the order they began even when one went on past a
+  seal
+- **`ossuary mailvault` refuses `tls = false` against any host but this machine.** The README
+  always said plaintext is for a bridge on loopback; the config is now read that way, and a password
+  never crosses the network in the clear by a slip in the file. A takeover that fails halfway keeps
+  the messages it took in remembered, and a call refused for its config or its accounts no longer
+  leaves an empty memo behind
+- **`ossuary-mount`** never plants a `.` or `..` from a place on record as a name in the view
+- **`ossuary audit`** no longer hedges its two observations with "not a finding"; the JSON
+  `observation` key says it. `ossuary ingest --help` counts six claims per file, as the record has
+  since 0.6.0
 
 ## [0.6.0] - 2026-09-19
 

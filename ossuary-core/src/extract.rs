@@ -99,8 +99,7 @@ pub struct Examined {
 /// element per subject, attribute and value and knows nothing of who
 /// said it, so the value is what tells one extractor's receipt from
 /// another's there — and what lets a retraction take back exactly one
-/// extractor's receipt. Which run the examination belonged to is told
-/// by what it derived.
+/// extractor's receipt.
 ///
 /// # Errors
 ///

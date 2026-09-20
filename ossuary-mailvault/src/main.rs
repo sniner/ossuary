@@ -117,13 +117,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let archive = open(&archive)?;
     say.line(format_args!("archive {}", archive.root().display()));
     // Everything that can say no before the archive is touched says it
-    // here — the memo is a file, and a refused call should make none.
-    if let Some(vault) = &from_vault {
-        vault::verify(vault)?;
-    }
-    let memo = Memo::open(&archive.root().join("cache").join(memo::FILE_NAME))?;
-
+    // before the memo is opened — the memo is a file, and a refused
+    // call should make none.
+    let memo_path = archive.root().join("cache").join(memo::FILE_NAME);
     let tally = if let Some(vault) = from_vault {
+        vault::verify(&vault)?;
+        let memo = Memo::open(&memo_path)?;
         say.line(format_args!("taking over the vault at {}", vault.display()));
         vault::run(
             &archive,
@@ -143,6 +142,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 config::FILE_NAME
             );
         }
+        let memo = Memo::open(&memo_path)?;
         fetch::run(
             &archive,
             &chosen,

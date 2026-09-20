@@ -23,7 +23,11 @@
 //! every other claim stays, and `--as-of` before the run still shows the
 //! file where it was. What the walk did not cover it does not judge: a
 //! directory that would not open, a path the excludes leave out, a root
-//! that is a single file — not seen is not gone.
+//! that is a single file, a root the walk met not one file under while
+//! the record stands by places there (what a mount point looks like
+//! with nothing mounted, unless the caller says the directory was
+//! emptied), and a place only another host ever saw the file at — not
+//! seen is not gone.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -153,9 +157,7 @@ where
         None => Judged::default(),
     };
     result.empty = empty;
-    if let Some(memory) = sweep.memory {
-        memory.begin()?;
-    }
+    let remembering = sweep.memory.map(IngestMemory::begin).transpose()?;
     for path in &gathered.files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
@@ -213,8 +215,8 @@ where
             memory.forget(sweep.host, &path)?;
         }
     }
-    if let Some(memory) = sweep.memory {
-        memory.commit()?;
+    if let Some(remembering) = remembering {
+        remembering.commit()?;
     }
     result.archives = gathered.archives;
     result.failed.extend(gathered.failed);
@@ -657,16 +659,42 @@ impl IngestMemory {
     /// One transaction around a whole run: thousands of sightings, one
     /// sync. A run that dies on the way rolls back whole, and its files
     /// are merely observed again next time.
-    fn begin(&self) -> Result<()> {
+    fn begin(&self) -> Result<Remembering<'_>> {
         self.connection.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(Remembering {
+            memory: self,
+            done: false,
+        })
+    }
+}
+
+/// The memory's transaction for one run: committed when the run gets to
+/// the end, rolled back when it leaves early — so a memory used for a
+/// second run is not still inside the first.
+struct Remembering<'a> {
+    memory: &'a IngestMemory,
+    done: bool,
+}
+
+impl Remembering<'_> {
+    fn commit(mut self) -> Result<()> {
+        self.memory.connection.execute_batch("COMMIT")?;
+        self.done = true;
         Ok(())
     }
+}
 
-    fn commit(&self) -> Result<()> {
-        self.connection.execute_batch("COMMIT")?;
-        Ok(())
+impl Drop for Remembering<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            // Nothing to answer with from a drop; a rollback that fails
+            // leaves the transaction to the connection's own end.
+            let _ = self.memory.connection.execute_batch("ROLLBACK");
+        }
     }
+}
 
+impl IngestMemory {
     /// Whether this place was last seen with exactly this size and mtime.
     fn unchanged(&self, host: &str, path: &Path, size: i64, mtime: i64) -> Result<bool> {
         let mut statement = self.connection.prepare_cached(

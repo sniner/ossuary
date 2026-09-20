@@ -57,7 +57,7 @@ password = "bridge-password"
 | | |
 |---|---|
 | `name` | how the record names this mailbox in every sighting. Renamed, new sightings carry the new name and the old ones keep the old — and the folders are fetched whole once, since the resume points are kept by name |
-| `host`, `port`, `tls` | the server; `993` and TLS unless said otherwise. Plaintext is for a bridge on loopback, never a real server |
+| `host`, `port`, `tls` | the server; `993` and TLS unless said otherwise. Plaintext is for a bridge on loopback, never a real server — `tls = false` against any other host is refused |
 | `user`, `password` | the login. `password_cmd` names a command that prints the password on its first line instead — a password manager — and runs only under `--allow-exec`; what it says on stderr, and what it asks for, reaches the terminal |
 | `folders` | which to fetch; every folder the server offers when absent. Ask the server what it calls them — Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on another account |
 
