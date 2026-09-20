@@ -5,6 +5,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-20
+
+### Changed
+
+- **The same programs as 0.6.1, released from a commit whose CI run passed.** 0.6.1 was tagged
+  on a commit that failed CI on an unused import in a test module; nothing in the shipped binaries
+  differs
+
 ## [0.6.1] - 2026-09-20
 
 ### Fixed
