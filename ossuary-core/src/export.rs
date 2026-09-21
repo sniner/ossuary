@@ -15,13 +15,16 @@ use std::path::{Component, Path, PathBuf};
 use crate::claim::Subject;
 
 /// Where a file stood, as far as the record tells: a full path some
-/// sighting recorded, or a bare name — a derived file never sat
+/// sighting recorded, or a bare name — a derived file that never sat
 /// anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Placement {
-    /// A recorded `file:path` — absolute, in its host's own spelling.
+    /// A recorded `file:path` — absolute, in its host's own spelling,
+    /// or led by `@`: the path an unpacked entry had inside its
+    /// archive, which lays out like any other path with the `@` taken
+    /// off.
     Path(String),
-    /// A recorded `file:name` — all a derived file has.
+    /// A recorded `file:name` — all a derived file without a path has.
     Name(String),
 }
 
@@ -64,7 +67,9 @@ pub fn lay_out(pairs: &[(Subject, Placement)]) -> Vec<Placed> {
         }
         match placement {
             Placement::Path(path) => {
-                let parts = parts(path);
+                // An inner place is a path in its archive's own
+                // folders; the `@` only says so, and is no folder.
+                let parts = parts(path.strip_prefix('@').unwrap_or(path));
                 if !parts.is_empty() {
                     pathed.push((subject.clone(), parts));
                 }
@@ -250,6 +255,20 @@ mod tests {
             targets(&placed),
             ["a.txt", "backup/a.txt"],
             "the run's reality had two, so the export has two"
+        );
+    }
+
+    #[test]
+    fn an_inner_place_lays_out_as_its_path_in_the_archive() {
+        let placed = lay_out(&[
+            path(&subject("7a"), "@dir/a.txt"),
+            path(&subject("8b"), "@other/a.txt"),
+            path(&subject("9c"), "@@odd.txt"),
+        ]);
+        assert_eq!(
+            targets(&placed),
+            ["@odd.txt", "dir/a.txt", "other/a.txt"],
+            "two entries named alike in different folders stay apart; a name led by @ keeps its own"
         );
     }
 

@@ -192,7 +192,7 @@ Every line says who said it, when, and in which run — the sniffed `text/plain`
 mail extractor's sharper `message/rfc822` both stand, because the
 record keeps every word and choosing between them is the reader's
 business, not the archive's. Naming attributes narrows the answer:
-`ossuary about e176bedf zip:` is everything the zip inventory recorded
+`ossuary about e176bedf packed:` is everything the inventory recorded
 about one archive file.
 
 ## Finding files

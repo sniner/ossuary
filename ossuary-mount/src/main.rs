@@ -228,6 +228,12 @@ fn grown_view(index: &Index) -> Result<Forest> {
         let Value::String(path) = standing.value else {
             continue;
         };
+        // A place inside another content is no place in the tree: the
+        // entry's archive is what stands here. Showing an archive as a
+        // folder of its entries would be a view of its own.
+        if path.starts_with('@') {
+            continue;
+        }
         places.push(Sighting {
             path,
             digest: standing.subject.as_str().to_string(),

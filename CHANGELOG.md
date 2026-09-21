@@ -5,6 +5,20 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **A place inside an archive is spelled with a leading `@`, and stands as `file:path` on the
+  unpacked entry and as `packed:path` on the archive; `zip:entry` and `zip:path` are gone.** One
+  term now reaches a file wherever it lay: `find file:path=*/2026-03.pdf` finds it on a disk or in
+  an archive, and which archive format it was is nobody's concern. The inventory and the entry say
+  the same value from either end, so "which archive holds this" and "where did this lie" are one
+  question. An `@`-led place places nothing by itself: the entry is present while its archive is,
+  as before. `export` lays an unpacked entry out under its path in the archive, so two entries
+  named alike in different folders stay apart; the mount leaves inner places out of its tree.
+  Nothing on an existing record is rewritten: `ossuary-fix packed` says every old inventory line
+  and entry path again in the new words, `@` in front, with the old claim's moment, source and run.
+  No schema version and no extractor generation moves
+
 ## [0.7.0] - 2026-09-21
 
 ### Breaking changes

@@ -173,7 +173,9 @@ type SegmentRow = (i64, String, Option<String>, i64);
 /// collapsed. A file is *placed* while a place stands on it — a
 /// `file:path` from a walk, a `mailbox:place` from a fetch — or, for
 /// what a tool won out of another file, while its origin is placed,
-/// along `prov:origin` as far as it goes. A file whose every
+/// along `prov:origin` as far as it goes. A `file:path` led by `@`
+/// names a place inside another content and places nothing by itself:
+/// an unpacked entry is present through its archive. A file whose every
 /// place was taken back is still held, and still answers `--as-of` a
 /// day it lay somewhere, but it is not part of the present. The record
 /// is the history itself: every claim ever written, retractions
@@ -280,6 +282,13 @@ pub struct Episode {
 /// every subject a place stands on, and every subject derived from one
 /// of those.
 ///
+/// A `file:path` led by `@` is a place inside another content — an
+/// entry's path in its archive — and places nothing by itself: the
+/// entry is present while its archive is, which the step below
+/// answers, and a walk that finds the archive gone takes back the
+/// archive's place, never the entry's. Only a place of the first kind
+/// opens the recursion.
+///
 /// The step walks from a placed subject to what was derived from it:
 /// its digest, spelled as the JSON string a standing value is, looked
 /// up under `prov:origin` through `standing_lookup`. Joining the
@@ -287,7 +296,9 @@ pub struct Episode {
 /// every derivation once per placed subject.
 const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
         SELECT subject FROM standing
-         WHERE attribute IN (SELECT id FROM attributes WHERE name IN ('file:path', 'mailbox:place'))
+         WHERE (attribute = (SELECT id FROM attributes WHERE name = 'file:path')
+                AND value NOT LIKE '\"@%')
+            OR attribute = (SELECT id FROM attributes WHERE name = 'mailbox:place')
         UNION
         SELECT st.subject FROM placed
           JOIN subjects su ON su.id = placed.subject
@@ -4044,6 +4055,72 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "and goes where its mail goes"
+        );
+    }
+
+    #[test]
+    fn an_inner_place_places_nothing_by_itself() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let archive = subject();
+        let entry = other();
+        log.append(&said(
+            entry.clone(),
+            "file:path",
+            json!("@dir/a.txt"),
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        log.append(&tag_about(entry.clone(), "inner", "2026-09-01T10:00:00Z"))
+            .unwrap();
+        index.fold(&log).unwrap();
+
+        let inner = [term("user:tag", "inner")];
+        assert!(
+            index.find(&inner, &[], Scope::Present).unwrap().is_empty(),
+            "an entry with only a place inside its archive is held, not placed"
+        );
+
+        log.append(&said(
+            archive.clone(),
+            "file:path",
+            json!("/x/bundle.zip"),
+            "2026-09-01T10:00:01Z",
+        ))
+        .unwrap();
+        log.append(&said(
+            entry.clone(),
+            "prov:origin",
+            json!(archive.as_str()),
+            "2026-09-01T10:00:01Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.find(&inner, &[], Scope::Present).unwrap(),
+            vec![entry.clone()],
+            "and present through its archive"
+        );
+
+        log.append(&taken_back(
+            archive,
+            "file:path",
+            json!("/x/bundle.zip"),
+            "2026-09-02T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert!(
+            index.find(&inner, &[], Scope::Present).unwrap().is_empty(),
+            "the walk takes back the archive's place, and the entry goes with it"
+        );
+        assert_eq!(
+            index
+                .values(&entry, &Attribute::parse("file:path").unwrap(), Scope::Held)
+                .unwrap(),
+            vec![json!("@dir/a.txt")],
+            "its inner place still stands on the record"
         );
     }
 

@@ -11,7 +11,7 @@ archive.
 
 | | |
 |---|---|
-| `packed:list` | tells every entry the archive holds, one `zip:entry` finding each, **without unpacking a byte** |
+| `packed:list` | tells every entry the archive holds, one `packed:path` finding each, **without unpacking a byte** |
 | `packed:unpack` | writes every entry out as a derived file of its own |
 
 Each has its own source, its own worklist and its own receipts — a zip
@@ -26,24 +26,29 @@ run = ["packed:list"]
 
 ## What it puts on the record
 
-`list` answers the inventory, entry names as the zip spells them, sorted
-so the answer reads the same however the zip was written. Directories are
-structure, not content, and stay untold:
+A place inside another content is spelled with a leading `@` and the
+entry's path verbatim after it. `list` answers the inventory in that
+spelling, sorted so the answer reads the same however the zip was
+written. Directories are structure, not content, and stay untold:
 
 ```
-zip:entry = "invoices/2026-03.pdf"
-zip:entry = "notes.txt"
+packed:path = "@invoices/2026-03.pdf"
+packed:path = "@notes.txt"
 ```
 
 `unpack` announces each entry as a derived file, taken into the archive
-with `prov:origin` naming the zip. An announced name is bare, so
-inner paths are flattened and the full path goes on the record as
-`zip:path`; where two names collide a counter slips in before the
-extension, a name longer than a filesystem takes is cut to fit, and the
-name the zip spelled stands beside it as `file:name` either way. A zip
-declares no kinds, so each announcement carries the same
-magic-bytes-then-UTF-8 look ingest would take. An entry streams into
-its file as it is read; none is held in memory whole.
+with `prov:origin` naming the zip. An announced name is bare, so inner
+paths are flattened and the entry's place goes on the record as its
+`file:path`, the same `@`-led value the inventory spelled — so "which
+archive holds this" and "where did this lie in its archive" are one
+question asked from either end, and `find file:path=*/2026-03.pdf`
+reaches the file whether it lay on a disk or in an archive. Where two
+names collide a counter slips in before the extension, a name longer
+than a filesystem takes is cut to fit, and the name the zip spelled
+stands beside it as `file:name` either way. A zip declares no kinds,
+so each announcement carries the same magic-bytes-then-UTF-8 look
+ingest would take. An entry streams into its file as it is read; none
+is held in memory whole.
 
 ## Not every zip is an archive
 

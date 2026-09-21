@@ -70,9 +70,10 @@ its maker, in its source.
 - `mail:` — a message's own voice, verbatim, as `ossuary-extract-mail`
   reads it — its headers standing on the mail, a part's identity on the
   part
-- `zip:` — what a zip archive says about itself, verbatim, as
-  `ossuary-extract-packed` reads it — the inventory standing on the
-  archive, an entry's place on the unpacked file
+- `packed:` — what a packed archive says about its inside, as
+  `ossuary-extract-packed` reads it: the inventory, standing on the
+  archive. Named for the thing, not the format — a reader asking which
+  archive holds a file does not care whether it was a zip
 - `mailbox:` — the mailbox as observed: where a message was when it
   was fetched, as `ossuary-mailvault` saw it
 
@@ -118,15 +119,26 @@ need.
 
 ### file:path
 
-- meaning: the real place a file sat when it was taken in — absolute,
-  symlinks and `..` resolved, the name included: one sighting, one
-  atomic value. Places accrete; the machine each one is on is
-  `prov:host`, said in the same breath. A standing place is what makes
-  a file part of the present: `find` answers only with files a place
-  stands on, or that were won out of one (`prov:origin`);
+- meaning: a place the content was seen at, in its container's own
+  spelling, the container said in the same breath. On a filesystem:
+  the real place a file sat when it was taken in — absolute, symlinks
+  and `..` resolved, the name included: one sighting, one atomic
+  value, the machine it is on `prov:host`. Inside another content: the
+  path an entry had in its archive, spelled with a leading `@` and the
+  entry's path verbatim after it (`@invoices/2026-03.pdf`; an entry
+  that itself begins with `@` reads `@@…`), the archive `prov:origin`.
+  Places accrete. One term reaches a file wherever it lay:
+  `file:path=*/2026-03.pdf` finds it on a disk or in an archive, and
+  which archive format it was is nobody's concern. What becomes of an
+  inner place is the reader's business: `export` lays the entry out
+  under its path in the archive, the mount leaves it out of its tree.
+  A standing place of the first kind is what makes a file part of the
+  present: `find` answers only with files such a place stands on, or
+  that were won out of one (`prov:origin`); an `@`-led place places
+  nothing by itself — the entry is present while its archive is;
   `--all` asks for every file held
 - value: string, a path
-- written by: ingest
+- written by: ingest; ossuary-extract-packed, on an unpacked entry
 - taken back by: ingest, when a later run over the same directory on
   the same host meets no file there — the file no longer lies at that
   place. What the run did not cover it does not judge: a directory
@@ -286,23 +298,19 @@ need.
 - value: string
 - written by: ossuary-extract-mail
 
-### zip:entry
+### packed:path
 
-- meaning: one entry a zip archive holds, spelled as the archive spells
-  it, inner path included — the inventory, standing on the archive
-  itself whether or not anything was unpacked, so "which zip holds a
-  file so named" is a question the record answers. Directories are
-  structure, not content, and stay untold
-- value: string, the entry's path inside the archive
+- meaning: one entry a packed archive holds — the inventory, standing
+  on the archive itself whether or not anything was unpacked, so
+  "which archive holds a file so named" is a question the record
+  answers. Spelled as an inner place, the way `file:path` spells one:
+  a leading `@`, the entry's path verbatim after it. The unpacked entry
+  says the same value on itself as `file:path`, with `prov:origin`
+  naming the archive — one spelling both ways, so an entry that
+  stayed inside is one whose `packed:path` no derived file answers
+  to. Directories are structure, not content, and stay untold
+- value: string, an `@`-led path inside the archive
 - written by: ossuary-extract-packed, under its `list` contract
-
-### zip:path
-
-- meaning: where an unpacked file sat inside its zip — the full entry
-  path, standing on the derived file, whose bare name is `file:name`
-  and whose origin is `prov:origin`
-- value: string, the entry's path inside the archive
-- written by: ossuary-extract-packed, under its `unpack` contract
 
 ### mailbox:place
 

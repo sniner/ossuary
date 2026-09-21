@@ -7,8 +7,16 @@
 //! and its own receipts. Called with the contract's name as the first
 //! argument — and, for `unpack`, the output directory as the second —
 //! it reads one file's bytes from stdin. `list` tells every entry the
-//! archive holds, one `zip:entry` finding each, without unpacking a
+//! archive holds, one `packed:path` finding each, without unpacking a
 //! byte; `unpack` writes every entry out as a file of its own.
+//!
+//! A place inside another content is spelled with a leading `@` and
+//! the entry's path verbatim after it: `@invoices/2026-03.pdf`. The
+//! inventory says it on the archive as `packed:path`; the unpacked file
+//! says it on itself as `file:path`, beside `prov:origin` naming the
+//! archive. The same spelling both ways, so "which archive holds this"
+//! and "where did this lie in its archive" are one question asked from
+//! either end, and whether the archive was a zip is nobody's concern.
 //!
 //! Not every zip is an archive. epub and the `OpenDocument` family open
 //! with an entry named `mimetype` holding nothing but their own kind,
@@ -25,7 +33,8 @@
 //! bare — so colliding names yield to a counter, a name longer than a
 //! filesystem takes is cut to fit, the true name goes on the record as
 //! `file:name` always, since the announced one is a handle the record
-//! never learns, and every file's full entry path as `zip:path`. A zip declares no kinds, so each announcement carries
+//! never learns, and every file's full entry path as its `@`-led
+//! `file:path`. A zip declares no kinds, so each announcement carries
 //! the same magic-bytes-then-UTF-8 look ingest would take, taken on the
 //! way out: an entry streams into its file, never through memory
 //! whole, and one that unpacks to more than [`UNPACKED_AT_MOST`] stays
@@ -230,10 +239,10 @@ fn mimey(declared: &str) -> bool {
     matches!(declared.split_once('/'), Some((kind, subtype)) if fits(kind) && fits(subtype))
 }
 
-/// The inventory: one finding per file entry, the entry's name as the
-/// zip spells it. Directories are structure, not content, and stay
-/// untold. Sorted so the answer reads the same however the zip was
-/// written — the record holds a set either way.
+/// The inventory: one finding per file entry, the entry's path as the
+/// zip spells it, as an inner place. Directories are structure, not
+/// content, and stay untold. Sorted so the answer reads the same
+/// however the zip was written — the record holds a set either way.
 fn list<R: Read + Seek>(archive: &ZipArchive<R>) -> Vec<serde_json::Value> {
     let mut entries: Vec<&str> = archive
         .file_names()
@@ -242,8 +251,16 @@ fn list<R: Read + Seek>(archive: &ZipArchive<R>) -> Vec<serde_json::Value> {
     entries.sort_unstable();
     entries
         .into_iter()
-        .map(|entry| json!({ "attribute": "zip:entry", "value": entry }))
+        .map(|entry| json!({ "attribute": "packed:path", "value": inner(entry) }))
         .collect()
+}
+
+/// A place inside another content, spelled: a leading `@`, then the
+/// entry's path verbatim — an entry that itself begins with `@` reads
+/// `@@…`. The one spelling both the inventory and the unpacked file
+/// use.
+fn inner(entry: &str) -> String {
+    format!("@{entry}")
 }
 
 /// Every entry out as a file of its own: flattened to its bare name,
@@ -343,7 +360,9 @@ fn unpack<R: Read + Seek>(
         // the announcement could wear it: the announced name is a
         // handle in the directory, and the record never learns it.
         lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
-        lines.push(json!({ "file": &announced, "attribute": "zip:path", "value": spelled }));
+        lines.push(
+            json!({ "file": &announced, "attribute": "file:path", "value": inner(&spelled) }),
+        );
     }
     Ok(lines)
 }
@@ -644,8 +663,8 @@ mod tests {
         assert_eq!(
             harvest(&bytes, Contract::List, None).unwrap(),
             vec![
-                json!({ "attribute": "zip:entry", "value": "dir/inner.bin" }),
-                json!({ "attribute": "zip:entry", "value": "readme.txt" }),
+                json!({ "attribute": "packed:path", "value": "@dir/inner.bin" }),
+                json!({ "attribute": "packed:path", "value": "@readme.txt" }),
             ]
         );
     }
@@ -667,16 +686,16 @@ mod tests {
         };
         expect(json!({ "file": "a.txt", "mime": "text/plain" }));
         expect(json!({ "file": "a.txt", "attribute": "file:name", "value": "a.txt" }));
-        expect(json!({ "file": "a.txt", "attribute": "zip:path", "value": "a.txt" }));
+        expect(json!({ "file": "a.txt", "attribute": "file:path", "value": "@a.txt" }));
         expect(json!({ "file": "a-2.txt", "mime": "text/plain" }));
         expect(json!({ "file": "a-2.txt", "attribute": "file:name", "value": "a.txt" }));
-        expect(json!({ "file": "a-2.txt", "attribute": "zip:path", "value": "dir/a.txt" }));
+        expect(json!({ "file": "a-2.txt", "attribute": "file:path", "value": "@dir/a.txt" }));
         expect(json!({ "file": "carried.zip", "mime": "application/zip" }));
         expect(json!({ "file": "carried.zip", "attribute": "file:name", "value": "carried.zip" }));
         expect(json!({
             "file": "carried.zip",
-            "attribute": "zip:path",
-            "value": "dir/deeper/carried.zip",
+            "attribute": "file:path",
+            "value": "@dir/deeper/carried.zip",
         }));
         assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"first");
         assert_eq!(
@@ -887,8 +906,8 @@ mod tests {
         })));
         assert!(lines.contains(&json!({
             "file": &announced,
-            "attribute": "zip:path",
-            "value": spelled,
+            "attribute": "file:path",
+            "value": format!("@{spelled}"),
         })));
         assert!(dir.path().join(&announced).is_file());
     }
