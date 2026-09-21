@@ -163,10 +163,10 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
         lines.push(json!({ "file": &announced, "mime": kind(part) }));
-        if let Some(name) = wanted.filter(|name| *name != announced) {
-            // The announcement had to yield to a name already taken, or
-            // to what a filesystem takes; the name the mail spelled goes
-            // on the record beside it.
+        if let Some(name) = wanted {
+            // The name the mail spelled goes on the record, whether or
+            // not the announcement could wear it: the announced name is
+            // a handle in the directory, and the record never learns it.
             lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
         }
         if let Some(id) = part.content_id() {
@@ -724,6 +724,11 @@ mod tests {
         let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
 
         assert!(lines.contains(&json!({ "file": "image.png", "mime": "image/png" })));
+        assert!(lines.contains(&json!({
+            "file": "image.png",
+            "attribute": "file:name",
+            "value": "image.png",
+        })));
         assert!(lines.contains(&json!({ "file": "image-2.png", "mime": "image/png" })));
         assert!(
             lines.contains(&json!({

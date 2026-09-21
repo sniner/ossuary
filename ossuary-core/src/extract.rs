@@ -44,7 +44,10 @@ pub const EXAMINED: &str = "prov:examined";
 /// whatever else it said about this file rather than the examined one.
 #[derive(Debug)]
 pub struct Derivation {
-    /// The announced name — what `file:name` will say.
+    /// The announced name: the file's handle in the scratch directory,
+    /// for the lines that speak about it and for the tally. The record
+    /// never learns it. A name the content was known by is a finding
+    /// the extractor says as `file:name`, when there is one.
     pub name: String,
     /// The announced MIME type — what `file:mime` will say. The one who
     /// wrote the bytes is not guessed at.
@@ -76,10 +79,13 @@ pub struct Examined {
 /// the receipt.
 ///
 /// A derived file is content with a record like any other, and the log
-/// says so: its `file:mime` and `file:name` in the extractor's words, its
+/// says so: its `file:mime` in the extractor's words, its
 /// origin as `derive:derived-from`, and — for bytes new
 /// to the store — its `file:size`, the way ingest says it: a fact of the
-/// content, once.
+/// content, once. No `file:name` is made up here: the announced name is
+/// a handle, and a name the content was known by is the extractor's to
+/// say, as a finding, where the format spelled one. Extracted text has
+/// none.
 /// Findings the extractor made about a derived file stand on it, not on
 /// the examined one. All claims of one examination carry one moment and
 /// one source; the caller vouches for the findings being what the
@@ -192,10 +198,10 @@ fn take(
         }
         // The size describes the content and is said on the bytes' first
         // day, the way ingest says it — and ingest already said it for
-        // everything content/ holds. Kind, name and origin belong to
-        // this derivation: another extractor, another mail may know
-        // the same bytes under other words, and every word stands in
-        // the set.
+        // everything content/ holds. Kind and origin belong to this
+        // derivation: another extractor, another mail may know the
+        // same bytes under other words, and every word stands in the
+        // set.
         if status.is_new() {
             let attribute = known_attribute("file:size");
             append(log, &subject, &attribute, &json!(size), time, source, run)?;
@@ -209,7 +215,6 @@ fn take(
     }
     let told = [
         (known_attribute("file:mime"), json!(derivation.mime)),
-        (known_attribute("file:name"), json!(derivation.name)),
         (
             known_attribute("derive:derived-from"),
             json!(origin.as_str()),
@@ -513,8 +518,8 @@ mod tests {
         assert_eq!(written.stored, 1, "the bytes were new to the store");
         assert_eq!(written.known, 0);
         assert_eq!(
-            written.claims, 6,
-            "size, kind, name, origin and the finding on the derived file, then the receipt"
+            written.claims, 5,
+            "size, kind, origin and the finding on the derived file, then the receipt"
         );
 
         let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF-1.7").as_str()).unwrap();
@@ -535,7 +540,10 @@ mod tests {
         };
         assert_eq!(value("file:size"), [serde_json::json!(8)]);
         assert_eq!(value("file:mime"), [serde_json::json!("application/pdf")]);
-        assert_eq!(value("file:name"), [serde_json::json!("report.pdf")]);
+        assert!(
+            value("file:name").is_empty(),
+            "the announced name is a handle; a name is the extractor's to say"
+        );
         assert_eq!(
             value("derive:derived-from"),
             [serde_json::json!(mail.as_str())],
@@ -612,16 +620,12 @@ mod tests {
         assert_eq!(written.stored, 0);
         assert_eq!(written.known, 1, "the bytes were already held");
         assert_eq!(
-            written.claims, 4,
-            "kind, name and origin again — the size is a fact of the content, said once"
+            written.claims, 3,
+            "kind and origin again — the size is a fact of the content, said once"
         );
 
         let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF").as_str()).unwrap();
         index.fold(archive.log()).unwrap();
-        let names = index
-            .values(&pdf, &Attribute::parse("file:name").unwrap(), Scope::Held)
-            .unwrap();
-        assert_eq!(names.len(), 2, "both names stand in the set");
         let origins = index
             .values(
                 &pdf,

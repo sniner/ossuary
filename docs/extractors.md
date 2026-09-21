@@ -104,7 +104,12 @@ shapes:
   see the [vocabulary](vocabulary.md).
 - The second announces a derived file: `file` is its name in the
   directory — bare, no path in it — and `mime` is what it is, said by
-  the one who wrote the bytes instead of guessed from them. Only
+  the one who wrote the bytes instead of guessed from them. The name is
+  a handle: it tells the lines that follow which file they speak about,
+  and the record never learns it. A name the content was known by, an
+  attachment's own or a zip entry's, is a finding of the third shape,
+  `file:name`, said whenever the format spelled one; extracted text
+  has no name and says none. Only
   announced files are taken in; anything else in the directory is the
   extractor's workspace, ignored and swept.
 - The third is a finding about an announced derived file rather than
@@ -139,9 +144,10 @@ source, findings without `file` with the examined file's subject, and
 findings with `file` with the derived file's — the extractor cannot
 know that name, since it is the bytes' own. Each announced file goes
 into the archive's derived store, content with a record like any other,
-and onto that record what is known: `file:mime` and `file:name` as announced,
+and onto that record what is known: `file:mime` as announced,
 `derive:derived-from` naming the examined file, and — for bytes the
-store meets for the first time — `file:size`. Bytes the content store
+store meets for the first time — `file:size`. No name is made up: a
+`file:name` stands there only where the extractor said one. Bytes the content store
 already holds — an attachment that was also saved and taken in as a
 file — get no copy in the derived store: the record grows all the
 same, and a subject names content wherever it lies, so the bytes

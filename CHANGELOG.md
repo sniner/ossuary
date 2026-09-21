@@ -5,6 +5,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A derived file carries a `file:name` only where the extractor said one.** The name an
+  extractor announces a file under is a handle in its working directory; the record used to learn it
+  as `file:name`, so every text excerpt was called `text.txt` and an attachment whose name had to
+  yield to a collision stood under the made-up one as well. Mail attachments and zip entries keep
+  their names, said by the extractor; extracted text has none. Names already on the record stay
+  there, the log being what it is; `ossuary retract` takes one back where it bothers
+
 ## [0.6.3] - 2026-09-21
 
 ### Fixed

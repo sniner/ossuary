@@ -143,8 +143,10 @@ need.
   attachment's own file name). Names accrete like sightings do: bytes
   met again under another name hold both
 - value: string, a bare file name
-- written by: ingest; `ossuary extract`, in the deriving extractor's
-  words
+- written by: ingest; ossuary-extract-mail and ossuary-extract-packed,
+  for a derived file the mail or the zip named. A derived file nobody
+  named, extracted text for one, carries none: the name an extractor
+  announces it under is a handle, and the record never learns it
 
 ### file:size
 

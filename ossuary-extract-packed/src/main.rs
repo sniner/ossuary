@@ -24,8 +24,8 @@
 //! Unpacked entries lose their inner paths — an announced name is
 //! bare — so colliding names yield to a counter, a name longer than a
 //! filesystem takes is cut to fit, the true name goes on the record as
-//! `file:name` either way, and every file's full entry path as
-//! `zip:path`. A zip declares no kinds, so each announcement carries
+//! `file:name` always, since the announced one is a handle the record
+//! never learns, and every file's full entry path as `zip:path`. A zip declares no kinds, so each announcement carries
 //! the same magic-bytes-then-UTF-8 look ingest would take, taken on the
 //! way out: an entry streams into its file, never through memory
 //! whole, and one that unpacks to more than [`UNPACKED_AT_MOST`] stays
@@ -339,12 +339,10 @@ fn unpack<R: Read + Seek>(
             }
         }
         lines.push(json!({ "file": &announced, "mime": look.kind() }));
-        if name != announced {
-            // The announcement had to yield to a name already taken, or
-            // to what a filesystem takes; the name the zip spelled goes
-            // on the record beside it.
-            lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
-        }
+        // The name the zip spelled goes on the record, whether or not
+        // the announcement could wear it: the announced name is a
+        // handle in the directory, and the record never learns it.
+        lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
         lines.push(json!({ "file": &announced, "attribute": "zip:path", "value": spelled }));
     }
     Ok(lines)
@@ -668,11 +666,13 @@ mod tests {
             assert!(lines.contains(&line), "missing {line}; got {lines:#?}");
         };
         expect(json!({ "file": "a.txt", "mime": "text/plain" }));
+        expect(json!({ "file": "a.txt", "attribute": "file:name", "value": "a.txt" }));
         expect(json!({ "file": "a.txt", "attribute": "zip:path", "value": "a.txt" }));
         expect(json!({ "file": "a-2.txt", "mime": "text/plain" }));
         expect(json!({ "file": "a-2.txt", "attribute": "file:name", "value": "a.txt" }));
         expect(json!({ "file": "a-2.txt", "attribute": "zip:path", "value": "dir/a.txt" }));
         expect(json!({ "file": "carried.zip", "mime": "application/zip" }));
+        expect(json!({ "file": "carried.zip", "attribute": "file:name", "value": "carried.zip" }));
         expect(json!({
             "file": "carried.zip",
             "attribute": "zip:path",
