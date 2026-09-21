@@ -5,6 +5,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`find`, `ls`, `tree` and the mount answer in well under a second again.** Asking the
+  present, the default scope, walked from every placed file to what was derived from it without an
+  index, and took the better part of a minute on an archive of some thirty thousand files; the walk
+  now goes through the index the cache already had. Nothing on the record changes, and the cache
+  needs no rebuild
+
 ## [0.6.2] - 2026-09-20
 
 ### Changed

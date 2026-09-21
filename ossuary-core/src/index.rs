@@ -279,14 +279,20 @@ pub struct Episode {
 /// The recursive table of placed subjects, for a query to open with:
 /// every subject a place stands on, and every subject derived from one
 /// of those.
+///
+/// The step walks from a placed subject to what was derived from it:
+/// its digest, spelled as the JSON string a standing value is, looked
+/// up under `derive:derived-from` through `standing_lookup`. Joining the
+/// other way round, on the value unquoted, has no index to use and reads
+/// every derivation once per placed subject.
 const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
         SELECT subject FROM standing
          WHERE attribute IN (SELECT id FROM attributes WHERE name IN ('file:path', 'mailbox:place'))
         UNION
-        SELECT st.subject FROM standing st
-          JOIN subjects su ON su.digest = json_extract(st.value, '$')
-          JOIN placed ON placed.subject = su.id
-         WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'derive:derived-from')
+        SELECT st.subject FROM placed
+          JOIN subjects su ON su.id = placed.subject
+          JOIN standing st ON st.attribute = (SELECT id FROM attributes WHERE name = 'derive:derived-from')
+                          AND st.value = json_quote(su.digest)
     ) ";
 
 /// A disposable query index over a claim log.
