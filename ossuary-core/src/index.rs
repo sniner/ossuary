@@ -173,7 +173,7 @@ type SegmentRow = (i64, String, Option<String>, i64);
 /// collapsed. A file is *placed* while a place stands on it — a
 /// `file:path` from a walk, a `mailbox:place` from a fetch — or, for
 /// what a tool won out of another file, while its origin is placed,
-/// along `derive:derived-from` as far as it goes. A file whose every
+/// along `prov:origin` as far as it goes. A file whose every
 /// place was taken back is still held, and still answers `--as-of` a
 /// day it lay somewhere, but it is not part of the present. The record
 /// is the history itself: every claim ever written, retractions
@@ -282,7 +282,7 @@ pub struct Episode {
 ///
 /// The step walks from a placed subject to what was derived from it:
 /// its digest, spelled as the JSON string a standing value is, looked
-/// up under `derive:derived-from` through `standing_lookup`. Joining the
+/// up under `prov:origin` through `standing_lookup`. Joining the
 /// other way round, on the value unquoted, has no index to use and reads
 /// every derivation once per placed subject.
 const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
@@ -291,7 +291,7 @@ const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
         UNION
         SELECT st.subject FROM placed
           JOIN subjects su ON su.id = placed.subject
-          JOIN standing st ON st.attribute = (SELECT id FROM attributes WHERE name = 'derive:derived-from')
+          JOIN standing st ON st.attribute = (SELECT id FROM attributes WHERE name = 'prov:origin')
                           AND st.value = json_quote(su.digest)
     ) ";
 
@@ -759,7 +759,7 @@ impl Index {
     }
 
     /// What was won out of one subject: every subject whose
-    /// `derive:derived-from` names it, one step down, in digest order.
+    /// `prov:origin` names it, one step down, in digest order.
     /// The [`Scope`] reads as in [`values`](Index::values): the standing
     /// origins, or every origin ever said. Each answer is one step; the
     /// whole tree is walked by asking again for each answer.
@@ -776,7 +776,7 @@ impl Index {
             // to grandchildren is the caller's, one step at a time.
             "SELECT DISTINCT su.digest
              FROM {} st JOIN subjects su ON su.id = st.subject
-             WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'derive:derived-from')
+             WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'prov:origin')
                AND st.value = json_quote(?1)
              ORDER BY su.digest",
             rows_of(scope)
@@ -3951,7 +3951,7 @@ mod tests {
         for (child, origin) in [(&pdf, &mail), (&image, &mail), (&text, &pdf)] {
             log.append(&said(
                 child.clone(),
-                "derive:derived-from",
+                "prov:origin",
                 json!(origin.as_str()),
                 "2026-09-01T10:00:00Z",
             ))
@@ -3976,7 +3976,7 @@ mod tests {
 
         log.append(&taken_back(
             image.clone(),
-            "derive:derived-from",
+            "prov:origin",
             json!(mail.as_str()),
             "2026-09-02T10:00:00Z",
         ))
@@ -4010,7 +4010,7 @@ mod tests {
         .unwrap();
         log.append(&said(
             derived.clone(),
-            "derive:derived-from",
+            "prov:origin",
             json!(origin.as_str()),
             "2026-09-01T10:00:00Z",
         ))

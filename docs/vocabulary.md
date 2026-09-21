@@ -45,19 +45,21 @@ point.
 
 **Links are values.** A relation's value is a full subject — the bare
 hex, full length. There is no `link:` namespace — namespaces sort by meaning
-domain, and a value's type is vocabulary metadata, declared here. There
-is no `derive:generated-by` either: every claim already names its maker,
-in its source.
+domain, and a value's type is vocabulary metadata, declared here. Where a
+derived blob came from is provenance, so its origin stands under `prov:`
+beside who took content in and who looked at it, not in a namespace of
+relations; and there is no `prov:generated-by`: every claim already names
+its maker, in its source.
 
 ## Namespaces
 
 - `prov:` — provenance: the archive's own acts — who took content in,
-  what has looked at it and what the looking remarked. In which call a
+  what has looked at it, what the looking remarked, and what content
+  was won out of what. In which call a
   claim was written is not an attribute but the claim's own `run`
   field, spelled in the [format](format.md)
 - `file:` — the file as observed: its places, names, size, kind and
   mtimes — what any format has on day one
-- `derive:` — relations between content: what came from what
 - `user:` — what the user says; the archive takes their word
 - `exif:` — verbatim EXIF fields, as `ossuary-extract-image` reads them
 - `raster:` — the pixel grid as the file's header describes it, as
@@ -121,7 +123,7 @@ need.
   atomic value. Places accrete; the machine each one is on is
   `prov:host`, said in the same breath. A standing place is what makes
   a file part of the present: `find` answers only with files a place
-  stands on, or that were won out of one (`derive:derived-from`);
+  stands on, or that were won out of one (`prov:origin`);
   `--all` asks for every file held
 - value: string, a path
 - written by: ingest
@@ -183,7 +185,7 @@ need.
 - value: string
 - written by: ingest
 
-### derive:derived-from
+### prov:origin
 
 - meaning: what this content came from — stands on the derived blob and
   points at its origin. Who made the derivation is the claim's source
@@ -262,7 +264,7 @@ need.
   the value as the document spells it: a date stays
   `"D:20190714110241+02'00'"`. The extracted text itself is not an
   attribute but a derived file, `text/plain`, tied to the document by
-  `derive:derived-from`
+  `prov:origin`
 - value: string
 - written by: ossuary-extract-pdf
 
@@ -279,7 +281,7 @@ need.
   return-path, the x- families — describes the journey, not the message,
   and stays untold. What the mail carries — named attachments, nested
   messages — is not an attribute but derived files, tied to the mail by
-  `derive:derived-from`; on such a part stands `mail:content-id`, the
+  `prov:origin`; on such a part stands `mail:content-id`, the
   part's identity as the mail spelled it (`"<part2@example.com>"`)
 - value: string
 - written by: ossuary-extract-mail
@@ -298,7 +300,7 @@ need.
 
 - meaning: where an unpacked file sat inside its zip — the full entry
   path, standing on the derived file, whose bare name is `file:name`
-  and whose origin is `derive:derived-from`
+  and whose origin is `prov:origin`
 - value: string, the entry's path inside the archive
 - written by: ossuary-extract-packed, under its `unpack` contract
 

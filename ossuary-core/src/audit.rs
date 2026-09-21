@@ -51,7 +51,7 @@ use crate::log::{Contents, Log};
 /// is a reference like the claim's own subject, and the audit follows
 /// both — a derived file's origin must be held no less than the derived
 /// file itself.
-const LINKS: [&str; 1] = ["derive:derived-from"];
+const LINKS: [&str; 1] = ["prov:origin"];
 
 /// One blob store's fixity: every entry read whole, its bytes re-hashed
 /// against the name they are filed under.
@@ -1415,12 +1415,7 @@ mod tests {
         let ghost = Subject::parse(&"ab".repeat(32)).unwrap();
         record(&archive, &ghost, "user:tag", json!("gone"));
         let linked = Subject::parse(&"cd".repeat(32)).unwrap();
-        record(
-            &archive,
-            &held,
-            "derive:derived-from",
-            json!(linked.as_str()),
-        );
+        record(&archive, &held, "prov:origin", json!(linked.as_str()));
         // A string value outside the link attributes is words, not a name.
         record(&archive, &held, "user:comment", json!(&"ef".repeat(32)));
 

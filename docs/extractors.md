@@ -145,7 +145,7 @@ findings with `file` with the derived file's — the extractor cannot
 know that name, since it is the bytes' own. Each announced file goes
 into the archive's derived store, content with a record like any other,
 and onto that record what is known: `file:mime` as announced,
-`derive:derived-from` naming the examined file, and — for bytes the
+`prov:origin` naming the examined file, and — for bytes the
 store meets for the first time — `file:size`. No name is made up: a
 `file:name` stands there only where the extractor said one. Bytes the content store
 already holds — an attachment that was also saved and taken in as a

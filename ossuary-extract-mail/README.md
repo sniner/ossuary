@@ -35,7 +35,7 @@ U+FFFD rather than silencing its whole header.
 ## What it hands over
 
 Every attachment and every nested message becomes a derived file, taken
-into the archive with `derive:derived-from` naming the mail it came out
+into the archive with `prov:origin` naming the mail it came out
 of. Announced with the kind the mail itself declared — not a guess from
 the bytes — and under the name the mail spelled, flattened to a bare file
 name. A forwarded message nobody named gets `message.eml`, a nameless

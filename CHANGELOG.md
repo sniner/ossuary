@@ -5,12 +5,22 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **A derived file's origin is `prov:origin`, no longer `derive:derived-from`.** Where a blob came
+  from is provenance, so it stands beside `prov:examined` instead of alone in a namespace of its
+  own, and the one attribute that was a predicate is now a noun like every other, so a term reads as
+  one: `find prov:origin=e9ed…`. Nothing on an existing record is rewritten, the log being what it is,
+  but the present is asked in the new words: a derived file whose origin stands only under the old
+  name is held, not placed, until said again. `ossuary extract --full` says it again for every
+  extractor; the old claims stay on the record as they were said. No schema version moves
+
 ### Added
 
 - **`find --with-derived` answers each match with what was won out of it.** Every derived file
   stands indented beneath its origin, as far as the derivations go, showing its kind ahead of what
   the question shows: a mail, its attachment, the attachment's text, in one answer instead of a
-  copied id and a second `find derive:derived-from=…`. Under `--id` the names come flat, ready for
+  copied id and a second `find prov:origin=…`. Under `--id` the names come flat, ready for
   `export`; under `--json` they nest under `derived`; the count says `3 file(s), 5 derived`
 
 ### Changed

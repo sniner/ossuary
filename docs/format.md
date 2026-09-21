@@ -86,7 +86,7 @@ understands.
 
 `content/` holds what was taken in: the originals. `derived/` holds what
 tools made of them — extracted text, unpacked attachments — content too,
-linked to its origin by `derive:` claims. The split is a rank, and the
+linked to its origin by `prov:origin` claims. The split is a rank, and the
 directory boundary enforces it: what was taken in and what a tool made
 do not mingle, so nothing that ever maintains `derived/` can reach the
 originals. The same bytes may lawfully stand in both stores — an invoice
@@ -188,7 +188,7 @@ from the log.
 `namespace:attribute`, lowercase `a-z`, `0-9` and `-`, one colon. Unknown
 attributes are legal — a claim nobody understands yet is a queue entry, not
 an error. The namespaces in use (`prov:`, `file:`, `exif:`, `user:`,
-`derive:`, …) and their vocabulary are documented separately; the format
+`mail:`, …) and their vocabulary are documented separately; the format
 does not depend on them.
 
 ## Segments

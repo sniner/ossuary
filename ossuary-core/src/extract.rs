@@ -80,7 +80,7 @@ pub struct Examined {
 ///
 /// A derived file is content with a record like any other, and the log
 /// says so: its `file:mime` in the extractor's words, its
-/// origin as `derive:derived-from`, and — for bytes new
+/// origin as `prov:origin`, and — for bytes new
 /// to the store — its `file:size`, the way ingest says it: a fact of the
 /// content, once. No `file:name` is made up here: the announced name is
 /// a handle, and a name the content was known by is the extractor's to
@@ -215,10 +215,7 @@ fn take(
     }
     let told = [
         (known_attribute("file:mime"), json!(derivation.mime)),
-        (
-            known_attribute("derive:derived-from"),
-            json!(origin.as_str()),
-        ),
+        (known_attribute("prov:origin"), json!(origin.as_str())),
     ];
     for (attribute, value) in &told {
         append(log, &subject, attribute, value, time, source, run)?;
@@ -545,7 +542,7 @@ mod tests {
             "the announced name is a handle; a name is the extractor's to say"
         );
         assert_eq!(
-            value("derive:derived-from"),
+            value("prov:origin"),
             [serde_json::json!(mail.as_str())],
             "the derived file points at its origin"
         );
@@ -627,11 +624,7 @@ mod tests {
         let pdf = Subject::parse(archive.content().algorithm().hash(b"%PDF").as_str()).unwrap();
         index.fold(archive.log()).unwrap();
         let origins = index
-            .values(
-                &pdf,
-                &Attribute::parse("derive:derived-from").unwrap(),
-                Scope::Held,
-            )
+            .values(&pdf, &Attribute::parse("prov:origin").unwrap(), Scope::Held)
             .unwrap();
         assert_eq!(origins.len(), 2, "and both origins");
         let sizes = index
@@ -686,7 +679,7 @@ mod tests {
             index
                 .values(
                     &saved,
-                    &Attribute::parse("derive:derived-from").unwrap(),
+                    &Attribute::parse("prov:origin").unwrap(),
                     Scope::Held
                 )
                 .unwrap(),

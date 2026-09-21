@@ -220,9 +220,9 @@ claim ever written, retractions included. The attachment from the mail
 above is found like any other file, with its origin one term away:
 
 ```console
-$ ossuary find 'file:name=*.pdf' derive:derived-from
+$ ossuary find 'file:name=*.pdf' prov:origin
 b5743276
-  derive:derived-from=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
+  prov:origin=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
 1 file(s)
 ```
 

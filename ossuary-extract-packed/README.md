@@ -36,7 +36,7 @@ zip:entry = "notes.txt"
 ```
 
 `unpack` announces each entry as a derived file, taken into the archive
-with `derive:derived-from` naming the zip. An announced name is bare, so
+with `prov:origin` naming the zip. An announced name is bare, so
 inner paths are flattened and the full path goes on the record as
 `zip:path`; where two names collide a counter slips in before the
 extension, a name longer than a filesystem takes is cut to fit, and the
