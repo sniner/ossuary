@@ -758,6 +758,37 @@ impl Index {
         Ok(standing)
     }
 
+    /// What was won out of one subject: every subject whose
+    /// `derive:derived-from` names it, one step down, in digest order.
+    /// The [`Scope`] reads as in [`values`](Index::values): the standing
+    /// origins, or every origin ever said. Each answer is one step; the
+    /// whole tree is walked by asking again for each answer.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-subject errors cannot
+    /// happen for rows a fold wrote, but are propagated rather than sworn
+    /// away.
+    pub fn derived(&self, subject: &Subject, scope: Scope) -> Result<Vec<Subject>> {
+        let mut statement = self.connection.prepare(&format!(
+            // The origin's digest, spelled as the JSON string a value is,
+            // finds its derivations through the lookup index; the walk
+            // to grandchildren is the caller's, one step at a time.
+            "SELECT DISTINCT su.digest
+             FROM {} st JOIN subjects su ON su.id = st.subject
+             WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'derive:derived-from')
+               AND st.value = json_quote(?1)
+             ORDER BY su.digest",
+            rows_of(scope)
+        ))?;
+        let rows = statement.query_map(params![subject.as_str()], |row| row.get::<_, String>(0))?;
+        let mut subjects = Vec::new();
+        for row in rows {
+            subjects.push(Subject::parse(&row?)?);
+        }
+        Ok(subjects)
+    }
+
     /// Everything currently standing on one subject: every standing
     /// `(attribute, value)` pair, ordered by attribute and value — as of
     /// the last [`fold`](Index::fold), the open head included. The whole
@@ -3901,6 +3932,65 @@ mod tests {
             before.find(&holiday, &[], Scope::Present).unwrap(),
             vec![placed],
             "as of the day it lay there, it did"
+        );
+    }
+
+    #[test]
+    fn what_was_derived_answers_one_step_down() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let mail = subject();
+        let pdf = other();
+        let text =
+            Subject::parse("bb2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
+                .unwrap();
+        let image =
+            Subject::parse("cc2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
+                .unwrap();
+        for (child, origin) in [(&pdf, &mail), (&image, &mail), (&text, &pdf)] {
+            log.append(&said(
+                child.clone(),
+                "derive:derived-from",
+                json!(origin.as_str()),
+                "2026-09-01T10:00:00Z",
+            ))
+            .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.derived(&mail, Scope::Held).unwrap(),
+            vec![pdf.clone(), image.clone()],
+            "both children, in digest order, and not the grandchild"
+        );
+        assert_eq!(
+            index.derived(&pdf, Scope::Held).unwrap(),
+            vec![text.clone()]
+        );
+        assert_eq!(
+            index.derived(&text, Scope::Held).unwrap(),
+            Vec::new(),
+            "a leaf has nothing below it"
+        );
+
+        log.append(&taken_back(
+            image.clone(),
+            "derive:derived-from",
+            json!(mail.as_str()),
+            "2026-09-02T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.derived(&mail, Scope::Held).unwrap(),
+            vec![pdf.clone()],
+            "an origin taken back no longer stands"
+        );
+        assert_eq!(
+            index.derived(&mail, Scope::Record).unwrap(),
+            vec![pdf, image],
+            "but the record remembers it"
         );
     }
 

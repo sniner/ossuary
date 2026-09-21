@@ -73,14 +73,75 @@ pub fn episode_line(episode: &Episode) -> String {
 /// file again. Several standing values repeat the attribute: the set,
 /// not a choice. Other types keep their JSON spelling.
 pub fn match_block(name: &str, shown: &[(String, Vec<Value>)]) -> String {
-    let mut block = name.to_string();
+    let mut block = String::new();
+    block_at(&mut block, name, shown, 0);
+    block
+}
+
+/// One match with what was won out of it: the file, what it shows, and
+/// every derived file the same way, as far as the derivations go.
+#[derive(Debug, Default, PartialEq)]
+pub struct Found {
+    /// The full name, what `--json` and `--id` say.
+    pub subject: String,
+    /// The short name, what a block is headed by.
+    pub name: String,
+    /// The shown attributes with their values, in the question's order.
+    pub shown: Vec<(String, Vec<Value>)>,
+    /// What was derived from this file, each with its own derivations.
+    pub derived: Vec<Found>,
+}
+
+/// One `find` match with its derivations as one block: the match as
+/// [`match_block`] spells it, then each derived file indented one step
+/// further than its origin, its name a line of its own and its pairs
+/// beneath it, the tree read top down.
+pub fn match_tree(found: &Found) -> String {
+    let mut block = String::new();
+    tree_at(&mut block, found, 0);
+    block
+}
+
+fn tree_at(block: &mut String, found: &Found, depth: usize) {
+    block_at(block, &found.name, &found.shown, depth);
+    for derived in &found.derived {
+        block.push('\n');
+        tree_at(block, derived, depth + 1);
+    }
+}
+
+/// The name at `depth` steps of two spaces, each pair one step deeper.
+fn block_at(block: &mut String, name: &str, shown: &[(String, Vec<Value>)], depth: usize) {
+    let indent = "  ".repeat(depth);
+    block.push_str(&indent);
+    block.push_str(name);
     for (attribute, values) in shown {
         for value in values {
-            block.push_str("\n  ");
+            block.push('\n');
+            block.push_str(&indent);
+            block.push_str("  ");
             block.push_str(&pair(attribute, value));
         }
     }
-    block
+}
+
+/// One `find` match with its derivations as one JSON object: the match
+/// as [`json_line`] spells it, then `derived`, a list of the derived
+/// files as objects of the same shape, nested as far as the
+/// derivations go. The list is there even when empty, so a reader can
+/// count on the key.
+pub fn json_tree(found: &Found) -> String {
+    let mut line = json_line(&found.subject, &found.shown);
+    line.pop();
+    line.push_str(",\"derived\":[");
+    for (position, derived) in found.derived.iter().enumerate() {
+        if position > 0 {
+            line.push(',');
+        }
+        line.push_str(&json_tree(derived));
+    }
+    line.push_str("]}");
+    line
 }
 
 /// One `find` match as one JSON object: the full subject, then each
@@ -226,6 +287,59 @@ mod tests {
             "a value that reads as a range is quoted back to literal"
         );
         assert_eq!(pair("user:tag", &json!("v*")), "user:tag=\"v*\"");
+    }
+
+    #[test]
+    fn a_match_tree_indents_each_derivation_one_step_below_its_origin() {
+        let found = Found {
+            subject: "e9ed6104aa".to_string(),
+            name: "e9ed6104".to_string(),
+            shown: vec![(attribute("file:name"), vec![json!("quarterly.eml")])],
+            derived: vec![
+                Found {
+                    subject: "b5743276aa".to_string(),
+                    name: "b5743276".to_string(),
+                    shown: vec![
+                        (attribute("file:mime"), vec![json!("application/pdf")]),
+                        (attribute("file:name"), vec![json!("report.pdf")]),
+                    ],
+                    derived: vec![Found {
+                        subject: "3f0c91aaaa".to_string(),
+                        name: "3f0c91aa".to_string(),
+                        shown: vec![(attribute("file:mime"), vec![json!("text/plain")])],
+                        derived: Vec::new(),
+                    }],
+                },
+                Found {
+                    subject: "17a2c0ffaa".to_string(),
+                    name: "17a2c0ff".to_string(),
+                    shown: Vec::new(),
+                    derived: Vec::new(),
+                },
+            ],
+        };
+        assert_eq!(
+            match_tree(&found),
+            "e9ed6104\n  file:name=quarterly.eml\n  b5743276\n    file:mime=application/pdf\n    file:name=report.pdf\n    3f0c91aa\n      file:mime=text/plain\n  17a2c0ff",
+            "the tree read top down, names and pairs each one step deeper than the origin's"
+        );
+        assert_eq!(
+            json_tree(&found),
+            "{\"subject\":\"e9ed6104aa\",\"file:name\":[\"quarterly.eml\"],\"derived\":[{\"subject\":\"b5743276aa\",\"file:mime\":[\"application/pdf\"],\"file:name\":[\"report.pdf\"],\"derived\":[{\"subject\":\"3f0c91aaaa\",\"file:mime\":[\"text/plain\"],\"derived\":[]}]},{\"subject\":\"17a2c0ffaa\",\"derived\":[]}]}",
+            "the same tree nested under `derived`, the list there even when empty"
+        );
+        let alone = Found {
+            subject: "9f2a".to_string(),
+            name: "9f2a".to_string(),
+            shown: Vec::new(),
+            derived: Vec::new(),
+        };
+        assert_eq!(
+            match_tree(&alone),
+            "9f2a",
+            "nothing derived is the match alone"
+        );
+        assert_eq!(json_tree(&alone), "{\"subject\":\"9f2a\",\"derived\":[]}");
     }
 
     #[test]

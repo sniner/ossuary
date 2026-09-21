@@ -5,6 +5,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`find --with-derived` answers each match with what was won out of it.** Every derived file
+  stands indented beneath its origin, as far as the derivations go, showing its kind ahead of what
+  the question shows: a mail, its attachment, the attachment's text, in one answer instead of a
+  copied id and a second `find derive:derived-from=…`. Under `--id` the names come flat, ready for
+  `export`; under `--json` they nest under `derived`; the count says `3 file(s), 5 derived`
+
 ### Changed
 
 - **A derived file carries a `file:name` only where the extractor said one.** The name an

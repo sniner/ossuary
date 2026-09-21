@@ -368,6 +368,17 @@ enum Command {
     /// `standing` or `get`; --json answers one JSON object per match, the
     /// values as lists.
     ///
+    /// --with-derived answers for each match with what was won out of
+    /// it as well: every derived file indented beneath its origin, as
+    /// far as the derivations go, headed by its short name and showing
+    /// its kind, `file:mime`, ahead of whatever the question shows. The
+    /// terms narrow the matches alone; what was derived comes along
+    /// unasked, and a derived file that matches on its own answers on
+    /// its own as well. Under --id the names come flat, in that order,
+    /// ready for `export`; under --json each match carries its
+    /// derivations as a list under `derived`, nested the same way. The
+    /// count names both: `3 file(s), 5 derived`.
+    ///
     /// A file answers only while it still lies somewhere: a place of its
     /// own on the record, or, for what a tool won out of another file,
     /// its origin's place. A file taken in and later gone from every
@@ -410,6 +421,12 @@ enum Command {
         /// retractions included
         #[arg(long)]
         all: bool,
+
+        /// And what was won out of each match: every derived file
+        /// beneath its origin, as far as the derivations go, with its
+        /// kind ahead of the shown attributes
+        #[arg(long)]
+        with_derived: bool,
     },
     /// Every attribute standing on the record, the words a question can
     /// be asked in
@@ -723,6 +740,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             as_of,
             all,
+            with_derived,
         } => find(
             &cli.archive,
             &terms,
@@ -731,6 +749,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             as_of.as_deref(),
             if all { Scope::Record } else { Scope::Present },
+            with_derived,
             quiet,
         ),
         Command::Attributes {
@@ -1547,7 +1566,7 @@ fn grouped(rows: Vec<(Attribute, Value)>) -> Vec<(String, Vec<Value>)> {
 /// a field of the claims. The question is the projection — the filters
 /// show themselves until a bare name stands among the terms; then
 /// explicit beats implicit, and only the bare ones show.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Projection {
     Attribute(Attribute),
     Namespace(String),
@@ -1624,6 +1643,7 @@ fn find(
     json: bool,
     as_of: Option<&str>,
     scope: Scope,
+    with_derived: bool,
     quiet: bool,
 ) -> Result<ExitCode> {
     if id_only && json {
@@ -1662,10 +1682,29 @@ fn find(
                 other => other.into(),
             })?
     };
+    let answering = Answering {
+        index: &index,
+        projections: &projections,
+        scope,
+        id_only,
+        json,
+    };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+    let mut derived = 0;
     for subject in &subjects {
-        let line = if id_only {
+        let line = if with_derived {
+            let found = answering.tree(subject)?;
+            let names = flat(&found);
+            derived += names.len() - 1;
+            if id_only {
+                names.join("\n")
+            } else if json {
+                output::json_tree(&found)
+            } else {
+                output::match_tree(&found)
+            }
+        } else if id_only {
             subject.as_str().to_string()
         } else {
             let shown = gather(&index, subject, &projections, scope)?;
@@ -1685,10 +1724,77 @@ fn find(
         match (subjects.len(), scope) {
             (0, Scope::Record) => eprintln!("nothing on the record matches"),
             (0, _) => eprintln!("nothing standing matches"),
+            (n, _) if with_derived => eprintln!("{n} file(s), {derived} derived"),
             (n, _) => eprintln!("{n} file(s)"),
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// How one `find` answers for a match, held together so the walk to
+/// what was derived can ask the same way at every step.
+struct Answering<'a> {
+    index: &'a Index,
+    projections: &'a [Projection],
+    scope: Scope,
+    /// Names alone: nothing gathered, nothing shortened.
+    id_only: bool,
+    /// Full names head the answer, so no short name is looked up.
+    json: bool,
+}
+
+impl Answering<'_> {
+    /// One match with everything won out of it, as far as the
+    /// derivations go. A derived file shows its kind first, then what
+    /// the question shows; the walk visits each file once, so a
+    /// derivation that leads back up cannot run in circles.
+    fn tree(&self, subject: &Subject) -> Result<output::Found> {
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(subject.clone());
+        let kind_first: Vec<Projection> =
+            std::iter::once(Projection::Attribute(Attribute::parse("file:mime")?))
+                .chain(self.projections.iter().cloned())
+                .collect();
+        self.found(subject, self.projections, &kind_first, &mut seen)
+    }
+
+    fn found(
+        &self,
+        subject: &Subject,
+        projections: &[Projection],
+        below: &[Projection],
+        seen: &mut std::collections::HashSet<Subject>,
+    ) -> Result<output::Found> {
+        let mut found = output::Found {
+            subject: subject.as_str().to_string(),
+            ..output::Found::default()
+        };
+        if !self.id_only {
+            found.shown = gather(self.index, subject, projections, self.scope)?;
+            if !self.json {
+                found.name = shorten(self.index, subject)?;
+            }
+        }
+        for derived in self.index.derived(subject, self.scope)? {
+            if !seen.insert(derived.clone()) {
+                continue;
+            }
+            found
+                .derived
+                .push(self.found(&derived, below, below, seen)?);
+        }
+        Ok(found)
+    }
+}
+
+/// The tree's full names in reading order, the origin ahead of what
+/// was derived from it: what `--id --with-derived` prints.
+fn flat(found: &output::Found) -> Vec<String> {
+    let mut names = vec![found.subject.clone()];
+    for derived in &found.derived {
+        names.extend(flat(derived));
+    }
+    names
 }
 
 fn history(root: &Path, json: bool, as_of: Option<&str>, quiet: bool) -> Result<ExitCode> {

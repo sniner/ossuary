@@ -226,6 +226,24 @@ b5743276
 1 file(s)
 ```
 
+The other way round, from a file down to everything won out of it,
+is `--with-derived`: each match with its derivations indented beneath
+it, as far as they go, each showing its kind ahead of what the
+question shows. Under `--id` the names come flat, ready for `export`;
+under `--json` they nest under `derived`:
+
+```console
+$ ossuary find 'file:name=*.eml' --with-derived
+e9ed6104
+  file:name=2026-03-10-quarterly.eml
+  b5743276
+    file:mime=application/pdf
+    file:name=report.pdf
+    3f0c91aa
+      file:mime=text/plain
+1 file(s), 2 derived
+```
+
 A name without a colon is a field of the claim itself — `run`,
 `source`, `time`, `retract` — and asks about the claim behind a value:
 what a run named, what you tagged yourself, what was written since a
