@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-21
+
 ### Breaking changes
 
 - **A derived file's origin is `prov:origin`, no longer `derive:derived-from`.** Where a blob came
