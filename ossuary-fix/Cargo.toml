@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive", "env"] }
-ossuary-core = { path = "../ossuary-core", version = "0.7.0" }
+ossuary-core = { path = "../ossuary-core", version = "0.8.0" }
 serde_json = "1.0"
 
 [dev-dependencies]

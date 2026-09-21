@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-21
+
 ### Breaking changes
 
 - **A place inside an archive is spelled with a leading `@`, and stands as `file:path` on the
