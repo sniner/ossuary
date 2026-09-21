@@ -7,6 +7,7 @@ members = [
     "ossuary-extract-mail",
     "ossuary-extract-packed",
     "ossuary-extract-pdf",
+    "ossuary-fix",
     "ossuary-mailvault",
     "ossuary-mount",
 ]

@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   # The programs the workspace ships; every build, strip and stage step
   # walks this list.
-  BINARIES: ossuary ossuary-mount ossuary-mailvault ossuary-extract-image ossuary-extract-mail ossuary-extract-packed ossuary-extract-pdf
+  BINARIES: ossuary ossuary-mount ossuary-mailvault ossuary-fix ossuary-extract-image ossuary-extract-mail ossuary-extract-packed ossuary-extract-pdf
 
 jobs:
   verify-version:

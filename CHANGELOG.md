@@ -12,11 +12,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own, and the one attribute that was a predicate is now a noun like every other, so a term reads as
   one: `find prov:origin=e9ed…`. Nothing on an existing record is rewritten, the log being what it is,
   but the present is asked in the new words: a derived file whose origin stands only under the old
-  name is held, not placed, until said again. `ossuary extract --full` says it again for every
-  extractor; the old claims stay on the record as they were said. No schema version moves
+  name is held, not placed, until said again. `ossuary-fix origin` says every such origin again in
+  seconds, with the old claim's moment, source and run; the old claims stay on the record as they
+  were said. No schema version moves
 
 ### Added
 
+- **`ossuary-fix`, a repair tool for the scars a 0.x archive collects.** One fix per scar, each
+  reading the whole log and writing exactly what is missing, a second run finding nothing to do;
+  `--dry-run` says what would be written. The first fix is `origin`, above
 - **`find --with-derived` answers each match with what was won out of it.** Every derived file
   stands indented beneath its origin, as far as the derivations go, showing its kind ahead of what
   the question shows: a mail, its attachment, the attachment's text, in one answer instead of a

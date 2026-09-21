@@ -1,0 +1,22 @@
+[package]
+name = "ossuary-fix"
+description = "Repair tool for 0.x archives after a breaking change"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-fix"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.51", features = ["derive", "env"] }
+ossuary-core = { path = "../ossuary-core", version = "0.6.3" }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

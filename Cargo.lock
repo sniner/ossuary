@@ -1415,6 +1415,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ossuary-fix"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ossuary-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ossuary-mailvault"
 version = "0.6.3"
 dependencies = [
