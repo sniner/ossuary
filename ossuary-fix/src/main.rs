@@ -74,6 +74,21 @@ enum Command {
     /// old claims stay as they were said. An origin already standing
     /// as `prov:origin` is left alone.
     Origin,
+    /// Say every standing `zip:entry` and `zip:path` again as an inner place
+    ///
+    /// Until 0.7.0 the packed extractor spoke in a namespace named
+    /// after the one format it read: an archive's inventory stood on
+    /// it as `zip:entry`, an unpacked entry's path inside the archive
+    /// stood on the entry as `zip:path`. A place inside another
+    /// content is now spelled with a leading `@` and stands as
+    /// `packed:path` on the archive and as `file:path` on the entry,
+    /// whatever the archive's format, so one `find` term reaches both.
+    /// This fix says each such place that still stands only under an
+    /// old word again under the new one, `@` in front, with the
+    /// moment, source and run of the old claim. The old claims stay as
+    /// they were said; a place already standing in the new word is
+    /// left alone.
+    Packed,
 }
 
 fn main() -> ExitCode {
@@ -94,6 +109,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     let log = archive.log();
     let plan: Plan = match cli.command {
         Command::Origin => fixes::origin::plan(log)?,
+        Command::Packed => fixes::packed::plan(log)?,
     };
     if !cli.dry_run {
         plan.apply(log)?;

@@ -4,3 +4,4 @@
 //! for saying so. A fix writes nothing itself.
 
 pub mod origin;
+pub mod packed;

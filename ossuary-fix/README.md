@@ -38,3 +38,13 @@ ones; they override nothing.
   no longer reach it. The fix says each origin still standing under the
   old word again under the new one. The old claims stay as they were
   said; an origin already standing as `prov:origin` is left alone
+- `packed` — until 0.7.0 the packed extractor spoke in a namespace named
+  after the one format it read: an archive's inventory stood on it as
+  `zip:entry`, an unpacked entry's path inside the archive stood on the
+  entry as `zip:path`. A place inside another content is now spelled
+  with a leading `@` and stands as `packed:path` on the archive and as
+  `file:path` on the entry, whatever the archive's format, so one `find`
+  term reaches both. The fix says each such place still standing only
+  under an old word again under the new one, `@` in front. The old
+  claims stay as they were said; a place already standing in the new
+  word is left alone
