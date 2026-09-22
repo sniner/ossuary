@@ -43,8 +43,7 @@ use serde_json::json;
 const EXIF_GENERATION: u32 = 1;
 const XMP_GENERATION: u32 = 1;
 const IPTC_GENERATION: u32 = 1;
-/// 2: the HEIF family joined.
-const RASTER_GENERATION: u32 = 2;
+const RASTER_GENERATION: u32 = 1;
 
 /// The kinds every reader here opens: the formats whose containers the
 /// program looks into for a packet, a record or a header.
@@ -148,13 +147,31 @@ fn examine(contract: Contract) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The tags that say where bytes lie in a TIFF and nothing about the
+/// picture: the strips' and tiles' offsets and byte counts, the
+/// thumbnail's, and the pointers to the other directories. A scan's
+/// `StripOffsets` is one number per strip, thousands of them, and no
+/// question is ever asked of it.
+const LAYOUT: [exif::Tag; 10] = [
+    exif::Tag::StripOffsets,
+    exif::Tag::StripByteCounts,
+    exif::Tag::RowsPerStrip,
+    exif::Tag::TileOffsets,
+    exif::Tag::TileByteCounts,
+    exif::Tag::JPEGInterchangeFormat,
+    exif::Tag::JPEGInterchangeFormatLength,
+    exif::Tag::ExifIFDPointer,
+    exif::Tag::GPSInfoIFDPointer,
+    exif::Tag::InteropIFDPointer,
+];
+
 /// Every EXIF field of the primary image, in EXIF's own words: the tag
 /// name kebab-cased under `exif:`, the value as the format stores it —
 /// text as text (the date's own colons included), numbers as numbers,
 /// rationals as `numerator/denominator`, one value bare and several as a
 /// list. Opaque byte blobs — `MakerNote` and kin — are not worth quoting,
-/// and bytes without readable EXIF yield nothing at all: that, too, is
-/// an answer.
+/// the file's own layout is no finding, and bytes without readable EXIF
+/// yield nothing at all: that, too, is an answer.
 fn extract(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
     let mut cursor = std::io::Cursor::new(bytes);
     let Ok(data) = exif::Reader::new().read_from_container(&mut cursor) else {
@@ -169,6 +186,9 @@ fn extract(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
         if field.tag.description().is_none() {
             // A tag the EXIF crate cannot name has no attribute to live
             // under; naming it by number would freeze a guess.
+            continue;
+        }
+        if LAYOUT.contains(&field.tag) {
             continue;
         }
         if let Some(value) = render(&field.value) {
@@ -310,6 +330,39 @@ mod tests {
         assert!(
             findings.contains(&("exif:f-number".to_string(), json!("28/10"))),
             "the stored fraction, not a prettied decimal; got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_tiffs_layout_is_no_finding() {
+        let mut out = std::io::Cursor::new(Vec::new());
+        let mut encoder = tiff::encoder::TiffEncoder::new(&mut out).unwrap();
+        let mut image = encoder
+            .new_image::<tiff::encoder::colortype::Gray8>(2, 2)
+            .unwrap();
+        image
+            .encoder()
+            .write_tag(tiff::tags::Tag::Software, "Example Scanner 1.0")
+            .unwrap();
+        image.write_data(&[0u8; 4]).unwrap();
+
+        let findings = extract(&out.into_inner());
+        assert!(
+            findings.contains(&("exif:software".to_string(), json!("Example Scanner 1.0"))),
+            "got {findings:?}"
+        );
+        assert!(
+            findings.contains(&("exif:image-width".to_string(), json!(2))),
+            "what the picture is stays; got {findings:?}"
+        );
+        assert!(
+            findings.iter().all(|(attribute, _)| {
+                !matches!(
+                    attribute.as_str(),
+                    "exif:strip-offsets" | "exif:strip-byte-counts" | "exif:rows-per-strip"
+                )
+            }),
+            "where the bytes lie is not; got {findings:?}"
         );
     }
 

@@ -33,8 +33,10 @@ these values are meant to be read.
 
 Left out: the thumbnail's fields, which describe the thumbnail; tags the
 EXIF reader cannot name, since numbering an unknown tag would freeze a
-guess into the record; and opaque blobs, `MakerNote` and its kin, which
-have nothing to quote.
+guess into the record; opaque blobs, `MakerNote` and its kin, which
+have nothing to quote; and a TIFF's own layout, `StripOffsets`,
+`StripByteCounts`, `RowsPerStrip` and the tile equivalents, which say
+where bytes lie and nothing about the picture.
 
 Kinds it reads: `image/jpeg`, `image/tiff`, `image/png`, `image/webp`,
 `image/heif`, `image/heic`, `image/avif`.

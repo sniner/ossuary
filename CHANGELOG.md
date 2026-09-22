@@ -25,9 +25,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **The `raster` contract's source is now `extractor:image-raster/2`.** The contract sees more than
-  it did, so every image is examined again on the next `ossuary extract image`, which says the same
-  grid again for the formats it already read
+- **The `exif` contract leaves a TIFF's layout out.** `StripOffsets`, `StripByteCounts`,
+  `RowsPerStrip`, the tile equivalents, the thumbnail's offset and length and the pointers to the
+  other directories say where bytes lie and nothing about the picture; a scan's strip offsets were
+  thousands of numbers under one attribute. What the picture is, `ImageWidth`, `BitsPerSample`,
+  `Compression`, still stands. Claims already written stay in the log; `ossuary extract image
+  --full` does not take them back
 - **`ossuary-extract-pdf` brings a document's attachments out, under a contract of its own.** A
   ZUGFeRD or Factur-X invoice is a PDF with the invoice's XML embedded; `ossuary extract
   pdf:attachments` writes every embedded file out as a derived file, tied to its document by
