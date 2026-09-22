@@ -5,8 +5,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-22
+
 ### Added
 
+- **`find --with-origin` answers each match with where it came from.** The same shape as
+  `--with-derived` read from the other end: the farthest origin heads the tree, the match stands
+  at its bottom, and every origin shows its kind ahead of what the question shows, so a mail and
+  its attachment stand the same way whichever of them was asked for. A file won out of two others
+  answers once per line of descent; with `--with-derived` as well, the whole line stands in one
+  tree. Under `--id` the names come flat, origin first, the order `export` wants; under `--json`
+  the tree nests under `derived` from the origin down; the count says `3 file(s), 2 origin(s)`
 - **`ossuary-extract-image` reads XMP, under a contract of its own.** `ossuary extract image:xmp`
   records every property of a picture's XMP packet under `xmp:`, the schema prefix folded into the
   name: `xmp:dc-subject` holds the keywords, `xmp:dc-title` the title in its default language,
@@ -22,27 +31,6 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The `raster` contract reads the HEIF family.** A HEIC or AVIF now says its width, height, bits
   per channel, alpha plane and colour model from its `meta` box, the codestream unopened; a grid of
   tiles answers as one picture
-- **`find --with-origin` answers each match with where it came from.** The same shape as
-  `--with-derived` read from the other end: the farthest origin heads the tree, the match stands
-  at its bottom, and every origin shows its kind ahead of what the question shows, so a mail and
-  its attachment stand the same way whichever of them was asked for. A file won out of two others
-  answers once per line of descent; with `--with-derived` as well, the whole line stands in one
-  tree. Under `--id` the names come flat, origin first, the order `export` wants; under `--json`
-  the tree nests under `derived` from the origin down; the count says `3 file(s), 2 origin(s)`
-
-### Changed
-
-- **`find --with-derived` draws its answer the way `tree` does.** Each derived file hangs on a
-  branch beneath its origin, `├──` and `└──` with the bar between, and a file's pairs stand under
-  its name beside the bar that leads to its first branch. `find` without the option keeps its
-  plain blocks; `--id` and `--json` are as they were
-
-- **The `exif` contract leaves a TIFF's layout out.** `StripOffsets`, `StripByteCounts`,
-  `RowsPerStrip`, the tile equivalents, the thumbnail's offset and length and the pointers to the
-  other directories say where bytes lie and nothing about the picture; a scan's strip offsets were
-  thousands of numbers under one attribute. What the picture is, `ImageWidth`, `BitsPerSample`,
-  `Compression`, still stands. Claims already written stay in the log; `ossuary extract image
-  --full` does not take them back
 - **`ossuary-extract-pdf` brings a document's attachments out, under a contract of its own.** A
   ZUGFeRD or Factur-X invoice is a PDF with the invoice's XML embedded; `ossuary extract
   pdf:attachments` writes every embedded file out as a derived file, tied to its document by
@@ -54,6 +42,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`find --with-derived` draws its answer the way `tree` does.** Each derived file hangs on a
+  branch beneath its origin, `├──` and `└──` with the bar between, and a file's pairs stand under
+  its name beside the bar that leads to its first branch. `find` without the option keeps its
+  plain blocks; `--id` and `--json` are as they were
+- **The `exif` contract leaves a TIFF's layout out.** `StripOffsets`, `StripByteCounts`,
+  `RowsPerStrip`, the tile equivalents, the thumbnail's offset and length and the pointers to the
+  other directories say where bytes lie and nothing about the picture; a scan's strip offsets were
+  thousands of numbers under one attribute. What the picture is, `ImageWidth`, `BitsPerSample`,
+  `Compression`, still stands. Claims already written stay in the log; `ossuary extract image
+  --full` does not take them back
 - **`about` spells the run as `[run:…]`, bracketed beside the source.** A line now ends
   `[extractor:mail/1] [run:c7a1e2d4-…]` instead of `[extractor:mail/1]  run c7a1e2d4-…`; the
   same words, one shape
