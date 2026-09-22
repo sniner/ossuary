@@ -8,15 +8,17 @@
 //! not the eight-bit RGB it would be expanded to. The colour model is
 //! the one the pixels are stored in, with one reading applied: a JPEG's
 //! YCbCr is `rgb`, since that is what it encodes, in another coordinate
-//! system. Bytes that are no image this contract reads, or whose header
-//! cannot be read, are an examination with nothing found.
+//! system. A HEIF's grid is what its `meta` box declares for the primary
+//! picture, the codestream unopened. Bytes that are no image this
+//! contract reads, or whose header cannot be read, are an examination
+//! with nothing found.
 
 use std::io::Cursor;
 
 use serde_json::{Value, json};
-use zune_jpeg::zune_core::bytestream::ZCursor;
 use zune_jpeg::zune_core::colorspace::ColorSpace;
-use zune_jpeg::zune_core::options::DecoderOptions;
+
+use crate::format::{self, Kind};
 
 /// The pixel grid as the header describes it.
 #[derive(Debug, PartialEq, Eq)]
@@ -49,16 +51,12 @@ impl Raster {
 
 /// The raster of these bytes, by the format their first bytes announce.
 pub fn read(bytes: &[u8]) -> Option<Raster> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        png(bytes)
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        jpeg(bytes)
-    } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
-        tiff(bytes)
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
-        webp(bytes)
-    } else {
-        None
+    match format::sniff(bytes)? {
+        Kind::Png => png(bytes),
+        Kind::Jpeg => jpeg(bytes),
+        Kind::Tiff => tiff(bytes),
+        Kind::WebP => webp(bytes),
+        Kind::Heif => crate::heif::parse(bytes)?.raster(),
     }
 }
 
@@ -86,12 +84,7 @@ fn png(bytes: &[u8]) -> Option<Raster> {
 /// The frame header. JPEG as read here is eight bits per channel; a
 /// twelve-bit file is refused by the reader, and so has nothing found.
 fn jpeg(bytes: &[u8]) -> Option<Raster> {
-    let options = DecoderOptions::default()
-        .set_strict_mode(false)
-        .set_max_width(usize::MAX)
-        .set_max_height(usize::MAX);
-    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-    decoder.decode_headers().ok()?;
+    let decoder = format::jpeg_headers(bytes)?;
     let info = decoder.info()?;
     let color = match decoder.input_colorspace()? {
         ColorSpace::Luma | ColorSpace::LumaA => "gray",

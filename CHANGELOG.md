@@ -7,6 +7,27 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`ossuary-extract-image` reads XMP, under a contract of its own.** `ossuary extract image:xmp`
+  records every property of a picture's XMP packet under `xmp:`, the schema prefix folded into the
+  name: `xmp:dc-subject` holds the keywords, `xmp:dc-title` the title in its default language,
+  `xmp:photoshop-city` the place, `xmp:xmp-rating` the stars. Lists stand with every item,
+  structures fold their fields into the path, and a list of structures, such as the edit history,
+  piles each field up in order. Read from JPEG (the extended packet included), PNG, TIFF, WebP and
+  the HEIF family. The source is `extractor:image-xmp/1`
+- **`ossuary-extract-image` reads IPTC, under a contract of its own.** `ossuary extract image:iptc`
+  records the IPTC-IIM record, the press vocabulary older than XMP that still rides in JPEGs and
+  TIFFs: `iptc:keywords`, `iptc:caption-abstract`, `iptc:by-line`, `iptc:credit`,
+  `iptc:copyright-notice`, `iptc:date-created` and the rest, each dataset by its own name. The
+  source is `extractor:image-iptc/1`
+- **The `raster` contract reads the HEIF family.** A HEIC or AVIF now says its width, height, bits
+  per channel, alpha plane and colour model from its `meta` box, the codestream unopened; a grid of
+  tiles answers as one picture
+
+### Changed
+
+- **The `raster` contract's source is now `extractor:image-raster/2`.** The contract sees more than
+  it did, so every image is examined again on the next `ossuary extract image`, which says the same
+  grid again for the formats it already read
 - **`ossuary-extract-pdf` brings a document's attachments out, under a contract of its own.** A
   ZUGFeRD or Factur-X invoice is a PDF with the invoice's XML embedded; `ossuary extract
   pdf:attachments` writes every embedded file out as a derived file, tied to its document by

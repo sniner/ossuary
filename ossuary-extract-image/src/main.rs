@@ -1,24 +1,32 @@
 //! The image extractor: bytes in, what the picture says about itself
-//! out — two contracts in one program.
+//! out — four contracts in one program.
 //!
 //! Speaks the ossuary extractor protocol (`docs/extractors.md`):
-//! `--identify` answers two lines, the `exif` contract and the `raster`
-//! contract, each with its own source and its own receipts. Called with
-//! the contract's name as its argument it reads one file's bytes from
-//! stdin and answers with findings on stdout, one JSON object per line.
+//! `--identify` answers four lines, the `exif`, `xmp`, `iptc` and
+//! `raster` contracts, each with its own source and its own receipts.
+//! Called with the contract's name as its argument it reads one file's
+//! bytes from stdin and answers with findings on stdout, one JSON
+//! object per line.
 //!
 //! `exif` records what EXIF says in EXIF's own terms — tag names
 //! kebab-cased, values as the format spells them — and never
-//! normalizes; that is the vocabulary's query-time business. `raster`
-//! records what the file's header says about its pixel grid — width,
-//! height, bits per channel, alpha, colour model — under `raster:`, as
-//! numbers to search by, read without decoding a pixel.
+//! normalizes; that is the vocabulary's query-time business. `xmp` does
+//! the same for the XMP packet, the schema prefix folded into the name,
+//! and `iptc` for the IPTC-IIM record. `raster` records what the file's
+//! header says about its pixel grid — width, height, bits per channel,
+//! alpha, colour model — under `raster:`, as numbers to search by, read
+//! without decoding a pixel.
 //!
-//! Bytes without readable EXIF, or without a header this program reads,
-//! are an examination like any other, with nothing found: exit 0, no
-//! output. Only failing to read stdin itself is a failure.
+//! Bytes without readable EXIF, XMP or IPTC, or without a header this
+//! program reads, are an examination like any other, with nothing
+//! found: exit 0, no output. Only failing to read stdin itself is a
+//! failure.
 
+mod format;
+mod heif;
+mod iptc;
 mod raster;
+mod xmp;
 
 use std::io::Read;
 use std::process::ExitCode;
@@ -30,10 +38,25 @@ use serde_json::json;
 /// when the findings change, when the same bytes would yield more or
 /// something different than before, and never for a build, a dependency
 /// or a release: a new generation examines every file again, and that
-/// is the only reason to have one. Two contracts, two numbers: what
+/// is the only reason to have one. Four contracts, four numbers: what
 /// `raster` learns to read says nothing about `exif`.
 const EXIF_GENERATION: u32 = 1;
-const RASTER_GENERATION: u32 = 1;
+const XMP_GENERATION: u32 = 1;
+const IPTC_GENERATION: u32 = 1;
+/// 2: the HEIF family joined.
+const RASTER_GENERATION: u32 = 2;
+
+/// The kinds every reader here opens: the formats whose containers the
+/// program looks into for a packet, a record or a header.
+const CONTAINERS: [&str; 7] = [
+    "image/jpeg",
+    "image/tiff",
+    "image/png",
+    "image/webp",
+    "image/heif",
+    "image/heic",
+    "image/avif",
+];
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -50,15 +73,25 @@ fn main() -> ExitCode {
                     "ossuary-extractor": 1,
                     "contract": "exif",
                     "source": format!("extractor:image-exif/{EXIF_GENERATION}"),
-                    "mimes": [
-                        "image/jpeg",
-                        "image/tiff",
-                        "image/png",
-                        "image/webp",
-                        "image/heif",
-                        "image/heic",
-                        "image/avif",
-                    ],
+                    "mimes": CONTAINERS,
+                })
+            );
+            println!(
+                "{}",
+                json!({
+                    "ossuary-extractor": 1,
+                    "contract": "xmp",
+                    "source": format!("extractor:image-xmp/{XMP_GENERATION}"),
+                    "mimes": CONTAINERS,
+                })
+            );
+            println!(
+                "{}",
+                json!({
+                    "ossuary-extractor": 1,
+                    "contract": "iptc",
+                    "source": format!("extractor:image-iptc/{IPTC_GENERATION}"),
+                    "mimes": ["image/jpeg", "image/tiff"],
                 })
             );
             println!(
@@ -67,26 +100,30 @@ fn main() -> ExitCode {
                     "ossuary-extractor": 1,
                     "contract": "raster",
                     "source": format!("extractor:image-raster/{RASTER_GENERATION}"),
-                    "mimes": ["image/jpeg", "image/png", "image/tiff", "image/webp"],
+                    "mimes": CONTAINERS,
                 })
             );
             ExitCode::SUCCESS
         }
         ["exif"] => examine(Contract::Exif),
+        ["xmp"] => examine(Contract::Xmp),
+        ["iptc"] => examine(Contract::Iptc),
         ["raster"] => examine(Contract::Raster),
         _ => {
             eprintln!(
-                "ossuary-extract-image: run with --identify, with `exif`, or with `raster`; a file's bytes on stdin either way"
+                "ossuary-extract-image: run with --identify, or with one of `exif`, `xmp`, `iptc`, `raster`; a file's bytes on stdin either way"
             );
             ExitCode::FAILURE
         }
     }
 }
 
-/// The program's two trades.
+/// The program's four trades.
 #[derive(Clone, Copy)]
 enum Contract {
     Exif,
+    Xmp,
+    Iptc,
     Raster,
 }
 
@@ -99,6 +136,8 @@ fn examine(contract: Contract) -> ExitCode {
     }
     let findings = match contract {
         Contract::Exif => extract(&bytes),
+        Contract::Xmp => xmp::read(&bytes),
+        Contract::Iptc => iptc::read(&bytes),
         Contract::Raster => raster::read(&bytes)
             .map(|raster| raster.findings())
             .unwrap_or_default(),
@@ -182,8 +221,9 @@ fn render(value: &exif::Value) -> Option<serde_json::Value> {
 
 /// `DateTimeOriginal` → `date-time-original`, `ISOSpeed` → `iso-speed`:
 /// a word starts at an uppercase letter after a lowercase one, and at the
-/// last uppercase letter of a run when lowercase follows it.
-fn kebab(name: &str) -> String {
+/// last uppercase letter of a run when lowercase follows it. The `xmp`
+/// contract draws its word boundaries the same way.
+pub(crate) fn kebab(name: &str) -> String {
     let characters: Vec<char> = name.chars().collect();
     let mut result = String::with_capacity(name.len() + 4);
     for (position, &character) in characters.iter().enumerate() {

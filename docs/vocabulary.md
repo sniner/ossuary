@@ -65,6 +65,11 @@ its maker, in its source.
 - `raster:` — the pixel grid as the file's header describes it, as
   `ossuary-extract-image` reads it — numbers to search by, each with
   one meaning: a width here is always pixels
+- `xmp:` — verbatim XMP properties, as `ossuary-extract-image` reads
+  them, the schema's prefix folded into the name: `xmp:dc-subject`,
+  `xmp:photoshop-city`
+- `iptc:` — verbatim IPTC-IIM datasets, the press record that predates
+  XMP, as `ossuary-extract-image` reads them
 - `pdf:` — verbatim PDF document information, as `ossuary-extract-pdf`
   reads it
 - `mail:` — a message's own voice, verbatim, as `ossuary-extract-mail`
@@ -237,6 +242,39 @@ need.
   `numerator/denominator` — one value bare, several as a list
 - written by: ossuary-extract-image, under its `exif` contract
 
+### xmp:…
+
+- meaning: one property of the XMP packet, verbatim. The name is the
+  schema's prefix and the property's name, kebab-cased and joined:
+  `dc:subject` is `xmp:dc-subject`, `xmpMM:DocumentID`
+  `xmp:xmp-mm-document-id`, `photoshop:City` `xmp:photoshop-city`. The
+  prefix is the one the XMP specification gives the namespace, whatever
+  the file declared; a namespace the extractor does not know keeps the
+  file's prefix. XMP nests, and the nesting is flattened: an item of a
+  list (`rdf:Bag`, `rdf:Seq`) is a value of the property; of language
+  alternatives (`rdf:Alt`) the default (`x-default`) stands, the first
+  where none is marked; a structure's field joins the path with a dash,
+  `Iptc4xmpExt:LocationCreated`'s `Iptc4xmpExt:City` standing as
+  `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`, and a list of
+  structures piles each field's values on the same attribute, in order
+- value: string, the packet's text untouched, `"5"` and
+  `"2019-07-14T11:02:41+02:00"` as spelled; one value bare, several as
+  a list
+- written by: ossuary-extract-image, under its `xmp` contract
+
+### iptc:…
+
+- meaning: one dataset of the IPTC-IIM application record, verbatim,
+  the dataset's name kebab-cased: `iptc:keywords`, `iptc:by-line`,
+  `iptc:caption-abstract`, `iptc:copyright-notice`, `iptc:date-created`.
+  A dataset the record says several times, as it says keywords, stands
+  with every value. Datasets the extractor cannot name, and the binary
+  ones, are left out
+- value: string, the record's text: a date stays `"20190714"`. Read as
+  UTF-8 where the record declares it or the bytes hold as such, as
+  Latin-1 otherwise; one value bare, several as a list
+- written by: ossuary-extract-image, under its `iptc` contract
+
 ### raster:width
 
 - meaning: the pixel grid's width, as the file's header states it. Not
@@ -254,14 +292,15 @@ need.
 ### raster:depth
 
 - meaning: bits per channel, as stored — a four-bit palette PNG says 4,
-  a sixteen-bit TIFF 16, a JPEG 8
+  a sixteen-bit TIFF 16, a JPEG 8, a ten-bit HEIC 10
 - value: integer, bits
 - written by: ossuary-extract-image, under its `raster` contract
 
 ### raster:alpha
 
-- meaning: whether the file carries transparency — an alpha channel, or
-  a PNG's tRNS chunk giving a palette or a colour its transparency
+- meaning: whether the file carries transparency — an alpha channel, a
+  PNG's tRNS chunk giving a palette or a colour its transparency, or a
+  HEIF's auxiliary alpha plane tied to the picture
 - value: boolean
 - written by: ossuary-extract-image, under its `raster` contract
 
