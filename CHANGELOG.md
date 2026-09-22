@@ -5,6 +5,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A mail's attachment says its place inside the mail.** `ossuary-extract-mail` now records the
+  name the mail spelled as an `@`-led `file:path` beside `file:name`, the spelling every inner
+  place has, the way a PDF's attachment and a zip's entry already do: `find file:path=*.pdf`
+  reaches an attachment wherever it lay, and an attachment that was also saved to disk shows both
+  places, the disk's and `@invoice.pdf`. An `@`-led place places nothing by itself, as before. A
+  forwarded message nobody named says no place, as it says no name. Mails already examined keep
+  their receipts; `ossuary extract --full` says the places for them
+
 ## [0.9.0] - 2026-09-22
 
 ### Added

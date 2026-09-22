@@ -147,7 +147,7 @@ need.
   `--all` asks for every file held
 - value: string, a path
 - written by: ingest; ossuary-extract-packed, on an unpacked entry;
-  ossuary-extract-pdf, on an attachment
+  ossuary-extract-pdf and ossuary-extract-mail, on an attachment
 - taken back by: ingest, when a later run over the same directory on
   the same host meets no file there — the file no longer lies at that
   place. What the run did not cover it does not judge: a directory

@@ -8,7 +8,10 @@
 //! answers with findings on stdout — the message's own words about
 //! itself, verbatim under `mail:` — while the attachments and nested
 //! messages it unpacks wait in the directory, each announced with the
-//! kind the mail itself declared.
+//! kind the mail itself declared, the name the mail spelled on the
+//! record as `file:name` and, as a place inside the mail, as an
+//! `@`-led `file:path` — the spelling every inner place has, whatever
+//! holds it.
 //!
 //! text/plain is read deliberately: ingest's sniff cannot tell a mail
 //! from any other text, so every text file passes through here once, and
@@ -141,7 +144,7 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
             // mail carrying: it stays inside.
             continue;
         }
-        let wanted = spelled.and_then(basename);
+        let wanted = spelled.and_then(|spelled| basename(spelled).map(|name| (name, spelled)));
         let fallback = if part.is_message() {
             // A forwarded mail is carried content even when nobody named
             // it — this extractor's own word for it, so it has a name to
@@ -154,8 +157,8 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
         // must not fail the whole mail every run; the file waits under
         // a name that fits, and the spelled name goes on the record.
         let wearable = wanted
-            .as_deref()
-            .map(fits)
+            .as_ref()
+            .map(|(name, _)| fits(name))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| fallback.to_string());
         let announced = uniquify(wearable, &mut taken);
@@ -163,11 +166,16 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
         lines.push(json!({ "file": &announced, "mime": kind(part) }));
-        if let Some(name) = wanted {
+        if let Some((name, spelled)) = wanted {
             // The name the mail spelled goes on the record, whether or
             // not the announcement could wear it: the announced name is
             // a handle in the directory, and the record never learns it.
+            // The name is the file's; the place is the spelled name
+            // whole with `@` in front, the spelling every inner place has.
             lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
+            lines.push(
+                json!({ "file": &announced, "attribute": "file:path", "value": inner(spelled) }),
+            );
         }
         if let Some(id) = part.content_id() {
             lines.push(json!({
@@ -315,6 +323,12 @@ fn kind(part: &MessagePart) -> String {
     } else {
         "application/octet-stream".to_string()
     }
+}
+
+/// A place inside another content, spelled: a leading `@`, then the
+/// name verbatim — the one spelling every inner place has.
+fn inner(spelled: &str) -> String {
+    format!("@{spelled}")
 }
 
 /// The bare file name inside a spelled attachment name: the last element
@@ -505,6 +519,11 @@ mod tests {
             "attribute": "file:name",
             "value": "x".repeat(300),
         })));
+        assert!(lines.contains(&json!({
+            "file": &announced,
+            "attribute": "file:path",
+            "value": format!("@{}", "x".repeat(300)),
+        })));
         assert!(dir.path().join(&announced).is_file());
     }
 
@@ -636,6 +655,19 @@ mod tests {
             lines.contains(&json!({ "file": "invoice.pdf", "mime": "application/pdf" })),
             "got {lines:#?}"
         );
+        assert!(lines.contains(&json!({
+            "file": "invoice.pdf",
+            "attribute": "file:name",
+            "value": "invoice.pdf",
+        })));
+        assert!(
+            lines.contains(&json!({
+                "file": "invoice.pdf",
+                "attribute": "file:path",
+                "value": "@invoice.pdf",
+            })),
+            "the attachment's place inside the mail, spelled the way every inner place is; got {lines:#?}"
+        );
         assert!(
             lines.contains(&json!({
                 "file": "invoice.pdf",
@@ -688,6 +720,13 @@ mod tests {
             lines.contains(&json!({ "file": "message.eml", "mime": "message/rfc822" })),
             "got {lines:#?}"
         );
+        assert!(
+            !lines.iter().any(|line| {
+                line["file"] == "message.eml"
+                    && (line["attribute"] == "file:name" || line["attribute"] == "file:path")
+            }),
+            "a name nobody spelled is this extractor's handle, not the mail's word; got {lines:#?}"
+        );
         let carried = std::fs::read_to_string(dir.path().join("message.eml")).unwrap();
         assert!(
             carried.starts_with("From: carol@example.org"),
@@ -737,6 +776,62 @@ mod tests {
                 "value": "image.png",
             })),
             "the name the mail spelled stands beside the one that had to yield; got {lines:#?}"
+        );
+        for announced in ["image.png", "image-2.png"] {
+            assert!(
+                lines.contains(&json!({
+                    "file": announced,
+                    "attribute": "file:path",
+                    "value": "@image.png",
+                })),
+                "both had the same place in the mail; got {lines:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spelled_path_is_the_place_and_its_last_element_the_name() {
+        let dir = TempDir::new().unwrap();
+        let mail = concat!(
+            "From: alice@example.com\r\n",
+            "To: bob@example.org\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"cut\"\r\n",
+            "\r\n",
+            "--cut\r\n",
+            "Content-Type: application/pdf\r\n",
+            "Content-Disposition: attachment; filename=\"Belege/Rechnung.pdf\"\r\n",
+            "\r\n",
+            "%PDF-1.4\r\n",
+            "--cut\r\n",
+            "Content-Type: application/pdf\r\n",
+            "Content-Disposition: attachment; filename=\"reports/\"\r\n",
+            "\r\n",
+            "%PDF-1.4\r\n",
+            "--cut--\r\n",
+        );
+
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+
+        assert!(lines.contains(&json!({
+            "file": "Rechnung.pdf",
+            "attribute": "file:name",
+            "value": "Rechnung.pdf",
+        })));
+        assert!(
+            lines.contains(&json!({
+                "file": "Rechnung.pdf",
+                "attribute": "file:path",
+                "value": "@Belege/Rechnung.pdf",
+            })),
+            "the place keeps the spelling whole; got {lines:#?}"
+        );
+        assert!(
+            lines.contains(&json!({ "file": "attachment", "mime": "application/pdf" }))
+                && !lines
+                    .iter()
+                    .any(|line| line["file"] == "attachment" && line["attribute"] == "file:path"),
+            "a spelling with no name in it names no place either; got {lines:#?}"
         );
     }
 }
