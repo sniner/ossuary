@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-22
+
 ### Added
 
 - **A mail's attachment says its place inside the mail.** `ossuary-extract-mail` now records the
