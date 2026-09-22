@@ -1,15 +1,20 @@
-//! The PDF extractor: PDFs in, plain text out — as a derived file.
+//! The PDF extractor: a document in, its text or its attachments out —
+//! two contracts in one program.
 //!
 //! Speaks the ossuary extractor protocol (`docs/extractors.md`): called
-//! with `--identify` it says who it is, that it reads `application/pdf`,
-//! and that it derives files; called with an output directory as its
-//! argument it reads one file's bytes from stdin, writes the extracted
-//! text as `text.txt` into that directory, and announces it on stdout —
-//! beside whatever the document's own info dictionary had to say,
-//! verbatim under `pdf:`.
+//! with `--identify` it answers two lines, the `text` contract and the
+//! `attachments` contract, each with its own source and its own
+//! receipts. Called with the contract's name as the first argument and
+//! an output directory as the second, it reads one file's bytes from
+//! stdin. `text` writes the extracted text as `text.txt` into that
+//! directory and announces it on stdout — beside whatever the
+//! document's own info dictionary had to say, verbatim under `pdf:`.
+//! `attachments` writes every file the document carries embedded — a
+//! `ZUGFeRD` or Factur-X invoice's XML, a PDF/A-3 payload, whatever a
+//! writer put in — out as a file of its own.
 //!
-//! The extraction engine is the system's `pdftotext` (poppler), spoken
-//! to over pipes the way ossuary speaks to this program. Its version is
+//! The text engine is the system's `pdftotext` (poppler), spoken to
+//! over pipes the way ossuary speaks to this program. Its version is
 //! deliberately not part of this extractor's source: re-examination
 //! follows a raised generation here, not the system's update cadence —
 //! `ossuary extract pdf --full` is the lever for the rare poppler leap
@@ -23,40 +28,78 @@
 //! a sentence, the sentence goes on the record as a `prov:note` finding
 //! and onto stderr, the same words in both places. Only the environment
 //! failing (no pdftotext, a broken pipe world) is a failure.
+//!
+//! Attachments are found where the format keeps them: in the catalog's
+//! `EmbeddedFiles` name tree, and on pages as file attachment
+//! annotations. Each comes out under the name its file specification
+//! spells, said on the record as `file:name` and, as a place inside the
+//! document, as an `@`-led `file:path` — the spelling every inner place
+//! has, whatever holds it. The kind is what the document declares for
+//! the stream, and the honest shrug when it declares none. An
+//! attachment that will not come out — a filter this program cannot
+//! decode, a stream larger than [`UNPACKED_AT_MOST`] — stays inside,
+//! and the reason goes on the record as a `prov:note` finding beside a
+//! line on stderr: a document that gave up its attachments incompletely
+//! must not read like one that gave them whole. A document lopdf cannot
+//! open has no attachments to give.
 
+use std::collections::HashSet;
 use std::io::{Read, Write as _};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+use lopdf::{Dictionary, Document, Object, ObjectId};
 use serde_json::json;
 
-/// The generation of what this extractor writes: the number in its
+/// The generation of what each contract writes: the number in its
 /// source, and so the memory of which files it has seen. Raised by hand
 /// when the findings change, when the same bytes would yield more or
 /// something different than before, and never for a build, a dependency
 /// or a release: a new generation examines every file again, and that
-/// is the only reason to have one.
-const GENERATION: u32 = 1;
+/// is the only reason to have one. Two contracts, two numbers: what
+/// `text` learns to see says nothing about `attachments`.
+const TEXT_GENERATION: u32 = 1;
+const ATTACHMENTS_GENERATION: u32 = 1;
+
+/// The most an attachment may unpack to. A compressed stream's whole
+/// point is bytes out of little; beyond this, the attachment stays
+/// inside with the reason on the record.
+const UNPACKED_AT_MOST: usize = 1 << 30;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.first().map(String::as_str) {
-        Some("--identify") => identify(),
-        Some(directory) if arguments.len() == 1 && !directory.starts_with('-') => {
-            examine(Path::new(directory))
+    match arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--identify"] => identify(),
+        ["text", directory] if !directory.starts_with('-') => {
+            examine(Contract::Text, Path::new(directory))
+        }
+        ["attachments", directory] if !directory.starts_with('-') => {
+            examine(Contract::Attachments, Path::new(directory))
         }
         _ => {
             eprintln!(
-                "ossuary-extract-pdf: run with --identify, or with the output directory as the only argument and a file's bytes on stdin"
+                "ossuary-extract-pdf: run with --identify, with `text DIR`, or with `attachments DIR`; a file's bytes on stdin either way"
             );
             ExitCode::FAILURE
         }
     }
 }
 
-/// Who this extractor is — answered only when its engine is actually
-/// there: a missing pdftotext fails loudly here, once, instead of
-/// quietly on every file.
+/// The program's two trades.
+#[derive(Clone, Copy)]
+enum Contract {
+    Text,
+    Attachments,
+}
+
+/// Who this extractor is — answered only when its text engine is
+/// actually there: a missing pdftotext fails loudly here, once,
+/// instead of quietly on every file.
 fn identify() -> ExitCode {
     if !pdftotext_present() {
         eprintln!(
@@ -68,7 +111,18 @@ fn identify() -> ExitCode {
         "{}",
         json!({
             "ossuary-extractor": 1,
-            "source": format!("extractor:pdf/{GENERATION}"),
+            "contract": "text",
+            "source": format!("extractor:pdf-text/{TEXT_GENERATION}"),
+            "mimes": ["application/pdf"],
+            "derives": true,
+        })
+    );
+    println!(
+        "{}",
+        json!({
+            "ossuary-extractor": 1,
+            "contract": "attachments",
+            "source": format!("extractor:pdf-attachments/{ATTACHMENTS_GENERATION}"),
             "mimes": ["application/pdf"],
             "derives": true,
         })
@@ -76,17 +130,37 @@ fn identify() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One document: info dictionary onto stdout, text into the directory.
-fn examine(directory: &Path) -> ExitCode {
+/// One document: stdin to its end, then whatever the contract trades in.
+fn examine(contract: Contract, directory: &Path) -> ExitCode {
     let mut bytes = Vec::new();
     if let Err(error) = std::io::stdin().lock().read_to_end(&mut bytes) {
         eprintln!("ossuary-extract-pdf: reading stdin: {error}");
         return ExitCode::FAILURE;
     }
-    for (attribute, value) in document_info(&bytes) {
+    match contract {
+        Contract::Text => text(&bytes, directory),
+        Contract::Attachments => match attachments(&bytes, directory, UNPACKED_AT_MOST) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("ossuary-extract-pdf: {error}");
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+/// The `text` contract: info dictionary onto stdout, text into the
+/// directory.
+fn text(bytes: &[u8], directory: &Path) -> ExitCode {
+    for (attribute, value) in document_info(bytes) {
         println!("{}", json!({ "attribute": attribute, "value": value }));
     }
-    let text = match pdftotext(bytes) {
+    let text = match pdftotext(bytes.to_vec()) {
         Ok(Harvest::Text(text)) => text,
         Ok(Harvest::Refused(sentence)) => {
             note(&sentence);
@@ -239,6 +313,415 @@ fn unwritable(character: char) -> bool {
         || code & 0xFFFE == 0xFFFE
 }
 
+/// The `attachments` contract: every embedded file out as a file of
+/// its own, announced with the kind the document declares, its spelled
+/// name on the record as `file:name` and as an `@`-led `file:path`.
+/// What will not come out stays inside and says why — see
+/// [`stays_inside`] — and costs no other attachment its examination.
+/// Only failing to write a file is a failure.
+fn attachments(
+    bytes: &[u8],
+    directory: &Path,
+    at_most: usize,
+) -> std::io::Result<Vec<serde_json::Value>> {
+    let Ok(document) = Document::load_mem(bytes) else {
+        return Ok(Vec::new());
+    };
+    let mut lines = Vec::new();
+    let mut taken = HashSet::new();
+    for specification in file_specifications(&document) {
+        let Some(spelled) = specification.name(&document) else {
+            lines.push(stays_inside(
+                &format!("{:?}", specification.stream),
+                "no file name in it",
+            ));
+            continue;
+        };
+        let Some(name) = basename(&spelled) else {
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            continue;
+        };
+        let wearable = fits(&name);
+        if wearable.is_empty() {
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            continue;
+        }
+        let Ok(object) = document.get_object(specification.stream) else {
+            lines.push(stays_inside(
+                &spelled,
+                "its file is missing from the document",
+            ));
+            continue;
+        };
+        let Ok(stream) = object.as_stream() else {
+            lines.push(stays_inside(&spelled, "its file is no stream"));
+            continue;
+        };
+        // The bound is checked before decoding as well as after: a
+        // stream already too large as stored need not be inflated to
+        // find out.
+        if stream.content.len() > at_most {
+            lines.push(stays_inside(
+                &spelled,
+                &format!("larger than {}", human_bytes(at_most)),
+            ));
+            continue;
+        }
+        // A stream without a filter is its bytes as they stand; lopdf
+        // asks for a filter before it inflates anything.
+        let content = if stream.dict.has(b"Filter") {
+            match stream.decompressed_content() {
+                Ok(content) => content,
+                Err(error) => {
+                    lines.push(stays_inside(&spelled, &error.to_string()));
+                    continue;
+                }
+            }
+        } else {
+            stream.content.clone()
+        };
+        if content.len() > at_most {
+            lines.push(stays_inside(
+                &spelled,
+                &format!("larger than {}", human_bytes(at_most)),
+            ));
+            continue;
+        }
+        let announced = uniquify(wearable, &mut taken);
+        std::fs::write(directory.join(&announced), &content).map_err(|error| {
+            std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
+        })?;
+        lines.push(json!({ "file": &announced, "mime": declared_kind(&stream.dict) }));
+        // The name the document spelled goes on the record, whether or
+        // not the announcement could wear it: the announced name is a
+        // handle in the directory, and the record never learns it.
+        lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
+        lines.push(
+            json!({ "file": &announced, "attribute": "file:path", "value": inner(&spelled) }),
+        );
+        for (attribute, value) in specification.facts(&document, &stream.dict) {
+            lines.push(json!({ "file": &announced, "attribute": attribute, "value": value }));
+        }
+    }
+    Ok(lines)
+}
+
+/// One embedded file as the document points at it: the file
+/// specification dictionary, and the stream its `EF` entry names.
+struct FileSpecification<'a> {
+    dictionary: &'a Dictionary,
+    stream: ObjectId,
+}
+
+impl FileSpecification<'_> {
+    /// The name the specification spells: `UF`, the Unicode one, before
+    /// `F`, the byte one — decoded the way any PDF text string is, and
+    /// nothing else done to it.
+    fn name(&self, document: &Document) -> Option<String> {
+        [b"UF".as_slice(), b"F"].iter().find_map(|key| {
+            let spelled = self.dictionary.get(key).ok()?;
+            let spelled = decode_text(dereference(document, spelled)?.as_str().ok()?);
+            (!spelled.is_empty()).then_some(spelled)
+        })
+    }
+
+    /// What the document says about the attachment beyond its name and
+    /// kind, verbatim under `pdf:` the way the info dictionary is: the
+    /// specification's `Desc` and `AFRelationship`, and from the
+    /// stream's `Params` its `CreationDate` and `ModDate`, the dates as
+    /// the document spells them. `Size` and `CheckSum` are facts of the
+    /// bytes, and the archive says those itself.
+    fn facts(&self, document: &Document, stream: &Dictionary) -> Vec<(String, String)> {
+        let params = stream
+            .get(b"Params")
+            .ok()
+            .and_then(|params| dereference(document, params))
+            .and_then(|params| params.as_dict().ok());
+        let mut facts = Vec::new();
+        for (dictionary, key) in [
+            (Some(self.dictionary), b"Desc".as_slice()),
+            (Some(self.dictionary), b"AFRelationship"),
+            (params, b"CreationDate"),
+            (params, b"ModDate"),
+        ] {
+            let Some(object) = dictionary
+                .and_then(|dictionary| dictionary.get(key).ok())
+                .and_then(|object| dereference(document, object))
+            else {
+                continue;
+            };
+            let value = match object {
+                Object::String(bytes, _) => decode_text(bytes),
+                Object::Name(name) => String::from_utf8_lossy(name).into_owned(),
+                _ => continue,
+            };
+            if value.is_empty() {
+                continue;
+            }
+            facts.push((
+                format!("pdf:{}", kebab(&String::from_utf8_lossy(key))),
+                value,
+            ));
+        }
+        facts
+    }
+}
+
+/// Every file specification the document carries, in the order the
+/// format keeps them: the catalog's `EmbeddedFiles` name tree first,
+/// then each page's file attachment annotations. A stream reached
+/// twice — the same file in the tree and on a page — comes out once.
+fn file_specifications(document: &Document) -> Vec<FileSpecification<'_>> {
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    let Ok(catalog) = document.catalog() else {
+        return found;
+    };
+    if let Some(names) = catalog
+        .get(b"Names")
+        .ok()
+        .and_then(|names| dereference(document, names))
+        .and_then(|names| names.as_dict().ok())
+        && let Some(tree) = names
+            .get(b"EmbeddedFiles")
+            .ok()
+            .and_then(|tree| dereference(document, tree))
+            .and_then(|tree| tree.as_dict().ok())
+    {
+        let mut visited = HashSet::new();
+        name_tree(document, tree, &mut visited, &mut |specification| {
+            take(specification, document, &mut seen, &mut found);
+        });
+    }
+    for page in document.get_pages().into_values() {
+        let annotations = document
+            .get_object(page)
+            .ok()
+            .and_then(|page| page.as_dict().ok())
+            .and_then(|page| page.get(b"Annots").ok())
+            .and_then(|annotations| dereference(document, annotations))
+            .and_then(|annotations| annotations.as_array().ok());
+        let Some(annotations) = annotations else {
+            continue;
+        };
+        for annotation in annotations {
+            let Some(annotation) =
+                dereference(document, annotation).and_then(|annotation| annotation.as_dict().ok())
+            else {
+                continue;
+            };
+            if annotation
+                .get(b"Subtype")
+                .ok()
+                .and_then(|subtype| subtype.as_name().ok())
+                != Some(b"FileAttachment")
+            {
+                continue;
+            }
+            if let Ok(specification) = annotation.get(b"FS") {
+                take(specification, document, &mut seen, &mut found);
+            }
+        }
+    }
+    found
+}
+
+/// A name tree walked to its leaves: `Kids` down, `Names` as pairs of
+/// key and value, the value handed on. A node met twice is a cycle,
+/// not a second copy, and is walked once.
+fn name_tree<'a>(
+    document: &'a Document,
+    node: &'a Dictionary,
+    visited: &mut HashSet<ObjectId>,
+    leaf: &mut impl FnMut(&'a Object),
+) {
+    if let Some(kids) = node
+        .get(b"Kids")
+        .ok()
+        .and_then(|kids| dereference(document, kids))
+        .and_then(|kids| kids.as_array().ok())
+    {
+        for kid in kids {
+            if let Object::Reference(id) = kid
+                && !visited.insert(*id)
+            {
+                continue;
+            }
+            if let Some(kid) = dereference(document, kid).and_then(|kid| kid.as_dict().ok()) {
+                name_tree(document, kid, visited, leaf);
+            }
+        }
+    }
+    if let Some(pairs) = node
+        .get(b"Names")
+        .ok()
+        .and_then(|names| dereference(document, names))
+        .and_then(|names| names.as_array().ok())
+    {
+        for pair in pairs.chunks_exact(2) {
+            leaf(&pair[1]);
+        }
+    }
+}
+
+/// A file specification resolved to the stream behind it and kept,
+/// unless that stream was kept already. The stream is under `EF`, as
+/// `UF` or `F` — a specification with neither embeds nothing and is
+/// passed over: a reference to a file elsewhere is not an attachment.
+fn take<'a>(
+    specification: &'a Object,
+    document: &'a Document,
+    seen: &mut HashSet<ObjectId>,
+    found: &mut Vec<FileSpecification<'a>>,
+) {
+    let Some(dictionary) =
+        dereference(document, specification).and_then(|object| object.as_dict().ok())
+    else {
+        return;
+    };
+    let Some(embedded) = dictionary
+        .get(b"EF")
+        .ok()
+        .and_then(|embedded| dereference(document, embedded))
+        .and_then(|embedded| embedded.as_dict().ok())
+    else {
+        return;
+    };
+    let stream = [b"UF".as_slice(), b"F"]
+        .iter()
+        .find_map(|key| match embedded.get(key) {
+            Ok(Object::Reference(id)) => Some(*id),
+            _ => None,
+        });
+    if let Some(stream) = stream
+        && seen.insert(stream)
+    {
+        found.push(FileSpecification { dictionary, stream });
+    }
+}
+
+/// The object behind a reference, or the object itself; a reference
+/// to nothing is nothing.
+fn dereference<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Object> {
+    match object {
+        Object::Reference(id) => document.get_object(*id).ok(),
+        other => Some(other),
+    }
+}
+
+/// The kind the document declares for an embedded stream — its
+/// `Subtype`, a mime type as a PDF name — and the honest shrug when it
+/// declares none, or something that is no mime type.
+fn declared_kind(stream: &Dictionary) -> String {
+    stream
+        .get(b"Subtype")
+        .ok()
+        .and_then(|subtype| subtype.as_name().ok())
+        .and_then(|name| std::str::from_utf8(name).ok())
+        .filter(|declared| mimey(declared))
+        .map_or_else(|| "application/octet-stream".to_string(), str::to_string)
+}
+
+/// Whether a declared kind reads as a mime type: two halves around one
+/// slash, each in the alphabet mime names use.
+fn mimey(declared: &str) -> bool {
+    let fits = |half: &str| {
+        !half.is_empty()
+            && half.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'+' | b'-')
+            })
+    };
+    matches!(declared.split_once('/'), Some((kind, subtype)) if fits(kind) && fits(subtype))
+}
+
+/// A place inside another content, spelled: a leading `@`, then the
+/// name verbatim — the one spelling every inner place has.
+fn inner(spelled: &str) -> String {
+    format!("@{spelled}")
+}
+
+/// An attachment the examination could not bring out, said twice from
+/// one wording: onto the record as a `prov:note` finding — a document
+/// that gave up its attachments incompletely must not read like one
+/// that gave them whole — and onto stderr for whoever watches the run.
+fn stays_inside(spelled: &str, reason: &str) -> serde_json::Value {
+    let sentence = format!("attachment {spelled} stayed inside: {reason}");
+    eprintln!("ossuary-extract-pdf: {sentence}");
+    json!({ "attribute": "prov:note", "value": sentence })
+}
+
+/// A byte count as a person reads it — the bound, said once.
+fn human_bytes(bytes: usize) -> String {
+    const UNITS: [&str; 5] = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+    let mut unit = 0;
+    let mut count = bytes;
+    while count >= 1024 && count % 1024 == 0 && unit < UNITS.len() - 1 {
+        count /= 1024;
+        unit += 1;
+    }
+    format!("{count} {}", UNITS[unit])
+}
+
+/// The bare file name inside a spelled name: the last element past
+/// either separator, because an announced name names a file, never a
+/// place. A spelling with no name left in it answers nothing.
+fn basename(spelled: &str) -> Option<String> {
+    let name = spelled
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
+}
+
+/// The most bytes an announced name may have: what a filesystem takes
+/// in one name, with room left for the counter `uniquify` slips in.
+const NAME_AT_MOST: usize = 240;
+
+/// The name as a file can wear it: control characters dropped, the
+/// whole cut to what a filesystem takes in one name — at a character
+/// boundary, the extension kept when it is one. The spelled name goes
+/// on the record whole; this is only the name the file waits under.
+/// Empty when nothing wearable is left.
+fn fits(spelled: &str) -> String {
+    let name: String = spelled.chars().filter(|c| !c.is_control()).collect();
+    if name.len() <= NAME_AT_MOST {
+        return name;
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= 16 => name.split_at(dot),
+        _ => (name.as_str(), ""),
+    };
+    let mut cut = NAME_AT_MOST - extension.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{extension}", &stem[..cut])
+}
+
+/// The wanted name, or the nearest free one: a counter slips in before
+/// the extension until nothing collides — case-insensitively, because
+/// the directory the files wait in may not tell Report from report.
+fn uniquify(wanted: String, taken: &mut HashSet<String>) -> String {
+    if taken.insert(wanted.to_lowercase()) {
+        return wanted;
+    }
+    let (stem, extension) = match wanted.rfind('.') {
+        Some(dot) if dot > 0 => wanted.split_at(dot),
+        _ => (wanted.as_str(), ""),
+    };
+    let mut count = 2usize;
+    loop {
+        let attempt = format!("{stem}-{count}{extension}");
+        if taken.insert(attempt.to_lowercase()) {
+            return attempt;
+        }
+        count += 1;
+    }
+}
+
 /// The document information dictionary, verbatim under `pdf:`: the keys
 /// kebab-cased (`CreationDate` → `pdf:creation-date`), the values as the
 /// document spells them — a date stays `D:20190714110241+02'00'`. A key
@@ -387,7 +870,8 @@ fn kebab(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use lopdf::{Document, Object, StringFormat, dictionary};
+    use lopdf::{Document, Object, Stream, StringFormat, dictionary};
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -593,5 +1077,309 @@ mod tests {
     fn bytes_without_a_pdf_are_an_empty_answer_not_an_error() {
         assert_eq!(document_info(b"plain words"), Vec::new());
         assert_eq!(document_info(&[]), Vec::new());
+    }
+
+    /// A document under construction: one page, and every way the
+    /// format has of pointing at an embedded file.
+    struct Builder {
+        document: Document,
+        page: ObjectId,
+        names: Vec<Object>,
+        annotations: Vec<Object>,
+    }
+
+    impl Builder {
+        fn new() -> Self {
+            let mut document = Document::with_version("1.7");
+            let pages = document.new_object_id();
+            let page = document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => Object::Reference(pages),
+            });
+            document.objects.insert(
+                pages,
+                Object::Dictionary(dictionary! {
+                    "Type" => "Pages",
+                    "Kids" => vec![Object::Reference(page)],
+                    "Count" => 1,
+                }),
+            );
+            Builder {
+                document,
+                page,
+                names: Vec::new(),
+                annotations: Vec::new(),
+            }
+        }
+
+        /// An embedded stream, declared as the kind given — or as
+        /// nothing — and deflated when the bytes shrink for it, the way
+        /// writers write them; a short one stays as it is.
+        fn stream(&mut self, content: &[u8], kind: Option<&str>) -> ObjectId {
+            let mut dict = dictionary! { "Type" => "EmbeddedFile" };
+            if let Some(kind) = kind {
+                dict.set("Subtype", Object::Name(kind.as_bytes().to_vec()));
+            }
+            dict.set(
+                "Params",
+                dictionary! {
+                    "Size" => Object::Integer(i64::try_from(content.len()).unwrap()),
+                    "ModDate" => Object::string_literal("D:20260725120000Z"),
+                },
+            );
+            let mut stream = Stream::new(dict, content.to_vec());
+            stream.compress().unwrap();
+            assert_eq!(
+                stream.dict.has(b"Filter"),
+                content.len() > 64,
+                "short content stays plain, long content deflates"
+            );
+            self.document.add_object(stream)
+        }
+
+        /// A file specification pointing at a stream, `UF` and `F` as
+        /// given.
+        fn specification(
+            &mut self,
+            unicode: Option<&str>,
+            byte: Option<&str>,
+            stream: Option<ObjectId>,
+        ) -> ObjectId {
+            let mut dict = dictionary! { "Type" => "Filespec" };
+            if let Some(unicode) = unicode {
+                let mut utf16 = vec![0xFE, 0xFF];
+                for unit in unicode.encode_utf16() {
+                    utf16.extend_from_slice(&unit.to_be_bytes());
+                }
+                dict.set("UF", Object::String(utf16, StringFormat::Literal));
+            }
+            if let Some(byte) = byte {
+                dict.set("F", Object::string_literal(byte));
+            }
+            if let Some(stream) = stream {
+                dict.set("EF", dictionary! { "F" => Object::Reference(stream) });
+                dict.set("Desc", Object::string_literal("what it is"));
+                dict.set("AFRelationship", Object::Name(b"Alternative".to_vec()));
+            }
+            self.document.add_object(dict)
+        }
+
+        fn in_tree(&mut self, key: &str, specification: ObjectId) {
+            self.names.push(Object::string_literal(key));
+            self.names.push(Object::Reference(specification));
+        }
+
+        fn on_page(&mut self, specification: ObjectId) {
+            let annotation = self.document.add_object(dictionary! {
+                "Type" => "Annot",
+                "Subtype" => "FileAttachment",
+                "FS" => Object::Reference(specification),
+            });
+            self.annotations.push(Object::Reference(annotation));
+        }
+
+        fn finish(mut self, kids_cycle: bool) -> Vec<u8> {
+            let leaf = self
+                .document
+                .add_object(dictionary! { "Names" => self.names });
+            let tree = if kids_cycle {
+                let root = self.document.new_object_id();
+                self.document.objects.insert(
+                    root,
+                    Object::Dictionary(dictionary! {
+                        "Kids" => vec![Object::Reference(leaf), Object::Reference(root)],
+                    }),
+                );
+                root
+            } else {
+                leaf
+            };
+            let names = self.document.add_object(dictionary! {
+                "EmbeddedFiles" => Object::Reference(tree),
+            });
+            let page = self
+                .document
+                .get_object_mut(self.page)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+            let pages = page.get(b"Parent").unwrap().clone();
+            page.set("Annots", self.annotations);
+            let catalog = self.document.add_object(dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages,
+                "Names" => Object::Reference(names),
+            });
+            self.document
+                .trailer
+                .set("Root", Object::Reference(catalog));
+            let mut bytes = Vec::new();
+            self.document.save_to(&mut bytes).unwrap();
+            bytes
+        }
+    }
+
+    fn harvest(bytes: &[u8], at_most: usize) -> (Vec<serde_json::Value>, TempDir) {
+        let directory = TempDir::new().unwrap();
+        let lines = attachments(bytes, directory.path(), at_most).unwrap();
+        (lines, directory)
+    }
+
+    #[test]
+    fn an_embedded_invoice_comes_out_with_its_name_place_kind_and_facts() {
+        let mut builder = Builder::new();
+        let xml = b"<?xml version=\"1.0\"?><rsm:CrossIndustryInvoice/>";
+        let stream = builder.stream(xml, Some("text/xml"));
+        let specification =
+            builder.specification(Some("factur-x.xml"), Some("factur-x.xml"), Some(stream));
+        builder.in_tree("factur-x.xml", specification);
+        let (lines, directory) = harvest(&builder.finish(false), UNPACKED_AT_MOST);
+        assert_eq!(
+            std::fs::read(directory.path().join("factur-x.xml")).unwrap(),
+            xml,
+            "the stream inflated, byte for byte"
+        );
+        for expected in [
+            json!({ "file": "factur-x.xml", "mime": "text/xml" }),
+            json!({ "file": "factur-x.xml", "attribute": "file:name", "value": "factur-x.xml" }),
+            json!({ "file": "factur-x.xml", "attribute": "file:path", "value": "@factur-x.xml" }),
+            json!({ "file": "factur-x.xml", "attribute": "pdf:desc", "value": "what it is" }),
+            json!({ "file": "factur-x.xml", "attribute": "pdf:af-relationship", "value": "Alternative" }),
+            json!({ "file": "factur-x.xml", "attribute": "pdf:mod-date", "value": "D:20260725120000Z" }),
+        ] {
+            assert!(
+                lines.contains(&expected),
+                "missing {expected}; got {lines:#?}"
+            );
+        }
+        assert!(
+            !lines.iter().any(|line| line["attribute"] == "pdf:size"),
+            "the size is the archive's to say"
+        );
+        assert!(!lines.iter().any(|line| line["attribute"] == "prov:note"));
+    }
+
+    #[test]
+    fn the_unicode_name_wins_and_a_path_in_it_becomes_the_place() {
+        let mut builder = Builder::new();
+        let stream = builder.stream(b"payload", Some("application/pdf"));
+        let specification = builder.specification(
+            Some("Belege\\Rechnung Müller.pdf"),
+            Some("Belege\\Rechnung M?ller.pdf"),
+            Some(stream),
+        );
+        builder.in_tree("a", specification);
+        let (lines, directory) = harvest(&builder.finish(false), UNPACKED_AT_MOST);
+        assert!(directory.path().join("Rechnung Müller.pdf").is_file());
+        assert!(lines.contains(
+            &json!({ "file": "Rechnung Müller.pdf", "attribute": "file:name", "value": "Rechnung Müller.pdf" })
+        ));
+        assert!(lines.contains(
+            &json!({ "file": "Rechnung Müller.pdf", "attribute": "file:path", "value": "@Belege\\Rechnung Müller.pdf" })
+        ));
+    }
+
+    #[test]
+    fn a_page_annotation_is_found_and_a_stream_reached_twice_comes_out_once() {
+        let mut builder = Builder::new();
+        let shared = builder.stream(b"one", Some("text/plain"));
+        let other = builder.stream(b"two", None);
+        let in_tree = builder.specification(Some("one.txt"), None, Some(shared));
+        let on_page_too = builder.specification(None, Some("one.txt"), Some(shared));
+        let on_page = builder.specification(None, Some("two.bin"), Some(other));
+        builder.in_tree("one.txt", in_tree);
+        builder.on_page(on_page_too);
+        builder.on_page(on_page);
+        let (lines, _directory) = harvest(&builder.finish(false), UNPACKED_AT_MOST);
+        let announced: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|line| line.get("mime").is_some())
+            .collect();
+        assert_eq!(announced.len(), 2, "{lines:#?}");
+        assert!(lines.contains(&json!({ "file": "one.txt", "mime": "text/plain" })));
+        assert!(
+            lines.contains(&json!({ "file": "two.bin", "mime": "application/octet-stream" })),
+            "no declared kind is the honest shrug; got {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_specification_embedding_nothing_is_passed_over() {
+        let mut builder = Builder::new();
+        let specification = builder.specification(Some("elsewhere.pdf"), None, None);
+        builder.in_tree("elsewhere.pdf", specification);
+        let (lines, _directory) = harvest(&builder.finish(false), UNPACKED_AT_MOST);
+        assert_eq!(lines, Vec::<serde_json::Value>::new());
+    }
+
+    #[test]
+    fn a_cycle_in_the_tree_is_walked_once() {
+        let mut builder = Builder::new();
+        let stream = builder.stream(b"leaf", Some("text/plain"));
+        let specification = builder.specification(Some("leaf.txt"), None, Some(stream));
+        builder.in_tree("leaf.txt", specification);
+        let (lines, _directory) = harvest(&builder.finish(true), UNPACKED_AT_MOST);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.get("mime").is_some())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn too_large_stays_inside_and_says_so() {
+        let mut builder = Builder::new();
+        let stream = builder.stream(&[0u8; 4096], Some("application/octet-stream"));
+        let specification = builder.specification(Some("zeros.bin"), None, Some(stream));
+        builder.in_tree("zeros.bin", specification);
+        let (lines, directory) = harvest(&builder.finish(false), 1024);
+        assert!(!directory.path().join("zeros.bin").exists());
+        assert_eq!(
+            lines,
+            vec![json!({
+                "attribute": "prov:note",
+                "value": "attachment zeros.bin stayed inside: larger than 1 KiB"
+            })]
+        );
+    }
+
+    #[test]
+    fn colliding_names_yield_to_a_counter() {
+        let mut builder = Builder::new();
+        let first = builder.stream(b"a", Some("text/plain"));
+        let second = builder.stream(b"b", Some("text/plain"));
+        let one = builder.specification(Some("dir/Note.txt"), None, Some(first));
+        let two = builder.specification(Some("other/note.txt"), None, Some(second));
+        builder.in_tree("one", one);
+        builder.in_tree("two", two);
+        let (lines, directory) = harvest(&builder.finish(false), UNPACKED_AT_MOST);
+        assert!(directory.path().join("Note.txt").is_file());
+        assert!(directory.path().join("note-2.txt").is_file());
+        assert!(lines.contains(
+            &json!({ "file": "note-2.txt", "attribute": "file:path", "value": "@other/note.txt" })
+        ));
+    }
+
+    #[test]
+    fn a_document_without_attachments_or_without_a_pdf_answers_nothing() {
+        let (lines, _directory) = harvest(&sample(), UNPACKED_AT_MOST);
+        assert_eq!(lines, Vec::<serde_json::Value>::new());
+        let (lines, _directory) = harvest(b"plain words", UNPACKED_AT_MOST);
+        assert_eq!(lines, Vec::<serde_json::Value>::new());
+    }
+
+    #[test]
+    fn a_declared_kind_must_read_as_one() {
+        assert_eq!(
+            declared_kind(&dictionary! { "Subtype" => "text/xml" }),
+            "text/xml"
+        );
+        assert_eq!(
+            declared_kind(&dictionary! { "Subtype" => "XML" }),
+            "application/octet-stream"
+        );
+        assert_eq!(declared_kind(&dictionary! {}), "application/octet-stream");
     }
 }

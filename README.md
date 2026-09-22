@@ -63,7 +63,7 @@ says for itself what it is and what it needs:
 | [`ossuary-extract-image`](ossuary-extract-image/README.md) | what a camera wrote into the picture, and the pixel grid |
 | [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a message's own voice, and what it carries |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip's inventory, or its files |
-| [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a document's text and info — wants poppler's `pdftotext` |
+| [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a document's text and info, or its attachments — wants poppler's `pdftotext` |
 
 One program is missing from that list on purpose: [`ossuary-fix`](ossuary-fix/README.md)
 repairs 0.x archives after a breaking change and is not a regular part

@@ -1,15 +1,22 @@
 # ossuary-extract-pdf
 
-*PDFs in, plain text out — as a derived file.*
+*A document in, its text or its attachments out — two contracts in one
+program.*
 
-An [extractor](../docs/extractors.md) for ossuary. It reads a document's
-bytes from stdin, answers with whatever the document's own information
-dictionary had to say, and writes the extracted text as `text.txt` into
-the directory it was given. It never touches the archive.
+An [extractor](../docs/extractors.md) for ossuary, of two trades. Under
+its `text` contract it reads a document's bytes from stdin, answers with
+whatever the document's own information dictionary had to say, and
+writes the extracted text as `text.txt` into the directory it was given.
+Under its `attachments` contract it writes every file the document
+carries embedded out as a file of its own: a ZUGFeRD or Factur-X
+invoice's XML, a PDF/A-3 payload, whatever a writer put in. It never
+touches the archive.
 
 The text is what makes a PDF findable: taken in as a derived file of its
 own, it is offered to whichever extractor reads plain text, and `ossuary
-find` reaches it like any other file.
+find` reaches it like any other file. An attachment joins the same
+world: an XML invoice is a file of its kind, tied to its document by
+`prov:origin`, and offered to whichever extractor reads that kind.
 
 ## It needs poppler
 
@@ -23,10 +30,11 @@ $ apt install poppler-utils     # Debian, Ubuntu
 
 Without it this extractor refuses to identify itself — loudly, once,
 instead of quietly failing on every file. The poppler version is
-deliberately *not* part of this extractor's source name: re-examination
-follows deliberate version bumps here, not the system's update cadence.
-`ossuary extract pdf --full` is the lever for the rare poppler leap that
-warrants a fresh look.
+deliberately *not* part of the `text` contract's source name:
+re-examination follows deliberate version bumps here, not the system's
+update cadence. `ossuary extract pdf:text --full` is the lever for the
+rare poppler leap that warrants a fresh look. Attachments need no
+poppler; they are read in-process.
 
 ## What it puts on the record
 
@@ -45,6 +53,41 @@ UTF-16BE or UTF-8 behind their BOM, and from `PDFDocEncoding` otherwise —
 conversion, not tidying: nothing is trimmed or normalized. A document the
 info reader cannot open simply has no info to give, and the text
 extraction is not asked for its opinion about that.
+
+## What it brings out
+
+Attachments are found where the format keeps them: in the catalog's
+`EmbeddedFiles` name tree, and on pages as file attachment annotations;
+a file reached both ways comes out once. Each is announced with the
+kind the document declares for it — `text/xml` for an invoice — and
+`application/octet-stream` when it declares none. On the record stands
+what the document said about it, verbatim:
+
+```
+file:name = "factur-x.xml"
+file:path = "@factur-x.xml"
+pdf:desc = "Factur-X/ZUGFeRD Invoice Data"
+pdf:af-relationship = "Alternative"
+pdf:creation-date = "D:20260725120000Z"
+pdf:mod-date = "D:20260725120000Z"
+```
+
+The name is the file specification's own, its Unicode spelling before
+its byte spelling; the place is that name with a leading `@`, the way
+every place inside another content is spelled, so `find
+file:path=*/factur-x.xml` reaches it wherever it lay. `pdf:desc` and
+`pdf:af-relationship` are the specification's, the two dates the
+stream's own parameters; the size and checksum a stream may also carry
+are facts of the bytes, and the archive says those itself.
+
+An attachment that will not come out stays inside, and the reason goes
+on the record as a `prov:note` finding beside a line on stderr — a
+filter this program cannot decode, a stream larger than 1 GiB — so a
+document that gave up its attachments incompletely does not read like
+one that gave them whole. A specification that embeds nothing, pointing
+at a file elsewhere, is not an attachment and is passed over silently.
+A document that cannot be opened has no attachments to give: exit 0,
+nothing found.
 
 ## When there is no text
 
@@ -81,16 +124,19 @@ Put the binary on the PATH beside `ossuary`, then:
 $ ossuary extract pdf
 ```
 
-Or list it under `[extract] run` in the archive's `config.toml`. A bare
-`ossuary extract` runs its list in rounds, so the `text.txt` this
-extractor hands back is offered to the text-reading extractors in the
-next round without a second call.
+That runs both contracts; `ossuary extract pdf:text` or `ossuary
+extract pdf:attachments` runs one, and the same spelling holds under
+`[extract] run` in the archive's `config.toml`. A bare `ossuary extract`
+runs its list in rounds, so the `text.txt` and the attachments this
+extractor hands back are offered to whichever extractor reads them in
+the next round without a second call.
 
 Testable by hand:
 
 ```console
 $ ossuary-extract-pdf --identify
-$ mkdir /tmp/out && ossuary-extract-pdf /tmp/out < report.pdf
+$ mkdir /tmp/out && ossuary-extract-pdf text /tmp/out < report.pdf
+$ mkdir /tmp/att && ossuary-extract-pdf attachments /tmp/att < invoice.pdf
 ```
 
 ## License

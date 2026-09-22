@@ -110,11 +110,12 @@ need.
   or that the document refused to be read. Said only when there is
   something to say; an empty harvest is no event. Remarks accrete, and
   who remarked is the claim's source — `prov:note` under
-  `extractor:pdf/…` read together is "this PDF gave no text", with no
-  narrower attribute needed
+  `extractor:pdf-text/…` read together is "this PDF gave no text", with
+  no narrower attribute needed
 - value: string, one sentence in the examiner's own words
 - written by: extractors, as an ordinary finding — today
-  ossuary-extract-pdf and ossuary-extract-packed, on entries its
+  ossuary-extract-pdf, and ossuary-extract-packed and
+  ossuary-extract-pdf's `attachments` contract on entries their
   unpacking could not bring out
 
 ### file:path
@@ -124,9 +125,11 @@ need.
   the real place a file sat when it was taken in — absolute, symlinks
   and `..` resolved, the name included: one sighting, one atomic
   value, the machine it is on `prov:host`. Inside another content: the
-  path an entry had in its archive, spelled with a leading `@` and the
-  entry's path verbatim after it (`@invoices/2026-03.pdf`; an entry
-  that itself begins with `@` reads `@@…`), the archive `prov:origin`.
+  path an entry had in its archive, or the name an attachment had in
+  its document, spelled with a leading `@` and the entry's path
+  verbatim after it (`@invoices/2026-03.pdf`, `@factur-x.xml`; an entry
+  that itself begins with `@` reads `@@…`), the container
+  `prov:origin`.
   Places accrete. One term reaches a file wherever it lay:
   `file:path=*/2026-03.pdf` finds it on a disk or in an archive, and
   which archive format it was is nobody's concern. What becomes of an
@@ -138,7 +141,8 @@ need.
   nothing by itself — the entry is present while its archive is;
   `--all` asks for every file held
 - value: string, a path
-- written by: ingest; ossuary-extract-packed, on an unpacked entry
+- written by: ingest; ossuary-extract-packed, on an unpacked entry;
+  ossuary-extract-pdf, on an attachment
 - taken back by: ingest, when a later run over the same directory on
   the same host meets no file there — the file no longer lies at that
   place. What the run did not cover it does not judge: a directory
@@ -157,8 +161,9 @@ need.
   attachment's own file name). Names accrete like sightings do: bytes
   met again under another name hold both
 - value: string, a bare file name
-- written by: ingest; ossuary-extract-mail and ossuary-extract-packed,
-  for a derived file the mail or the zip named. A derived file nobody
+- written by: ingest; ossuary-extract-mail, ossuary-extract-packed and
+  ossuary-extract-pdf, for a derived file the mail, the zip or the
+  document named. A derived file nobody
   named, extracted text for one, carries none: the name an extractor
   announces it under is a handle, and the record never learns it
 
@@ -276,9 +281,15 @@ need.
   the value as the document spells it: a date stays
   `"D:20190714110241+02'00'"`. The extracted text itself is not an
   attribute but a derived file, `text/plain`, tied to the document by
-  `prov:origin`
+  `prov:origin`. On an attachment the same words say what its document
+  said about it: the file specification's `pdf:desc` and
+  `pdf:af-relationship`, and from the stream's parameters
+  `pdf:creation-date` and `pdf:mod-date`; the attachment's name and
+  place stand as `file:name` and `file:path`, its size the archive
+  says itself
 - value: string
-- written by: ossuary-extract-pdf
+- written by: ossuary-extract-pdf, under its `text` contract on the
+  document and under its `attachments` contract on an attachment
 
 ### mail:…
 

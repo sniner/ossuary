@@ -15,3 +15,6 @@ path = "src/main.rs"
 [dependencies]
 lopdf = "0.38"
 serde_json = "1.0.151"
+
+[dev-dependencies]
+tempfile = "3"

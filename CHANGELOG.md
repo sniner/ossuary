@@ -5,6 +5,24 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary-extract-pdf` brings a document's attachments out, under a contract of its own.** A
+  ZUGFeRD or Factur-X invoice is a PDF with the invoice's XML embedded; `ossuary extract
+  pdf:attachments` writes every embedded file out as a derived file, tied to its document by
+  `prov:origin`, named as the document names it (`file:name`), placed as `@factur-x.xml`
+  (`file:path`, the spelling every inner place has), announced with the kind the document declares,
+  and carrying what the document said about it: `pdf:desc`, `pdf:af-relationship`,
+  `pdf:creation-date`, `pdf:mod-date`. Both the catalog's embedded files and page attachments are
+  found. What will not come out stays inside with a `prov:note` saying why
+
+### Changed
+
+- **The PDF extractor's text contract is now named `text`, its source `extractor:pdf-text/1`.** The
+  program of one trade became one of two, and each contract's source names it, the way
+  `extractor:packed-list/1` does. The old receipts under `extractor:pdf/1` no longer count: every
+  PDF is examined again on the next `ossuary extract pdf`, which says the same text and info again
+
 ## [0.8.0] - 2026-09-21
 
 ### Breaking changes
