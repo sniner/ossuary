@@ -144,7 +144,8 @@ need.
   present: `find` answers only with files such a place stands on, or
   that were won out of one (`prov:origin`); an `@`-led place places
   nothing by itself — the entry is present while its archive is;
-  `--all` asks for every file held
+  `--all` asks the record instead, every claim ever written on every
+  file held, a place taken back included
 - value: string, a path
 - written by: ingest; ossuary-extract-packed, on an unpacked entry;
   ossuary-extract-pdf and ossuary-extract-mail, on an attachment
