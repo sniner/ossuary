@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 use ossuary_core::{Attribute, Claim, Episode, Source, Value};
 
 /// One claim as one line: when it was recorded, what it says, who says
-/// so, and in which run — a claim from before runs were written ends
-/// with its source.
+/// so in brackets, and in which run, bracketed beside it as `[run:…]` —
+/// a claim from before runs were written ends with its source.
 ///
 /// Values read as JSON — a string keeps its quotes, a number stands bare —
 /// so what the reader sees is what the log holds, type and all.
@@ -16,7 +16,7 @@ pub fn line(claim: &Claim) -> String {
     let source = claim.source().as_str();
     let run = claim
         .run()
-        .map(|run| format!("  run {}", run.as_str()))
+        .map(|run| format!(" [run:{}]", run.as_str()))
         .unwrap_or_default();
     match (claim.value(), claim.is_retraction()) {
         (Some(value), false) => format!("{time}  {attribute} = {value}  [{source}]{run}"),

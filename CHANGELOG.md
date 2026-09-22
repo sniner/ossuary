@@ -18,6 +18,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`about` spells the run as `[run:…]`, bracketed beside the source.** A line now ends
+  `[extractor:mail/1] [run:c7a1e2d4-…]` instead of `[extractor:mail/1]  run c7a1e2d4-…`; the
+  same words, one shape
 - **The PDF extractor's text contract is now named `text`, its source `extractor:pdf-text/1`.** The
   program of one trade became one of two, and each contract's source names it, the way
   `extractor:packed-list/1` does. The old receipts under `extractor:pdf/1` no longer count: every

@@ -177,19 +177,19 @@ beginning of the name is enough while it names only one file:
 
 ```console
 $ ossuary about e9ed6104
-2026-09-06T15:23:40Z  file:path = "/home/john/mail/2026-03-10-quarterly.eml"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-2026-09-06T15:23:40Z  file:name = "2026-03-10-quarterly.eml"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-2026-09-06T15:23:40Z  prov:host = "atlas.example.net"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-2026-09-06T15:23:40Z  file:size = 491  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-2026-09-06T15:23:40Z  file:mime = "text/plain"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-2026-09-06T15:23:40Z  file:modified = "2026-09-06T15:23:40.89362092Z"  [ingest]  run 315e360b-020e-48be-8f2d-f2002a2ea9b4
-2026-09-06T15:25:02Z  file:mime = "message/rfc822"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
-2026-09-06T15:25:02Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
-2026-09-06T15:25:02Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
-2026-09-06T15:25:02Z  mail:subject = "Quarterly figures"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
-2026-09-06T15:25:02Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
-2026-09-06T15:25:02Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
-2026-09-06T15:25:02Z  prov:examined = "extractor:mail/1"  [extractor:mail/1]  run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2026-09-06T15:23:40Z  file:path = "/home/john/mail/2026-03-10-quarterly.eml"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
+2026-09-06T15:23:40Z  file:name = "2026-03-10-quarterly.eml"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
+2026-09-06T15:23:40Z  prov:host = "atlas.example.net"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
+2026-09-06T15:23:40Z  file:size = 491  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
+2026-09-06T15:23:40Z  file:mime = "text/plain"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
+2026-09-06T15:23:40Z  file:modified = "2026-09-06T15:23:40.89362092Z"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
+2026-09-06T15:25:02Z  file:mime = "message/rfc822"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:subject = "Quarterly figures"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  prov:examined = "extractor:mail/1"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
 ```
 
 Every line says who said it, when, and in which run — the sniffed `text/plain` and the
