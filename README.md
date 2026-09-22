@@ -60,11 +60,15 @@ says for itself what it is and what it needs:
 | [`ossuary-core`](ossuary-core/README.md) | the archive itself: claims, segments, the fold. What everything else stands on |
 | [`ossuary-mount`](ossuary-mount/README.md) | the record as a read-only filesystem |
 | [`ossuary-mailvault`](ossuary-mailvault/README.md) | mail into the archive: whole mailboxes fetched over IMAP |
-| [`ossuary-fix`](ossuary-fix/README.md) | repair tool for 0.x archives after a breaking change |
 | [`ossuary-extract-image`](ossuary-extract-image/README.md) | what a camera wrote into the picture, and the pixel grid |
 | [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a message's own voice, and what it carries |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip's inventory, or its files |
 | [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a document's text and info — wants poppler's `pdftotext` |
+
+One program is missing from that list on purpose: [`ossuary-fix`](ossuary-fix/README.md)
+repairs 0.x archives after a breaking change and is not a regular part
+of the package. Its own README says what it does and when it should not
+be used.
 
 ## A new archive
 

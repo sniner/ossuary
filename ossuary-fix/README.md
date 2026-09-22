@@ -2,6 +2,12 @@
 
 *Repair tool for 0.x archives after a breaking change.*
 
+Not to be confused with `ossuary maintain`, which keeps a sound archive
+sound and never rewrites what is sealed. `ossuary-fix` exists for 0.x
+archives after a breaking change, and it is allowed to break that
+promise: it does the dirty jobs a breaking change leaves behind. Once
+the archive format has settled it has no business on an archive.
+
 A 0.x archive collects scars: a word in the vocabulary that changed, a
 claim an older version should have said. The programs stay free of
 migration code; this one knows each scar by name and closes it. Each
