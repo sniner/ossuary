@@ -92,21 +92,43 @@ pub struct Found {
     pub derived: Vec<Found>,
 }
 
-/// One `find` match with its derivations as one block: the match as
-/// [`match_block`] spells it, then each derived file indented one step
-/// further than its origin, its name a line of its own and its pairs
-/// beneath it, the tree read top down.
+/// One `find` match with its derivations as one block, drawn the way
+/// `tree` draws a disk: the match's short name heads it, each derived
+/// file hangs on a branch of its own beneath its origin, the last one
+/// closing the branch, and a file's pairs stand under its name ahead
+/// of its branches, beside the bar that leads to the first of them. A
+/// file with nothing beneath it is a name alone.
 pub fn match_tree(found: &Found) -> String {
-    let mut block = String::new();
-    tree_at(&mut block, found, 0);
-    block
+    let mut lines = vec![found.name.clone()];
+    drawn(found, "", &mut lines);
+    lines.join("\n")
 }
 
-fn tree_at(block: &mut String, found: &Found, depth: usize) {
-    block_at(block, &found.name, &found.shown, depth);
+/// What stands beneath one file's name, every line led by `prefix`:
+/// its pairs, then each derived file on a branch with its own beneath.
+fn drawn(found: &Found, prefix: &str, lines: &mut Vec<String>) {
+    // The bar beside the pairs leads down to the first branch; a leaf
+    // has none to lead to.
+    let bar = if found.derived.is_empty() {
+        "    "
+    } else {
+        "│   "
+    };
+    for (attribute, values) in &found.shown {
+        for value in values {
+            lines.push(format!("{prefix}{bar}{}", pair(attribute, value)));
+        }
+    }
+    let mut ahead = found.derived.len();
     for derived in &found.derived {
-        block.push('\n');
-        tree_at(block, derived, depth + 1);
+        ahead -= 1;
+        let (tee, below) = if ahead == 0 {
+            ("└── ", "    ")
+        } else {
+            ("├── ", "│   ")
+        };
+        lines.push(format!("{prefix}{tee}{}", derived.name));
+        drawn(derived, &format!("{prefix}{below}"), lines);
     }
 }
 
@@ -290,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_match_tree_indents_each_derivation_one_step_below_its_origin() {
+    fn a_match_tree_hangs_each_derivation_on_a_branch_below_its_origin() {
         let found = Found {
             subject: "e9ed6104aa".to_string(),
             name: "e9ed6104".to_string(),
@@ -320,8 +342,18 @@ mod tests {
         };
         assert_eq!(
             match_tree(&found),
-            "e9ed6104\n  file:name=quarterly.eml\n  b5743276\n    file:mime=application/pdf\n    file:name=report.pdf\n    3f0c91aa\n      file:mime=text/plain\n  17a2c0ff",
-            "the tree read top down, names and pairs each one step deeper than the origin's"
+            [
+                "e9ed6104",
+                "│   file:name=quarterly.eml",
+                "├── b5743276",
+                "│   │   file:mime=application/pdf",
+                "│   │   file:name=report.pdf",
+                "│   └── 3f0c91aa",
+                "│           file:mime=text/plain",
+                "└── 17a2c0ff",
+            ]
+            .join("\n"),
+            "the pairs under their name beside the bar to the first branch, a leaf's without one"
         );
         assert_eq!(
             json_tree(&found),

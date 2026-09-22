@@ -232,39 +232,39 @@ b5743276
 ```
 
 The other way round, from a file down to everything won out of it,
-is `--with-derived`: each match with its derivations indented beneath
-it, as far as they go, each showing its kind ahead of what the
-question shows. Under `--id` the names come flat, ready for `export`;
-under `--json` they nest under `derived`:
+is `--with-derived`: each match with its derivations drawn beneath it
+the way `tree` draws a disk, as far as they go, each showing its kind
+ahead of what the question shows. Under `--id` the names come flat,
+ready for `export`; under `--json` they nest under `derived`:
 
 ```console
 $ ossuary find 'file:name=*.eml' --with-derived
 e9ed6104
-  file:name=2026-03-10-quarterly.eml
-  b5743276
-    file:mime=application/pdf
-    file:name=report.pdf
-    3f0c91aa
-      file:mime=text/plain
+│   file:name=2026-03-10-quarterly.eml
+└── b5743276
+    │   file:mime=application/pdf
+    │   file:name=report.pdf
+    └── 3f0c91aa
+            file:mime=text/plain
 1 file(s), 2 derived
 ```
 
 And from a file up to where it came from is `--with-origin`: the same
 shape read from the other end, the farthest origin at the head of the
-block and the match at its bottom, so a mail and its attachment stand
+tree and the match at its bottom, so a mail and its attachment stand
 the same way whichever of them was asked for. A file won out of two
 others, the same attachment in two mails, answers once per line of
-descent. With `--with-derived` as well, the whole line stands in one
-block; under `--id` the names come flat, origin first, the order
-`export` wants:
+descent, each a tree of its own. With `--with-derived` as well, the
+whole line stands in one tree; under `--id` the names come flat,
+origin first, the order `export` wants:
 
 ```console
 $ ossuary find 'file:name=*.pdf' --with-origin
 e9ed6104
-  file:mime=message/rfc822
-  file:name=2026-03-10-quarterly.eml
-  b5743276
-    file:name=report.pdf
+│   file:mime=message/rfc822
+│   file:name=2026-03-10-quarterly.eml
+└── b5743276
+        file:name=report.pdf
 1 file(s), 1 origin(s)
 ```
 

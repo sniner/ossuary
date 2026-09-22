@@ -370,27 +370,29 @@ enum Command {
     /// values as lists.
     ///
     /// --with-derived answers for each match with what was won out of
-    /// it as well: every derived file indented beneath its origin, as
-    /// far as the derivations go, headed by its short name and showing
-    /// its kind, `file:mime`, ahead of whatever the question shows. The
-    /// terms narrow the matches alone; what was derived comes along
-    /// unasked, and a derived file that matches on its own answers on
-    /// its own as well. Under --id the names come flat, in that order,
-    /// ready for `export`; under --json each match carries its
-    /// derivations as a list under `derived`, nested the same way. The
-    /// count names both: `3 file(s), 5 derived`.
+    /// it as well, drawn the way `tree` draws a disk: every derived
+    /// file on a branch beneath its origin, as far as the derivations
+    /// go, headed by its short name and showing its kind, `file:mime`,
+    /// ahead of whatever the question shows. The terms narrow the
+    /// matches alone; what was derived comes along unasked, and a
+    /// derived file that matches on its own answers on its own as
+    /// well. Under --id the names come flat, in that order, ready for
+    /// `export`; under --json each match carries its derivations as a
+    /// list under `derived`, nested the same way. The count names
+    /// both: `3 file(s), 5 derived`.
     ///
     /// --with-origin answers for each match with where it came from as
     /// well, in the same shape read from the other end: the farthest
-    /// origin heads the block, each step of the descent indented one
-    /// deeper, the match at the bottom, and every origin shows its kind
-    /// ahead of whatever the question shows. A file won out of two
-    /// others, the same attachment in two mails, answers once per line
-    /// of descent. With --with-derived as well, what was won out of the
-    /// match follows beneath it, the whole line in one block. Under
-    /// --id the names come flat, the origin ahead of what was derived
-    /// from it, the order `export` wants; under --json the block nests
-    /// under `derived` from the origin down. The count says
+    /// origin heads the tree, each step of the descent a branch
+    /// beneath the last, the match at the bottom, and every origin
+    /// shows its kind ahead of whatever the question shows. A file won
+    /// out of two others, the same attachment in two mails, answers
+    /// once per line of descent, each a tree of its own. With
+    /// --with-derived as well, what was won out of the match follows
+    /// beneath it, the whole line in one tree. Under --id the names
+    /// come flat, the origin ahead of what was derived from it, the
+    /// order `export` wants; under --json the tree nests under
+    /// `derived` from the origin down. The count says
     /// `3 file(s), 2 origin(s)`.
     ///
     /// A file answers only while it still lies somewhere: a place of its
@@ -443,8 +445,8 @@ enum Command {
         with_derived: bool,
 
         /// And where each match came from: every origin above it, as
-        /// far as the descent goes, the match indented beneath the last
-        /// of them
+        /// far as the descent goes, the match on a branch beneath the
+        /// last of them
         #[arg(long)]
         with_origin: bool,
     },
