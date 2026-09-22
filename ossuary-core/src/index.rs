@@ -800,6 +800,28 @@ impl Index {
         Ok(subjects)
     }
 
+    /// What one subject was won out of: every subject its `prov:origin`
+    /// names, one step up, in digest order. The [`Scope`] reads as in
+    /// [`values`](Index::values): the standing origins, or every origin
+    /// ever said. Each answer is one step; the whole line of descent is
+    /// walked by asking again for each answer. A value that does not
+    /// spell a name is no step and is passed over.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`.
+    pub fn origins(&self, subject: &Subject, scope: Scope) -> Result<Vec<Subject>> {
+        let mut origins: Vec<Subject> = self
+            .values(subject, &Attribute::parse("prov:origin")?, scope)?
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(|digest| Subject::parse(digest).ok())
+            .collect();
+        origins.sort();
+        origins.dedup();
+        Ok(origins)
+    }
+
     /// Everything currently standing on one subject: every standing
     /// `(attribute, value)` pair, ordered by attribute and value — as of
     /// the last [`fold`](Index::fold), the open head included. The whole
@@ -4001,6 +4023,74 @@ mod tests {
         assert_eq!(
             index.derived(&mail, Scope::Record).unwrap(),
             vec![pdf, image],
+            "but the record remembers it"
+        );
+    }
+
+    #[test]
+    fn where_a_file_came_from_answers_one_step_up() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let mail = subject();
+        let other_mail = other();
+        let pdf =
+            Subject::parse("bb2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
+                .unwrap();
+        let text =
+            Subject::parse("cc2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
+                .unwrap();
+        // The same attachment in two mails: one file, two origins.
+        for (child, origin) in [(&pdf, &other_mail), (&pdf, &mail), (&text, &pdf)] {
+            log.append(&said(
+                child.clone(),
+                "prov:origin",
+                json!(origin.as_str()),
+                "2026-09-01T10:00:00Z",
+            ))
+            .unwrap();
+        }
+        log.append(&said(
+            text.clone(),
+            "prov:origin",
+            json!("not a name"),
+            "2026-09-01T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.origins(&pdf, Scope::Held).unwrap(),
+            vec![mail.clone(), other_mail.clone()],
+            "both origins, in digest order, and not the grandparent's"
+        );
+        assert_eq!(
+            index.origins(&text, Scope::Held).unwrap(),
+            vec![pdf.clone()],
+            "a value that spells no name is no step"
+        );
+        assert_eq!(
+            index.origins(&mail, Scope::Held).unwrap(),
+            Vec::new(),
+            "a root came from nowhere"
+        );
+
+        log.append(&taken_back(
+            pdf.clone(),
+            "prov:origin",
+            json!(other_mail.as_str()),
+            "2026-09-02T10:00:00Z",
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.origins(&pdf, Scope::Held).unwrap(),
+            vec![mail.clone()],
+            "an origin taken back no longer stands"
+        );
+        assert_eq!(
+            index.origins(&pdf, Scope::Record).unwrap(),
+            vec![mail, other_mail],
             "but the record remembers it"
         );
     }

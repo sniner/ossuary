@@ -249,6 +249,25 @@ e9ed6104
 1 file(s), 2 derived
 ```
 
+And from a file up to where it came from is `--with-origin`: the same
+shape read from the other end, the farthest origin at the head of the
+block and the match at its bottom, so a mail and its attachment stand
+the same way whichever of them was asked for. A file won out of two
+others, the same attachment in two mails, answers once per line of
+descent. With `--with-derived` as well, the whole line stands in one
+block; under `--id` the names come flat, origin first, the order
+`export` wants:
+
+```console
+$ ossuary find 'file:name=*.pdf' --with-origin
+e9ed6104
+  file:mime=message/rfc822
+  file:name=2026-03-10-quarterly.eml
+  b5743276
+    file:name=report.pdf
+1 file(s), 1 origin(s)
+```
+
 A name without a colon is a field of the claim itself — `run`,
 `source`, `time`, `retract` — and asks about the claim behind a value:
 what a run named, what you tagged yourself, what was written since a

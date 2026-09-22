@@ -22,6 +22,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The `raster` contract reads the HEIF family.** A HEIC or AVIF now says its width, height, bits
   per channel, alpha plane and colour model from its `meta` box, the codestream unopened; a grid of
   tiles answers as one picture
+- **`find --with-origin` answers each match with where it came from.** The same shape as
+  `--with-derived` read from the other end: the farthest origin heads the block, the match stands
+  at its bottom, and every origin shows its kind ahead of what the question shows, so a mail and
+  its attachment stand the same way whichever of them was asked for. A file won out of two others
+  answers once per line of descent; with `--with-derived` as well, the whole line stands in one
+  block. Under `--id` the names come flat, origin first, the order `export` wants; under `--json`
+  the block nests under `derived` from the origin down; the count says `3 file(s), 2 origin(s)`
 
 ### Changed
 

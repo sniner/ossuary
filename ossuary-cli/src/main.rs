@@ -4,6 +4,7 @@
 //! else does — every decision about the archive itself is `ossuary-core`'s.
 
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -379,6 +380,19 @@ enum Command {
     /// derivations as a list under `derived`, nested the same way. The
     /// count names both: `3 file(s), 5 derived`.
     ///
+    /// --with-origin answers for each match with where it came from as
+    /// well, in the same shape read from the other end: the farthest
+    /// origin heads the block, each step of the descent indented one
+    /// deeper, the match at the bottom, and every origin shows its kind
+    /// ahead of whatever the question shows. A file won out of two
+    /// others, the same attachment in two mails, answers once per line
+    /// of descent. With --with-derived as well, what was won out of the
+    /// match follows beneath it, the whole line in one block. Under
+    /// --id the names come flat, the origin ahead of what was derived
+    /// from it, the order `export` wants; under --json the block nests
+    /// under `derived` from the origin down. The count says
+    /// `3 file(s), 2 origin(s)`.
+    ///
     /// A file answers only while it still lies somewhere: a place of its
     /// own on the record, or, for what a tool won out of another file,
     /// its origin's place. A file taken in and later gone from every
@@ -427,6 +441,12 @@ enum Command {
         /// kind ahead of the shown attributes
         #[arg(long)]
         with_derived: bool,
+
+        /// And where each match came from: every origin above it, as
+        /// far as the descent goes, the match indented beneath the last
+        /// of them
+        #[arg(long)]
+        with_origin: bool,
     },
     /// Every attribute standing on the record, the words a question can
     /// be asked in
@@ -741,6 +761,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             as_of,
             all,
             with_derived,
+            with_origin,
         } => find(
             &cli.archive,
             &terms,
@@ -749,7 +770,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             as_of.as_deref(),
             if all { Scope::Record } else { Scope::Present },
-            with_derived,
+            Along {
+                derived: with_derived,
+                origin: with_origin,
+            },
             quiet,
         ),
         Command::Attributes {
@@ -1643,7 +1667,7 @@ fn find(
     json: bool,
     as_of: Option<&str>,
     scope: Scope,
-    with_derived: bool,
+    along: Along,
     quiet: bool,
 ) -> Result<ExitCode> {
     if id_only && json {
@@ -1691,19 +1715,21 @@ fn find(
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+    let mut origins = 0;
     let mut derived = 0;
     for subject in &subjects {
-        let line = if with_derived {
-            let found = answering.tree(subject)?;
-            let names = flat(&found);
-            derived += names.len() - 1;
-            if id_only {
-                names.join("\n")
-            } else if json {
-                output::json_tree(&found)
-            } else {
-                output::match_tree(&found)
+        let line = if along.origin {
+            let mut blocks = Vec::new();
+            for (above, found) in answering.descents(subject, along.derived)? {
+                origins += above;
+                derived += flat(&found).len() - above - 1;
+                blocks.push(answering.render(&found));
             }
+            blocks.join("\n")
+        } else if along.derived {
+            let found = answering.tree(subject)?;
+            derived += flat(&found).len() - 1;
+            answering.render(&found)
         } else if id_only {
             subject.as_str().to_string()
         } else {
@@ -1724,11 +1750,28 @@ fn find(
         match (subjects.len(), scope) {
             (0, Scope::Record) => eprintln!("nothing on the record matches"),
             (0, _) => eprintln!("nothing standing matches"),
-            (n, _) if with_derived => eprintln!("{n} file(s), {derived} derived"),
-            (n, _) => eprintln!("{n} file(s)"),
+            (n, _) => {
+                let mut count = format!("{n} file(s)");
+                if along.origin {
+                    write!(count, ", {origins} origin(s)").expect("writing to a String");
+                }
+                if along.derived {
+                    write!(count, ", {derived} derived").expect("writing to a String");
+                }
+                eprintln!("{count}");
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Which way a `find` follows `prov:origin` past its matches.
+#[derive(Clone, Copy)]
+struct Along {
+    /// Down: what was won out of each match.
+    derived: bool,
+    /// Up: where each match came from.
+    origin: bool,
 }
 
 /// How one `find` answers for a match, held together so the walk to
@@ -1744,6 +1787,28 @@ struct Answering<'a> {
 }
 
 impl Answering<'_> {
+    /// What a file that came along unasked shows: its kind first, then
+    /// what the question shows.
+    fn kind_first(&self) -> Result<Vec<Projection>> {
+        Ok(
+            std::iter::once(Projection::Attribute(Attribute::parse("file:mime")?))
+                .chain(self.projections.iter().cloned())
+                .collect(),
+        )
+    }
+
+    /// One tree the way the question asked: the names flat under --id,
+    /// one JSON object under --json, the indented block otherwise.
+    fn render(&self, found: &output::Found) -> String {
+        if self.id_only {
+            flat(found).join("\n")
+        } else if self.json {
+            output::json_tree(found)
+        } else {
+            output::match_tree(found)
+        }
+    }
+
     /// One match with everything won out of it, as far as the
     /// derivations go. A derived file shows its kind first, then what
     /// the question shows; the walk visits each file once, so a
@@ -1751,20 +1816,67 @@ impl Answering<'_> {
     fn tree(&self, subject: &Subject) -> Result<output::Found> {
         let mut seen = std::collections::HashSet::new();
         seen.insert(subject.clone());
-        let kind_first: Vec<Projection> =
-            std::iter::once(Projection::Attribute(Attribute::parse("file:mime")?))
-                .chain(self.projections.iter().cloned())
-                .collect();
-        self.found(subject, self.projections, &kind_first, &mut seen)
+        self.found(subject, self.projections, &self.kind_first()?, &mut seen)
     }
 
-    fn found(
-        &self,
-        subject: &Subject,
-        projections: &[Projection],
-        below: &[Projection],
-        seen: &mut std::collections::HashSet<Subject>,
-    ) -> Result<output::Found> {
+    /// One match with where it came from: one tree per line of descent,
+    /// the farthest origin at its head and the match beneath the last
+    /// of them, each origin showing its kind first. With `derived`,
+    /// what was won out of the match follows beneath it. Each tree
+    /// comes with the number of origins above the match.
+    fn descents(&self, subject: &Subject, derived: bool) -> Result<Vec<(usize, output::Found)>> {
+        let kind_first = self.kind_first()?;
+        let mut trees = Vec::new();
+        for line in self.ancestry(subject)? {
+            let mut found = if derived {
+                let mut seen: std::collections::HashSet<Subject> = line.iter().cloned().collect();
+                self.found(subject, self.projections, &kind_first, &mut seen)?
+            } else {
+                self.alone(subject, self.projections)?
+            };
+            for origin in line.iter().rev().skip(1) {
+                let mut above = self.alone(origin, &kind_first)?;
+                above.derived.push(found);
+                found = above;
+            }
+            trees.push((line.len() - 1, found));
+        }
+        Ok(trees)
+    }
+
+    /// Every line of descent that ends at the subject, the farthest
+    /// origin first and the subject last; a file that came from nowhere
+    /// is a line of its own. A line visits each file once, so an origin
+    /// that leads back down cannot run in circles.
+    fn ancestry(&self, subject: &Subject) -> Result<Vec<Vec<Subject>>> {
+        let mut lines = Vec::new();
+        let mut path = vec![subject.clone()];
+        self.climb(&mut path, &mut lines)?;
+        Ok(lines)
+    }
+
+    fn climb(&self, path: &mut Vec<Subject>, lines: &mut Vec<Vec<Subject>>) -> Result<()> {
+        let top = path.last().cloned().expect("a path begins at the match");
+        let origins: Vec<Subject> = self
+            .index
+            .origins(&top, self.scope)?
+            .into_iter()
+            .filter(|origin| !path.contains(origin))
+            .collect();
+        if origins.is_empty() {
+            lines.push(path.iter().rev().cloned().collect());
+            return Ok(());
+        }
+        for origin in origins {
+            path.push(origin);
+            self.climb(path, lines)?;
+            path.pop();
+        }
+        Ok(())
+    }
+
+    /// One file by itself, showing `projections`, nothing beneath it.
+    fn alone(&self, subject: &Subject, projections: &[Projection]) -> Result<output::Found> {
         let mut found = output::Found {
             subject: subject.as_str().to_string(),
             ..output::Found::default()
@@ -1775,6 +1887,17 @@ impl Answering<'_> {
                 found.name = shorten(self.index, subject)?;
             }
         }
+        Ok(found)
+    }
+
+    fn found(
+        &self,
+        subject: &Subject,
+        projections: &[Projection],
+        below: &[Projection],
+        seen: &mut std::collections::HashSet<Subject>,
+    ) -> Result<output::Found> {
+        let mut found = self.alone(subject, projections)?;
         for derived in self.index.derived(subject, self.scope)? {
             if !seen.insert(derived.clone()) {
                 continue;
