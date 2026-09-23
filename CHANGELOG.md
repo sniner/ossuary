@@ -5,6 +5,23 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary-mailvault` fetches Microsoft 365 mailboxes over MS Graph.** An account with
+  `backend = "msgraph"` in `mailvault.toml` names a tenant, an application and its secret
+  (`client_secret` or `client_secret_cmd`, run under `--allow-exec`) and the mailbox to read as
+  `user`; it takes no host and no password, and the keys of an IMAP account are refused on it.
+  The folders are the ones Outlook shows, a folder inside another as `Inbox/Projects`; every
+  message goes in with its `mailbox:place` as over IMAP. Where a run carries on is the server's
+  delta link, kept in `cache/`: the next run is handed only what changed, a link the server no
+  longer honours costs one whole round, and the link moves forward only once every message the
+  round offered has landed. Throttling and gateway trouble are waited out and asked again
+- **Any key of a `mailvault.toml` account can be given as `KEY_cmd`**, the way mailvault takes
+  them: a command whose first line is the value, `tenant_id_cmd` and `client_id_cmd` as readily
+  as `password_cmd`. It runs only under `--allow-exec`, and only when the account is reached, so
+  a command that fails costs that account alone. A command's value wins over the key given
+  outright; `name`, `backend` and `folders` take no command
+
 ## [0.9.1] - 2026-09-22
 
 ### Added

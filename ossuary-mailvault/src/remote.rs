@@ -17,7 +17,7 @@ use imap::types::NameAttribute;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, RootCertStore, StreamOwned};
 
-use crate::config::Account;
+use crate::config::Imap;
 use crate::utf7;
 
 /// A folder opened: what the server promised about its UIDs.
@@ -88,24 +88,24 @@ impl Remote {
     ///
     /// A server that does not answer, TLS that will not set up, a
     /// greeting that never comes, or a login the server refuses.
-    pub fn connect(account: &Account, password: &str) -> Result<Self> {
+    pub fn connect(name: &str, account: &Imap, password: &str) -> Result<Self> {
         let stream: Box<dyn Stream> = if account.tls {
-            Box::new(tls(account)?)
+            Box::new(tls(name, account)?)
         } else {
-            Box::new(reached(account)?)
+            Box::new(reached(name, account)?)
         };
         let mut client = imap::Client::new(stream);
         client
             .read_greeting()
-            .with_context(|| format!("{}: the server sent no IMAP greeting", account.name))?;
+            .with_context(|| format!("{name}: the server sent no IMAP greeting"))?;
         let session = client
             .login(&account.user, password)
             .map_err(|(error, _)| error)
             .with_context(|| {
                 format!(
-                    "{}: {} refused the login for {}; wrong password, or the server \
+                    "{name}: {} refused the login for {}; wrong password, or the server \
                      wants an app-specific one",
-                    account.name, account.host, account.user
+                    account.host, account.user
                 )
             })?;
         Ok(Self { session })
@@ -141,18 +141,18 @@ impl Remote {
 
 /// TLS to the account's server, the certificate held against the
 /// public roots and the host's name.
-fn tls(account: &Account) -> Result<StreamOwned<ClientConnection, TcpStream>> {
+fn tls(name: &str, account: &Imap) -> Result<StreamOwned<ClientConnection, TcpStream>> {
     let roots = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let name = ServerName::try_from(account.host.clone())
-        .with_context(|| format!("{}: {:?} is not a host name", account.name, account.host))?;
-    let connection = ClientConnection::new(Arc::new(config), name)
-        .with_context(|| format!("{}: TLS could not be set up", account.name))?;
-    Ok(StreamOwned::new(connection, reached(account)?))
+    let server = ServerName::try_from(account.host.clone())
+        .with_context(|| format!("{name}: {:?} is not a host name", account.host))?;
+    let connection = ClientConnection::new(Arc::new(config), server)
+        .with_context(|| format!("{name}: TLS could not be set up"))?;
+    Ok(StreamOwned::new(connection, reached(name, account)?))
 }
 
 /// The most a server may keep quiet, once connected, before the run
@@ -163,16 +163,12 @@ const SILENT_AT_MOST: Duration = Duration::from_secs(300);
 /// The account's server, connected, and bound to answer: a read or a
 /// write that gets nothing within [`SILENT_AT_MOST`] fails, and the
 /// folder is named in the tally instead of the run standing still.
-fn reached(account: &Account) -> Result<TcpStream> {
-    let tcp = TcpStream::connect((account.host.as_str(), account.port)).with_context(|| {
-        format!(
-            "{}: {}:{} did not answer",
-            account.name, account.host, account.port
-        )
-    })?;
+fn reached(name: &str, account: &Imap) -> Result<TcpStream> {
+    let tcp = TcpStream::connect((account.host.as_str(), account.port))
+        .with_context(|| format!("{name}: {}:{} did not answer", account.host, account.port))?;
     tcp.set_read_timeout(Some(SILENT_AT_MOST))
         .and_then(|()| tcp.set_write_timeout(Some(SILENT_AT_MOST)))
-        .with_context(|| format!("{}: the connection takes no timeout", account.name))?;
+        .with_context(|| format!("{name}: the connection takes no timeout"))?;
     Ok(tcp)
 }
 

@@ -13,7 +13,11 @@
 //! server's temporary numbering — it means nothing once the UIDVALIDITY
 //! changes — so it belongs here and nowhere on a message's record.
 //! Without a resume point a folder is fetched whole; the bytes dedup in
-//! the store, and the places are said again.
+//! the store, and the places are said again. A folder read over MS
+//! Graph keeps a **delta link** instead — the server's own "you are
+//! caught up here", handed out at the end of a round — and when it was
+//! handed out, so a link the server no longer honours can say how old
+//! it was.
 //!
 //! The **takeover memo** remembers which places of a mailvault
 //! archive's messages are on the record, so an interrupted takeover
@@ -23,6 +27,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension as _, params};
@@ -36,6 +41,39 @@ pub const FILE_NAME: &str = "mailvault.sqlite";
 pub struct Resume {
     pub uidvalidity: u32,
     pub uid: u32,
+}
+
+/// A folder's resume point over MS Graph: the delta link the server
+/// handed out at the end of the last round, and when, in seconds since
+/// the epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delta {
+    pub link: String,
+    pub issued: i64,
+}
+
+impl Delta {
+    /// How old the link is, for the line that reports the server
+    /// refusing it — the one way to learn how long these live.
+    #[must_use]
+    pub fn age(&self) -> String {
+        let seconds = now().saturating_sub(self.issued).max(0);
+        let hours = seconds / 3600;
+        if hours < 48 {
+            format!("{hours}h")
+        } else {
+            format!("{}d", hours / 24)
+        }
+    }
+}
+
+/// Seconds since the epoch, as the memo stamps them.
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 pub struct Memo {
@@ -61,6 +99,13 @@ impl Memo {
                  folder      TEXT NOT NULL,
                  uidvalidity INTEGER NOT NULL,
                  uid         INTEGER NOT NULL,
+                 PRIMARY KEY (account, folder)
+             );
+             CREATE TABLE IF NOT EXISTS delta (
+                 account TEXT NOT NULL,
+                 folder  TEXT NOT NULL,
+                 link    TEXT NOT NULL,
+                 issued  INTEGER NOT NULL,
                  PRIMARY KEY (account, folder)
              );
              CREATE TABLE IF NOT EXISTS said (
@@ -129,6 +174,43 @@ impl Memo {
                  uidvalidity = excluded.uidvalidity",
         )?;
         statement.execute(params![account, folder, resume.uidvalidity, resume.uid])?;
+        Ok(())
+    }
+
+    /// Where a folder's delta rounds carry on — `None` for a folder
+    /// never rounded off.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn delta(&self, account: &str, folder: &str) -> Result<Option<Delta>> {
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT link, issued FROM delta WHERE account = ?1 AND folder = ?2")?;
+        let found = statement
+            .query_row(params![account, folder], |row| {
+                Ok(Delta {
+                    link: row.get(0)?,
+                    issued: row.get(1)?,
+                })
+            })
+            .optional()?;
+        Ok(found)
+    }
+
+    /// A round over the folder came to its end and everything it
+    /// offered is in: the next run carries on from this link. A newer
+    /// link replaces the older whole — the server issued it, and the
+    /// server is the one who knows.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn advance_delta(&self, account: &str, folder: &str, link: &str) -> Result<()> {
+        let mut statement = self.connection.prepare_cached(
+            "INSERT OR REPLACE INTO delta (account, folder, link, issued) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        statement.execute(params![account, folder, link, now()])?;
         Ok(())
     }
 
@@ -222,6 +304,33 @@ mod tests {
             Some(at(8, 3)),
             "a new UIDVALIDITY starts over"
         );
+    }
+
+    #[test]
+    fn a_delta_link_is_remembered_per_folder_and_replaced_whole() {
+        let (_dir, memo) = memo();
+        assert_eq!(memo.delta("a", "Inbox").unwrap(), None);
+        memo.advance_delta("a", "Inbox", "https://graph.example/one")
+            .unwrap();
+        memo.advance_delta("a", "Inbox", "https://graph.example/two")
+            .unwrap();
+        let point = memo.delta("a", "Inbox").unwrap().unwrap();
+        assert_eq!(point.link, "https://graph.example/two");
+        assert!(point.issued > 0);
+        assert_eq!(point.age(), "0h", "just issued");
+        assert_eq!(memo.delta("a", "Sent").unwrap(), None);
+    }
+
+    #[test]
+    fn a_links_age_reads_in_hours_and_then_in_days() {
+        let hours = |h: i64| Delta {
+            link: String::new(),
+            issued: now() - h * 3600,
+        };
+        assert_eq!(hours(5).age(), "5h");
+        assert_eq!(hours(47).age(), "47h");
+        assert_eq!(hours(48).age(), "2d");
+        assert_eq!(hours(24 * 30).age(), "30d");
     }
 
     #[test]

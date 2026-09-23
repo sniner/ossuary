@@ -9,9 +9,19 @@
 //! It lives beside the archive it fills for the same reason
 //! `config.toml` does: the two cannot drift apart, and a backup of the
 //! archive carries the recipe. That puts a mailbox's login where the
-//! archive lies — the password itself belongs in a password manager,
-//! reached through `password_cmd`.
+//! archive lies — the secrets themselves belong in a password manager,
+//! and any key can be given as `KEY_cmd` instead: a command whose first
+//! line is the value, run only under `--allow-exec`, and only when the
+//! account is reached, so a command that fails costs that account and
+//! nothing else.
+//!
+//! An account is reached one of two ways, and `backend` says which:
+//! `imap`, the default, with a host and a password; or `msgraph`, a
+//! Microsoft 365 mailbox read over MS Graph with an app registration
+//! instead of a login. Each way has its own keys, and the keys of the
+//! other are refused, not skipped.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -21,6 +31,9 @@ use serde::Deserialize;
 /// The file's name in the archive root.
 pub const FILE_NAME: &str = "mailvault.toml";
 
+/// What a `KEY_cmd` ends in.
+const CMD: &str = "_cmd";
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -29,12 +42,41 @@ pub struct Config {
 }
 
 /// One mailbox and how to reach it.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct Account {
     /// What the record calls this mailbox in every sighting, and the
     /// key its resume points are kept under.
     pub name: String,
+    /// The folders to fetch; every folder the server offers when absent.
+    pub folders: Option<Vec<String>>,
+    backend: Backend,
+    /// The keys given outright.
+    given: toml::Table,
+    /// The keys given as `KEY_cmd`: the key, and the command whose
+    /// first line is its value.
+    commands: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Backend {
+    Imap,
+    Graph,
+}
+
+/// The two ways to a mailbox, each with the keys it takes — every
+/// `KEY_cmd` run and its value filled in.
+#[derive(Debug)]
+pub enum Reach {
+    /// `backend = "imap"`, or no `backend` at all.
+    Imap(Imap),
+    /// `backend = "msgraph"`.
+    Graph(Graph),
+}
+
+/// An IMAP server and a login.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Imap {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -44,12 +86,19 @@ pub struct Account {
     pub tls: bool,
     pub user: String,
     pub password: Option<String>,
-    /// A shell command that prints the password on its first line — so
-    /// the secret can live in a password manager instead of this file.
-    /// Runs only under `--allow-exec`.
-    pub password_cmd: Option<String>,
-    /// The folders to fetch; every folder the server offers when absent.
-    pub folders: Option<Vec<String>>,
+}
+
+/// A Microsoft 365 mailbox behind an app registration: the tenant, the
+/// application and its secret are the login; `user` only says whose
+/// mailbox to read.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Graph {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    /// The mailbox to read, as its address.
+    pub user: String,
 }
 
 fn default_port() -> u16 {
@@ -68,6 +117,80 @@ fn loopback(host: &str) -> bool {
             .trim_matches(['[', ']'])
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
+}
+
+impl<'de> Deserialize<'de> for Account {
+    /// `backend` picks the keys the rest of the table is read with, so
+    /// a key of the other way is refused by name rather than by a
+    /// guess between two shapes. The `KEY_cmd` keys are set aside to
+    /// run later, and the shape is tried at once with their places
+    /// held, so a typo is refused here and not after the first login.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let mut table = toml::Table::deserialize(deserializer)?;
+        let name = match table.remove("name") {
+            Some(toml::Value::String(name)) => name,
+            Some(_) => return Err(D::Error::custom("name must be a string")),
+            None => return Err(D::Error::missing_field("name")),
+        };
+        let folders = table
+            .remove("folders")
+            .map(toml::Value::try_into::<Vec<String>>)
+            .transpose()
+            .map_err(|error| D::Error::custom(format!("{name}: folders: {error}")))?;
+        let backend = match table.remove("backend") {
+            None => Backend::Imap,
+            Some(toml::Value::String(backend)) => match backend.as_str() {
+                "imap" => Backend::Imap,
+                "msgraph" => Backend::Graph,
+                other => {
+                    return Err(D::Error::custom(format!(
+                        "{name}: backend = {other:?} is not a way this build knows; imap or msgraph"
+                    )));
+                }
+            },
+            Some(_) => {
+                return Err(D::Error::custom(format!(
+                    "{name}: backend must be a string"
+                )));
+            }
+        };
+        let mut commands = BTreeMap::new();
+        let commanded: Vec<String> = table
+            .keys()
+            .filter(|key| key.ends_with(CMD))
+            .cloned()
+            .collect();
+        for key in commanded {
+            let target = key[..key.len() - CMD.len()].to_string();
+            if matches!(target.as_str(), "name" | "backend" | "folders") {
+                return Err(D::Error::custom(format!(
+                    "{name}: {key} is not read from a command; {target} decides the shape of the account"
+                )));
+            }
+            match table.remove(&key) {
+                Some(toml::Value::String(cmd)) => {
+                    commands.insert(target, cmd);
+                }
+                _ => {
+                    return Err(D::Error::custom(format!(
+                        "{name}: {key} must be a string, the command to run"
+                    )));
+                }
+            }
+        }
+        let account = Self {
+            name,
+            folders,
+            backend,
+            given: table,
+            commands,
+        };
+        account
+            .build(|_key| Ok(String::new()))
+            .map_err(|error| D::Error::custom(format!("{error:#}")))?;
+        Ok(account)
+    }
 }
 
 impl Config {
@@ -108,14 +231,6 @@ impl Config {
                     "{}: two accounts named {:?}; every mailbox needs a name of its own",
                     path.display(),
                     account.name
-                );
-            }
-            if !account.tls && !loopback(&account.host) {
-                bail!(
-                    "{}: {}: tls = false would send the password to {} in the clear; plaintext is for a bridge on loopback only, so drop tls = false or point the account at localhost",
-                    path.display(),
-                    account.name,
-                    account.host
                 );
             }
         }
@@ -164,55 +279,110 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 impl Account {
-    /// The account's password: `password_cmd` first, `password` second.
+    /// The way to the mailbox, every `KEY_cmd` run and its value filled
+    /// in. A command's value wins over a key given outright.
     ///
     /// # Errors
     ///
     /// A command configured but not allowed, a command that fails or
-    /// prints nothing, or no password at all.
-    pub fn password(&self, allow_exec: bool) -> Result<String> {
-        if let Some(cmd) = &self.password_cmd {
-            if !allow_exec {
+    /// prints nothing, or plaintext IMAP to anything but this machine.
+    pub fn reach(&self, allow_exec: bool) -> Result<Reach> {
+        let reach = self.build(|key| self.run(key, allow_exec))?;
+        if let Reach::Imap(imap) = &reach {
+            if !imap.tls && !loopback(&imap.host) {
                 bail!(
-                    "{}: password_cmd stands in {FILE_NAME} and runs only under --allow-exec",
-                    self.name
-                );
-            }
-            // Only stdout is the command's answer. Its stderr and its
-            // stdin stay with the terminal: a password manager asks for
-            // a passphrase there, and says there what went wrong.
-            let out = Command::new("sh")
-                .arg("-c")
-                .arg(cmd)
-                .stdin(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .output()
-                .with_context(|| format!("{}: password_cmd could not be run", self.name))?;
-            if !out.status.success() {
-                bail!(
-                    "{}: password_cmd failed ({}); what it said stands above",
+                    "{}: tls = false would send the password to {} in the clear; plaintext is for a bridge on loopback only, so drop tls = false or point the account at localhost",
                     self.name,
-                    out.status
+                    imap.host
                 );
             }
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let password = stdout.lines().next().unwrap_or("").trim();
-            if password.is_empty() {
-                bail!(
-                    "{}: password_cmd printed nothing; it has to print the password on its first line",
-                    self.name
-                );
-            }
-            return Ok(password.to_string());
         }
-        if let Some(password) = &self.password {
-            return Ok(password.clone());
+        Ok(reach)
+    }
+
+    /// The way to the mailbox with the commanded keys valued by
+    /// `value`, read strictly for the backend's shape.
+    fn build(&self, value: impl Fn(&str) -> Result<String>) -> Result<Reach> {
+        let mut table = self.given.clone();
+        for key in self.commands.keys() {
+            table.insert(key.clone(), toml::Value::String(value(key)?));
         }
-        bail!(
-            "{}: no password configured; set password_cmd (a command that prints it) \
-             or password in {FILE_NAME}",
-            self.name
-        );
+        let rest = toml::Value::Table(table);
+        Ok(match self.backend {
+            Backend::Imap => Reach::Imap(
+                rest.try_into()
+                    .map_err(|error| anyhow!("{}: {error}", self.name))?,
+            ),
+            Backend::Graph => Reach::Graph(
+                rest.try_into()
+                    .map_err(|error| anyhow!("{}: {error}", self.name))?,
+            ),
+        })
+    }
+
+    /// The value of `key`: the first line the `KEY_cmd` command prints.
+    fn run(&self, key: &str, allow_exec: bool) -> Result<String> {
+        let cmd = &self.commands[key];
+        let name = &self.name;
+        if !allow_exec {
+            bail!("{name}: {key}{CMD} stands in {FILE_NAME} and runs only under --allow-exec");
+        }
+        // Only stdout is the command's answer. Its stderr and its
+        // stdin stay with the terminal: a password manager asks for
+        // a passphrase there, and says there what went wrong.
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .output()
+            .with_context(|| format!("{name}: {key}{CMD} could not be run"))?;
+        if !out.status.success() {
+            bail!(
+                "{name}: {key}{CMD} failed ({}); what it said stands above",
+                out.status
+            );
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let value = stdout.lines().next().unwrap_or("").trim();
+        if value.is_empty() {
+            bail!(
+                "{name}: {key}{CMD} printed nothing; it has to print the {key} on its first line"
+            );
+        }
+        Ok(value.to_string())
+    }
+}
+
+impl Imap {
+    /// The password, which the file may leave out only to have it
+    /// commanded.
+    ///
+    /// # Errors
+    ///
+    /// Neither given nor commanded.
+    pub fn password(&self, name: &str) -> Result<&str> {
+        self.password.as_deref().ok_or_else(|| {
+            anyhow!(
+                "{name}: no password configured; set password{CMD} (a command that prints it) or password in {FILE_NAME}"
+            )
+        })
+    }
+}
+
+impl Graph {
+    /// The application's secret, which the file may leave out only to
+    /// have it commanded.
+    ///
+    /// # Errors
+    ///
+    /// Neither given nor commanded.
+    pub fn secret(&self, name: &str) -> Result<&str> {
+        self.client_secret.as_deref().ok_or_else(|| {
+            anyhow!(
+                "{name}: no client_secret configured; set client_secret{CMD} (a command that prints it) or client_secret in {FILE_NAME}"
+            )
+        })
     }
 }
 
@@ -226,21 +396,30 @@ mod tests {
         Config::load(dir.path())
     }
 
+    fn imap(account: &Account, allow_exec: bool) -> Result<Imap> {
+        match account.reach(allow_exec)? {
+            Reach::Imap(imap) => Ok(imap),
+            Reach::Graph(_) => panic!("{}: an imap account was expected", account.name),
+        }
+    }
+
     #[test]
     fn plaintext_is_for_loopback_only() {
         for host in ["127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.2"] {
+            let config = load(&format!(
+                "[[account]]\nname = \"a\"\nhost = \"{host}\"\ntls = false\nuser = \"u\"\n"
+            ))
+            .unwrap();
             assert!(
-                load(&format!(
-                    "[[account]]\nname = \"a\"\nhost = \"{host}\"\ntls = false\nuser = \"u\"\n"
-                ))
-                .is_ok(),
+                imap(&config.accounts[0], false).is_ok(),
                 "{host} is this machine"
             );
         }
-        let refused = load(
+        let config = load(
             "[[account]]\nname = \"a\"\nhost = \"imap.example.org\"\ntls = false\nuser = \"u\"\n",
         )
-        .unwrap_err();
+        .unwrap();
+        let refused = imap(&config.accounts[0], false).err().unwrap();
         assert!(refused.to_string().contains("in the clear"), "{refused:#}");
     }
 
@@ -251,13 +430,24 @@ mod tests {
         )
         .unwrap();
         let account = &config.accounts[0];
-        assert_eq!((account.port, account.tls), (993, true));
+        let imap = imap(account, false).unwrap();
+        assert_eq!((imap.port, imap.tls), (993, true));
         assert!(account.folders.is_none());
 
-        assert!(
+        let refused =
             load("[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\nserver = \"x\"\n")
-                .is_err(),
-            "a key this build does not know is refused"
+                .err()
+                .unwrap();
+        assert!(
+            format!("{refused:#}").contains("server"),
+            "a key this build does not know is refused by name: {refused:#}"
+        );
+        let refused = load("[[account]]\nname = \"a\"\nhost = \"h\"\n")
+            .err()
+            .unwrap();
+        assert!(
+            format!("{refused:#}").contains("user"),
+            "a key missing is named at load, not at the login: {refused:#}"
         );
     }
 
@@ -268,6 +458,10 @@ mod tests {
         assert!(load(twice).is_err());
         assert!(load("[[account]]\nname = \"a/b\"\nhost = \"h\"\nuser = \"u\"\n").is_err());
         assert!(load("[[account]]\nname = \"a b\"\nhost = \"h\"\nuser = \"u\"\n").is_err());
+        assert!(
+            load("[[account]]\nhost = \"h\"\nuser = \"u\"\n").is_err(),
+            "no name, no account"
+        );
     }
 
     #[test]
@@ -288,13 +482,123 @@ mod tests {
     }
 
     #[test]
-    fn a_password_command_runs_only_when_allowed() {
+    fn a_command_runs_only_when_allowed_and_any_key_may_be_commanded() {
         let config = load(
-            "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\npassword_cmd = \"echo secret\"\n",
+            "[[account]]\nname = \"a\"\nhost_cmd = \"echo imap.example.org\"\n\
+             user = \"nobody\"\nuser_cmd = \"printf 'john\\\\nignored'\"\n\
+             password_cmd = \"echo secret\"\n",
         )
         .unwrap();
         let account = &config.accounts[0];
-        assert!(account.password(false).is_err());
-        assert_eq!(account.password(true).unwrap(), "secret");
+        let refused = imap(account, false).err().unwrap();
+        assert!(
+            refused.to_string().contains("host_cmd stands in"),
+            "{refused:#}"
+        );
+
+        let imap = imap(account, true).unwrap();
+        assert_eq!(imap.host, "imap.example.org");
+        assert_eq!(
+            imap.user, "john",
+            "the command's first line wins over the key"
+        );
+        assert_eq!(imap.password("a").unwrap(), "secret");
+    }
+
+    #[test]
+    fn a_command_that_fails_or_says_nothing_is_named() {
+        let config = load(
+            "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\npassword_cmd = \"false\"\n\
+             [[account]]\nname = \"b\"\nhost = \"h\"\nuser = \"u\"\npassword_cmd = \"true\"\n\
+             [[account]]\nname = \"c\"\nhost = \"h\"\nuser = \"u\"\n",
+        )
+        .unwrap();
+        let failed = imap(&config.accounts[0], true).err().unwrap();
+        assert!(
+            failed.to_string().contains("password_cmd failed"),
+            "{failed:#}"
+        );
+        let silent = imap(&config.accounts[1], true).err().unwrap();
+        assert!(silent.to_string().contains("printed nothing"), "{silent:#}");
+        let none = imap(&config.accounts[2], true).unwrap();
+        let missing = none.password("c").err().unwrap();
+        assert!(
+            missing.to_string().contains("no password configured"),
+            "{missing:#}"
+        );
+    }
+
+    #[test]
+    fn the_keys_that_shape_the_account_take_no_command() {
+        for key in ["name", "backend", "folders"] {
+            let refused = load(&format!(
+                "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n{key}_cmd = \"echo x\"\n"
+            ))
+            .err()
+            .unwrap();
+            assert!(
+                format!("{refused:#}").contains(&format!("{key}_cmd is not read from a command")),
+                "{refused:#}"
+            );
+        }
+        let refused = load(
+            "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\nnonsense_cmd = \"echo x\"\n",
+        )
+        .err()
+        .unwrap();
+        assert!(
+            format!("{refused:#}").contains("nonsense"),
+            "a command for a key the account does not have is refused at load: {refused:#}"
+        );
+    }
+
+    #[test]
+    fn an_msgraph_account_has_its_own_keys_and_none_of_imaps() {
+        let config = load(
+            "[[account]]\nname = \"m365\"\nbackend = \"msgraph\"\ntenant_id_cmd = \"echo t\"\n\
+             client_id = \"c\"\nclient_secret_cmd = \"echo s3cret\"\nuser = \"john@example.com\"\n\
+             folders = [\"Inbox\"]\n",
+        )
+        .unwrap();
+        let account = &config.accounts[0];
+        assert_eq!(account.folders.as_deref(), Some(&["Inbox".to_string()][..]));
+        assert!(account.reach(false).is_err(), "two commands, not allowed");
+        let Reach::Graph(graph) = account.reach(true).unwrap() else {
+            panic!("an msgraph account was expected");
+        };
+        assert_eq!(
+            (graph.tenant_id.as_str(), graph.client_id.as_str()),
+            ("t", "c")
+        );
+        assert_eq!(graph.secret("m365").unwrap(), "s3cret");
+
+        let refused = load(
+            "[[account]]\nname = \"m365\"\nbackend = \"msgraph\"\ntenant_id = \"t\"\n\
+             client_id = \"c\"\nuser = \"u\"\nhost = \"imap.example.com\"\n",
+        )
+        .err()
+        .unwrap();
+        assert!(
+            format!("{refused:#}").contains("host"),
+            "an imap key on an msgraph account is refused by name: {refused:#}"
+        );
+
+        let refused = load(
+            "[[account]]\nname = \"m365\"\nbackend = \"msgraph\"\nclient_id = \"c\"\nuser = \"u\"\n",
+        )
+        .err()
+        .unwrap();
+        assert!(
+            format!("{refused:#}").contains("tenant_id"),
+            "a missing key is named: {refused:#}"
+        );
+
+        let refused = load("[[account]]\nname = \"x\"\nbackend = \"pop3\"\n")
+            .err()
+            .unwrap();
+        assert!(
+            format!("{refused:#}").contains("imap or msgraph"),
+            "{refused:#}"
+        );
     }
 }

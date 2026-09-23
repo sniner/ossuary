@@ -1,13 +1,14 @@
 //! ossuary-mailvault: mail into the archive.
 //!
-//! `ossuary mailvault` fetches whole mailboxes over IMAP into an
-//! ossuary archive. Every message goes in through the archive's own
-//! two-step accession — the bytes into the content store, once, however
-//! many folders and accounts carry them — and onto the record goes
-//! where it was seen: the account and the folder, as one
-//! `mailbox:place` claim per place. Where each folder's fetch carries
-//! on is this program's own memory in `cache/`, the way mailvault kept
-//! it: the folder's UIDVALIDITY and the highest UID fetched under it.
+//! `ossuary mailvault` fetches whole mailboxes over IMAP or MS Graph
+//! into an ossuary archive. Every message goes in through the
+//! archive's own two-step accession — the bytes into the content
+//! store, once, however many folders and accounts carry them — and
+//! onto the record goes where it was seen: the account and the folder,
+//! as one `mailbox:place` claim per place. Where each folder's fetch
+//! carries on is this program's own memory in `cache/`, the way
+//! mailvault kept it: over IMAP the folder's UIDVALIDITY and the
+//! highest UID fetched under it, over Graph the server's delta link.
 //!
 //! Everything after that is ossuary's: `extract mail` reads the
 //! headers and unpacks the attachments, `find` asks, `get` answers.
@@ -25,6 +26,7 @@ use ossuary_core::{Archive, Error};
 
 mod config;
 mod fetch;
+mod graph;
 mod memo;
 mod output;
 mod place;
@@ -51,7 +53,7 @@ pub const MESSAGE: &str = "message/rfc822";
 #[command(
     name = "ossuary-mailvault",
     version,
-    about = "Mail into the archive: whole mailboxes fetched over IMAP, every message on the record with the place it was seen in",
+    about = "Mail into the archive: whole mailboxes fetched over IMAP or MS Graph, every message on the record with the place it was seen in",
     max_term_width = 100
 )]
 struct Cli {
@@ -70,8 +72,8 @@ struct Cli {
     #[arg(long)]
     full: bool,
 
-    /// Run the *_cmd fields of mailvault.toml, the password from a
-    /// password manager
+    /// Run the *_cmd fields of mailvault.toml: a password, a client
+    /// secret, any key from a password manager
     #[arg(long)]
     allow_exec: bool,
 
