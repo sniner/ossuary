@@ -5,6 +5,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A release carries one tarball per platform with every program in it**, in place of the
+  one file per program of releases so far. The Homebrew tap installs from it:
+  `brew install sniner/tap/ossuary` brings all eight programs on macOS and Linux, and follows a
+  release within a day
+
 ## [0.10.0] - 2026-09-23
 
 ### Added

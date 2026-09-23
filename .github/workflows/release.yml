@@ -206,6 +206,21 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Pack one tarball per platform
+        # The release carries one archive per platform with every program in
+        # it, and nothing else; the Homebrew tap installs from it. Artifacts
+        # come back without their mode bits, so the tarball sets them.
+        run: |
+          for suffix in x86_64-linux-musl aarch64-linux-musl macos-universal; do
+            stage=$(mktemp -d)
+            for bin in $BINARIES; do
+              install -m 755 "dist/$bin-${GITHUB_REF_NAME}-$suffix" "$stage/$bin"
+              rm "dist/$bin-${GITHUB_REF_NAME}-$suffix"
+            done
+            tar -C "$stage" -czf "dist/ossuary-${GITHUB_REF_NAME}-$suffix.tar.gz" $BINARIES
+            rm -r "$stage"
+          done
+
       - name: List assets
         run: ls -la dist/
 
@@ -233,4 +248,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md \
-            dist/ossuary*
+            dist/ossuary-*.tar.gz

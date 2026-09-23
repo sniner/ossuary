@@ -39,11 +39,17 @@ would use it for:
 
 ## Getting it
 
+With Homebrew, on macOS or Linux, one command brings every program:
+
+```console
+$ brew install sniner/tap/ossuary
+```
+
 Every [release](https://github.com/sniner/ossuary/releases) carries the
 programs built: for Linux on x86_64 and arm64, statically linked, and
-for macOS as universal binaries — one file per program, named after the
-program, the version and the platform. Building it yourself is the
-other way in:
+for macOS as universal binaries — one tarball per platform, named after
+the version and the platform, with every program in it. Building it
+yourself is the other way in:
 
 ```console
 $ git clone https://github.com/sniner/ossuary
