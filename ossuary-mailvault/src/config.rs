@@ -279,6 +279,12 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 impl Account {
+    /// Whether the mailbox is reached over MS Graph.
+    #[must_use]
+    pub fn over_graph(&self) -> bool {
+        matches!(self.backend, Backend::Graph)
+    }
+
     /// The way to the mailbox, every `KEY_cmd` run and its value filled
     /// in. A command's value wins over a key given outright.
     ///

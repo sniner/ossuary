@@ -115,6 +115,17 @@ old ones stay true for their time.
 $ ossuary find 'mailbox:place=example.org/Sent' mail:subject
 ```
 
+A Microsoft 365 mailbox also says which categories a message carries,
+and those go on the record as `mailbox:tag`, by the name Outlook shows.
+A category is state, not history: a fetch says the marks it sees and
+takes back the ones that stood and are gone, so what stands is the
+marks as of the last sighting, and a message recategorised in the
+meantime comes round again with its marks as they now are.
+
+```console
+$ ossuary find 'mailbox:tag=Invoice' mail:subject
+```
+
 ## Where a run carries on
 
 Each folder's resume point lives in `cache/`: the UIDVALIDITY the

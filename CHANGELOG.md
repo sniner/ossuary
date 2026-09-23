@@ -16,6 +16,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   delta link, kept in `cache/`: the next run is handed only what changed, a link the server no
   longer honours costs one whole round, and the link moves forward only once every message the
   round offered has landed. Throttling and gateway trouble are waited out and asked again
+- **A Microsoft 365 mailbox's categories go on the record as `mailbox:tag`**, by the name
+  Outlook shows. A category is state, not history: a fetch says the marks it sees on a message
+  and takes back the ones that stood and are gone, so `find mailbox:tag=Invoice` answers with
+  the marks as of the last sighting and `--as-of` with the marks as of then. A message
+  recategorised in the meantime comes round again on its own. The verdict counts the marks
+  taken back
 - **Any key of a `mailvault.toml` account can be given as `KEY_cmd`**, the way mailvault takes
   them: a command whose first line is the value, `tenant_id_cmd` and `client_id_cmd` as readily
   as `password_cmd`. It runs only under `--allow-exec`, and only when the account is reached, so

@@ -13,6 +13,10 @@
 //! out at the end of the last round: the next round starts from it and
 //! is handed only what changed. A link the server no longer honours
 //! costs one whole round; so does a link that was never handed out.
+//! Graph also says which marks the mailbox has on each message — its
+//! categories — and those go on the record as `mailbox:tag`: said as
+//! seen, and taken back where they stood and are gone, so what stands
+//! is the marks as of the last sighting.
 //!
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
@@ -25,14 +29,18 @@
 //! a folder that will not open are named in the tally, and the run
 //! goes on to the next. The archive or the memo refusing ends the run.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
-use ossuary_core::{Archive, Attribute, Sighting, Source, admit, record};
+use ossuary_core::{
+    Archive, Attribute, Claim, Index, Scope, Sighting, Source, Subject, Timestamp, Value, admit,
+    record,
+};
 use serde_json::json;
 
 use crate::config::{self, Account, Reach};
-use crate::graph::{Graph, Halt};
+use crate::graph::{Graph, Halt, Offered};
 use crate::memo::{Memo, Resume};
 use crate::output::{Say, counted};
 use crate::place;
@@ -64,12 +72,22 @@ pub fn run(
     options: &Options,
     say: Say,
 ) -> Result<Tally> {
+    // Taking a mark back needs to know what stands, and only a Graph
+    // account says marks — an IMAP run leaves the index alone.
+    let record = if accounts.iter().any(|account| account.over_graph()) {
+        Some(caught_up(archive, say)?)
+    } else {
+        None
+    };
     let fetch = Fetch {
         archive,
         memo,
         options,
         source: Source::parse(crate::SOURCE)?,
         place: Attribute::parse(place::ATTRIBUTE)?,
+        tag: Attribute::parse(place::TAG)?,
+        record,
+        said: RefCell::new(HashMap::new()),
         say,
     };
     let mut tally = Tally::new("fetch");
@@ -81,6 +99,20 @@ pub fn run(
     Ok(tally)
 }
 
+/// The index in `cache/`, caught up to the log — and, when that was
+/// real work, said so.
+fn caught_up(archive: &Archive, say: Say) -> Result<Index> {
+    let mut index = archive.index()?;
+    let folded = index.fold(archive.log())?;
+    if folded.segments > 0 {
+        say.line(format_args!(
+            "catching the index up: {} it had not seen",
+            counted(folded.segments, "sealed segment", "sealed segments")
+        ));
+    }
+    Ok(index)
+}
+
 /// One fetch in progress: what it works on, and how it speaks.
 struct Fetch<'a> {
     archive: &'a Archive,
@@ -88,6 +120,14 @@ struct Fetch<'a> {
     options: &'a Options,
     source: Source,
     place: Attribute,
+    tag: Attribute,
+    /// The record as it stood when the run began, for the marks a
+    /// message carried before — `None` when no account says marks.
+    record: Option<Index>,
+    /// The marks this run said, by subject: the record above does not
+    /// see them yet, and a message met twice in one run must not take
+    /// back what the run itself just said.
+    said: RefCell<HashMap<String, BTreeSet<String>>>,
     say: Say,
 }
 
@@ -105,14 +145,25 @@ impl Fetch<'_> {
         }
     }
 
-    /// A message is in: its bytes admitted, its place on the record.
+    /// A message is in: its bytes admitted, its place on the record —
+    /// and its marks, where the mailbox says marks: those it carries
+    /// said, those it carried and no longer does taken back.
     ///
     /// # Errors
     ///
     /// The archive refusing.
-    fn land(&self, name: &str, bytes: &[u8], tally: &mut Tally) -> Result<()> {
+    fn land(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        tags: Option<&[String]>,
+        tally: &mut Tally,
+    ) -> Result<()> {
         let admitted = admit(self.archive.content(), bytes)?;
-        let facts = [(self.place.clone(), json!(name))];
+        let mut facts = vec![(self.place.clone(), json!(name))];
+        for tag in tags.unwrap_or_default() {
+            facts.push((self.tag.clone(), json!(tag)));
+        }
         tally.claims += record(
             self.archive.log(),
             &admitted,
@@ -129,6 +180,45 @@ impl Fetch<'_> {
         } else {
             tally.known += 1;
         }
+        if let Some(tags) = tags {
+            self.take_back(admitted.subject(), tags, tally)?;
+        }
+        Ok(())
+    }
+
+    /// The marks that stood on the message and are not among `tags`
+    /// any more are taken back, one retraction each — under this
+    /// fetcher's source, in this run. What stood is what the record
+    /// held when the run began, and what this run has said since.
+    fn take_back(&self, subject: &Subject, tags: &[String], tally: &mut Tally) -> Result<()> {
+        let current: BTreeSet<String> = tags.iter().cloned().collect();
+        let mut stood = BTreeSet::new();
+        if let Some(record) = &self.record {
+            for value in record.values(subject, &self.tag, Scope::Held)? {
+                if let Value::String(tag) = value {
+                    stood.insert(tag);
+                }
+            }
+        }
+        let mut said = self.said.borrow_mut();
+        if let Some(earlier) = said.get(subject.as_str()) {
+            stood.extend(earlier.iter().cloned());
+        }
+        let time = Timestamp::now();
+        for gone in stood.difference(&current) {
+            let claim = Claim::retract_value(
+                subject.clone(),
+                self.tag.clone(),
+                json!(gone),
+                time.clone(),
+                self.source.clone(),
+                tally.run.clone(),
+            )?;
+            self.archive.log().append(&claim)?;
+            tally.claims += 1;
+            tally.taken += 1;
+        }
+        said.insert(subject.as_str().to_string(), current);
         Ok(())
     }
 
@@ -210,7 +300,7 @@ impl Fetch<'_> {
         let mut frontier = 0;
         self.memo.begin()?;
         let outcome = mailbox.fetch(&uids, &mut |uid, bytes| {
-            self.land(&name, bytes, tally)?;
+            self.land(&name, bytes, None, tally)?;
             // The message is on the record; the next run may start above
             // the highest UID with nothing missing below it. Committed in
             // batches: a run that dies repeats at most a batch, and the
@@ -297,23 +387,23 @@ impl Fetch<'_> {
         Ok(Ok(()))
     }
 
-    /// Every message the round offered, one request each: how many
-    /// landed, and how many the server kept — those are named in the
-    /// tally.
+    /// Every message the round offered, one request each, with the
+    /// marks the round said it carries: how many landed, and how many
+    /// the server kept — those are named in the tally.
     fn graph_land(
         &self,
         name: &str,
         client: &mut Graph<'_>,
-        ids: &[String],
+        offered: &[Offered],
         tally: &mut Tally,
     ) -> Result<(usize, usize)> {
         let mut progress = self.say.progress();
         let mut landed = 0;
         let mut missed = 0;
-        for (done, id) in ids.iter().enumerate() {
-            match client.message(id) {
+        for (done, message) in offered.iter().enumerate() {
+            match client.message(&message.id) {
                 Ok(bytes) => {
-                    self.land(name, &bytes, tally)?;
+                    self.land(name, &bytes, Some(&message.tags), tally)?;
                     landed += 1;
                 }
                 Err(error) => {
@@ -323,7 +413,7 @@ impl Fetch<'_> {
             }
             progress.update(
                 done + 1,
-                &format!("{name}: {} of {} fetched", done + 1, ids.len()),
+                &format!("{name}: {} of {} fetched", done + 1, offered.len()),
             );
         }
         progress.finish();
@@ -405,14 +495,14 @@ impl Fetch<'_> {
         };
         self.say.line(format_args!(
             "{name}: {how}, {} to fetch{gone}",
-            counted(round.ids.len(), "message", "messages")
+            counted(round.offered.len(), "message", "messages")
         ));
         if self.options.dry_run {
-            tally.would += round.ids.len();
+            tally.would += round.offered.len();
             return Ok(());
         }
 
-        let (landed, missed) = self.graph_land(&name, client, &round.ids, tally)?;
+        let (landed, missed) = self.graph_land(&name, client, &round.offered, tally)?;
         if missed > 0 {
             self.say.line(format_args!(
                 "{name}: {} not fetched; the resume point stays, and the next run asks for them again",
@@ -573,6 +663,7 @@ mod tests {
         }
     }
 
+    /// A fetch with the record caught up to the log, as `run` makes one.
     fn fetcher<'a>(bench: &'a Bench, options: &'a Options) -> Fetch<'a> {
         Fetch {
             archive: &bench.archive,
@@ -580,6 +671,9 @@ mod tests {
             options,
             source: Source::parse(crate::SOURCE).unwrap(),
             place: Attribute::parse(place::ATTRIBUTE).unwrap(),
+            tag: Attribute::parse(place::TAG).unwrap(),
+            record: Some(caught_up(&bench.archive, Say::new(true)).unwrap()),
+            said: RefCell::new(HashMap::new()),
             say: Say::new(true),
         }
     }
@@ -732,6 +826,14 @@ mod tests {
             }
         }
 
+        /// The bytes the stub hands out for a message id, and their
+        /// subject.
+        fn message(id: &str) -> (Vec<u8>, Subject) {
+            let bytes = format!("Subject: {id}\r\n\r\nbody {id}").into_bytes();
+            let subject = Subject::parse(Algorithm::Sha256.hash(&bytes).as_str()).unwrap();
+            (bytes, subject)
+        }
+
         /// A tenant issuing tokens and a mailbox of one folder,
         /// `Inbox` as `F1`, with these messages in it.
         fn stub(ids: &[&str]) -> Stub {
@@ -752,21 +854,29 @@ mod tests {
             for id in ids {
                 stub.script(
                     &format!("GET /v1.0/users/{USER}/messages/{id}/$value"),
-                    vec![Reply::bytes(
-                        200,
-                        format!("Subject: {id}\r\n\r\nbody {id}").as_bytes(),
-                    )],
+                    vec![Reply::bytes(200, &message(id).0)],
                 );
             }
             stub
         }
 
-        /// The first round, from scratch, offers `ids` and ends on
+        /// A message as a round lists it, with these marks on it.
+        fn marked(id: &str, tags: &[&str]) -> serde_json::Value {
+            json!({ "id": id, "categories": tags })
+        }
+
+        /// A round over the folder, from scratch when `from` is `None`
+        /// and from that link otherwise, offers `items` and ends on
         /// `link`.
-        fn first_round(stub: &Stub, ids: &[&str], link: &str) {
-            let items: Vec<_> = ids.iter().map(|id| json!({ "id": id })).collect();
+        fn offer(stub: &Stub, from: Option<&str>, items: &[serde_json::Value], link: &str) {
+            let key = match from {
+                Some(from) => format!("GET /v1.0/delta/{from}"),
+                None => format!(
+                    "GET /v1.0/users/{USER}/mailFolders/F1/messages/delta?$select=id,categories"
+                ),
+            };
             stub.script(
-                &format!("GET /v1.0/users/{USER}/mailFolders/F1/messages/delta?$select=id"),
+                &key,
                 vec![Reply::json(
                     200,
                     &json!({ "value": items, "@odata.deltaLink": format!("{}/v1.0/delta/{link}", stub.url()) }),
@@ -774,16 +884,17 @@ mod tests {
             );
         }
 
+        /// The first round, from scratch, offers `ids` and ends on
+        /// `link`.
+        fn first_round(stub: &Stub, ids: &[&str], link: &str) {
+            let items: Vec<_> = ids.iter().map(|id| json!({ "id": id })).collect();
+            offer(stub, None, &items, link);
+        }
+
         /// A round from `link` on offers `ids` and ends on `next`.
         fn next_round(stub: &Stub, link: &str, ids: &[&str], next: &str) {
             let items: Vec<_> = ids.iter().map(|id| json!({ "id": id })).collect();
-            stub.script(
-                &format!("GET /v1.0/delta/{link}"),
-                vec![Reply::json(
-                    200,
-                    &json!({ "value": items, "@odata.deltaLink": format!("{}/v1.0/delta/{next}", stub.url()) }),
-                )],
-            );
+            offer(stub, Some(link), &items, next);
         }
 
         fn fetch(
@@ -819,6 +930,17 @@ mod tests {
                 .map(|point| point.link)
         }
 
+        /// The marks standing on a message, as the record has them.
+        fn standing_tags(bench: &Bench, subject: &Subject) -> Vec<String> {
+            let index = caught_up(&bench.archive, Say::new(true)).unwrap();
+            index
+                .values(subject, &Attribute::parse(place::TAG).unwrap(), Scope::Held)
+                .unwrap()
+                .into_iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect()
+        }
+
         #[test]
         fn a_first_round_takes_the_folder_whole_and_the_next_carries_on_from_its_link() {
             let bench = bench();
@@ -843,6 +965,102 @@ mod tests {
                 link(&bench).unwrap().ends_with("/delta/three"),
                 "an unchanged folder still records the server's word"
             );
+        }
+
+        #[test]
+        fn the_marks_are_said_as_seen_and_taken_back_when_gone() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1", "M2"]);
+            let (_, m1) = message("M1");
+            let (_, m2) = message("M2");
+            offer(
+                &stub,
+                None,
+                &[marked("M1", &["Red", "Later"]), marked("M2", &[])],
+                "one",
+            );
+
+            let tally = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(
+                (tally.stored, tally.claims, tally.taken),
+                (2, 8, 0),
+                "place, size, kind each — and two marks on the first"
+            );
+            assert_eq!(standing_tags(&bench, &m1), ["Later", "Red"]);
+            assert!(standing_tags(&bench, &m2).is_empty());
+
+            // Red comes off M1 and goes onto M2: both come round again.
+            offer(
+                &stub,
+                Some("one"),
+                &[marked("M1", &["Later"]), marked("M2", &["Red"])],
+                "two",
+            );
+            let again = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!((again.stored, again.known), (0, 2), "the bytes are held");
+            assert_eq!(again.taken, 1, "Red is taken back from M1");
+            assert_eq!(
+                again.claims, 7,
+                "M1: place, kind, Later, and Red taken back; M2: place, kind, Red"
+            );
+            assert_eq!(standing_tags(&bench, &m1), ["Later"]);
+            assert_eq!(standing_tags(&bench, &m2), ["Red"]);
+
+            // Said again unchanged, by a round from scratch: nothing is
+            // taken back.
+            offer(
+                &stub,
+                None,
+                &[marked("M1", &["Later"]), marked("M2", &["Red"])],
+                "three",
+            );
+            let full = fetch(&bench, &stub, &account, true, false);
+            assert_eq!(full.taken, 0);
+            assert_eq!(standing_tags(&bench, &m1), ["Later"]);
+        }
+
+        #[test]
+        fn a_message_met_twice_in_one_run_keeps_what_the_run_said() {
+            // The same bytes under two ids — a message in two folders —
+            // and the record does not see the run's own claims yet.
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            let (bytes, m1) = message("M1");
+            stub.script(
+                &format!("GET /v1.0/users/{USER}/messages/M1-again/$value"),
+                vec![Reply::bytes(200, &bytes)],
+            );
+            offer(
+                &stub,
+                None,
+                &[marked("M1", &["Red"]), marked("M1-again", &["Red"])],
+                "one",
+            );
+
+            let tally = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(
+                tally.taken, 0,
+                "the second sighting says Red again, takes nothing back"
+            );
+            assert_eq!(standing_tags(&bench, &m1), ["Red"]);
+
+            offer(
+                &stub,
+                Some("one"),
+                &[marked("M1", &["Red"]), marked("M1-again", &[])],
+                "two",
+            );
+            let again = fetch(&bench, &stub, &account, false, false);
+            assert_eq!(
+                again.taken, 1,
+                "the second sighting in a run sees what the first just said, and takes it back"
+            );
+            assert!(standing_tags(&bench, &m1).is_empty());
         }
 
         #[test]

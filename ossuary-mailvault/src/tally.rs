@@ -19,8 +19,10 @@ pub struct Tally {
     /// Messages a takeover found already in with every place: not
     /// read, nothing recorded.
     pub left: usize,
-    /// Claims appended to the log.
+    /// Claims appended to the log, retractions included.
     pub claims: usize,
+    /// Marks taken back: a `mailbox:tag` that stood and no longer does.
+    pub taken: usize,
     /// Under `--dry-run`: messages the run would have fetched.
     pub would: usize,
     /// What went wrong, named — an account that would not answer, a
@@ -38,6 +40,7 @@ impl Tally {
             known: 0,
             left: 0,
             claims: 0,
+            taken: 0,
             would: 0,
             failed: Vec::new(),
         }
@@ -68,6 +71,9 @@ impl Tally {
         }
         if self.left > 0 {
             parts.push(format!("{} already on record", self.left));
+        }
+        if self.taken > 0 {
+            parts.push(format!("{} taken back", counted(self.taken, "tag", "tags")));
         }
         let record = if self.claims > 0 {
             format!("{} claim(s) written, run {}", self.claims, self.run)
@@ -115,6 +121,14 @@ mod tests {
         assert_eq!(
             tally.verdict(false),
             "2 messages stored, 1 already stored, 4 already on record; 11 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4"
+        );
+        tally.taken = 1;
+        assert!(
+            tally
+                .verdict(false)
+                .contains("4 already on record, 1 tag taken back; 11 claim(s)"),
+            "{}",
+            tally.verdict(false)
         );
     }
 }

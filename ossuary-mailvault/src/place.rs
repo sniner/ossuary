@@ -21,6 +21,12 @@ pub const ATTRIBUTE: &str = "mailbox:place";
 /// and says so in the log's own words.
 pub const SEEN: &str = "mailbox:seen";
 
+/// The marks the mailbox has on a message beside its place — Outlook's
+/// categories, by name. Not in the message's bytes, and not a place:
+/// state as of the last sighting, said anew each time and taken back
+/// where it no longer stands.
+pub const TAG: &str = "mailbox:tag";
+
 /// A folder of an account.
 #[must_use]
 pub fn folder(account: &str, folder: &str) -> String {

@@ -80,7 +80,8 @@ its maker, in its source.
   archive. Named for the thing, not the format — a reader asking which
   archive holds a file does not care whether it was a zip
 - `mailbox:` — the mailbox as observed: where a message was when it
-  was fetched, as `ossuary-mailvault` saw it
+  was fetched, and what marks the mailbox had on it there, as
+  `ossuary-mailvault` saw it
 
 Vocabulary for subjects that are not blobs waits for the first real
 need.
@@ -393,3 +394,21 @@ need.
   a message seen in two places at two dates holds both dates
 - value: string, the date as the vault's log wrote it
 - written by: `ossuary mailvault --from-vault`
+
+### mailbox:tag
+
+- meaning: a mark the mailbox had on a message beside its place — an
+  Outlook category, by the name the mailbox shows for it. Not in the
+  message's bytes, and nowhere an extractor could re-say it: it is what
+  the mailbox said about its copy when the message was fetched, and it
+  is lost with the mailbox. Unlike a place, a mark is state, not
+  history: a fetch says the marks it sees and takes back the ones that
+  stood and are gone, so the standing set is the marks as of the last
+  sighting, and `--as-of` shows the marks as of then. A message fetched
+  from two accounts that mark it differently shares one set, and the
+  fetcher takes back what it no longer sees whichever account said it.
+  The category's colour is a matter of the mailbox's display and not
+  recorded
+- value: string
+- written by: `ossuary mailvault`, over MS Graph — a mailbox reached
+  over IMAP says no marks

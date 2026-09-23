@@ -75,12 +75,22 @@ const CONNECT_AT_MOST: Duration = Duration::from_secs(60);
 const ANSWER_AT_MOST: Duration = Duration::from_secs(300);
 const BODY_AT_MOST: Duration = Duration::from_secs(900);
 
+/// One message a round offers: Graph's id to fetch it by, and the
+/// marks the mailbox has on it — Outlook's categories, by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offered {
+    pub id: String,
+    pub tags: Vec<String>,
+}
+
 /// A delta round: what the folder offers, and where to carry on.
 #[derive(Debug, Default)]
 pub struct Round {
-    /// The messages, by Graph's id — new since the link the round
-    /// started from, or every one of the folder.
-    pub ids: Vec<String>,
+    /// The messages — new or changed since the link the round started
+    /// from, or every one of the folder. A category put on or taken
+    /// off a message is a change too, and brings the message round
+    /// again with its marks as they now stand.
+    pub offered: Vec<Offered>,
     /// Entries the server marked removed: deleted, or moved out of the
     /// folder. Nothing to fetch, but worth a word.
     pub gone: usize,
@@ -134,6 +144,8 @@ struct FolderItem {
 #[derive(Deserialize)]
 struct DeltaItem {
     id: String,
+    #[serde(default)]
+    categories: Vec<String>,
     #[serde(rename = "@removed")]
     removed: Option<serde_json::Value>,
 }
@@ -390,7 +402,7 @@ impl<'a> Graph<'a> {
         let mut url = match from {
             Some(link) => link.to_string(),
             None => format!(
-                "{}/users/{}/mailFolders/{folder_id}/messages/delta?$select=id",
+                "{}/users/{}/mailFolders/{folder_id}/messages/delta?$select=id,categories",
                 self.base, self.account.user
             ),
         };
@@ -412,7 +424,10 @@ impl<'a> Graph<'a> {
                 if item.removed.is_some() {
                     round.gone += 1;
                 } else {
-                    round.ids.push(item.id);
+                    round.offered.push(Offered {
+                        id: item.id,
+                        tags: item.categories,
+                    });
                 }
             }
             let Some(next) = page.next else {
@@ -948,10 +963,12 @@ mod tests {
         let page2 = format!("{}/v1.0/delta/page2", stub.url());
         let done = format!("{}/v1.0/delta/done", stub.url());
         stub.script(
-            &format!("GET /v1.0/users/{USER}/mailFolders/F1/messages/delta?$select=id"),
+            &format!(
+                "GET /v1.0/users/{USER}/mailFolders/F1/messages/delta?$select=id,categories"
+            ),
             vec![Reply::json(
                 200,
-                &json!({ "value": [{ "id": "M1" }, { "id": "M2", "@removed": { "reason": "deleted" } }], "@odata.nextLink": page2 }),
+                &json!({ "value": [{ "id": "M1", "categories": ["Red", "Later"] }, { "id": "M2", "@removed": { "reason": "deleted" } }], "@odata.nextLink": page2 }),
             )],
         );
         stub.script(
@@ -966,7 +983,20 @@ mod tests {
 
         let round = graph.round("F1", None).ok().unwrap();
 
-        assert_eq!(round.ids, ["M1", "M3"]);
+        assert_eq!(
+            round.offered,
+            [
+                Offered {
+                    id: "M1".to_string(),
+                    tags: vec!["Red".to_string(), "Later".to_string()],
+                },
+                Offered {
+                    id: "M3".to_string(),
+                    tags: Vec::new(),
+                },
+            ],
+            "the marks come with the id; none listed is none"
+        );
         assert_eq!(round.gone, 1);
         assert_eq!(round.link.as_deref(), Some(done.as_str()));
         let prefer: Vec<_> = stub
