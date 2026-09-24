@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow, bail};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ossuary_core::{Archive, Error};
 
 mod config;
@@ -38,6 +38,7 @@ mod vault;
 use config::Config;
 use memo::Memo;
 use output::Say;
+use tally::Tally;
 
 /// What every claim of this program says as its source.
 pub const SOURCE: &str = "mailvault";
@@ -46,50 +47,88 @@ pub const SOURCE: &str = "mailvault";
 pub const MESSAGE: &str = "message/rfc822";
 
 #[derive(Parser)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the command line's switches, one field each — a mode enum would only rename them"
-)]
 #[command(
     name = "ossuary-mailvault",
     version,
-    about = "Mail into the archive: whole mailboxes fetched over IMAP or MS Graph, every message on the record with the place it was seen in",
+    about = "Fetch mail from IMAP and Microsoft 365 mailboxes into an ossuary archive",
     max_term_width = 100
 )]
 struct Cli {
-    /// The archive to fill; standing in it is enough
-    #[arg(long, value_name = "DIR", env = "OSSUARY_ARCHIVE", default_value = ".")]
+    /// The ossuary archive to work in
+    #[arg(
+        long,
+        global = true,
+        value_name = "DIR",
+        env = "OSSUARY_ARCHIVE",
+        default_value = "."
+    )]
     archive: PathBuf,
 
-    /// Only these accounts, by the name mailvault.toml gives them; every
-    /// configured one otherwise. With --from-vault: only these
-    /// mailboxes of the vault
-    #[arg(value_name = "ACCOUNT")]
-    accounts: Vec<String>,
-
-    /// Fetch every folder whole, wherever the last run left off. Bytes
-    /// the archive has are not stored twice; their place is said again
-    #[arg(long)]
-    full: bool,
-
-    /// Run the *_cmd fields of mailvault.toml: a password, a client
-    /// secret, any key from a password manager
-    #[arg(long)]
-    allow_exec: bool,
-
-    /// Say what would be fetched and write nothing
-    #[arg(long)]
-    dry_run: bool,
-
-    /// Take over a mailvault archive standing at DIR instead of asking
-    /// any server: every message it holds, with the mailbox and folder
-    /// it was seen in. Interrupted, the next call carries on
-    #[arg(long, value_name = "DIR")]
-    from_vault: Option<PathBuf>,
-
-    /// The verdict and errors only; the run keeps its narration to itself
-    #[arg(short, long)]
+    /// Print only the result and errors
+    #[arg(short, long, global = true)]
     quiet: bool,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+#[allow(
+    clippy::doc_markdown,
+    reason = "help texts; backticks would show in --help"
+)]
+enum Command {
+    /// Write a mailvault.toml with an example of each kind of account
+    ///
+    /// The examples are commented out. An existing mailvault.toml is not
+    /// overwritten.
+    Init,
+    /// Fetch new mail from the accounts in mailvault.toml
+    ///
+    /// Only messages that arrived since the last run are fetched, unless
+    /// --full is given.
+    Fetch {
+        /// Fetch only these accounts, by their name in mailvault.toml; all
+        /// when none is given
+        #[arg(value_name = "ACCOUNT")]
+        accounts: Vec<String>,
+
+        /// Fetch all messages, not only those since the last run. Messages
+        /// already in the archive are not stored again
+        #[arg(long)]
+        full: bool,
+
+        /// Run the commands given as *_cmd keys in mailvault.toml, such as
+        /// password_cmd
+        #[arg(long)]
+        allow_exec: bool,
+
+        /// Show what would be fetched, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Import an archive of the Python tool mailvault (github.com/sniner/mailvault)
+    ///
+    /// Each message is stored with the mailboxes and folders mailvault
+    /// recorded for it.
+    Import {
+        /// The mailvault archive's directory
+        #[arg(value_name = "DIR")]
+        vault: PathBuf,
+
+        /// Import only these mailboxes, by their name in mailvault; all
+        /// when none is given
+        #[arg(value_name = "MAILBOX")]
+        mailboxes: Vec<String>,
+
+        /// Read all messages again, including those already imported
+        #[arg(long)]
+        full: bool,
+
+        /// Show what would be imported, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -105,62 +144,96 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         archive,
-        accounts,
-        full,
-        allow_exec,
-        dry_run,
-        from_vault,
         quiet,
+        command,
     } = cli;
-    if allow_exec && from_vault.is_some() {
-        bail!("--allow-exec runs commands to reach mailboxes, and --from-vault asks none");
-    }
     let say = Say::new(quiet);
     let archive = open(&archive)?;
-    say.line(format_args!("archive {}", archive.root().display()));
+    let memo_path = archive.root().join("cache").join(memo::FILE_NAME);
     // Everything that can say no before the archive is touched says it
     // before the memo is opened — the memo is a file, and a refused
     // call should make none.
-    let memo_path = archive.root().join("cache").join(memo::FILE_NAME);
-    let tally = if let Some(vault) = from_vault {
-        vault::verify(&vault)?;
-        let memo = Memo::open(&memo_path)?;
-        say.line(format_args!("taking over the vault at {}", vault.display()));
-        vault::run(
-            &archive,
-            &vault,
-            &accounts,
-            &memo,
-            &vault::Options { full, dry_run },
-            say,
-        )?
-    } else {
-        let config = Config::load(archive.root())?;
-        let chosen = config.chosen(&accounts)?;
-        if chosen.is_empty() {
-            bail!(
-                "{}: no accounts in {}; one [[account]] table per mailbox; see the README for the shape",
-                archive.root().display(),
-                config::FILE_NAME
-            );
+    match command {
+        Command::Init => {
+            init(&archive)?;
+            Ok(ExitCode::SUCCESS)
         }
-        let memo = Memo::open(&memo_path)?;
-        fetch::run(
-            &archive,
-            &chosen,
-            &memo,
-            &fetch::Options {
-                full,
-                allow_exec,
-                dry_run,
-            },
-            say,
-        )?
-    };
+        Command::Fetch {
+            accounts,
+            full,
+            allow_exec,
+            dry_run,
+        } => {
+            say.line(format_args!("archive {}", archive.root().display()));
+            let config = Config::load(archive.root())?;
+            let chosen = config.chosen(&accounts)?;
+            if chosen.is_empty() {
+                bail!(
+                    "{}: no accounts in {}; one [[account]] table per mailbox; see the README for the shape",
+                    archive.root().display(),
+                    config::FILE_NAME
+                );
+            }
+            let memo = Memo::open(&memo_path)?;
+            let tally = fetch::run(
+                &archive,
+                &chosen,
+                &memo,
+                &fetch::Options {
+                    full,
+                    allow_exec,
+                    dry_run,
+                },
+                say,
+            )?;
+            Ok(finish(&tally, dry_run))
+        }
+        Command::Import {
+            vault,
+            mailboxes,
+            full,
+            dry_run,
+        } => {
+            say.line(format_args!("archive {}", archive.root().display()));
+            vault::verify(&vault)?;
+            let memo = Memo::open(&memo_path)?;
+            say.line(format_args!(
+                "importing the mailvault archive at {}",
+                vault.display()
+            ));
+            let tally = vault::run(
+                &archive,
+                &vault,
+                &mailboxes,
+                &memo,
+                &vault::Options { full, dry_run },
+                say,
+            )?;
+            Ok(finish(&tally, dry_run))
+        }
+    }
+}
 
+/// A `mailvault.toml` to fill in, unless one stands already.
+fn init(archive: &Archive) -> Result<()> {
+    let root = archive.root().display();
+    let name = config::FILE_NAME;
+    if config::begin(archive.root())? {
+        println!(
+            "{root}: {name} written with commented-out examples; fill in your mailboxes, then run `ossuary mailvault fetch`"
+        );
+    } else {
+        println!("{root}: {name} already there, left as it is");
+    }
+    Ok(())
+}
+
+/// The verdict on stdout, what failed on stderr, and the exit code
+/// that says which of the two it was.
+fn finish(tally: &Tally, dry_run: bool) -> ExitCode {
     println!("{}", tally.verdict(dry_run));
     if tally.failed.is_empty() {
-        return Ok(ExitCode::SUCCESS);
+        return ExitCode::SUCCESS;
     }
     for failure in &tally.failed {
         eprintln!("{failure}");
@@ -173,7 +246,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             tally.failed.len()
         );
     }
-    Ok(ExitCode::FAILURE)
+    ExitCode::FAILURE
 }
 
 /// The archive, or the way to one — `ossuary`'s own wording.

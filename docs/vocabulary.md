@@ -393,7 +393,7 @@ need.
   beside `mailbox:place` in the set without being paired to one place;
   a message seen in two places at two dates holds both dates
 - value: string, the date as the vault's log wrote it
-- written by: `ossuary mailvault --from-vault`
+- written by: `ossuary mailvault import`
 
 ### mailbox:tag
 

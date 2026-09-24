@@ -34,6 +34,65 @@ pub const FILE_NAME: &str = "mailvault.toml";
 /// What a `KEY_cmd` ends in.
 const CMD: &str = "_cmd";
 
+/// The file `init` writes: an example of each kind of account, every
+/// one commented out, so the file as written fetches nothing.
+pub const STARTER: &str = r##"# The mailboxes `ossuary mailvault fetch` reads, one [[account]] table
+# each. The examples below are commented out: remove the "# " in front
+# of one and fill it in. A key not shown here is refused.
+#
+# Any key except name, backend and folders can be given as KEY_cmd, a
+# command that prints the value on its first line: password_cmd, most
+# often. Commands run only under `ossuary mailvault fetch --allow-exec`.
+
+# An IMAP mailbox, every key spelled out.
+#
+# [[account]]
+# name = "example.org"         # letters, digits, '.', '_' and '-'
+# backend = "imap"             # the default
+# host = "imap.example.org"
+# port = 993                   # the default
+# tls = true                   # the default; false only for a bridge on this machine
+# user = "john@example.org"
+# password_cmd = "pass show mail/example.org"   # or password = "..." outright
+# folders = ["INBOX", "Sent"]  # every folder the server offers when left out
+
+# Gmail. All Mail holds every message, and each label folder would
+# fetch them again. The folder's name follows the account's language,
+# "[Google Mail]/Alle Nachrichten" on a German one. The password is an
+# app password.
+#
+# [[account]]
+# name = "gmail.com"
+# host = "imap.gmail.com"
+# user = "john.doe@gmail.com"
+# password_cmd = "pass show mail/gmail"
+# folders = ["[Gmail]/All Mail"]
+
+# Proton Mail through Proton Bridge on this machine: plaintext IMAP on
+# loopback, and the password the Bridge shows, not the Proton password.
+#
+# [[account]]
+# name = "proton.me"
+# host = "127.0.0.1"
+# port = 1143
+# tls = false
+# user = "john.doe@proton.me"
+# password_cmd = "pass show mail/proton-bridge"
+# folders = ["All Mail"]
+
+# A Microsoft 365 mailbox, read over MS Graph. The login is an app
+# registration in Azure granted Mail.Read; user names the mailbox.
+#
+# [[account]]
+# name = "m365"
+# backend = "msgraph"
+# tenant_id = "00000000-0000-0000-0000-000000000000"
+# client_id = "11111111-1111-1111-1111-111111111111"
+# client_secret_cmd = "pass show m365/client-secret"
+# user = "john.doe@example.com"
+# folders = ["Inbox", "Sent Items"]  # as Outlook shows them; "Inbox/Projects" for a subfolder
+"##;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -206,8 +265,7 @@ impl Config {
         let text = std::fs::read_to_string(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 anyhow!(
-                    "{}: no {FILE_NAME} here; the mailboxes stand in the archive's own \
-                     {FILE_NAME}, one [[account]] table each; see the README for the shape",
+                    "{}: no {FILE_NAME} here; begin one with `ossuary mailvault init`",
                     root.display()
                 )
             } else {
@@ -265,6 +323,21 @@ impl Config {
             .filter(|account| names.contains(&account.name))
             .collect())
     }
+}
+
+/// Write [`STARTER`] at `root`. A `mailvault.toml` already there is left
+/// as it is; answers whether the file was written.
+///
+/// # Errors
+///
+/// The file could not be written.
+pub fn begin(root: &Path) -> Result<bool> {
+    let path = root.join(FILE_NAME);
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::write(&path, STARTER).with_context(|| format!("writing {}", path.display()))?;
+    Ok(true)
 }
 
 /// A name opens every `mailbox:place` value, and the first slash ends
@@ -407,6 +480,59 @@ mod tests {
             Reach::Imap(imap) => Ok(imap),
             Reach::Graph(_) => panic!("{}: an imap account was expected", account.name),
         }
+    }
+
+    /// The starter with its examples switched on: every commented line
+    /// that is a table header or a key.
+    fn uncommented(text: &str) -> String {
+        text.lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(rest)
+                    if rest.starts_with("[[account]]")
+                        || rest.split_once(" = ").is_some_and(|(key, _)| {
+                            key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                        }) =>
+                {
+                    rest
+                }
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_starter_fetches_nothing_until_an_example_is_switched_on() {
+        assert!(load(STARTER).unwrap().accounts.is_empty());
+
+        let config = load(&uncommented(STARTER)).unwrap();
+        let names: Vec<_> = config
+            .accounts
+            .iter()
+            .map(|account| account.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["example.org", "gmail.com", "proton.me", "m365"],
+            "every example is an account this build reads, every key one it knows"
+        );
+    }
+
+    #[test]
+    fn begin_writes_the_starter_once_and_leaves_a_file_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(begin(dir.path()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap(),
+            STARTER
+        );
+
+        std::fs::write(dir.path().join(FILE_NAME), "# mine\n").unwrap();
+        assert!(!begin(dir.path()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap(),
+            "# mine\n"
+        );
     }
 
     #[test]

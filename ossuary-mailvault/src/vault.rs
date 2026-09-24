@@ -105,7 +105,7 @@ pub fn run(
     say: Say,
 ) -> Result<Tally> {
     verify(vault)?;
-    let mut tally = Tally::new("take over");
+    let mut tally = Tally::new("import");
 
     say.line("reading the vault's log: where every message was seen");
     let gathered = gather(&vault.join("meta"), names, &mut tally)?;
@@ -151,7 +151,7 @@ pub fn run(
         progress.update(
             done,
             &format!(
-                "taking over: {done} of {total} message(s), {} stored",
+                "importing: {done} of {total} message(s), {} stored",
                 tally.stored
             ),
         );

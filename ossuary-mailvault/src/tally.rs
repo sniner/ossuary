@@ -7,7 +7,7 @@ use crate::output::counted;
 #[derive(Debug)]
 pub struct Tally {
     /// What the run does to a message, for the dry run's verdict:
-    /// "fetch" or "take over".
+    /// "fetch" or "import".
     act: &'static str,
     /// The run's id, as every claim of it carries in its `run` field.
     pub run: ossuary_core::Run,

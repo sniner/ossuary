@@ -18,7 +18,7 @@ unpacks what a message carries, `find` asks, `get` answers.
 
 ```console
 $ cd /home/john/archive
-$ ossuary mailvault --allow-exec
+$ ossuary mailvault fetch --allow-exec
 archive /home/john/archive
 example.org: 2 folders
 example.org/INBOX: carrying on above UID 1180, 24 messages to fetch
@@ -32,11 +32,18 @@ example.org/Sent: carrying on above UID 310, 0 messages to fetch
 as `ossuary-mailvault`, and callable directly under that name. It takes
 `--archive` and `OSSUARY_ARCHIVE` the way every ossuary command does.
 
+| | |
+|---|---|
+| `init` | writes a `mailvault.toml` with an example of each kind of account, all commented out. A `mailvault.toml` already there is left as it is |
+| `fetch` | fetches the mailboxes `mailvault.toml` names |
+| `import` | takes over an archive of the Python mailvault |
+
 ## The mailboxes
 
 They stand in `mailvault.toml` in the archive root — its own file, one
 `[[account]]` table per mailbox, read strictly: a key this program does
-not know is refused rather than skipped.
+not know is refused rather than skipped. `ossuary mailvault init` writes
+one to start from.
 
 ```toml
 [[account]]
@@ -92,7 +99,7 @@ The keys of one way are refused on an account of the other: a `host`
 on an `msgraph` account is a mistake, not a key to skip.
 
 Naming accounts on the command line fetches those alone:
-`ossuary mailvault example.org`.
+`ossuary mailvault fetch example.org`.
 
 ## What goes on the record
 
@@ -125,6 +132,29 @@ meantime comes round again with its marks as they now are.
 ```console
 $ ossuary find 'mailbox:tag=Invoice' mail:subject
 ```
+
+## Gmail labels
+
+Gmail labels are not recorded. Microsoft 365 categories are, as
+`mailbox:tag` (see above).
+
+Over IMAP, Gmail shows each label as a folder. Fetch `[Gmail]/All Mail`
+alone, under whatever name the account gives it: it holds every message
+except Spam and Trash. Each further label folder fetches the same
+messages again and records the folder as one more `mailbox:place`.
+
+Both ways to the labels themselves are a pain for an archive:
+
+- IMAP has them only through Gmail's extension `X-GM-LABELS`, which
+  leaves out the label of the folder being read. A run asks only for
+  messages above the last UID, so a label added to or removed from a
+  message fetched earlier is never seen.
+- The Gmail API has proper labels, but takes only OAuth 2.0: a Google
+  Cloud project of your own and a consent given in the browser, which
+  Google lets lapse after seven days while the project is in testing.
+  The app password that IMAP runs on does not work there.
+
+Support for Gmail labels is therefore not expected.
 
 ## Where a run carries on
 
@@ -161,12 +191,12 @@ An archive of the Python [mailvault](https://github.com/sniner/mailvault)
 can be taken over whole, message for message:
 
 ```console
-$ ossuary mailvault --from-vault /srv/mailvault/private
+$ ossuary mailvault import /srv/mailvault/private
 archive /home/john/archive
-taking over the vault at /srv/mailvault/private
+importing the mailvault archive at /srv/mailvault/private
 reading the vault's log: where every message was seen
 131,504 messages in 3,207 log files, filed in 140,222 places
-taking over: 131,504 of 131,504 message(s), 131,504 stored
+importing: 131,504 of 131,504 message(s), 131,504 stored
 131,504 messages stored; 543,502 claim(s) written, run 0c1e…
 ```
 
@@ -178,7 +208,8 @@ Each message is held against its own name on the way; a damaged file is
 named and left out. A takeover is long, and interrupted it simply
 carries on: a memo in `cache/` remembers which places are said, and
 `--full` ignores it. A message that gained a place since is read again
-and said with the new one. Naming mailboxes takes over those alone.
+and said with the new one. Naming mailboxes after the directory takes
+over those alone: `ossuary mailvault import /srv/mailvault/private gmail.com`.
 
 The seam does not show afterwards: a fetch of the same folder later
 finds the same messages already held and says the same place again.
