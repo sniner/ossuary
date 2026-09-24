@@ -389,16 +389,16 @@ added when it is first needed.
 
 - meaning: where a message was seen: the account it was fetched from
   and the folder in that account, as one value. The value is the
-  account's name as given in `mailvault.toml`, a slash, and the folder
-  as the server names it (`"example.org/INBOX"`,
-  `"example.org/[Gmail]/All Mail"`). Account and folder are one value
+  account's name as given in `mailvault.toml`, a colon, and the folder
+  as the server names it (`"example.org:INBOX"`,
+  `"example.org:[Gmail]/All Mail"`). Account and folder are one value
   so that for a message in two folders of two accounts it stays known
   which folder was in which account. Like `file:path`, the value
   records a sighting and is true for the time of that sighting: if an
   account is renamed later, new sightings record the new name. Places
   accumulate. A place imported from an archive of the Python tool
   mailvault may name only the account (`"example.org"`, folder
-  unknown) or only a folder (`"/old mail"`, no account). The number the
+  unknown) or only a folder (`":old mail"`, no account). The number the
   server gives a message is not recorded here or anywhere else in the
   record: it is temporary, and the fetcher keeps it in its own memory
   in `cache/`. A standing `mailbox:place` makes a message present in

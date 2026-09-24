@@ -59,8 +59,9 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 
 # Gmail. All Mail contains every message; each label folder would fetch
 # the same messages again. The folder name depends on the account's
-# language, such as "[Google Mail]/Alle Nachrichten" on a German account.
-# The password is an app password.
+# language, such as "[Google Mail]/Alle Nachrichten" on a German account;
+# `ossuary mailvault folders` lists the names. The password is an app
+# password.
 #
 # [[account]]
 # name = "gmail.com"
@@ -341,8 +342,8 @@ pub fn begin(root: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// A name opens every `mailbox:place` value, and the first slash ends
-/// it — so a name holds no slash, and nothing else that would make a
+/// A name opens every `mailbox:place` value, and the first colon ends
+/// it — so a name holds no colon, and nothing else that would make a
 /// place hard to read back. The same rule holds for a mailbox taken
 /// over from a vault.
 pub fn valid_name(name: &str) -> bool {

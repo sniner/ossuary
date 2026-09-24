@@ -21,9 +21,9 @@ $ cd /home/john/archive
 $ ossuary mailvault fetch --allow-exec
 archive /home/john/archive
 example.org: 2 folders
-example.org/INBOX: resuming above UID 1180, 24 messages to fetch
-example.org/INBOX: 24 of 24 fetched
-example.org/Sent: resuming above UID 310, 0 messages to fetch
+example.org:INBOX: resuming above UID 1180, 24 messages to fetch
+example.org:INBOX: 24 of 24 fetched
+example.org:Sent: resuming above UID 310, 0 messages to fetch
 24 messages stored; 96 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4
 ```
 
@@ -36,6 +36,7 @@ ossuary command.
 | | |
 |---|---|
 | `init` | writes a `mailvault.toml` with an example of each kind of account, all commented out. An existing `mailvault.toml` is not overwritten |
+| `folders` | lists the folders of the accounts in `mailvault.toml`, one `account:folder` per line |
 | `fetch` | fetches the mailboxes listed in `mailvault.toml` |
 | `import` | imports an archive of the Python mailvault |
 
@@ -67,7 +68,7 @@ password = "bridge-password"
 | `name` | the account name used in every `mailbox:place` claim. After a rename, new claims use the new name and existing claims keep the old one. Resume points are stored by name, so the first fetch after a rename fetches every folder in full |
 | `host`, `port`, `tls` | the server; port `993` with TLS by default. `tls = false` is allowed only for a bridge on localhost and is rejected for any other host |
 | `user`, `password` | the login. Any key can be given as `KEY_cmd` instead, most often `password_cmd`: a command that prints the value on its first line, for example from a password manager. Commands run only with `--allow-exec`, and only when their account is fetched; their prompts and error messages appear on the terminal. If both `KEY` and `KEY_cmd` are set, the command's value is used. `name`, `backend` and `folders` cannot be given as commands |
-| `folders` | the folders to fetch; all folders when omitted. Folder names differ between accounts: Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on a German account. `ossuary mailvault fetch --dry-run` without `folders` prints the name of every folder |
+| `folders` | the folders to fetch; all folders when omitted. Folder names differ between accounts: Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on a German account. `ossuary mailvault folders` lists the names the server uses |
 
 A Microsoft 365 mailbox is fetched over Microsoft's MS Graph API instead of
 IMAP, set with `backend = "msgraph"`. Such an account has no host and no
@@ -109,17 +110,17 @@ run it was fetched in. For each folder it was found in, one claim records
 the place:
 
 ```
-mailbox:place = "example.org/INBOX"
+mailbox:place = "example.org:INBOX"
 ```
 
-The value is the account name, a slash, and the folder name as the server
-reports it. A message in two folders gets two such claims; a message
+The value is the account name, a colon, and the folder name as the server
+reports it, the same form `ossuary mailvault folders` prints. A message in two folders gets two such claims; a message
 fetched from two accounts gets one from each. Like `file:path`, it records
 where the message was when it was fetched. If an account is renamed later,
 new claims use the new name and existing claims keep the old one.
 
 ```console
-$ ossuary find 'mailbox:place=example.org/Sent' mail:subject
+$ ossuary find 'mailbox:place=example.org:Sent' mail:subject
 ```
 
 For a Microsoft 365 mailbox, the message's Outlook categories are recorded

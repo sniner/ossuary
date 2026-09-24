@@ -785,7 +785,7 @@ mod tests {
 
         assert_eq!(tally.stored, 1);
         assert_eq!(tally.failed.len(), 1);
-        assert!(tally.failed[0].contains("example.org/INBOX"));
+        assert!(tally.failed[0].contains("example.org:INBOX"));
         assert_eq!(
             point(&bench),
             None,
@@ -1129,7 +1129,7 @@ mod tests {
             assert_eq!(tally.stored, 1, "the one handed over is in");
             assert_eq!(tally.failed.len(), 1);
             assert!(
-                tally.failed[0].starts_with("m365/Inbox: message M2: HTTP 404"),
+                tally.failed[0].starts_with("m365:Inbox: message M2: HTTP 404"),
                 "{:?}",
                 tally.failed
             );
@@ -1186,7 +1186,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 tally.failed,
-                ["m365/Drafts: no such folder; the mailbox has Inbox"]
+                ["m365:Drafts: no such folder; the mailbox has Inbox"]
             );
         }
 

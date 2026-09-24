@@ -11,6 +11,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ossuary mailvault`, with the same options and account names.
   `ossuary mailvault import DIR [MAILBOX...]` replaces `--from-vault DIR` for importing an archive
   of the Python tool mailvault
+- **`mailbox:place` separates account and folder with a colon**: `gmail.com:[Gmail]/All Mail`
+  instead of `gmail.com/[Gmail]/All Mail`, so the account stands apart from the folder's own
+  slashes. A folder known without its account is written `:old mail`
 
 ### Added
 
@@ -18,6 +21,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kind of account: IMAP with all keys, Gmail, Proton Mail through Proton Bridge, and Microsoft 365
   over MS Graph. The examples are commented out, so nothing is fetched until one is filled in. An
   existing `mailvault.toml` is not overwritten
+- **`ossuary mailvault folders` lists the folders of the configured accounts**, one
+  `account:folder` per line, so the names for the `folders` key can be looked up. It takes
+  account names and `--allow-exec` like `fetch`
 - **Each release has one tarball per platform with all programs**, instead of one file per
   program. The Homebrew tap installs from it: `brew install sniner/tap/ossuary` installs all eight
   programs on macOS and Linux and picks up a new release within a day

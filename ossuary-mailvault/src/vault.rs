@@ -531,7 +531,7 @@ mod tests {
 
         assert_eq!(
             standing(&bench, ONE, "mailbox:place"),
-            vec![json!("example.org/INBOX"), json!("example.org/\\Sent")],
+            vec![json!("example.org:INBOX"), json!("example.org:\\Sent")],
             "both places, account and folder — the vault's own words"
         );
         assert_eq!(
@@ -589,7 +589,7 @@ mod tests {
         assert!(tally.failed.is_empty());
         assert_eq!(
             standing(&bench, TWO, "mailbox:place"),
-            vec![json!("example.org/Archive"), json!("example.org/INBOX")]
+            vec![json!("example.org:Archive"), json!("example.org:INBOX")]
         );
     }
 

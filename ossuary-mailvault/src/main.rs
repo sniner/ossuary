@@ -17,10 +17,11 @@
 //! on the PATH, handed the archive in `OSSUARY_ARCHIVE`, linking the
 //! core. Its mailboxes stand in `mailvault.toml` in the archive root.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Archive, Error};
 
@@ -35,9 +36,11 @@ mod tally;
 mod utf7;
 mod vault;
 
-use config::Config;
+use config::{Account, Config, Reach};
+use graph::Graph;
 use memo::Memo;
 use output::Say;
+use remote::Remote;
 use tally::Tally;
 
 /// What every claim of this program says as its source.
@@ -83,6 +86,21 @@ enum Command {
     /// The examples are commented out. An existing mailvault.toml is not
     /// overwritten.
     Init,
+    /// List the folders of the accounts in mailvault.toml
+    ///
+    /// One line per folder, as ACCOUNT:FOLDER. The part after the colon is
+    /// the name to use in the account's folders list.
+    Folders {
+        /// List only these accounts, by their name in mailvault.toml; all
+        /// when none is given
+        #[arg(value_name = "ACCOUNT")]
+        accounts: Vec<String>,
+
+        /// Run the commands given as *_cmd keys in mailvault.toml, such as
+        /// password_cmd
+        #[arg(long)]
+        allow_exec: bool,
+    },
     /// Fetch new mail from the accounts in mailvault.toml
     ///
     /// Only messages that arrived since the last run are fetched, unless
@@ -158,6 +176,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
             init(&archive)?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Folders {
+            accounts,
+            allow_exec,
+        } => {
+            let config = Config::load(archive.root())?;
+            let chosen = chosen(&archive, &config, &accounts)?;
+            folders(&chosen, allow_exec)
+        }
         Command::Fetch {
             accounts,
             full,
@@ -166,14 +192,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => {
             say.line(format_args!("archive {}", archive.root().display()));
             let config = Config::load(archive.root())?;
-            let chosen = config.chosen(&accounts)?;
-            if chosen.is_empty() {
-                bail!(
-                    "{}: no accounts in {}; add or uncomment an [[account]] table for each mailbox",
-                    archive.root().display(),
-                    config::FILE_NAME
-                );
-            }
+            let chosen = chosen(&archive, &config, &accounts)?;
             let memo = Memo::open(&memo_path)?;
             let tally = fetch::run(
                 &archive,
@@ -210,6 +229,69 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 say,
             )?;
             Ok(finish(&tally, dry_run))
+        }
+    }
+}
+
+/// The accounts named, or all of them; an error when there are none at
+/// all.
+fn chosen<'a>(archive: &Archive, config: &'a Config, names: &[String]) -> Result<Vec<&'a Account>> {
+    let chosen = config.chosen(names)?;
+    if chosen.is_empty() {
+        bail!(
+            "{}: no accounts in {}; add or uncomment an [[account]] table for each mailbox",
+            archive.root().display(),
+            config::FILE_NAME
+        );
+    }
+    Ok(chosen)
+}
+
+/// Every folder of each account on stdout. An account that cannot be
+/// reached is reported on stderr, and the others are still listed.
+fn folders(accounts: &[&Account], allow_exec: bool) -> Result<ExitCode> {
+    let mut out = std::io::stdout().lock();
+    let mut failed = 0;
+    for account in accounts {
+        let names = match account_folders(account, allow_exec) {
+            Ok(names) => names,
+            Err(error) => {
+                eprintln!("{error:#}");
+                failed += 1;
+                continue;
+            }
+        };
+        for name in names {
+            match writeln!(out, "{}", place::folder(&account.name, &name)) {
+                Ok(()) => {}
+                // The reader closed the pipe (`| head`) and has what it wanted.
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                    return Ok(ExitCode::SUCCESS);
+                }
+                Err(error) => return Err(error).context("writing to stdout"),
+            }
+        }
+    }
+    if failed == 0 {
+        return Ok(ExitCode::SUCCESS);
+    }
+    eprintln!("{failed} account(s) failed, listed above");
+    Ok(ExitCode::FAILURE)
+}
+
+/// The folders of one account, as the server names them.
+fn account_folders(account: &Account, allow_exec: bool) -> Result<Vec<String>> {
+    match account.reach(allow_exec)? {
+        Reach::Imap(imap) => {
+            let password = imap.password(&account.name)?;
+            let mut remote = Remote::connect(&account.name, &imap, password)?;
+            let folders = remote.folders().with_context(|| account.name.clone());
+            remote.logout();
+            folders
+        }
+        Reach::Graph(graph) => {
+            let secret = graph.secret(&account.name)?.to_string();
+            Ok(Graph::connect(&account.name, &graph, secret)?.folders())
         }
     }
 }

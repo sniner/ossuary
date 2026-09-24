@@ -4223,7 +4223,7 @@ mod tests {
         log.append(&said(
             message.clone(),
             "mailbox:place",
-            json!("example.org/INBOX"),
+            json!("example.org:INBOX"),
             "2026-09-01T10:00:00Z",
         ))
         .unwrap();

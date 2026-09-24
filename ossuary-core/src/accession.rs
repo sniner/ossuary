@@ -399,7 +399,7 @@ mod tests {
         let source = source();
         let facts = vec![(
             Attribute::parse("mailbox:place").unwrap(),
-            json!("example.org/INBOX"),
+            json!("example.org:INBOX"),
         )];
         let admitted = admit(&content, &b"From: a@example.org\r\n\r\nhello"[..]).unwrap();
 
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(
             spelled,
             vec![
-                ("mailbox:place", json!("example.org/INBOX")),
+                ("mailbox:place", json!("example.org:INBOX")),
                 ("file:size", json!(28)),
                 ("file:mime", json!("message/rfc822")),
             ],
@@ -454,8 +454,8 @@ mod tests {
             facts,
             tags: &[],
         };
-        let first = vec![(Attribute::parse("mailbox:place").unwrap(), json!("a/INBOX"))];
-        let second = vec![(Attribute::parse("mailbox:place").unwrap(), json!("b/INBOX"))];
+        let first = vec![(Attribute::parse("mailbox:place").unwrap(), json!("a:INBOX"))];
+        let second = vec![(Attribute::parse("mailbox:place").unwrap(), json!("b:INBOX"))];
 
         let admitted = admit(&content, &b"hello"[..]).unwrap();
         record(&log, &admitted, &said(&first)).unwrap();
@@ -469,7 +469,7 @@ mod tests {
         let head = log.head().unwrap();
         assert_eq!(head.len(), 4);
         assert_eq!(head[3].attribute().as_str(), "mailbox:place");
-        assert_eq!(head[3].value(), Some(&json!("b/INBOX")));
+        assert_eq!(head[3].value(), Some(&json!("b:INBOX")));
     }
 
     #[test]

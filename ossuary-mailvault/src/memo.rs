@@ -345,8 +345,8 @@ mod tests {
             "taken in without a place is still taken in"
         );
 
-        let inbox = "x/INBOX".to_string();
-        let sent = "x/Sent".to_string();
+        let inbox = "x:INBOX".to_string();
+        let sent = "x:Sent".to_string();
         memo.say("abc", &[&inbox]).unwrap();
         memo.say("abc", &[&inbox, &sent]).unwrap();
         assert_eq!(
