@@ -556,6 +556,7 @@ fn take(
             mime: None,
             facts: &facts,
             tags,
+            time: None,
         },
     )?;
     Ok((admitted.is_new(), claims))

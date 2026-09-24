@@ -1,31 +1,33 @@
-//! Taking over a mailvault archive — the Python one — whole.
+//! Importing an archive of the Python mailvault.
 //!
-//! A mailvault archive holds every message as a file named by the hash
-//! of its bytes, and beside them an append-only log of where each was
-//! seen: one file per mailbox and folder, listing the messages observed
-//! there, with the date the file was sealed. That is everything the
-//! record needs. The messages go in through the archive's two-step
-//! accession like a fetch's would, and each place the log names becomes
-//! a `mailbox:place` claim — the same fact a fetch records, so the seam
-//! does not show afterwards. The date the vault saw a place goes with
-//! it as `mailbox:seen`: a fetch's sighting is its claim's own time, a
-//! takeover's lies years before the claim.
+//! Such an archive stores every message as a file named by the SHA-384
+//! of its bytes, and keeps a log of where each message was seen: one file
+//! per mailbox, folder and backup run, listing the messages seen there,
+//! with the time of the run in its header. Each message goes in through
+//! the same two steps as a fetched one (admit, then record), and each
+//! place the log names becomes a `mailbox:place` claim, as a fetch
+//! records it.
 //!
-//! A takeover is long — hundreds of thousands of files, often over a
-//! network share — and may be interrupted. The memo in `cache/`
-//! remembers which places of which message are on the record, so the
-//! next run carries on rather than reading everything again. A cache
-//! like the ingest walk's: it informs the effort, never the truth. A
-//! message that gained a place is read again and admitted again — the
-//! store says the bytes are held, and the new place goes on the record
-//! that way, never on a subject the memo remembered.
+//! The claims carry the time from the log, not the time of the import. A
+//! claim's time is when the sighting was recorded, and the Python
+//! mailvault recorded it then. Claims with old times must not share a
+//! segment with today's, because segments are ordered by the time of
+//! their first claim (see `docs/format.md`). So the claims of a batch of
+//! messages are written sorted by time, into a segment of their own.
+//!
+//! An import can take hours and may be interrupted. The memo in `cache/`
+//! remembers which places of which message are recorded, so the next run
+//! continues instead of reading everything again. It only saves work: a
+//! message that gained a place is read and admitted again, and the new
+//! place is recorded on the subject the store reports, never on one the
+//! memo remembered.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use ossuary_core::{Archive, Attribute, Sighting, Source, admit, record};
+use ossuary_core::{Admitted, Archive, Attribute, Sighting, Source, Timestamp, admit, record};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest as _, Sha384};
@@ -44,11 +46,13 @@ const MARK_LINE: &str = "mailvault archive format 1";
 /// field; nothing here needs one.
 const LOG_VERSIONS: [u32; 2] = [1, 2];
 
-/// How many messages land between two commits of the memo.
-const COMMIT_EVERY: usize = 500;
+/// How many messages are admitted before their claims are written into a
+/// segment of their own and the memo is committed.
+const BATCH: usize = 500;
 
 /// The header line of one log file: where its messages were seen, and
-/// when the file was sealed.
+/// when: the start of the backup run, as Python's `isoformat()` of a UTC
+/// time.
 #[derive(Debug, Deserialize)]
 struct Header {
     version: u32,
@@ -121,34 +125,41 @@ pub fn run(
         vault,
         source: Source::parse(crate::SOURCE)?,
         place: Attribute::parse(place::ATTRIBUTE)?,
-        seen: Attribute::parse(place::SEEN)?,
         memo: (!options.full).then_some(memo),
     };
     let total = gathered.places.len();
     let mut progress = say.progress();
     let mut done = 0;
+    let mut batch = Vec::new();
     if let Some(memo) = takeover.memo {
         memo.begin()?;
     }
     for (store_id, places) in &gathered.places {
         done += 1;
-        if let Err(error) = takeover.take(store_id, places, options.dry_run, &mut tally) {
-            // What landed before the trouble stays remembered either
-            // way: the messages are on the record, and the memo must
-            // not offer them again.
-            let closed = takeover.memo.map_or(Ok(()), Memo::commit);
-            return Err(match closed {
+        let step = match takeover.take(store_id, places, options.dry_run, &mut tally) {
+            Ok(Some(pending)) => {
+                batch.push(pending);
+                if batch.len() < BATCH {
+                    Ok(())
+                } else {
+                    takeover.settle(&mut batch, &mut tally)
+                }
+            }
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = step {
+            // The messages admitted so far still get their claims, and the
+            // memo keeps what was recorded.
+            let saved = takeover
+                .settle(&mut batch, &mut tally)
+                .and_then(|()| takeover.memo.map_or(Ok(()), Memo::commit));
+            return Err(match saved {
                 Ok(()) => error,
                 Err(more) => error.context(format!(
                     "and the import progress could not be saved: {more:#}"
                 )),
             });
-        }
-        if let Some(memo) = takeover.memo {
-            if done % COMMIT_EVERY == 0 {
-                memo.commit()?;
-                memo.begin()?;
-            }
         }
         progress.update(
             done,
@@ -158,6 +169,7 @@ pub fn run(
             ),
         );
     }
+    takeover.settle(&mut batch, &mut tally)?;
     progress.finish();
     if let Some(memo) = takeover.memo {
         memo.commit()?;
@@ -165,34 +177,43 @@ pub fn run(
     Ok(tally)
 }
 
-/// One takeover in progress: where from, where to, and what is
-/// remembered — nothing, under `--full`.
+/// One import in progress: where from, where to, and what is
+/// remembered (nothing, under `--full`).
 struct Takeover<'a> {
     archive: &'a Archive,
     vault: &'a Path,
     source: Source,
     place: Attribute,
-    seen: Attribute,
     memo: Option<&'a Memo>,
 }
 
-/// The places one message was seen in, each with the earliest date the
-/// log has for it — `None` where the log file carried no date.
-type Places = BTreeMap<String, Option<String>>;
+/// The places one message was seen in, each with the earliest time the
+/// log has for it; `None` where no log file for that place had a usable
+/// date.
+type Places = BTreeMap<String, Option<Timestamp>>;
+
+/// A message admitted and waiting for its claims, which are written for
+/// a whole batch at once.
+struct Pending {
+    store_id: String,
+    admitted: Admitted,
+    /// The places not yet recorded, with their times from the log.
+    places: Vec<(String, Option<Timestamp>)>,
+}
 
 impl Takeover<'_> {
-    /// One message with its places: read and taken in with the places
-    /// the record lacks, or left in peace when it lacks none.
+    /// Read and admit one message whose places are not all recorded yet.
+    /// `None` when there is nothing to do, in a dry run, and when the
+    /// message could not be read (which the tally names).
     fn take(
         &self,
         store_id: &str,
         places: &Places,
         dry_run: bool,
         tally: &mut Tally,
-    ) -> Result<()> {
-        // What the memo says is on the record already: a place said
-        // before is not said again, a message said with every place is
-        // not even read.
+    ) -> Result<Option<Pending>> {
+        // A place the memo lists is not recorded again, and a message
+        // with all its places recorded is not even read.
         let said = self
             .memo
             .map(|memo| memo.said(store_id))
@@ -202,59 +223,109 @@ impl Takeover<'_> {
             Some(recorded) => (true, recorded),
             None => (false, BTreeSet::new()),
         };
-        let pending: Vec<(&String, &Option<String>)> = places
+        let places: Vec<(String, Option<Timestamp>)> = places
             .iter()
             .filter(|(place, _)| !recorded.contains(*place))
+            .map(|(place, time)| (place.clone(), time.clone()))
             .collect();
-        if known && pending.is_empty() {
+        if known && places.is_empty() {
             tally.left += 1;
-            return Ok(());
+            return Ok(None);
         }
         if dry_run {
             tally.would += 1;
-            return Ok(());
+            return Ok(None);
         }
         let bytes = match read_message(self.vault, store_id) {
             Ok(bytes) => bytes,
             Err(error) => {
                 tally.failed.push(format!("{error:#}"));
-                return Ok(());
+                return Ok(None);
             }
         };
-        let mut facts: Vec<(Attribute, serde_json::Value)> = pending
-            .iter()
-            .map(|(place, _)| (self.place.clone(), json!(place)))
-            .collect();
-        let dates: BTreeSet<&String> = pending
-            .iter()
-            .filter_map(|(_, date)| date.as_ref())
-            .collect();
-        facts.extend(
-            dates
-                .into_iter()
-                .map(|date| (self.seen.clone(), json!(date))),
-        );
         let admitted = admit(self.archive.content(), &bytes[..])?;
-        tally.claims += record(
-            self.archive.log(),
-            &admitted,
-            &Sighting {
-                source: &self.source,
-                run: &tally.run,
-                mime: Some(crate::MESSAGE),
-                facts: &facts,
-                tags: &[],
-            },
-        )?;
         if admitted.is_new() {
             tally.stored += 1;
         } else {
             tally.known += 1;
         }
-        if let Some(memo) = self.memo {
-            let places: Vec<&String> = pending.iter().map(|(place, _)| *place).collect();
-            memo.say(store_id, &places)?;
+        Ok(Some(Pending {
+            store_id: store_id.to_string(),
+            admitted,
+            places,
+        }))
+    }
+
+    /// Write the claims of a batch into a segment of their own, sorted by
+    /// time, then remember what was recorded and commit the memo. One
+    /// sighting per message and time: the first of a message also records
+    /// the size of new bytes.
+    fn settle(&self, batch: &mut Vec<Pending>, tally: &mut Tally) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
         }
+        let log = self.archive.log();
+        // Whatever the head holds from today goes into a segment first.
+        log.seal()?;
+        let now = Timestamp::now();
+        let mut sightings: Vec<(Timestamp, usize, Vec<&String>)> = Vec::new();
+        for (index, pending) in batch.iter().enumerate() {
+            let mut by_time: BTreeMap<Timestamp, Vec<&String>> = BTreeMap::new();
+            for (place, time) in &pending.places {
+                by_time
+                    .entry(time.clone().unwrap_or_else(|| now.clone()))
+                    .or_default()
+                    .push(place);
+            }
+            if by_time.is_empty() {
+                // No place at all: the message still gets its size and kind.
+                by_time.insert(now.clone(), Vec::new());
+            }
+            sightings.extend(
+                by_time
+                    .into_iter()
+                    .map(|(time, places)| (time, index, places)),
+            );
+        }
+        sightings.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        let mut seen = vec![false; batch.len()];
+        for (time, index, places) in &sightings {
+            let pending = &batch[*index];
+            let again;
+            let admitted = if seen[*index] {
+                again = pending.admitted.again();
+                &again
+            } else {
+                &pending.admitted
+            };
+            seen[*index] = true;
+            let facts: Vec<(Attribute, serde_json::Value)> = places
+                .iter()
+                .map(|place| (self.place.clone(), json!(place)))
+                .collect();
+            tally.claims += record(
+                log,
+                admitted,
+                &Sighting {
+                    source: &self.source,
+                    run: &tally.run,
+                    mime: Some(crate::MESSAGE),
+                    facts: &facts,
+                    tags: &[],
+                    time: Some(time),
+                },
+            )?;
+        }
+        log.seal()?;
+        if let Some(memo) = self.memo {
+            for pending in batch.iter() {
+                let places: Vec<&String> = pending.places.iter().map(|(place, _)| place).collect();
+                memo.say(&pending.store_id, &places)?;
+            }
+            memo.commit()?;
+            memo.begin()?;
+        }
+        batch.clear();
         Ok(())
     }
 }
@@ -322,7 +393,7 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
         return Ok(());
     }
     if let Some(mailbox) = &header.mailbox {
-        // The first slash of a place ends the mailbox's name; a name
+        // The first colon of a place ends the mailbox's name; a name
         // holding one would make every place of this file unreadable.
         if !valid_name(mailbox) {
             bail!(
@@ -332,6 +403,12 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
         }
     }
     gathered.logs += 1;
+    // A date that names no moment leaves the place undated; its claims
+    // then get the time of the import.
+    let time = header
+        .date
+        .as_deref()
+        .and_then(|date| Timestamp::from_rfc3339(date).ok());
     let place = match (&header.mailbox, &header.folder) {
         (Some(mailbox), Some(folder)) => Some(place::folder(mailbox, folder)),
         (Some(mailbox), None) => Some(place::account(mailbox)),
@@ -353,15 +430,15 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
         };
         match places.get_mut(place) {
             None => {
-                places.insert(place.clone(), header.date.clone());
+                places.insert(place.clone(), time.clone());
                 gathered.sightings += 1;
             }
-            // The same place in two files: the earlier date is when it
+            // The same place in two files: the earlier time is when it
             // was first seen there.
             Some(seen) => {
-                if let Some(date) = &header.date {
-                    if seen.as_ref().is_none_or(|earlier| date < earlier) {
-                        *seen = Some(date.clone());
+                if let Some(time) = &time {
+                    if seen.as_ref().is_none_or(|earlier| time < earlier) {
+                        *seen = Some(time.clone());
                     }
                 }
             }
@@ -509,8 +586,22 @@ mod tests {
     }
 
     fn standing(bench: &Bench, bytes: &[u8], attribute: &str) -> Vec<serde_json::Value> {
+        standing_as_of(bench, bytes, attribute, None)
+    }
+
+    /// The standing values, today or as the record stood at `cutoff`.
+    fn standing_as_of(
+        bench: &Bench,
+        bytes: &[u8],
+        attribute: &str,
+        cutoff: Option<&str>,
+    ) -> Vec<serde_json::Value> {
         let mut index = bench.archive.index().unwrap();
         index.fold(bench.archive.log()).unwrap();
+        let index = match cutoff {
+            Some(cutoff) => index.as_of(cutoff).unwrap(),
+            None => index,
+        };
         let subject = Subject::parse(Algorithm::Sha256.hash(bytes).as_str()).unwrap();
         index
             .values(
@@ -535,9 +626,17 @@ mod tests {
             "both places, account and folder — the vault's own words"
         );
         assert_eq!(
-            standing(&bench, ONE, "mailbox:seen"),
-            vec![json!("2024-03-05T10:00:00+00:00")],
-            "the dated file's date, verbatim; the undated file says nothing"
+            standing_as_of(&bench, ONE, "mailbox:place", Some("2024-03-05T10:00:00Z")),
+            vec![json!("example.org:INBOX")],
+            "recorded at the log's time; the undated place at the import's"
+        );
+        assert!(
+            standing_as_of(&bench, ONE, "mailbox:place", Some("2024-03-05T09:59:59Z")).is_empty(),
+            "nothing before the first sighting"
+        );
+        assert!(
+            bench.archive.log().head().unwrap().is_empty(),
+            "the claims with old times are sealed into a segment of their own"
         );
         assert_eq!(
             standing(&bench, ONE, "file:mime"),
@@ -585,7 +684,7 @@ mod tests {
             (0, 1, 1),
             "read again, held already: the store answers, not the memo"
         );
-        assert_eq!(tally.claims, 3, "the place, its date, the told kind");
+        assert_eq!(tally.claims, 2, "the place and the told kind");
         assert!(tally.failed.is_empty());
         assert_eq!(
             standing(&bench, TWO, "mailbox:place"),
@@ -632,9 +731,14 @@ mod tests {
         );
         take(&bench, &[], false, false);
         assert_eq!(
-            standing(&bench, ONE, "mailbox:seen"),
-            vec![json!("2023-06-01T08:00:00+00:00")],
+            standing_as_of(&bench, ONE, "mailbox:place", Some("2023-06-01T08:00:00Z")),
+            vec![json!("example.org:INBOX")],
             "seen in INBOX twice, first in 2023"
+        );
+        assert_eq!(
+            standing_as_of(&bench, ONE, "file:size", Some("2023-06-01T08:00:00Z")),
+            vec![json!(ONE.len())],
+            "the size goes with the first sighting"
         );
     }
 

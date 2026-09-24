@@ -396,29 +396,17 @@ added when it is first needed.
   which folder was in which account. Like `file:path`, the value
   records a sighting and is true for the time of that sighting: if an
   account is renamed later, new sightings record the new name. Places
-  accumulate. A place imported from an archive of the Python tool
-  mailvault may name only the account (`"example.org"`, folder
-  unknown) or only a folder (`":old mail"`, no account). The number the
+  accumulate. The claim's time is the time of the sighting: for a
+  fetch the time of the fetch, for an import from an archive of the
+  Python tool mailvault the time that archive's log gives for it. Such
+  an imported place may also name only the account (`"example.org"`,
+  folder unknown) or only a folder (`":old mail"`, no account). The number the
   server gives a message is not recorded here or anywhere else in the
   record: it is temporary, and the fetcher keeps it in its own memory
   in `cache/`. A standing `mailbox:place` makes a message present in
   the same way as a standing `file:path` makes a file present
 - value: string
 - written by: `ossuary mailvault`
-
-### mailbox:seen
-
-- meaning: when the message was seen at a place, where that differs
-  from the claim's own time. A fetch does not write it, because the
-  time of its claims is the time of the sighting. An import from an
-  archive of the Python tool mailvault records sightings from that
-  archive's log, which may be years old, and writes the date on which
-  the log file was sealed, in the log's own format. Like
-  `file:modified` next to `file:path`, it is in the set next to
-  `mailbox:place` without being paired with a particular place; a
-  message seen in two places at two dates has both dates
-- value: string, the date as written in the mailvault archive's log
-- written by: `ossuary mailvault import`
 
 ### mailbox:tag
 

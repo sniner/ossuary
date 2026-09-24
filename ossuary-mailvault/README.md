@@ -200,10 +200,10 @@ importing: 131,504 of 131,504 message(s), 131,504 stored
 ```
 
 Every message in the archive's log files is imported with every place the
-log lists for it, as `mailbox:place` (the same claim a fetch writes), and
-with the date the Python mailvault first recorded it there, as
-`mailbox:seen`. For a fetched message, the claim's own time is when it was
-seen; for an imported one, `mailbox:seen` holds the original date. Each
+log lists for it, as `mailbox:place` (the same claim a fetch writes). Each
+claim gets the time at which the Python mailvault first recorded the
+message at that place, as a fetch's claim gets the time of the fetch, so
+`--as-of` shows the mailboxes as the Python mailvault knew them then. Each
 message is checked against its hash; a damaged file is reported and
 skipped.
 

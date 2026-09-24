@@ -18,11 +18,6 @@
 /// The attribute every place stands under.
 pub const ATTRIBUTE: &str = "mailbox:place";
 
-/// When a place was seen, where that is not the claim's own time: a
-/// takeover repeats what a mailvault archive's log saw years earlier,
-/// and says so in the log's own words.
-pub const SEEN: &str = "mailbox:seen";
-
 /// The marks the mailbox has on a message beside its place — Outlook's
 /// categories, by name. Not in the message's bytes, and not a place:
 /// state as of the last sighting, said anew each time and taken back

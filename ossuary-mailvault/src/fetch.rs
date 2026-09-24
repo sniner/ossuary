@@ -173,6 +173,7 @@ impl Fetch<'_> {
                 mime: Some(crate::MESSAGE),
                 facts: &facts,
                 tags: &[],
+                time: None,
             },
         )?;
         if admitted.is_new() {

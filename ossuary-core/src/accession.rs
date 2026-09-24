@@ -76,6 +76,18 @@ impl Admitted {
     pub fn kind(&self) -> &str {
         &self.kind
     }
+
+    /// The same bytes for another sighting in the same call. The store
+    /// had them by then, so [`record`] does not write their size twice.
+    #[must_use]
+    pub fn again(&self) -> Admitted {
+        Admitted {
+            subject: self.subject.clone(),
+            new: false,
+            size: self.size,
+            kind: self.kind.clone(),
+        }
+    }
 }
 
 /// What a taker says about the bytes it brings — one sighting of the
@@ -98,6 +110,11 @@ pub struct Sighting<'a> {
     /// The user's own word on the arrival: each a `user:tag` under the
     /// source `user` — the human asserts, the taker is only the pen.
     pub tags: &'a [String],
+    /// When the sighting was recorded, if not now: an import that repeats
+    /// what another program recorded earlier gives that program's time.
+    /// The caller keeps such claims apart from today's in the log (see
+    /// `docs/format.md` on segment order). `None` is now.
+    pub time: Option<&'a Timestamp>,
 }
 
 /// Stream `bytes` into `content` and answer what was seen of them. The
@@ -122,14 +139,15 @@ pub fn admit(content: &Store, bytes: impl Read) -> Result<Admitted> {
 /// Put an admission on the record: the taker's facts, the tags, the
 /// kind in the taker's words where it has them — and for bytes new to
 /// the store their size, and the sniffed kind where the taker had no
-/// word. Every claim of one call carries one moment and one run.
+/// word. Every claim of one call carries one moment, the sighting's
+/// own or now, and one run.
 /// Answers how many claims went in.
 ///
 /// # Errors
 ///
 /// Whatever building or appending a claim can answer.
 pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usize> {
-    let time = Timestamp::now();
+    let time = said.time.cloned().unwrap_or_else(Timestamp::now);
     let word = Source::parse("user")?;
     let subject = &admitted.subject;
 
@@ -393,6 +411,57 @@ mod tests {
     }
 
     #[test]
+    fn a_sighting_with_a_time_of_its_own_is_recorded_at_that_time() {
+        let dir = TempDir::new().unwrap();
+        let (content, log) = archive(&dir);
+        let source = source();
+        let place = |folder: &str| {
+            vec![(
+                Attribute::parse("mailbox:place").unwrap(),
+                json!(format!("example.org:{folder}")),
+            )]
+        };
+        let (early, late) = (
+            Timestamp::parse("2019-05-01T08:00:00Z").unwrap(),
+            Timestamp::parse("2023-01-01T00:00:00Z").unwrap(),
+        );
+        let admitted = admit(&content, &b"From: a@example.org\r\n\r\nhello"[..]).unwrap();
+        let (inbox, archive_folder) = (place("INBOX"), place("Archive"));
+        let sighting = |facts, time| Sighting {
+            source: &source,
+            run: &RUN,
+            mime: Some("message/rfc822"),
+            facts,
+            tags: &[],
+            time: Some(time),
+        };
+
+        let first = record(&log, &admitted, &sighting(&inbox, &early)).unwrap();
+        let second = record(&log, &admitted.again(), &sighting(&archive_folder, &late)).unwrap();
+
+        assert_eq!(
+            (first, second),
+            (3, 2),
+            "the size once, on the first sighting"
+        );
+        let head = log.head().unwrap();
+        let written: Vec<(&str, &str)> = head
+            .iter()
+            .map(|claim| (claim.attribute().as_str(), claim.time().as_str()))
+            .collect();
+        assert_eq!(
+            written,
+            vec![
+                ("mailbox:place", "2019-05-01T08:00:00Z"),
+                ("file:size", "2019-05-01T08:00:00Z"),
+                ("file:mime", "2019-05-01T08:00:00Z"),
+                ("mailbox:place", "2023-01-01T00:00:00Z"),
+                ("file:mime", "2023-01-01T00:00:00Z"),
+            ]
+        );
+    }
+
+    #[test]
     fn record_writes_the_takers_facts_and_the_day_one_facts() {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
@@ -412,6 +481,7 @@ mod tests {
                 mime: Some("message/rfc822"),
                 facts: &facts,
                 tags: &[],
+                time: None,
             },
         )
         .unwrap();
@@ -453,6 +523,7 @@ mod tests {
             mime: None,
             facts,
             tags: &[],
+            time: None,
         };
         let first = vec![(Attribute::parse("mailbox:place").unwrap(), json!("a:INBOX"))];
         let second = vec![(Attribute::parse("mailbox:place").unwrap(), json!("b:INBOX"))];
@@ -483,6 +554,7 @@ mod tests {
             mime: Some("message/rfc822"),
             facts: &[],
             tags: &[],
+            time: None,
         };
         let first = admit(&content, &b"hello"[..]).unwrap();
         record(&log, &first, &told).unwrap();
@@ -520,6 +592,7 @@ mod tests {
                 mime: None,
                 facts: &[],
                 tags: &[],
+                time: None,
             },
         )
         .unwrap();
@@ -549,6 +622,7 @@ mod tests {
                 mime: None,
                 facts: &[],
                 tags: &tags,
+                time: None,
             },
         )
         .unwrap();

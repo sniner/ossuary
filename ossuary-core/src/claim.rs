@@ -258,6 +258,68 @@ impl Timestamp {
         ))
     }
 
+    /// The moment an RFC 3339 time from another program names, in this
+    /// format's shape: the offset applied, fractional seconds dropped.
+    /// `2024-03-01T02:00:03.512345+01:00` becomes `2024-03-01T01:00:03Z`.
+    ///
+    /// A time without an offset is refused: its time zone is unknown, so
+    /// it names no moment.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Timestamp`] for any other shape, and for a date or time
+    /// that does not exist.
+    pub fn from_rfc3339(given: &str) -> Result<Self> {
+        let error = || Error::Timestamp(given.to_string());
+        let (Some(base), Some(rest)) = (given.get(..19), given.get(19..)) else {
+            return Err(error());
+        };
+        let whole = Self::parse(&format!("{base}Z")).map_err(|_| error())?;
+        let rest = match rest.strip_prefix('.') {
+            Some(fraction) => {
+                let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
+                if digits == 0 {
+                    return Err(error());
+                }
+                &fraction[digits..]
+            }
+            None => rest,
+        };
+        let offset = match rest.as_bytes() {
+            b"Z" | b"z" => 0,
+            [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2]
+                if [h1, h2, m1, m2].iter().all(|b| b.is_ascii_digit()) =>
+            {
+                let hours = i64::from((h1 - b'0') * 10 + (h2 - b'0'));
+                let minutes = i64::from((m1 - b'0') * 10 + (m2 - b'0'));
+                if hours > 23 || minutes > 59 {
+                    return Err(error());
+                }
+                let seconds = hours * 3600 + minutes * 60;
+                if *sign == b'-' { -seconds } else { seconds }
+            }
+            _ => return Err(error()),
+        };
+        if offset == 0 {
+            return Ok(whole);
+        }
+        Self::from_unix(whole.unix() - offset).map_err(|_| error())
+    }
+
+    /// Seconds since the Unix epoch, negative before it.
+    fn unix(&self) -> i64 {
+        let field = |start: usize, len: usize| -> u32 {
+            self.0[start..start + len]
+                .parse()
+                .expect("the shape was checked at parsing")
+        };
+        let days = days_from_civil(i64::from(field(0, 4)), field(5, 2), field(8, 2));
+        days * 86_400
+            + i64::from(field(11, 2)) * 3600
+            + i64::from(field(14, 2)) * 60
+            + i64::from(field(17, 2))
+    }
+
     /// This very second, UTC.
     ///
     /// A system clock standing before 1970 is read as the epoch — a broken
@@ -300,6 +362,18 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
         u32::try_from(month).expect("a month is 1..=12"),
         u32::try_from(day).expect("a day is 1..=31"),
     )
+}
+
+/// The day count since 1970-01-01 of a civil date: the inverse of
+/// [`civil_from_days`], from the same source.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year.rem_euclid(400);
+    let month = i64::from(month);
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// How many days `month` has in `year`.
@@ -1016,6 +1090,55 @@ mod tests {
             assert!(
                 matches!(Source::parse(wrong), Err(Error::Source(_))),
                 "{wrong:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn another_programs_rfc3339_time_becomes_a_timestamp() {
+        let read = |given| Timestamp::from_rfc3339(given).map(|t| t.as_str().to_string());
+        assert_eq!(
+            read("2024-03-01T02:00:03.512345+00:00").unwrap(),
+            "2024-03-01T02:00:03Z",
+            "Python's isoformat of a UTC time; the fraction is dropped"
+        );
+        assert_eq!(
+            read("2024-03-01T02:00:03Z").unwrap(),
+            "2024-03-01T02:00:03Z"
+        );
+        assert_eq!(
+            read("2024-03-01T01:30:00-01:00").unwrap(),
+            "2024-03-01T02:30:00Z"
+        );
+        assert_eq!(
+            read("2024-03-01T00:30:00+01:00").unwrap(),
+            "2024-02-29T23:30:00Z",
+            "the offset crosses a leap day"
+        );
+        assert_eq!(
+            read("1969-12-31T23:59:59+00:00").unwrap(),
+            "1969-12-31T23:59:59Z"
+        );
+        for refused in [
+            "2024-03-01T02:00:03",
+            "2024-03-01T02:00:03.+00:00",
+            "2024-03-01T02:00:03+0000",
+            "2024-02-30T02:00:03+00:00",
+            "2024-03-01T02:00:03+24:00",
+            "yesterday",
+        ] {
+            assert!(read(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn days_from_civil_undoes_civil_from_days() {
+        for days in [-800_000, -1, 0, 1, 11_016, 19_783, 2_932_896] {
+            let (year, month, day) = civil_from_days(days);
+            assert_eq!(
+                days_from_civil(year, month, day),
+                days,
+                "{year}-{month}-{day}"
             );
         }
     }

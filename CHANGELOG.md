@@ -14,6 +14,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`mailbox:place` separates account and folder with a colon**: `gmail.com:[Gmail]/All Mail`
   instead of `gmail.com/[Gmail]/All Mail`, so the account stands apart from the folder's own
   slashes. A folder known without its account is written `:old mail`
+- **`ossuary mailvault import` records each place with the time from the Python mailvault's
+  log** as the claim's own time, the way a fetch's claim carries the time of the fetch.
+  `--as-of` then shows the mailboxes as the Python mailvault knew them at that time.
+  `mailbox:seen` is no longer written
 
 ### Added
 

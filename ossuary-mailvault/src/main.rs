@@ -28,13 +28,13 @@ use ossuary_core::{Archive, Error};
 mod config;
 mod fetch;
 mod graph;
+mod import;
 mod memo;
 mod output;
 mod place;
 mod remote;
 mod tally;
 mod utf7;
-mod vault;
 
 use config::{Account, Config, Reach};
 use graph::Graph;
@@ -214,18 +214,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
         } => {
             say.line(format_args!("archive {}", archive.root().display()));
-            vault::verify(&vault)?;
+            import::verify(&vault)?;
             let memo = Memo::open(&memo_path)?;
             say.line(format_args!(
                 "importing the Python mailvault archive at {}",
                 vault.display()
             ));
-            let tally = vault::run(
+            let tally = import::run(
                 &archive,
                 &vault,
                 &mailboxes,
                 &memo,
-                &vault::Options { full, dry_run },
+                &import::Options { full, dry_run },
                 say,
             )?;
             Ok(finish(&tally, dry_run))
