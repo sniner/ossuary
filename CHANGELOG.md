@@ -5,19 +5,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Breaking changes
-
-- **`ossuary mailvault` has subcommands.** `ossuary mailvault fetch` replaces the bare
-  `ossuary mailvault`, with the same options and account names.
-  `ossuary mailvault import DIR [MAILBOX...]` replaces `--from-vault DIR` for importing an archive
-  of the Python tool mailvault
-- **`mailbox:place` separates account and folder with a colon**: `gmail.com:[Gmail]/All Mail`
-  instead of `gmail.com/[Gmail]/All Mail`, so the account stands apart from the folder's own
-  slashes. A folder known without its account is written `:old mail`
-- **`ossuary mailvault import` records each place with the time from the Python mailvault's
-  log** as the claim's own time, the way a fetch's claim carries the time of the fetch.
-  `--as-of` then shows the mailboxes as the Python mailvault knew them at that time.
-  `mailbox:seen` is no longer written
+## [0.10.1] - 2026-09-24
 
 ### Added
 
@@ -31,6 +19,20 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Each release has one tarball per platform with all programs**, instead of one file per
   program. The Homebrew tap installs from it: `brew install sniner/tap/ossuary` installs all eight
   programs on macOS and Linux and picks up a new release within a day
+
+### Changed
+
+- **`ossuary mailvault` has subcommands.** `ossuary mailvault fetch` replaces the bare
+  `ossuary mailvault`, with the same options and account names.
+  `ossuary mailvault import DIR [MAILBOX...]` replaces `--from-vault DIR` for importing an archive
+  of the Python tool mailvault
+- **`ossuary mailvault` separates account and folder in `mailbox:place` with a colon**:
+  `gmail.com:[Gmail]/All Mail` instead of `gmail.com/[Gmail]/All Mail`, so the account stands
+  apart from the folder's own slashes. A folder known without its account is written `:old mail`
+- **`ossuary mailvault import` records each place with the time from the Python mailvault's
+  log** as the claim's own time, the way a fetch's claim carries the time of the fetch.
+  `--as-of` then shows the mailboxes as the Python mailvault knew them at that time.
+  `mailbox:seen` is no longer written
 
 ## [0.10.0] - 2026-09-23
 
