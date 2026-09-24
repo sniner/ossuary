@@ -35,11 +35,11 @@ use crate::plan::Plan;
     name = "ossuary-fix",
     version,
     about = "Repair tool for 0.x archives after a breaking change",
-    after_help = "Every fix reads the whole log, works out what is missing, and writes
-exactly that. Run a fix twice and the second run finds nothing to do."
+    after_help = "Each fix reads the log and writes only the claims that are missing.
+Running a fix again writes nothing."
 )]
 struct Cli {
-    /// The archive to work in; standing in it is enough
+    /// The archive to work in
     #[arg(
         long,
         global = true,
@@ -49,7 +49,7 @@ struct Cli {
     )]
     archive: PathBuf,
 
-    /// Say what would be written, and write nothing
+    /// Show what would be written, write nothing
     #[arg(long, global = true)]
     dry_run: bool,
 
@@ -57,37 +57,33 @@ struct Cli {
     command: Command,
 }
 
-/// The fixes, one per scar. The help text of each says what the scar
-/// is, what the fix writes, and what it leaves alone.
+/// The fixes, one per breaking change. The help text of each says what
+/// changed, what the fix writes, and what it leaves unchanged.
 #[derive(Subcommand)]
 enum Command {
-    /// Say every standing `derive:derived-from` again as `prov:origin`
+    /// Copy standing `derive:derived-from` to `prov:origin`
     ///
-    /// Until 0.6.3 a derived file's origin was recorded as
-    /// `derive:derived-from`; the word is `prov:origin` now, and the
-    /// present is asked in the new word, so a derived file whose origin
-    /// stands only under the old one is held but not placed: `find`,
-    /// `ls` and the mount no longer reach it. This fix says each origin
-    /// that still stands under the old word again under the new one,
-    /// with the moment, source and run of the old claim, so the record
-    /// reads as of any day as if the new word had always been used. The
-    /// old claims stay as they were said. An origin already standing
-    /// as `prov:origin` is left alone.
+    /// Until 0.6.3 the origin of a derived file was recorded as
+    /// `derive:derived-from`; it is now `prov:origin`. A derived file
+    /// whose origin is recorded only under the old attribute is not
+    /// shown by `find`, `ls` or `ossuary-mount`. This fix copies each
+    /// standing `derive:derived-from` value to `prov:origin`, with the
+    /// time, source and run of the old claim. The old claims are not
+    /// changed. Origins already recorded as `prov:origin` are skipped.
     Origin,
-    /// Say every standing `zip:entry` and `zip:path` again as an inner place
+    /// Copy standing `zip:entry` and `zip:path` to `packed:path` and `file:path`
     ///
-    /// Until 0.7.0 the packed extractor spoke in a namespace named
-    /// after the one format it read: an archive's inventory stood on
-    /// it as `zip:entry`, an unpacked entry's path inside the archive
-    /// stood on the entry as `zip:path`. A place inside another
-    /// content is now spelled with a leading `@` and stands as
-    /// `packed:path` on the archive and as `file:path` on the entry,
-    /// whatever the archive's format, so one `find` term reaches both.
-    /// This fix says each such place that still stands only under an
-    /// old word again under the new one, `@` in front, with the
-    /// moment, source and run of the old claim. The old claims stay as
-    /// they were said; a place already standing in the new word is
-    /// left alone.
+    /// Until 0.7.0 the packed extractor read only zip files and used the
+    /// `zip` namespace: the entries of a zip file were recorded on it as
+    /// `zip:entry`, the path of an unpacked entry was recorded on the
+    /// entry as `zip:path`. Paths inside a packed file now begin with
+    /// `@` and are recorded as `packed:path` on the packed file and as
+    /// `file:path` on the entry, for every format, so one `find` term
+    /// matches both. This fix copies each standing `zip:entry` value to
+    /// `packed:path` and each standing `zip:path` value to `file:path`,
+    /// with a leading `@` and the time, source and run of the old claim.
+    /// The old claims are not changed. Paths already recorded under the
+    /// new attribute are skipped.
     Packed,
 }
 
@@ -121,7 +117,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
 fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
-            "{}: not an ossuary archive; stand in one, or name it with --archive",
+            "{}: not an ossuary archive; run this in an archive or name one with --archive",
             path.display()
         ),
         other => other.into(),

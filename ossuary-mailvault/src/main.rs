@@ -64,7 +64,7 @@ struct Cli {
     )]
     archive: PathBuf,
 
-    /// Print only the result and errors
+    /// Print only results and errors
     #[arg(short, long, global = true)]
     quiet: bool,
 
@@ -109,15 +109,15 @@ enum Command {
     },
     /// Import an archive of the Python tool mailvault (github.com/sniner/mailvault)
     ///
-    /// Each message is stored with the mailboxes and folders mailvault
-    /// recorded for it.
+    /// Each message is stored with the mailboxes and folders the Python
+    /// mailvault recorded for it.
     Import {
-        /// The mailvault archive's directory
+        /// The directory of the Python mailvault archive
         #[arg(value_name = "DIR")]
         vault: PathBuf,
 
-        /// Import only these mailboxes, by their name in mailvault; all
-        /// when none is given
+        /// Import only these mailboxes, by their name in the Python
+        /// mailvault; all when none is given
         #[arg(value_name = "MAILBOX")]
         mailboxes: Vec<String>,
 
@@ -169,7 +169,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let chosen = config.chosen(&accounts)?;
             if chosen.is_empty() {
                 bail!(
-                    "{}: no accounts in {}; one [[account]] table per mailbox; see the README for the shape",
+                    "{}: no accounts in {}; add or uncomment an [[account]] table for each mailbox",
                     archive.root().display(),
                     config::FILE_NAME
                 );
@@ -198,7 +198,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             vault::verify(&vault)?;
             let memo = Memo::open(&memo_path)?;
             say.line(format_args!(
-                "importing the mailvault archive at {}",
+                "importing the Python mailvault archive at {}",
                 vault.display()
             ));
             let tally = vault::run(
@@ -223,7 +223,7 @@ fn init(archive: &Archive) -> Result<()> {
             "{root}: {name} written with commented-out examples; fill in your mailboxes, then run `ossuary mailvault fetch`"
         );
     } else {
-        println!("{root}: {name} already there, left as it is");
+        println!("{root}: {name} already exists, not overwritten");
     }
     Ok(())
 }
@@ -239,10 +239,10 @@ fn finish(tally: &Tally, dry_run: bool) -> ExitCode {
         eprintln!("{failure}");
     }
     if dry_run {
-        eprintln!("{} failed, as named above", tally.failed.len());
+        eprintln!("{} failed, listed above", tally.failed.len());
     } else {
         eprintln!(
-            "{} failed, as named above; the rest is on the record, and the next run tries them again",
+            "{} failed, listed above; everything else was recorded, and the next run tries the failed ones again",
             tally.failed.len()
         );
     }
@@ -253,7 +253,7 @@ fn finish(tally: &Tally, dry_run: bool) -> ExitCode {
 fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
-            "{}: not an ossuary archive; stand in one, name it with --archive, or begin one with `ossuary init`",
+            "{}: not an ossuary archive; run in an archive, name one with --archive, or create one with `ossuary init`",
             path.display()
         ),
         other => other.into(),

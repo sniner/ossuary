@@ -27,7 +27,7 @@ pub(crate) fn export(
 ) -> Result<ExitCode> {
     if forgotten_destination(destination) {
         return Err(anyhow!(
-            "{}: reads like an id, and no such directory stands; the destination comes first: `ossuary export DIR ID…`",
+            "{}: looks like an ID and is not an existing directory; the destination comes first: `ossuary export DIR ID…`",
             destination.display()
         ));
     }
@@ -91,7 +91,7 @@ pub(crate) fn export(
     )];
     if delivery.standing > 0 {
         verdict.push(format!(
-            "{} already standing there, same bytes",
+            "{} already present with the same content",
             delivery.standing
         ));
     }
@@ -120,10 +120,10 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
             let sightings = index.run_sightings(&run)?;
             if sightings.is_empty() {
                 return Err(if index.has_run(&run)? {
-                    anyhow!("run {id} named no file; nothing was exported")
+                    anyhow!("run {id} recorded no files; nothing exported")
                 } else {
                     anyhow!(
-                        "no run {id} on the record; `ossuary history` lists the runs; nothing was exported"
+                        "run {id} not found, nothing exported; `ossuary history` lists the runs"
                     )
                 });
             }
@@ -133,18 +133,16 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
             // name — the likeliest way one lands here is a pipe that
             // forgot --id.
             return Err(anyhow!(
-                "{id:?} is not a file's name; it reads like find's rendered answer; `ossuary find --id …` hands over bare names, ready to pipe; nothing was exported"
+                "{id:?} is not a file name, nothing exported; `ossuary find --id …` prints bare names for piping"
             ));
         } else {
             let Some(subject) = resolve(index, id)? else {
-                return Err(anyhow!(
-                    "nothing on the record begins with {id:?}; nothing was exported"
-                ));
+                return Err(anyhow!("no subject begins with {id:?}; nothing exported"));
             };
             let standing = places(index, &subject, &file_path, &file_name)?;
             if standing.is_empty() {
                 return Err(anyhow!(
-                    "no path and no name stands on the record for {subject}; `ossuary get` still hands the bytes out, to a name of yours; nothing was exported"
+                    "{subject} has no recorded path or name, nothing exported; `ossuary get {subject} --output FILE` writes it to a file of your choice"
                 ));
             }
             pairs.extend(standing.into_iter().map(|place| (subject.clone(), place)));
@@ -192,9 +190,9 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
                         landed.entry(placed.subject.clone()).or_insert(dest);
                     }
                     Ok(_) => {
-                        fail("different content already stands here, left untouched".to_string());
+                        fail("a different file already exists here, left untouched".to_string());
                     }
-                    Err(error) => fail(format!("reading what stands here: {error}")),
+                    Err(error) => fail(format!("reading the existing file: {error}")),
                 }
                 continue;
             }
@@ -207,7 +205,7 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
         if let Some(first) = landed.get(&placed.subject) {
             match fs::copy(first, &dest) {
                 Ok(_) => delivery.exported += 1,
-                Err(error) => fail(format!("copying its first landing: {error}")),
+                Err(error) => fail(format!("copying from the first exported copy: {error}")),
             }
             continue;
         }
@@ -216,7 +214,7 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
                 delivery.exported += 1;
                 landed.insert(placed.subject.clone(), dest);
             }
-            Ok(false) => fail("on the record, but no store holds the bytes".to_string()),
+            Ok(false) => fail("recorded, but its content is missing from the archive".to_string()),
             Err(error) => {
                 fail(format!("{error:#}"));
                 // A write that died halfway leaves no half file behind;
@@ -273,7 +271,7 @@ fn disambiguate(mut plan: Vec<Placed>, quiet: bool) -> Vec<Placed> {
             if taken.insert(bumped.clone()) {
                 if !quiet {
                     eprintln!(
-                        "{}: name already taken in this export, landing as {}",
+                        "{}: name already used in this export, exporting as {}",
                         placed.target.display(),
                         bumped.display()
                     );

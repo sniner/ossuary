@@ -1,105 +1,98 @@
 # ossuary-extract-packed
 
-*A zip archive in, its inventory or its files out.*
+Lists the entries of a zip file, or extracts them as derived files.
 
-An [extractor](../docs/extractors.md) for ossuary, and the first that
-carries two trades in one program. It reads a zip's bytes from stdin and
-answers, depending on which contract was asked for. It never touches the
-archive.
+An [extractor](../docs/extractors.md) for ossuary with two contracts. It
+reads a zip file from stdin and prints the results of one contract. It
+does not access the ossuary archive; `ossuary extract` runs it and
+records the results.
 
-## Two contracts
+## Contracts
 
 | | |
 |---|---|
-| `packed:list` | tells every entry the archive holds, one `packed:path` finding each, **without unpacking a byte** |
-| `packed:unpack` | writes every entry out as a derived file of its own |
+| `packed:list` | records every entry as a `packed:path` claim, without extracting anything |
+| `packed:unpack` | extracts every entry as a derived file |
 
-Each has its own source, its own worklist and its own receipts — a zip
-inventoried is not a zip unpacked, and to the record that both live in
-one binary is invisible. That is what makes "inventory the archives,
-never unpack them" a policy one can actually state:
+Each contract has its own source and its own receipts: a zip file that
+was listed does not count as unpacked. To list zip files without ever
+unpacking them:
 
 ```toml
 [extract]
 run = ["packed:list"]
 ```
 
-## What it puts on the record
+## Recorded attributes
 
-A place inside another content is spelled with a leading `@` and the
-entry's path verbatim after it. `list` answers the inventory in that
-spelling, sorted so the answer reads the same however the zip was
-written. Directories are structure, not content, and stay untold:
+A location inside a zip file is written as a leading `@` followed by the
+entry's path as stored in the zip. `list` records every file entry this
+way, sorted by path. Directories are not recorded:
 
 ```
 packed:path = "@invoices/2026-03.pdf"
 packed:path = "@notes.txt"
 ```
 
-`unpack` announces each entry as a derived file, taken into the archive
-with `prov:origin` naming the zip. An announced name is bare, so inner
-paths are flattened and the entry's place goes on the record as its
-`file:path`, the same `@`-led value the inventory spelled — so "which
-archive holds this" and "where did this lie in its archive" are one
-question asked from either end, and `find file:path=*/2026-03.pdf`
-reaches the file whether it lay on a disk or in an archive. Where two
-names collide a counter slips in before the extension, a name longer
-than a filesystem takes is cut to fit, and the name the zip spelled
-stands beside it as `file:name` either way. A zip declares no kinds,
-so each announcement carries the same magic-bytes-then-UTF-8 look
-ingest would take. An entry streams into its file as it is read; none
-is held in memory whole.
+`unpack` extracts each entry as a derived file, with `prov:origin`
+pointing to the zip file. The file is written under its bare file name,
+and the entry's full path is recorded as its `file:path`, the same `@`
+value that `list` records. `find file:path=*/2026-03.pdf` therefore finds
+the file whether it came from a disk or from a zip file. If two names
+collide, a counter is added before the extension; a name too long for
+the filesystem is shortened. In either case the file name from the zip
+is recorded as `file:name`.
 
-## Not every zip is an archive
+A zip file does not declare file types, so each entry's type is detected
+the same way ingest detects it: magic bytes first, then a check for
+UTF-8 text. Entries are streamed to disk, not loaded into memory.
 
-epub and the OpenDocument family open with a first entry named `mimetype`
-holding nothing but their own kind; OOXML carries `[Content_Types].xml`
-at its root. These are documents wearing zip as an envelope, and nobody
-wants them shredded into XML innards. Both contracts recognize them by
-the container's own construction, stay shut, and answer with the sharper
-`file:mime` instead — said by the bytes, standing beside the sniffed
-`application/zip` — so an extractor reading the sharper kind can find
-them.
+## Documents in zip format
 
-A jar stays an ordinary archive: it promises nothing about its insides.
-Bytes that do not read as a zip at all are an examination with nothing
-found.
+EPUB and OpenDocument files start with an entry named `mimetype` that
+contains their MIME type; OOXML files contain `[Content_Types].xml` at
+the root. Both contracts recognize these formats, neither list nor
+unpack them, and record the more specific `file:mime` instead, in
+addition to the `application/zip` detected at ingest. An extractor for
+that type can then find them. An OOXML file that is not a Word, Excel or
+PowerPoint document gives an empty result.
 
-## What stays inside
+A jar file is treated as an ordinary zip file. Bytes that are not a
+readable zip file give an empty result.
 
-* **An encrypted entry.** There is no password to offer, and a receipt
-  beats being offered the same locked door every run.
-* **A damaged entry**, or one whose spelling holds no file name.
-* **An entry that unpacks to more than 1 GiB.** A zip bomb's whole point
-  is bytes out of nowhere; the bound is where the program stops taking
-  them.
-* **A symlink**, silently — its bytes are a name rather than content, and
-  nothing is lost.
+## Entries that are not extracted
 
-For all but the symlink the reason goes on the record as a `prov:note` finding
-and onto stderr in the same words: a zip that unpacked incompletely must
-not read like one that unpacked whole. One refused entry costs no other
-entry its examination.
+* **Encrypted entries.** There is no way to supply a password.
+* **Damaged entries**, and entries whose path has no file name.
+* **Entries larger than 1 GiB** when unpacked.
+* **Symbolic links.**
 
-Only failing to write an entry's file is a failure. Note that unpacking
-holds one entry in memory at a time and writes it out whole.
+For each of these except symbolic links, the reason is recorded as a
+`prov:note` claim on the zip file and printed on stderr:
 
-## Kinds it reads
+```
+prov:note = "entry secret.txt not unpacked: encrypted"
+```
 
-`application/zip`, for both contracts. Other container formats — tar,
-7z, rar — are another program's business.
+The other entries are extracted as usual, and the zip file gets its
+receipt. Only a failure to write an extracted file is an error.
+
+## Supported types
+
+`application/zip`, for both contracts. Other formats (tar, 7z, rar) are
+not supported.
 
 ## Running it
 
-Put the binary on the PATH beside `ossuary`, then:
+Put the binary on the PATH next to `ossuary`, then:
 
 ```console
 $ ossuary extract packed:list      # one contract
-$ ossuary extract packed           # both, each on its own worklist
+$ ossuary extract packed           # both contracts
 ```
 
-Testable by hand — the contract's name comes first, and `unpack` takes
-the output directory after it:
+To run it by hand, give the contract name first; `unpack` takes the
+output directory as second argument:
 
 ```console
 $ ossuary-extract-packed --identify
@@ -109,4 +102,4 @@ $ mkdir /tmp/out && ossuary-extract-packed unpack /tmp/out < bundle.zip
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0 (see [LICENSE](../LICENSE)).

@@ -111,7 +111,7 @@ impl Archive {
             let context = format!("{}: {context}", root.display());
             move |source| Error::Io { context, source }
         };
-        fs::create_dir_all(&root).map_err(io("creating the archive root"))?;
+        fs::create_dir_all(&root).map_err(io("creating the archive directory"))?;
         fs::create_dir_all(root.join("cache")).map_err(io("creating cache/"))?;
         let mark = Mark {
             generation: GENERATION,

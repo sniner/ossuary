@@ -1,60 +1,60 @@
 # ossuary-mailvault
 
-*Mail into the archive.*
+*Fetch mail into an ossuary archive.*
 
-> **An early proof of concept.** This program is here to be tried and
-> played with, not to archive anything that matters. It may change at any
-> time, in any way, with no regard for what an earlier build wrote into an
-> archive. Mail that is to be kept is still the job of
-> [mailvault](https://github.com/sniner/mailvault), the other project.
+> **An early proof of concept.** This program is for trying out, not for
+> archiving mail that matters. It may change at any time, in any way,
+> without regard for what an earlier build wrote into an archive. For
+> mail you need to keep, use the Python tool
+> [mailvault](https://github.com/sniner/mailvault).
 
-`ossuary mailvault` fetches whole mailboxes into an ossuary archive:
-over IMAP, or over MS Graph for a Microsoft 365 mailbox. A message goes
-in once, however many folders and accounts carry it, and onto the
-record goes where it was seen — account and folder — so "which mailbox
-was this in" is a question the archive answers for good.
-Everything after that is ossuary's: `extract mail` reads the headers and
-unpacks what a message carries, `find` asks, `get` answers.
+`ossuary mailvault` fetches mail over IMAP, or over MS Graph for a
+Microsoft 365 mailbox. Each message is stored once, however many folders
+and accounts contain it. For each folder a message was found in, a claim
+records the account and the folder, so the archive can tell which mailbox
+a message was in. The archive's own commands work on the messages from
+there: `ossuary extract mail` reads the headers and unpacks the
+attachments, `ossuary find` searches, `ossuary get` retrieves a message.
 
 ```console
 $ cd /home/john/archive
 $ ossuary mailvault fetch --allow-exec
 archive /home/john/archive
 example.org: 2 folders
-example.org/INBOX: carrying on above UID 1180, 24 messages to fetch
+example.org/INBOX: resuming above UID 1180, 24 messages to fetch
 example.org/INBOX: 24 of 24 fetched
-example.org/Sent: carrying on above UID 310, 0 messages to fetch
+example.org/Sent: resuming above UID 310, 0 messages to fetch
 24 messages stored; 96 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4
 ```
 
-`ossuary mailvault` is this program: an
-[outside verb](../ossuary-cli/README.md#outside-verbs), found on the PATH
-as `ossuary-mailvault`, and callable directly under that name. It takes
-`--archive` and `OSSUARY_ARCHIVE` the way every ossuary command does.
+`ossuary mailvault` runs this program as an
+[outside verb](../ossuary-cli/README.md#outside-verbs): `ossuary` finds it
+on the PATH as `ossuary-mailvault`, and it can also be called directly
+under that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every
+ossuary command.
 
 | | |
 |---|---|
-| `init` | writes a `mailvault.toml` with an example of each kind of account, all commented out. A `mailvault.toml` already there is left as it is |
-| `fetch` | fetches the mailboxes `mailvault.toml` names |
-| `import` | takes over an archive of the Python mailvault |
+| `init` | writes a `mailvault.toml` with an example of each kind of account, all commented out. An existing `mailvault.toml` is not overwritten |
+| `fetch` | fetches the mailboxes listed in `mailvault.toml` |
+| `import` | imports an archive of the Python mailvault |
 
 ## The mailboxes
 
-They stand in `mailvault.toml` in the archive root — its own file, one
-`[[account]]` table per mailbox, read strictly: a key this program does
-not know is refused rather than skipped. `ossuary mailvault init` writes
-one to start from.
+The mailboxes are configured in `mailvault.toml` in the archive root, one
+`[[account]]` table per mailbox. Unknown keys are rejected, not ignored.
+`ossuary mailvault init` writes a file to start from.
 
 ```toml
 [[account]]
-name = "example.org"                  # what the record calls this mailbox
+name = "example.org"                  # the account name in mailbox:place
 host = "imap.example.org"
 user = "john@example.org"
 password_cmd = "pass show mail/example.org"
 folders = ["INBOX", "Sent"]
 
 [[account]]
-name = "bridge"                       # a local bridge, plaintext on loopback
+name = "bridge"                       # a local bridge, plaintext IMAP on localhost
 host = "127.0.0.1"
 port = 1143
 tls = false
@@ -64,15 +64,15 @@ password = "bridge-password"
 
 | | |
 |---|---|
-| `name` | how the record names this mailbox in every sighting. Renamed, new sightings carry the new name and the old ones keep the old — and the folders are fetched whole once, since the resume points are kept by name |
-| `host`, `port`, `tls` | the server; `993` and TLS unless said otherwise. Plaintext is for a bridge on loopback, never a real server — `tls = false` against any other host is refused |
-| `user`, `password` | the login. Any key can be given as `KEY_cmd` instead — `password_cmd`, most often — naming a command that prints the value on its first line, a password manager; it runs only under `--allow-exec`, and only when the account is reached, and what it says on stderr, and what it asks for, reaches the terminal. A command's value wins over the key given outright; `name`, `backend` and `folders` take no command |
-| `folders` | which to fetch; every folder the server offers when absent. Ask the server what it calls them — Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on another account |
+| `name` | the account name used in every `mailbox:place` claim. After a rename, new claims use the new name and existing claims keep the old one. Resume points are stored by name, so the first fetch after a rename fetches every folder in full |
+| `host`, `port`, `tls` | the server; port `993` with TLS by default. `tls = false` is allowed only for a bridge on localhost and is rejected for any other host |
+| `user`, `password` | the login. Any key can be given as `KEY_cmd` instead, most often `password_cmd`: a command that prints the value on its first line, for example from a password manager. Commands run only with `--allow-exec`, and only when their account is fetched; their prompts and error messages appear on the terminal. If both `KEY` and `KEY_cmd` are set, the command's value is used. `name`, `backend` and `folders` cannot be given as commands |
+| `folders` | the folders to fetch; all folders when omitted. Folder names differ between accounts: Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on a German account. `ossuary mailvault fetch --dry-run` without `folders` prints the name of every folder |
 
-A Microsoft 365 mailbox is not fetched over IMAP but over Microsoft's
-own interface, MS Graph, and says so with `backend = "msgraph"`. That
-account has no host and no password: the login is an app registration
-in Azure, and `user` only names whose mailbox to read.
+A Microsoft 365 mailbox is fetched over Microsoft's MS Graph API instead of
+IMAP, set with `backend = "msgraph"`. Such an account has no host and no
+password: it logs in with an app registration in Azure, and `user` only
+names the mailbox to read.
 
 ```toml
 [[account]]
@@ -85,49 +85,48 @@ user = "john.doe@example.com"
 folders = ["Inbox", "Sent Items"]
 ```
 
-The tenant and client ids may come from the password manager the same
-way, as `tenant_id_cmd` and `client_id_cmd`.
+The tenant and client ids can also come from a command, as
+`tenant_id_cmd` and `client_id_cmd`.
 
 | | |
 |---|---|
-| `tenant_id`, `client_id` | the application registered in Azure, granted `Mail.Read` by an administrator. That permission covers every mailbox of the tenant; have the administrator restrict it to this one with an application access policy |
-| `client_secret` | the application's secret — worth more than a password, so keep it in a password manager and name it as `client_secret_cmd` |
-| `user` | the mailbox to read, by its address. It is not a login |
-| `folders` | as above; the names are the ones Outlook shows, in the mailbox's own language, a folder inside another as `Inbox/Projects` |
+| `tenant_id`, `client_id` | the application registered in Azure, with the `Mail.Read` application permission granted by an administrator. That permission covers every mailbox in the tenant; an administrator can restrict it to this mailbox with an application access policy |
+| `client_secret` | the application's secret. Keep it in a password manager and use `client_secret_cmd` |
+| `user` | the address of the mailbox to read. It is not a login |
+| `folders` | as above; the folder names Outlook shows, in the mailbox's language, with a subfolder written as `Inbox/Projects` |
 
-The keys of one way are refused on an account of the other: a `host`
-on an `msgraph` account is a mistake, not a key to skip.
+IMAP keys on an `msgraph` account are rejected, and `msgraph` keys on an
+IMAP account.
 
-Naming accounts on the command line fetches those alone:
+To fetch only some accounts, name them:
 `ossuary mailvault fetch example.org`.
 
-## What goes on the record
+## What is recorded
 
-Each message is taken in like a file `ingest` finds — its size, its
-kind (`message/rfc822`, said outright: the fetcher knows what it holds),
-the run it arrived in — and one claim per place it was seen:
+Each message is stored like a file added by `ossuary ingest`, with its
+size, its type (`message/rfc822`, set by the fetch, not detected) and the
+run it was fetched in. For each folder it was found in, one claim records
+the place:
 
 ```
 mailbox:place = "example.org/INBOX"
 ```
 
-The account's name, a slash, the folder as the server spells it, in one
-value because the two belong together: a message in two folders holds
-two, a message fetched from two accounts holds one from each. It is
-information, the way `file:path` is — where the message was when it was
-fetched. An account renamed later is a new name in new sightings; the
-old ones stay true for their time.
+The value is the account name, a slash, and the folder name as the server
+reports it. A message in two folders gets two such claims; a message
+fetched from two accounts gets one from each. Like `file:path`, it records
+where the message was when it was fetched. If an account is renamed later,
+new claims use the new name and existing claims keep the old one.
 
 ```console
 $ ossuary find 'mailbox:place=example.org/Sent' mail:subject
 ```
 
-A Microsoft 365 mailbox also says which categories a message carries,
-and those go on the record as `mailbox:tag`, by the name Outlook shows.
-A category is state, not history: a fetch says the marks it sees and
-takes back the ones that stood and are gone, so what stands is the
-marks as of the last sighting, and a message recategorised in the
-meantime comes round again with its marks as they now are.
+For a Microsoft 365 mailbox, the message's Outlook categories are recorded
+as `mailbox:tag`, by the name Outlook shows. Each fetch records the
+categories a message has and retracts those it no longer has, so the
+standing `mailbox:tag` claims match the last fetch. A message whose
+categories were changed is included in the next fetch.
 
 ```console
 $ ossuary find 'mailbox:tag=Invoice' mail:subject
@@ -156,70 +155,74 @@ Both ways to the labels themselves are a pain for an archive:
 
 Support for Gmail labels is therefore not expected.
 
-## Where a run carries on
+## Resuming
 
-Each folder's resume point lives in `cache/`: the UIDVALIDITY the
-server promised last time, and the highest UID fetched under it. The
-next run asks the server only for what lies above, and the server
-answers with the new messages alone. A folder whose UIDVALIDITY the
-server changed is fetched again whole — the bytes are not stored twice,
-and the places are said again. The resume point is a cache like every
-file in `cache/`: losing it costs one whole fetch of the folder, never
-a claim. The server's numbering stands nowhere on a message's record;
-it means nothing once the UIDVALIDITY changes.
+For each IMAP folder, the resume point is stored in `cache/`: the
+folder's UIDVALIDITY and the highest UID fetched. The next run asks the
+server only for messages above that UID. If the server changed the
+UIDVALIDITY, the folder is fetched again in full: messages already in the
+archive are not stored again, and their `mailbox:place` claims are
+written again. Like everything in `cache/`, the resume points can be
+deleted; the next fetch then fetches every folder in full, and no claim is
+lost. UIDs are not recorded as claims.
 
-Over MS Graph the resume point is the server's own word: a delta link
-handed out at the end of a round, meaning "you are caught up here". The
-next run starts from it and is handed only what changed, a message
-deleted in the meantime included, as a word that it is gone. A link the
-server no longer honours — they do expire, and the run says how old it
-was — costs one whole round, no more. The link moves forward only once
-every message the round offered has landed: one the server would not
-hand over is named, and the next run asks for it again.
+For a Microsoft 365 folder, the resume point is the delta link the server
+returns at the end of a fetch. The next run starts from it and gets only
+what changed since; messages deleted or moved away in the meantime are
+counted. Delta links expire; an expired link means one full fetch of the
+folder, and the run prints how old the link was. The link is saved only
+when every listed message was fetched. A message the server did not
+return is reported, and the next run tries it again.
 
-`--full` fetches every folder whole regardless. `--dry-run` says what a
-run would fetch and writes nothing. Both narrate folder by folder on
-stderr; the verdict on stdout says which clean outcome it was.
+`--full` fetches every folder in full. `--dry-run` shows what a run would
+fetch and writes nothing. The progress of both goes to stderr, one line
+per folder; the result line goes to stdout.
 
-An account that will not answer — the password, the login, a tenant
-that issues no token, a folder that will not open — is named and costs
-only itself; the run goes on to the next, and exits `1` at the end.
+If an account or a folder fails (a wrong password, a rejected login, no
+token from the tenant, a folder that cannot be opened), the error is
+printed and the run continues with the next one; the exit code is then
+`1`.
 
-## Taking a mailvault archive over
+## Importing a Python mailvault archive
 
 An archive of the Python [mailvault](https://github.com/sniner/mailvault)
-can be taken over whole, message for message:
+can be imported with all its messages:
 
 ```console
 $ ossuary mailvault import /srv/mailvault/private
 archive /home/john/archive
-importing the mailvault archive at /srv/mailvault/private
-reading the vault's log: where every message was seen
+importing the Python mailvault archive at /srv/mailvault/private
+reading the log files
 131,504 messages in 3,207 log files, filed in 140,222 places
 importing: 131,504 of 131,504 message(s), 131,504 stored
 131,504 messages stored; 543,502 claim(s) written, run 0c1e…
 ```
 
-Every message the vault's log names goes in with every place the log
-saw it in, as `mailbox:place` — the same fact a fetch records — and
-with the date the log first saw it there, as `mailbox:seen`: a fetch's
-sighting is its claim's own time, a takeover's lies years before it.
-Each message is held against its own name on the way; a damaged file is
-named and left out. A takeover is long, and interrupted it simply
-carries on: a memo in `cache/` remembers which places are said, and
-`--full` ignores it. A message that gained a place since is read again
-and said with the new one. Naming mailboxes after the directory takes
-over those alone: `ossuary mailvault import /srv/mailvault/private gmail.com`.
+Every message in the archive's log files is imported with every place the
+log lists for it, as `mailbox:place` (the same claim a fetch writes), and
+with the date the Python mailvault first recorded it there, as
+`mailbox:seen`. For a fetched message, the claim's own time is when it was
+seen; for an imported one, `mailbox:seen` holds the original date. Each
+message is checked against its hash; a damaged file is reported and
+skipped.
 
-The seam does not show afterwards: a fetch of the same folder later
-finds the same messages already held and says the same place again.
+An import of a large archive takes long. If it is interrupted, the next
+`import` continues where it stopped. The progress is kept in `cache/`, and
+`--full` ignores it. A message that was recorded in a new place since the
+last import is read again and imported with the new place. To import only
+some mailboxes, name them after the directory:
+`ossuary mailvault import /srv/mailvault/private gmail.com`.
+
+A later fetch of the same folder, under the same account name, finds the
+imported messages already stored and records the same `mailbox:place`
+value.
 
 ## Exit codes
 
-`0` when everything asked for went in, `1` when anything was named as
-failed — and for an archive that will not open, a `mailvault.toml` that
-will not read, or a directory that is no vault.
+`0` when everything was fetched or imported. `1` when anything failed,
+and when the archive cannot be opened, `mailvault.toml` cannot be read, or
+the directory given to `import` is not a Python mailvault archive.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0, see [LICENSE](../LICENSE).

@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-mount"
-description = "The record mounted as a read-only filesystem"
+description = "Mounts an ossuary archive as a read-only filesystem"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -70,7 +70,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "ossuary-extract-mail: run with --identify, or with the output directory as the only argument and a file's bytes on stdin"
+                "ossuary-extract-mail: expected --identify, or an output directory with the file on stdin"
             );
             ExitCode::FAILURE
         }

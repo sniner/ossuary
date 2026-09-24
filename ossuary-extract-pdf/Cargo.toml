@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-extract-pdf"
-description = "PDF extractor for ossuary archives, deriving plain text and document information"
+description = "PDF extractor for ossuary archives: text, document information and attachments"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

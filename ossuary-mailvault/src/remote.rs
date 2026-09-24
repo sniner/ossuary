@@ -103,8 +103,8 @@ impl Remote {
             .map_err(|(error, _)| error)
             .with_context(|| {
                 format!(
-                    "{name}: {} refused the login for {}; wrong password, or the server \
-                     wants an app-specific one",
+                    "{name}: {} rejected the login for {}; check the password, or use an \
+                     app password if the server requires one",
                     account.host, account.user
                 )
             })?;
@@ -123,13 +123,13 @@ impl Remote {
         let names = self
             .session
             .list(Some(""), Some("*"))
-            .context("the folder list was refused")?;
+            .context("listing the folders failed")?;
         names
             .iter()
             .filter(|name| !name.attributes().contains(&NameAttribute::NoSelect))
             .map(|name| utf7::decode(name.name()))
             .collect::<Result<Vec<_>>>()
-            .context("the server listed a folder whose name will not read")
+            .context("the server listed a folder name that cannot be decoded")
     }
 
     pub fn logout(mut self) {
@@ -149,9 +149,9 @@ fn tls(name: &str, account: &Imap) -> Result<StreamOwned<ClientConnection, TcpSt
         .with_root_certificates(roots)
         .with_no_client_auth();
     let server = ServerName::try_from(account.host.clone())
-        .with_context(|| format!("{name}: {:?} is not a host name", account.host))?;
+        .with_context(|| format!("{name}: {:?} is not a valid host name", account.host))?;
     let connection = ClientConnection::new(Arc::new(config), server)
-        .with_context(|| format!("{name}: TLS could not be set up"))?;
+        .with_context(|| format!("{name}: TLS setup failed"))?;
     Ok(StreamOwned::new(connection, reached(name, account)?))
 }
 
@@ -164,11 +164,15 @@ const SILENT_AT_MOST: Duration = Duration::from_secs(300);
 /// write that gets nothing within [`SILENT_AT_MOST`] fails, and the
 /// folder is named in the tally instead of the run standing still.
 fn reached(name: &str, account: &Imap) -> Result<TcpStream> {
-    let tcp = TcpStream::connect((account.host.as_str(), account.port))
-        .with_context(|| format!("{name}: {}:{} did not answer", account.host, account.port))?;
+    let tcp = TcpStream::connect((account.host.as_str(), account.port)).with_context(|| {
+        format!(
+            "{name}: cannot connect to {}:{}",
+            account.host, account.port
+        )
+    })?;
     tcp.set_read_timeout(Some(SILENT_AT_MOST))
         .and_then(|()| tcp.set_write_timeout(Some(SILENT_AT_MOST)))
-        .with_context(|| format!("{name}: the connection takes no timeout"))?;
+        .with_context(|| format!("{name}: setting the connection timeout failed"))?;
     Ok(tcp)
 }
 
@@ -180,10 +184,7 @@ impl Mailbox for Remote {
             .examine(&wire)
             .with_context(|| format!("{folder} could not be opened"))?;
         let Some(uidvalidity) = mailbox.uid_validity else {
-            bail!(
-                "{folder}: the server did not state a UIDVALIDITY, and without one \
-                 no run can carry on from the last"
-            );
+            bail!("{folder}: the server sent no UIDVALIDITY");
         };
         Ok(Folder { uidvalidity })
     }
@@ -195,7 +196,7 @@ impl Mailbox for Remote {
         let found = self
             .session
             .uid_search(&query)
-            .context("the UID search was refused")?;
+            .context("the UID search failed")?;
         let mut uids: Vec<u32> = found.into_iter().filter(|&uid| uid > above).collect();
         uids.sort_unstable();
         Ok(uids)
@@ -217,7 +218,7 @@ impl Mailbox for Remote {
             let fetches = self
                 .session
                 .uid_fetch(&set, "(UID BODY.PEEK[])")
-                .context("the fetch was refused")
+                .context("fetching the messages failed")
                 .map_err(Stop::Server)?;
             for fetch in &*fetches {
                 let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) else {

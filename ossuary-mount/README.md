@@ -1,96 +1,94 @@
 # ossuary-mount
 
-*The record as a read-only filesystem.*
+*Mount an ossuary archive as a read-only filesystem.*
 
-A reading room for every place the record knows: the same forest
-`ossuary ls` and `ossuary tree` answer with, grafted onto a directory so
-any program can read the archive's files where they once stood. Photos
-open in the viewer, a file manager browses them, previews work — and
-nothing can be written.
+`ossuary mount` shows every file the archive has a path for, at that
+path, in a directory that any program can read. It is the same tree
+`ossuary ls` and `ossuary tree` show. Photos open in the image viewer, a
+file manager can browse them, previews work. Nothing can be written.
 
 ```console
 $ ossuary mount ~/view
-the record stands at /home/john/view, read-only, 5 file(s) in 5 folder(s); Ctrl-C gives it back
+mounted read-only at /home/john/view: 5 file(s) in 5 folder(s); press Ctrl-C to unmount
 $ open ~/view/home/john/photos/DSC_1042.jpg
 ```
 
-`ossuary mount` is this program: an
-[outside verb](../ossuary-cli/README.md#outside-verbs), found on the PATH
-as `ossuary-mount`, and callable directly under that name. It takes
-`--archive` and `OSSUARY_ARCHIVE` the way every ossuary command does.
+`ossuary mount` runs this program as an
+[outside verb](../ossuary-cli/README.md#outside-verbs): `ossuary` finds it
+on the PATH as `ossuary-mount`, and it can also be called directly under
+that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every ossuary
+command.
 
-The command stays in the foreground. Ctrl-C gives the directory back, and
-so does a plain `umount` from another terminal. A mountpoint that was not
-there is created, and one this command created goes with the mount when
-it ends.
+The command runs in the foreground. Ctrl-C unmounts, and so does `umount`
+from another terminal. A mountpoint that does not exist is created, and
+removed again when the mount ends.
 
-## What is in the room
+## What is shown
 
-Every place any ingest ever saw, from every machine, in one forest — not
-a disk. A place answers as long as its claim stands, however long the
-disk it named is gone. Beside the files stand no others: derived files
-never sat anywhere, so an unpacked attachment is reachable through
-`ossuary find`, not here.
+Every path that `ossuary ingest` recorded, from every machine, in one
+tree. A file is shown as long as its `file:path` claim is standing, even
+if the disk it was on is gone. Derived files, such as attachments
+unpacked from a mail, have no path and are not shown; `ossuary find`
+finds them.
 
-Writing is answered by the operating system itself: read-only
-filesystem. The view is grown once, when the mount begins, and does not
-change for the life of the mount — an ingest in another terminal is seen
-by the next mount, not by this one.
+Writes fail with the operating system's read-only error. The tree is
+built once when the mount starts and does not change while mounted;
+files ingested in the meantime appear in the next mount.
 
-## The moment it answers for
+## Past states
 
 ```console
 $ ossuary mount ~/last-year --as-of 2026-01-01
 ```
 
-`--as-of TIME` is the record as it was known at that moment, UTC —
-`2026-01-01T08:00:00`, a trailing `Z` welcome, or `2026-01-01`, which
-closes at that day's end, as it does everywhere `ossuary` takes it. A
-run id in place of the time, as `ossuary history` lists them, closes
-the view after that run's last claim. Files since retracted stand
-again, files since arrived are absent, and a place whose file changed
-shows the old bytes. Two mounts side by side are two moments side by
-side, comparable with any tool that reads files.
+`--as-of TIME` shows the archive as it was at that moment, in UTC. TIME
+is `2026-01-01T08:00:00` (a trailing `Z` is optional) or `2026-01-01`,
+which means the end of that day, as everywhere in `ossuary`. A run id, as
+listed by `ossuary history`, means the moment after that run's last
+claim. Files retracted since then are shown, files added since then are
+not, and a path whose file has changed since shows the old content. Two
+mounts at two moments can be compared with any tool that reads files.
 
-## Where the view narrows
+## Conflicts
 
-A filesystem can say less than the record does, and both narrowings are
-this program's declared policy, never the record's:
+A filesystem cannot show everything the record holds. Two rules decide
+what is shown; they apply only to the mount and do not change the
+record:
 
-* **One file per name.** Of several files standing at one place — the
-  same path, different bytes over time — the newest surviving assertion
-  wins, log order breaking ties within a second.
-* **One thing per name.** Where a name stands as file and folder at
-  once, the folder keeps it, because its children must stay reachable;
-  the file steps aside under a name carrying the start of its digest
-  (`notes-1f4c2a9b.txt`), the spelling `export` uses for its collision
-  bumps.
+* **One file per path.** If several files were recorded at the same path
+  (the same path with different content over time), the file with the
+  newest standing claim is shown; within the same second, the claim
+  written later to the log wins.
+* **A path is either a file or a folder.** If a path was recorded both as
+  a file and as a folder, the folder is shown, so the files in it stay
+  reachable. The file is shown next to it under a name with the start of
+  its digest added (`notes-1f4c2a9b.txt`), the same naming that
+  `ossuary export` uses for name collisions.
 
-## The doors
+## Platforms
 
-Neither door asks for root, and neither installs anything kernel-side.
+Neither platform needs root, and neither installs a kernel extension or
+module.
 
-* **macOS** — an NFS server on `127.0.0.1`, on a port the system hands
-  out, mounted by the operating system's own client (`mount -t nfs`,
-  read-only, NFSv3 over TCP). Giving the room back is `umount`, and
-  `diskutil unmount force` when something still reads it.
-* **Linux** — a FUSE filesystem, mounted through `fusermount3` from the
-  fuse3 package every distribution ships. The mount is declared
-  read-only, so the kernel answers every write before it reaches this
-  program.
+* **macOS**: an NFS server on `127.0.0.1`, on a port the system assigns,
+  mounted by the system's own NFS client (`mount -t nfs`, read-only,
+  NFSv3 over TCP). Unmounting uses `umount`, and `diskutil unmount force`
+  if a program still has a file open.
+* **Linux**: a FUSE filesystem, mounted with `fusermount3` from the fuse3
+  package that every distribution ships. The mount is read-only, so the
+  kernel rejects every write before it reaches this program.
 
-No other platform has a door; building elsewhere refuses with that in
-words.
+On other platforms the build fails with an error saying so.
 
-## What it holds while it serves
+## Memory use
 
-Files are read in place out of the store, so a mounted archive costs
-little memory. Two bounds keep it that way: at most 256 store files stay
-open — a closed one is simply opened anew on its next read — and entries
-the store keeps compressed, which cannot be read in place, are loaded
-whole with at most 512 MiB of them kept at hand, least recently loaded
-let go first.
+Files are read directly from the archive, so a mount needs little
+memory. At most 256 archive files are kept open; a file closed to stay
+under that limit is opened again on its next read. Files the archive
+stores compressed cannot be read in place: they are loaded completely,
+and at most 512 MiB of them are kept in memory, the least recently
+loaded removed first.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0, see [LICENSE](../LICENSE).

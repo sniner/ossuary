@@ -110,7 +110,7 @@ fn main() -> ExitCode {
         ["raster"] => examine(Contract::Raster),
         _ => {
             eprintln!(
-                "ossuary-extract-image: run with --identify, or with one of `exif`, `xmp`, `iptc`, `raster`; a file's bytes on stdin either way"
+                "ossuary-extract-image: expected --identify, or `exif`, `xmp`, `iptc` or `raster` with the file on stdin"
             );
             ExitCode::FAILURE
         }

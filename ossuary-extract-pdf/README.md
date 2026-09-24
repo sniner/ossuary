@@ -1,45 +1,46 @@
 # ossuary-extract-pdf
 
-*A document in, its text or its attachments out — two contracts in one
-program.*
+Records the document information of a PDF, and extracts its text and
+its embedded files as derived files.
 
-An [extractor](../docs/extractors.md) for ossuary, of two trades. Under
-its `text` contract it reads a document's bytes from stdin, answers with
-whatever the document's own information dictionary had to say, and
-writes the extracted text as `text.txt` into the directory it was given.
-Under its `attachments` contract it writes every file the document
-carries embedded out as a file of its own: a ZUGFeRD or Factur-X
-invoice's XML, a PDF/A-3 payload, whatever a writer put in. It never
-touches the archive.
+An [extractor](../docs/extractors.md) for ossuary with two contracts. It
+reads a PDF from stdin and writes into the output directory it was
+given:
 
-The text is what makes a PDF findable: taken in as a derived file of its
-own, it is offered to whichever extractor reads plain text, and `ossuary
-find` reaches it like any other file. An attachment joins the same
-world: an XML invoice is a file of its kind, tied to its document by
-`prov:origin`, and offered to whichever extractor reads that kind.
+- `text` records the document information dictionary and writes the
+  extracted text as `text.txt`.
+- `attachments` writes every embedded file: the XML of a ZUGFeRD or
+  Factur-X invoice, the attachments of a PDF/A-3 file, or any other
+  embedded file.
 
-## It needs poppler
+It does not access the archive; `ossuary extract` runs it and records
+the results. The text becomes a derived file of type `text/plain` and
+is offered to any extractor that reads plain text. An attachment becomes
+a derived file of its declared type, with `prov:origin` pointing to the
+PDF, and is offered to any extractor that reads that type.
 
-The extraction engine is the system's `pdftotext`, spoken to over pipes
-the way ossuary speaks to this program:
+## Requirements
+
+The `text` contract uses `pdftotext` from poppler:
 
 ```console
 $ brew install poppler          # macOS
 $ apt install poppler-utils     # Debian, Ubuntu
 ```
 
-Without it this extractor refuses to identify itself — loudly, once,
-instead of quietly failing on every file. The poppler version is
-deliberately *not* part of the `text` contract's source name:
-re-examination follows deliberate version bumps here, not the system's
-update cadence. `ossuary extract pdf:text --full` is the lever for the
-rare poppler leap that warrants a fresh look. Attachments need no
-poppler; they are read in-process.
+Without `pdftotext` on the PATH, `--identify` fails with a message to
+install poppler, and neither contract runs. The `attachments` contract
+itself does not use poppler.
 
-## What it puts on the record
+The poppler version is not part of the `text` contract's source, so an
+update of poppler does not cause PDFs to be examined again. To examine
+all PDFs again after a poppler update, run
+`ossuary extract pdf:text --full`.
 
-The document information dictionary, verbatim under `pdf:`, the keys
-kebab-cased and the values as the document spells them:
+## Recorded attributes (`text`)
+
+The document information dictionary is recorded under `pdf:`, with the
+keys in kebab case and the values as stored in the document:
 
 ```
 pdf:title = "Quarterly figures"
@@ -47,21 +48,45 @@ pdf:producer = "Example Writer 3.1"
 pdf:creation-date = "D:20190714110241+02'00'"
 ```
 
-A PDF date stays a PDF date; a key that does not fit the attribute
-grammar is skipped rather than guessed at. Text strings are decoded from
-UTF-16BE or UTF-8 behind their BOM, and from `PDFDocEncoding` otherwise —
-conversion, not tidying: nothing is trimmed or normalized. A document the
-info reader cannot open simply has no info to give, and the text
-extraction is not asked for its opinion about that.
+Dates keep the PDF date format. Keys that are not valid attribute names
+are skipped. Text strings are decoded from UTF-16BE or UTF-8 when they
+start with a byte order mark, and from `PDFDocEncoding` otherwise;
+nothing is trimmed or normalized. If the document information cannot be
+read, nothing is recorded for it, and the text is extracted regardless.
 
-## What it brings out
+## When no text is extracted
 
-Attachments are found where the format keeps them: in the catalog's
-`EmbeddedFiles` name tree, and on pages as file attachment annotations;
-a file reached both ways comes out once. Each is announced with the
-kind the document declares for it — `text/xml` for an invoice — and
-`application/octet-stream` when it declares none. On the record stands
-what the document said about it, verbatim:
+In these cases no `text.txt` is written, the extractor exits with 0, and
+the PDF gets its receipt:
+
+* **No text.** Scanned pages, or text that is only whitespace (page
+  breaks count as whitespace).
+* **Text extraction not possible.** The document does not permit text
+  extraction, or `pdftotext` cannot open it.
+* **Mostly invalid characters.** Fonts without a `ToUnicode` map give
+  `pdftotext` glyph numbers instead of characters. If more than half of
+  the non-whitespace characters are control characters, replacement
+  characters, private-use characters or noncharacters, the text is
+  discarded.
+
+In the last two cases the reason is recorded as a `prov:note` claim on
+the PDF and printed on stderr:
+
+```
+prov:note = "the document does not permit text extraction"
+```
+
+If `pdftotext` cannot be run or fails for another reason, the PDF is
+listed among the run's failures and offered again in the next run.
+
+## Extracted files (`attachments`)
+
+Embedded files are read from the document's `EmbeddedFiles` name tree
+and from file attachment annotations on pages; a file referenced from
+both is extracted once. Each file gets the type the document declares
+for it (`text/xml` for an invoice), or `application/octet-stream` if the
+document declares none. The following is recorded on the extracted
+file, as written in the document:
 
 ```
 file:name = "factur-x.xml"
@@ -72,66 +97,44 @@ pdf:creation-date = "D:20260725120000Z"
 pdf:mod-date = "D:20260725120000Z"
 ```
 
-The name is the file specification's own, its Unicode spelling before
-its byte spelling; the place is that name with a leading `@`, the way
-every place inside another content is spelled, so `find
-file:path=*/factur-x.xml` reaches it wherever it lay. `pdf:desc` and
-`pdf:af-relationship` are the specification's, the two dates the
-stream's own parameters; the size and checksum a stream may also carry
-are facts of the bytes, and the archive says those itself.
+`file:name` is the name from the file specification (the Unicode name
+if there is one, otherwise the byte name). `file:path` is that name
+with a leading `@`, which marks a location inside another file, so
+`find file:path=*/factur-x.xml` finds it wherever it came from.
+`pdf:desc` and `pdf:af-relationship` come from the file specification,
+the two dates from the embedded file's parameters. Size and checksum
+stated in the PDF are not recorded; the archive records the size
+itself.
 
-An attachment that will not come out stays inside, and the reason goes
-on the record as a `prov:note` finding beside a line on stderr — a
-filter this program cannot decode, a stream larger than 1 GiB — so a
-document that gave up its attachments incompletely does not read like
-one that gave them whole. A specification that embeds nothing, pointing
-at a file elsewhere, is not an attachment and is passed over silently.
-A document that cannot be opened has no attachments to give: exit 0,
-nothing found.
+An embedded file that cannot be extracted (for example because it is
+damaged, compressed with a filter this extractor does not support, or
+larger than 1 GiB) is skipped. The
+reason is recorded as a `prov:note` claim on the PDF and printed on
+stderr, and the other files are extracted as usual. A file
+specification that refers to an external file instead of embedding it
+is ignored. A document that cannot be opened gives an empty result,
+with exit code 0.
 
-## When there is no text
-
-Not every PDF has text to give, and that is an answer too — exit 0, no
-file announced, the receipt written:
-
-* **Scanned pages, an empty harvest.** Nothing but whitespace is nothing;
-  page breaks are whitespace too.
-* **A document that forbids extraction**, or one `pdftotext` cannot open
-  at all. Both are the document's own deterministic answer, so it counts
-  as examined.
-* **A harvest that is mostly not text.** Fonts without a `ToUnicode` map
-  hand `pdftotext` glyph numbers rather than characters. When more than
-  half of the non-whitespace characters are unwritable — controls, the
-  replacement character, the Private Use Areas, the noncharacters — the
-  harvest is discarded. Where the line errs it errs toward keeping: a bad
-  `text.txt` can be derived again, a silently discarded good one cannot.
-
-Whenever there is a reason worth a sentence, the sentence goes on the
-record as a `prov:note` finding and onto stderr, the same words in both
-places. Only the environment failing — no `pdftotext`, a broken pipe
-world — is a failure; the file is then named in the run's failures and
-offered again.
-
-## Kinds it reads
+## Supported types
 
 `application/pdf`.
 
 ## Running it
 
-Put the binary on the PATH beside `ossuary`, then:
+Put the binary on the PATH next to `ossuary`, then:
 
 ```console
 $ ossuary extract pdf
 ```
 
-That runs both contracts; `ossuary extract pdf:text` or `ossuary
-extract pdf:attachments` runs one, and the same spelling holds under
-`[extract] run` in the archive's `config.toml`. A bare `ossuary extract`
-runs its list in rounds, so the `text.txt` and the attachments this
-extractor hands back are offered to whichever extractor reads them in
-the next round without a second call.
+This runs both contracts; `ossuary extract pdf:text` or
+`ossuary extract pdf:attachments` runs one. The same names can be listed
+under `[extract] run` in the archive's `config.toml`. A plain
+`ossuary extract` runs the listed extractors in rounds, so `text.txt`
+and the extracted files are examined by the extractors for their types
+in the same call.
 
-Testable by hand:
+To run it by hand:
 
 ```console
 $ ossuary-extract-pdf --identify
@@ -141,4 +144,4 @@ $ mkdir /tmp/att && ossuary-extract-pdf attachments /tmp/att < invoice.pdf
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0 (see [LICENSE](../LICENSE)).

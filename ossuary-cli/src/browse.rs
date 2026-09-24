@@ -104,7 +104,7 @@ fn named(given: Option<&str>) -> Result<String> {
     let given = given.unwrap_or("/");
     if !given.starts_with('/') {
         return Err(anyhow!(
-            "{given:?} names no place; the record spells places whole, from /, the way ingest saw them"
+            "{given:?} is not an absolute path; give the path as ingest recorded it, starting with /"
         ));
     }
     let bare = given.trim_end_matches('/');
@@ -119,10 +119,9 @@ fn named(given: Option<&str>) -> Result<String> {
 /// or the record holds no places at all, which only the root can say.
 fn nothing(place: &str, how: &str) -> String {
     if place == "/" {
-        "the record knows no places yet; they arrive when `ossuary ingest` takes files in"
-            .to_string()
+        "no paths recorded yet; add files with `ossuary ingest`".to_string()
     } else {
-        format!("nothing on the record {how} {place}; `ossuary ls /` shows where the record begins")
+        format!("no recorded paths {how} {place}; `ossuary ls /` shows the top level")
     }
 }
 

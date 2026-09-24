@@ -189,7 +189,7 @@ impl Answer {
             .into_with_config()
             .limit(MESSAGE_AT_MOST)
             .read_to_vec()
-            .context("the answer broke off")?;
+            .context("reading the response failed")?;
         Ok(Self {
             status,
             retry_after,
@@ -198,7 +198,7 @@ impl Answer {
     }
 
     fn json<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_slice(&self.body).context("the answer was not the JSON expected")
+        serde_json::from_slice(&self.body).context("the response is not the expected JSON")
     }
 
     /// The trouble in the server's words: the status, and the code and
@@ -298,11 +298,11 @@ impl<'a> Graph<'a> {
                 ("scope", SCOPE),
                 ("grant_type", "client_credentials"),
             ])
-            .with_context(|| format!("{}: {} did not answer", self.name, host_of(&url)))?;
+            .with_context(|| format!("{}: no response from {}", self.name, host_of(&url)))?;
         let answer = Answer::read(response)?;
         let token: Token = answer.json().with_context(|| {
             format!(
-                "{}: {} answered HTTP {}",
+                "{}: {} returned HTTP {}",
                 self.name,
                 host_of(&url),
                 answer.status
@@ -316,7 +316,7 @@ impl<'a> Graph<'a> {
             .or(token.error)
             .unwrap_or_else(|| format!("HTTP {}", answer.status));
         bail!(
-            "{}: the tenant issued no token: {reason}; wrong secret, wrong tenant, or consent never granted",
+            "{}: token request failed: {reason}; check the client secret, the tenant id and the admin consent",
             self.name
         );
     }
@@ -358,7 +358,7 @@ impl<'a> Graph<'a> {
         loop {
             let answer = self.get(&url, None)?;
             if answer.status != 200 {
-                bail!("{}", self.refused("the folder list", &answer));
+                bail!("{}", self.refused("listing the folders", &answer));
             }
             let page: Page<FolderItem> = answer.json()?;
             for folder in page.value {
@@ -416,7 +416,7 @@ impl<'a> Graph<'a> {
             if answer.status != 200 {
                 return Err(Halt::Failed(anyhow!(
                     "{}",
-                    self.refused("the delta round", &answer)
+                    self.refused("listing the messages", &answer)
                 )));
             }
             let page: Page<DeltaItem> = answer.json().map_err(Halt::Failed)?;
@@ -460,18 +460,18 @@ impl<'a> Graph<'a> {
     fn refused(&self, what: &str, answer: &Answer) -> String {
         match answer.status {
             403 => format!(
-                "{}: {what} was refused ({}); the application needs Mail.Read granted by an administrator, and an access policy may keep it from {}",
+                "{}: {what} failed ({}); the application needs Mail.Read with admin consent, and an application access policy may block {}",
                 self.name,
                 answer.trouble(),
                 self.account.user
             ),
             404 => format!(
-                "{}: {what} was refused ({}); no mailbox for {} in this tenant, or no licence on it",
+                "{}: {what} failed ({}); no mailbox for {} in this tenant, or it has no licence",
                 self.name,
                 answer.trouble(),
                 self.account.user
             ),
-            _ => format!("{}: {what} was refused ({})", self.name, answer.trouble()),
+            _ => format!("{}: {what} failed ({})", self.name, answer.trouble()),
         }
     }
 
@@ -480,7 +480,7 @@ impl<'a> Graph<'a> {
     fn get(&mut self, url: &str, prefer: Option<&str>) -> Result<Answer> {
         if !self.owns(url) {
             bail!(
-                "refusing to send the token to {}: mail is only ever asked of {}",
+                "refusing to send the token to {}; only {} is allowed",
                 host_of(url),
                 host_of(&self.base)
             );
@@ -506,7 +506,7 @@ impl<'a> Graph<'a> {
                 }
                 Err(error) => {
                     return Err(anyhow!(error).context(format!(
-                        "{} did not answer, {} times asked",
+                        "no response from {} after {} attempts",
                         host_of(url),
                         attempt + 1
                     )));
@@ -567,7 +567,7 @@ fn origin_of(url: &str) -> Option<&str> {
 fn host_of(url: &str) -> &str {
     origin_of(url)
         .and_then(|origin| origin.split_once("://"))
-        .map_or("nowhere in particular", |(_, host)| host)
+        .map_or("(invalid URL)", |(_, host)| host)
 }
 
 /// A Graph id is long and says nothing to a reader; its head is
@@ -884,7 +884,7 @@ mod tests {
         let account = account();
         let refused = reach(&stub, "m365", &account).err().unwrap();
         let text = format!("{refused:#}");
-        assert!(text.contains("m365: the tenant issued no token"), "{text}");
+        assert!(text.contains("m365: token request failed"), "{text}");
         assert!(text.contains("AADSTS7000215"), "{text}");
     }
 
@@ -1119,7 +1119,7 @@ mod tests {
             host_of("https://Graph.Microsoft.com/v1.0"),
             "Graph.Microsoft.com"
         );
-        assert_eq!(host_of("nonsense"), "nowhere in particular");
+        assert_eq!(host_of("nonsense"), "(invalid URL)");
         assert_eq!(shortened("AAMkAGI2TG93AAA="), "AAMkAGI2TG93AAA=");
         assert_eq!(shortened(&"A".repeat(30)), format!("{}…", "A".repeat(20)));
     }

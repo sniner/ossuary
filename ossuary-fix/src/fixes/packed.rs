@@ -31,9 +31,9 @@ pub fn plan(log: &Log) -> Result<Plan> {
     let claims = record::whole(log)?;
     let mut plan = Plan {
         apart: true,
-        unit: "inner place(s)",
-        done: "said again with a leading @, as packed:path on the archive and file:path on the entry",
-        nothing: "every zip:entry and zip:path on the record already stands in the new words",
+        unit: "path(s)",
+        done: "copied to packed:path and file:path with a leading @",
+        nothing: "every zip:entry and zip:path is already recorded as packed:path or file:path",
         ..Plan::default()
     };
     let mut standing = 0;
@@ -49,7 +49,7 @@ pub fn plan(log: &Log) -> Result<Plan> {
         for ((subject, _), claim) in olds {
             let Some(Value::String(spelled)) = claim.value() else {
                 return Err(anyhow!(
-                    "a standing {old} on {subject} that is no string; the record is not what this fix expects"
+                    "{subject}: the standing {old} value is not a string; nothing was written"
                 ));
             };
             let value = Value::String(inner(spelled));
@@ -73,11 +73,11 @@ pub fn plan(log: &Log) -> Result<Plan> {
     }
     if without_run > 0 {
         plan.notes.push(format!(
-            "{without_run} of them from before runs were written, under one fresh run"
+            "{without_run} of them have no run id and are given a single new run id"
         ));
     }
     if standing > 0 {
-        plan.notes.push(format!("{standing} already stood"));
+        plan.notes.push(format!("{standing} already recorded"));
     }
     Ok(plan)
 }
@@ -182,7 +182,7 @@ mod tests {
             "extractor:packed-list/1"
         );
         assert!(planned.apart);
-        assert_eq!(planned.notes, vec!["1 already stood".to_string()]);
+        assert_eq!(planned.notes, vec!["1 already recorded".to_string()]);
 
         planned.apply(log).unwrap();
         let mut index = Index::open(dir.path().join("cache").join("fix-test.sqlite")).unwrap();
@@ -216,7 +216,7 @@ mod tests {
         );
         assert_eq!(
             again.sentence(false),
-            "nothing to say: every zip:entry and zip:path on the record already stands in the new words; 3 already stood"
+            "nothing to do: every zip:entry and zip:path is already recorded as packed:path or file:path; 3 already recorded"
         );
     }
 }

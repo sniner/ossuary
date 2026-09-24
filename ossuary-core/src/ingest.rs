@@ -376,7 +376,7 @@ where
             Ok(_) => walker.failed.push((
                 root.clone(),
                 Error::Io {
-                    context: "taking in".to_string(),
+                    context: "ingesting".to_string(),
                     source: std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "not a file or a directory",
@@ -462,7 +462,7 @@ where
                 result.failed.push((
                     path,
                     Error::Io {
-                        context: "measuring".to_string(),
+                        context: "reading metadata".to_string(),
                         source,
                     },
                 ));

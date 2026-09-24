@@ -362,7 +362,7 @@ impl Manifests {
             let context = format!("{}: {context}", self.dir.display());
             move |source| Error::Io { context, source }
         };
-        fs::create_dir_all(&self.dir).map_err(io("creating the manifest drawer"))?;
+        fs::create_dir_all(&self.dir).map_err(io("creating the manifest directory"))?;
         fs::write(self.path(manifest.digest()), manifest.to_line())
             .map_err(io("writing a manifest"))
     }

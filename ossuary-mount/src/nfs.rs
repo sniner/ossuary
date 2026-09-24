@@ -197,7 +197,7 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
 async fn held(door: Door, mountpoint: &Path, room: &Room<'_>) -> Result<ExitCode> {
     let mut listener = NFSTcpListener::bind("127.0.0.1:0", door)
         .await
-        .context("opening the NFS door on 127.0.0.1")?;
+        .context("starting the NFS server on 127.0.0.1")?;
     let port = listener.get_listen_port();
     let (mounted, mut mount_events) = tokio::sync::mpsc::channel(8);
     listener.set_mount_listener(mounted);
@@ -214,7 +214,7 @@ async fn held(door: Door, mountpoint: &Path, room: &Room<'_>) -> Result<ExitCode
     if !outcome.success() {
         server.abort();
         return Err(anyhow!(
-            "{place}: mount refused; the mountpoint must be a directory of your own, and nothing may already be mounted there"
+            "{place}: mount failed; the mountpoint must be a directory you own with nothing mounted on it"
         ));
     }
 
@@ -237,7 +237,7 @@ async fn held(door: Door, mountpoint: &Path, room: &Room<'_>) -> Result<ExitCode
             }
             _ = &mut server => {
                 return Err(anyhow!(
-                    "the NFS door closed on its own; unmount with `umount {place}`, then mount anew"
+                    "the NFS server stopped unexpectedly; run `umount {place}`, then mount again"
                 ));
             }
         }
@@ -260,7 +260,7 @@ fn give_back(place: &str, room: &Room<'_>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     room.tell(format_args!(
-        "{place} still in use, asking diskutil to force it"
+        "{place} still in use, forcing the unmount with diskutil"
     ));
     if Command::new("diskutil")
         .args(["unmount", "force", place])
@@ -272,6 +272,6 @@ fn give_back(place: &str, room: &Room<'_>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     Err(anyhow!(
-        "{place} is still mounted; close what reads it and run `umount {place}`"
+        "{place} is still mounted; close the programs using it and run `umount {place}`"
     ))
 }

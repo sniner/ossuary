@@ -68,23 +68,23 @@ pub fn decode(wire: &str) -> Result<String> {
         out.push_str(&rest[..at]);
         let after = &rest[at + 1..];
         let Some(end) = after.find('-') else {
-            bail!("{wire:?}: a '&' that is never closed by '-'");
+            bail!("{wire:?}: '&' without a closing '-'");
         };
         let run = &after[..end];
         if run.is_empty() {
             out.push('&');
         } else {
             let bytes = unbase64(run)
-                .ok_or_else(|| anyhow::anyhow!("{wire:?}: {run:?} is not the encoding's base64"))?;
+                .ok_or_else(|| anyhow::anyhow!("{wire:?}: {run:?} is not valid modified base64"))?;
             if bytes.len() % 2 != 0 {
-                bail!("{wire:?}: {run:?} does not decode to whole UTF-16 units");
+                bail!("{wire:?}: {run:?} does not decode to complete UTF-16 code units");
             }
             let units: Vec<u16> = bytes
                 .chunks(2)
                 .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
                 .collect();
             let text = String::from_utf16(&units)
-                .map_err(|_| anyhow::anyhow!("{wire:?}: {run:?} is not UTF-16"))?;
+                .map_err(|_| anyhow::anyhow!("{wire:?}: {run:?} is not valid UTF-16"))?;
             out.push_str(&text);
         }
         rest = &after[end + 1..];

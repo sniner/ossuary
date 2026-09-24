@@ -382,7 +382,7 @@ impl Log {
         name.push(".tmp");
         let tmp = self.head.with_file_name(name);
         fs::write(&tmp, header_line(Some(entry.digest()), None))
-            .map_err(io("beginning the fresh head"))?;
+            .map_err(io("writing the new head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
 
         if let Some(manifests) = &self.manifests {

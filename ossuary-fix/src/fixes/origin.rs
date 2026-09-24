@@ -32,8 +32,8 @@ pub fn plan(log: &Log) -> Result<Plan> {
     let mut plan = Plan {
         apart: true,
         unit: "origin(s)",
-        done: "said again as prov:origin",
-        nothing: "every origin on the record already stands as prov:origin",
+        done: "copied to prov:origin",
+        nothing: "every origin is already recorded as prov:origin",
         ..Plan::default()
     };
     let mut standing = 0;
@@ -46,10 +46,9 @@ pub fn plan(log: &Log) -> Result<Plan> {
             standing += 1;
             continue;
         }
-        let value = claim
-            .value()
-            .cloned()
-            .ok_or_else(|| anyhow!("a standing origin without a value; the replay is wrong"))?;
+        let value = claim.value().cloned().ok_or_else(|| {
+            anyhow!("internal error: a standing origin without a value; nothing was written")
+        })?;
         let run = claim.run().cloned().unwrap_or_else(|| {
             without_run += 1;
             fresh.clone()
@@ -65,11 +64,11 @@ pub fn plan(log: &Log) -> Result<Plan> {
     }
     if without_run > 0 {
         plan.notes.push(format!(
-            "{without_run} of them from before runs were written, under one fresh run"
+            "{without_run} of them have no run id and are given a single new run id"
         ));
     }
     if standing > 0 {
-        plan.notes.push(format!("{standing} already stood"));
+        plan.notes.push(format!("{standing} already recorded"));
     }
     Ok(plan)
 }
@@ -157,10 +156,10 @@ mod tests {
             "315e360b-020e-48be-8f2d-f2002a2ea9b4"
         );
         assert!(planned.apart);
-        assert_eq!(planned.notes, vec!["1 already stood".to_string()]);
+        assert_eq!(planned.notes, vec!["1 already recorded".to_string()]);
         assert_eq!(
             planned.sentence(false),
-            "2 origin(s) said again as prov:origin, in a segment of their own; 1 already stood"
+            "2 origin(s) copied to prov:origin, in a separate segment; 1 already recorded"
         );
 
         planned.apply(log).unwrap();
@@ -190,7 +189,7 @@ mod tests {
         );
         assert_eq!(
             again.sentence(false),
-            "nothing to say: every origin on the record already stands as prov:origin; 3 already stood"
+            "nothing to do: every origin is already recorded as prov:origin; 3 already recorded"
         );
     }
 }

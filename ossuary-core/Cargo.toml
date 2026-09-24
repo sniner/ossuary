@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-core"
-description = "Core of the ossuary archive: claims, segments, and the fold"
+description = "Core library of the ossuary archive: claims, segments and the claim index"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

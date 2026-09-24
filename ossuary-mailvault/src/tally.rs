@@ -52,7 +52,7 @@ impl Tally {
     pub fn verdict(&self, dry_run: bool) -> String {
         if dry_run {
             let left = if self.left > 0 {
-                format!(", {} already on record", self.left)
+                format!(", {} already imported", self.left)
             } else {
                 String::new()
             };
@@ -70,10 +70,10 @@ impl Tally {
             parts.push(format!("{} already stored", self.known));
         }
         if self.left > 0 {
-            parts.push(format!("{} already on record", self.left));
+            parts.push(format!("{} already imported", self.left));
         }
         if self.taken > 0 {
-            parts.push(format!("{} taken back", counted(self.taken, "tag", "tags")));
+            parts.push(format!("{} retracted", counted(self.taken, "tag", "tags")));
         }
         let record = if self.claims > 0 {
             format!("{} claim(s) written, run {}", self.claims, self.run)
@@ -106,7 +106,7 @@ mod tests {
         tally.left = 2;
         assert_eq!(
             tally.verdict(true),
-            "would fetch 1 message, 2 already on record; nothing written"
+            "would fetch 1 message, 2 already imported; nothing written"
         );
     }
 
@@ -120,13 +120,13 @@ mod tests {
         tally.claims = 11;
         assert_eq!(
             tally.verdict(false),
-            "2 messages stored, 1 already stored, 4 already on record; 11 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4"
+            "2 messages stored, 1 already stored, 4 already imported; 11 claim(s) written, run 315e360b-020e-48be-8f2d-f2002a2ea9b4"
         );
         tally.taken = 1;
         assert!(
             tally
                 .verdict(false)
-                .contains("4 already on record, 1 tag taken back; 11 claim(s)"),
+                .contains("4 already imported, 1 tag retracted; 11 claim(s)"),
             "{}",
             tally.verdict(false)
         );

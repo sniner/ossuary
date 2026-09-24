@@ -36,30 +36,31 @@ const CMD: &str = "_cmd";
 
 /// The file `init` writes: an example of each kind of account, every
 /// one commented out, so the file as written fetches nothing.
-pub const STARTER: &str = r##"# The mailboxes `ossuary mailvault fetch` reads, one [[account]] table
-# each. The examples below are commented out: remove the "# " in front
-# of one and fill it in. A key not shown here is refused.
+pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[account]] table each.
+# The examples below are commented out: remove the "# " in front of the
+# lines of one and fill it in. Keys not shown here are rejected.
 #
-# Any key except name, backend and folders can be given as KEY_cmd, a
-# command that prints the value on its first line: password_cmd, most
-# often. Commands run only under `ossuary mailvault fetch --allow-exec`.
+# Any key except name, backend and folders can be given as KEY_cmd
+# instead: a command that prints the value on its first line, most
+# often password_cmd. Commands run only with
+# `ossuary mailvault fetch --allow-exec`.
 
-# An IMAP mailbox, every key spelled out.
+# An IMAP mailbox with all keys.
 #
 # [[account]]
 # name = "example.org"         # letters, digits, '.', '_' and '-'
 # backend = "imap"             # the default
 # host = "imap.example.org"
 # port = 993                   # the default
-# tls = true                   # the default; false only for a bridge on this machine
+# tls = true                   # the default; false only for a bridge on localhost
 # user = "john@example.org"
-# password_cmd = "pass show mail/example.org"   # or password = "..." outright
-# folders = ["INBOX", "Sent"]  # every folder the server offers when left out
+# password_cmd = "pass show mail/example.org"   # or password = "..."
+# folders = ["INBOX", "Sent"]  # all folders if omitted
 
-# Gmail. All Mail holds every message, and each label folder would
-# fetch them again. The folder's name follows the account's language,
-# "[Google Mail]/Alle Nachrichten" on a German one. The password is an
-# app password.
+# Gmail. All Mail contains every message; each label folder would fetch
+# the same messages again. The folder name depends on the account's
+# language, such as "[Google Mail]/Alle Nachrichten" on a German account.
+# The password is an app password.
 #
 # [[account]]
 # name = "gmail.com"
@@ -69,7 +70,7 @@ pub const STARTER: &str = r##"# The mailboxes `ossuary mailvault fetch` reads, o
 # folders = ["[Gmail]/All Mail"]
 
 # Proton Mail through Proton Bridge on this machine: plaintext IMAP on
-# loopback, and the password the Bridge shows, not the Proton password.
+# localhost. The password is the one Bridge shows, not the Proton password.
 #
 # [[account]]
 # name = "proton.me"
@@ -81,7 +82,8 @@ pub const STARTER: &str = r##"# The mailboxes `ossuary mailvault fetch` reads, o
 # folders = ["All Mail"]
 
 # A Microsoft 365 mailbox, read over MS Graph. The login is an app
-# registration in Azure granted Mail.Read; user names the mailbox.
+# registration in Azure with the Mail.Read permission; user is the
+# address of the mailbox.
 #
 # [[account]]
 # name = "m365"
@@ -204,7 +206,7 @@ impl<'de> Deserialize<'de> for Account {
                 "msgraph" => Backend::Graph,
                 other => {
                     return Err(D::Error::custom(format!(
-                        "{name}: backend = {other:?} is not a way this build knows; imap or msgraph"
+                        "{name}: unknown backend {other:?}; use imap or msgraph"
                     )));
                 }
             },
@@ -224,7 +226,7 @@ impl<'de> Deserialize<'de> for Account {
             let target = key[..key.len() - CMD.len()].to_string();
             if matches!(target.as_str(), "name" | "backend" | "folders") {
                 return Err(D::Error::custom(format!(
-                    "{name}: {key} is not read from a command; {target} decides the shape of the account"
+                    "{name}: {key} is not supported; set {target} directly"
                 )));
             }
             match table.remove(&key) {
@@ -233,7 +235,7 @@ impl<'de> Deserialize<'de> for Account {
                 }
                 _ => {
                     return Err(D::Error::custom(format!(
-                        "{name}: {key} must be a string, the command to run"
+                        "{name}: {key} must be a string (the command to run)"
                     )));
                 }
             }
@@ -265,28 +267,27 @@ impl Config {
         let text = std::fs::read_to_string(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 anyhow!(
-                    "{}: no {FILE_NAME} here; begin one with `ossuary mailvault init`",
+                    "{}: no {FILE_NAME}; create one with `ossuary mailvault init`",
                     root.display()
                 )
             } else {
                 anyhow!("{}: {error}", path.display())
             }
         })?;
-        let config: Config = toml::from_str(&text)
-            .with_context(|| format!("{} could not be understood", path.display()))?;
+        let config: Config = toml::from_str(&text).with_context(|| path.display().to_string())?;
         let mut names = std::collections::HashSet::new();
         for account in &config.accounts {
             if !valid_name(&account.name) {
                 bail!(
-                    "{}: {:?} cannot name a mailbox on the record; use letters, digits, \
-                     '.', '_' and '-' only",
+                    "{}: invalid account name {:?}; use only letters, digits, '.', '_' \
+                     and '-'",
                     path.display(),
                     account.name
                 );
             }
             if !names.insert(account.name.as_str()) {
                 bail!(
-                    "{}: two accounts named {:?}; every mailbox needs a name of its own",
+                    "{}: two accounts named {:?}; account names must be unique",
                     path.display(),
                     account.name
                 );
@@ -308,7 +309,7 @@ impl Config {
         for name in names {
             if !self.accounts.iter().any(|account| &account.name == name) {
                 bail!(
-                    "{name}: no such account in {FILE_NAME}; it knows {}",
+                    "{name}: no such account in {FILE_NAME}; known accounts: {}",
                     self.accounts
                         .iter()
                         .map(|account| account.name.as_str())
@@ -370,7 +371,7 @@ impl Account {
         if let Reach::Imap(imap) = &reach {
             if !imap.tls && !loopback(&imap.host) {
                 bail!(
-                    "{}: tls = false would send the password to {} in the clear; plaintext is for a bridge on loopback only, so drop tls = false or point the account at localhost",
+                    "{}: tls = false is allowed only for localhost, not for {}; remove tls = false",
                     self.name,
                     imap.host
                 );
@@ -404,7 +405,7 @@ impl Account {
         let cmd = &self.commands[key];
         let name = &self.name;
         if !allow_exec {
-            bail!("{name}: {key}{CMD} stands in {FILE_NAME} and runs only under --allow-exec");
+            bail!("{name}: {key}{CMD} is set in {FILE_NAME}; pass --allow-exec to run it");
         }
         // Only stdout is the command's answer. Its stderr and its
         // stdin stay with the terminal: a password manager asks for
@@ -418,16 +419,14 @@ impl Account {
             .with_context(|| format!("{name}: {key}{CMD} could not be run"))?;
         if !out.status.success() {
             bail!(
-                "{name}: {key}{CMD} failed ({}); what it said stands above",
+                "{name}: {key}{CMD} failed ({}); see its output above",
                 out.status
             );
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
         let value = stdout.lines().next().unwrap_or("").trim();
         if value.is_empty() {
-            bail!(
-                "{name}: {key}{CMD} printed nothing; it has to print the {key} on its first line"
-            );
+            bail!("{name}: {key}{CMD} printed nothing; it must print the {key} on its first line");
         }
         Ok(value.to_string())
     }
@@ -552,7 +551,10 @@ mod tests {
         )
         .unwrap();
         let refused = imap(&config.accounts[0], false).err().unwrap();
-        assert!(refused.to_string().contains("in the clear"), "{refused:#}");
+        assert!(
+            refused.to_string().contains("allowed only for localhost"),
+            "{refused:#}"
+        );
     }
 
     #[test]
@@ -624,7 +626,7 @@ mod tests {
         let account = &config.accounts[0];
         let refused = imap(account, false).err().unwrap();
         assert!(
-            refused.to_string().contains("host_cmd stands in"),
+            refused.to_string().contains("host_cmd is set in"),
             "{refused:#}"
         );
 
@@ -669,7 +671,7 @@ mod tests {
             .err()
             .unwrap();
             assert!(
-                format!("{refused:#}").contains(&format!("{key}_cmd is not read from a command")),
+                format!("{refused:#}").contains(&format!("{key}_cmd is not supported")),
                 "{refused:#}"
             );
         }

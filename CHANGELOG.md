@@ -7,22 +7,20 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking changes
 
-- **`ossuary mailvault` takes a command.** `ossuary mailvault fetch` does what a bare
-  `ossuary mailvault` did, with the same options and account names; `ossuary mailvault import DIR`
-  takes over a mailvault archive in place of `--from-vault DIR`, the vault's mailbox names after
-  the directory
+- **`ossuary mailvault` has subcommands.** `ossuary mailvault fetch` replaces the bare
+  `ossuary mailvault`, with the same options and account names.
+  `ossuary mailvault import DIR [MAILBOX...]` replaces `--from-vault DIR` for importing an archive
+  of the Python tool mailvault
 
 ### Added
 
 - **`ossuary mailvault init` writes a `mailvault.toml` to start from**, with an example of each
-  kind of account: IMAP with every key, Gmail, Proton Mail through Proton Bridge, and Microsoft 365
-  over MS Graph. The examples are commented out, so the file fetches nothing until one is filled
-  in; a `mailvault.toml` already there is left as it is
-
-- **A release carries one tarball per platform with every program in it**, in place of the
-  one file per program of releases so far. The Homebrew tap installs from it:
-  `brew install sniner/tap/ossuary` brings all eight programs on macOS and Linux, and follows a
-  release within a day
+  kind of account: IMAP with all keys, Gmail, Proton Mail through Proton Bridge, and Microsoft 365
+  over MS Graph. The examples are commented out, so nothing is fetched until one is filled in. An
+  existing `mailvault.toml` is not overwritten
+- **Each release has one tarball per platform with all programs**, instead of one file per
+  program. The Homebrew tap installs from it: `brew install sniner/tap/ossuary` installs all eight
+  programs on macOS and Linux and picks up a new release within a day
 
 ## [0.10.0] - 2026-09-23
 

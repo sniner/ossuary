@@ -185,7 +185,7 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
     ];
     let mut session = Session::new(Door { record }, mountpoint, &config).with_context(|| {
         format!(
-            "{place}: mount refused; the mountpoint must be a directory of your own with nothing mounted there, and the fuse3 package (fusermount3) must be installed"
+            "{place}: mount failed; the mountpoint must be a directory you own with nothing mounted on it, and fusermount3 (package fuse3) must be installed"
         )
     })?;
     let mut unmounter = session.unmount_callable();
@@ -225,16 +225,16 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
             Ok(ExitCode::SUCCESS)
         }
         Some(Ok(Err(error))) => Err(anyhow!(
-            "the FUSE door closed on its own: {error}; unmount with `fusermount3 -u {place}`, then mount anew"
+            "the FUSE filesystem stopped: {error}; run `fusermount3 -u {place}`, then mount again"
         )),
         Some(Err(_)) => Err(anyhow!(
-            "the filesystem thread ended without a word; unmount with `fusermount3 -u {place}`, then mount anew"
+            "the FUSE filesystem stopped unexpectedly; run `fusermount3 -u {place}`, then mount again"
         )),
         // A signal: give the room back ourselves.
         None => {
             unmounter.unmount().with_context(|| {
                 format!(
-                    "{place} is still mounted; close what reads it and run `fusermount3 -u {place}`"
+                    "{place} is still mounted; close the programs using it and run `fusermount3 -u {place}`"
                 )
             })?;
             // Letting go detaches the room at once; a reader still
@@ -248,7 +248,7 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
                 room.given_back();
             } else {
                 room.tell(format_args!(
-                    "{place} given back; a reader still held a file, and sees it go"
+                    "{place} unmounted while a program still had a file open"
                 ));
             }
             Ok(ExitCode::SUCCESS)

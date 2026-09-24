@@ -16,23 +16,21 @@ const HANDFUL: usize = 5;
 pub(crate) fn audit(root: &Path, json: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
     if json && verbose {
         return Err(anyhow!(
-            "--json always names every finding; --verbose adds nothing; drop one of them"
+            "--json already lists every finding; drop --verbose"
         ));
     }
     let archive = open(root)?;
     if !quiet {
         eprintln!("archive {}", archive.root().display());
-        eprintln!(
-            "step 1 of 3: content/, every file read whole, its bytes proved against its name"
-        );
+        eprintln!("step 1 of 3: content/, checking every file against its hash");
     }
     let content = ossuary_core::audit_store(archive.content())?;
     if !quiet {
-        eprintln!("step 2 of 3: derived/, the same, for what tools made");
+        eprintln!("step 2 of 3: derived/, checking every file against its hash");
     }
     let derived = ossuary_core::audit_store(archive.derived())?;
     if !quiet {
-        eprintln!("step 3 of 3: claims/, every sealed segment and the open head read back");
+        eprintln!("step 3 of 3: claims/, reading every sealed segment and the open segment");
     }
     let log = ossuary_core::audit_log(archive.log())?;
     let audit = Audit::assemble(content, derived, log);
@@ -72,12 +70,12 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
         return Ok(());
     }
     let missing = if audit.missing.is_empty() {
-        say(out, "every file the claims speak of is held")?
+        say(out, "every file referenced by the claims is present")?
     } else {
         listing(
             out,
             &format!(
-                "{} file(s) the claims speak of, held by no store",
+                "{} file(s) referenced by the claims but missing",
                 audit.missing.len()
             ),
             &audit.missing,
@@ -95,7 +93,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
             continue;
         }
         let heading = format!(
-            "{} file(s) held in {place} that no claim speaks of; the next arrival records them",
+            "{} file(s) in {place} without claims; adding the same file again records them",
             unrecorded.len()
         );
         if !listing(out, &heading, unrecorded, verbose)? {
@@ -122,7 +120,7 @@ fn twin_block(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<bool
         .map(|twin| twin.digest.as_str().to_string())
         .collect();
     let heading = format!(
-        "{} file(s) held by both stores; `ossuary maintain weed` takes the copy in derived/ out",
+        "{} file(s) in both content/ and derived/; `ossuary maintain weed` removes the copy in derived/",
         names.len()
     );
     if !listing(out, &heading, &names, verbose)? {
@@ -138,7 +136,7 @@ fn twin_block(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<bool
         return Ok(true);
     }
     let heading = format!(
-        "{} of them damaged in content/ and sound in derived/; `ossuary maintain weed --repair` stores the sound bytes in the original's place",
+        "{} of them damaged in content/ and sound in derived/; `ossuary maintain weed --repair` replaces the damaged copy with the sound one",
         repairable.len()
     );
     listing(out, &heading, &repairable, verbose)
@@ -161,7 +159,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
         if !say(
             out,
             &format!(
-                "the chain of sealed segments is broken: {} chains where there should be one",
+                "the chain of sealed segments is broken: {} separate chains, expected one",
                 log.chains.len()
             ),
         )? {
@@ -175,17 +173,17 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
         for (index, brk) in log.breaks.iter().enumerate() {
             let line = match &brk.cause {
                 Cause::HeadLost => format!(
-                    "  chain {} begins where a head was lost, its claims with it: nothing recorded between {} and {} survived; take that in again, then `ossuary maintain mend` joins the chains",
+                    "  chain {} starts after a lost open segment: the claims recorded between {} and {} are lost; repeat the runs of that period, then run `ossuary maintain mend` to join the chains",
                     index + 2,
                     when(brk.from.as_ref()),
                     when(brk.to.as_ref()),
                 ),
                 Cause::SegmentLost(segment) => format!(
-                    "  chain {} begins after segment {segment}, which is not held; restore it from a copy of the archive, or `ossuary maintain mend` joins the chains and keeps its name on the record",
+                    "  chain {} starts after segment {segment}, which is missing; restore it from a backup of the archive, or run `ossuary maintain mend` to join the chains (the mend records the missing segment's name)",
                     index + 2,
                 ),
                 Cause::SegmentUnreadable(segment) => format!(
-                    "  chain {} begins after segment {segment}, which is held but will not read back; restore it from a copy of the archive",
+                    "  chain {} starts after segment {segment}, which is present but unreadable; restore it from a backup of the archive",
                     index + 2,
                 ),
             };
@@ -196,7 +194,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
                 && !say(
                     out,
                     &format!(
-                        "  which chain stands right before chain {} is not certain; `maintain mend` leaves this break alone",
+                        "  the chain before chain {} cannot be determined; `ossuary maintain mend` leaves this break open",
                         index + 2
                     ),
                 )?
@@ -209,7 +207,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
         if !say(
             out,
             &format!(
-                "claims: the chain runs in a circle; mend {mend} joins two ends that were not a break's; take its file out of claims/, then `ossuary maintain mend` again"
+                "claims: the chain forms a loop; mend {mend} joins two ends that were not a break; remove its file from claims/, then run `ossuary maintain mend` again"
             ),
         )? {
             return Ok(false);
@@ -230,10 +228,10 @@ fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<boo
                     "mend {} joins {} to {}",
                     mended.mend,
                     mended.previous,
-                    mended.before.as_deref().unwrap_or("the open head")
+                    mended.before.as_deref().unwrap_or("the open segment")
                 );
                 if let Some(replaces) = &mended.replaces {
-                    line = format!("{line} in place of {replaces}, which is gone");
+                    line = format!("{line}, replacing the missing {replaces}");
                 }
                 line
             })
@@ -249,14 +247,14 @@ fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<boo
             .iter()
             .map(|mended| {
                 format!(
-                    "mend {} stood in for {}",
+                    "mend {} replaced {}",
                     mended.mend,
-                    mended.replaces.as_deref().unwrap_or("nothing named")
+                    mended.replaces.as_deref().unwrap_or("an unnamed segment")
                 )
             })
             .collect();
         let heading = format!(
-            "{} mend(s) for a loss since made good; the segment each stood in for is held again",
+            "{} mend(s) no longer needed; the segment each one replaced is present again",
             mends.len()
         );
         if !listing(out, &heading, &mends, verbose)? {
@@ -265,7 +263,7 @@ fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<boo
     }
     if !log.idle_mends.is_empty() {
         let heading = format!(
-            "{} mend(s) that close no break; the segment each stands in front of needs none, or is not held",
+            "{} mend(s) that close no break; the segment after each one needs no mend or is missing",
             log.idle_mends.len()
         );
         if !listing(out, &heading, &log.idle_mends, verbose)? {
@@ -292,14 +290,14 @@ fn describe(chain: &Chain) -> String {
         clauses.push(format!("{} claim(s)", chain.claims));
         span(&mut clauses);
         if chain.open_head {
-            clauses.push(format!("{first} to the open head"));
+            clauses.push(format!("{first} to the open segment"));
         } else if first == last {
-            clauses.push(format!("{first} alone"));
+            clauses.push(format!("{first} only"));
         } else {
             clauses.push(format!("{first} to {last}"));
         }
     } else {
-        clauses.push("the open head alone".to_string());
+        clauses.push("the open segment only".to_string());
         clauses.push(format!("{} claim(s)", chain.claims));
         span(&mut clauses);
     }
@@ -314,7 +312,7 @@ fn when(time: Option<&Timestamp>) -> &str {
 /// The last line: which clean outcome it is, or how much is wrong.
 fn verdict(audit: &Audit) -> String {
     if audit.is_sound() {
-        "sound; every file re-hashed and true to its name, every claim read back, every sealed segment named still held, nothing spoken of is missing".to_string()
+        "sound; every file matches its hash, every claim is readable, no segment or referenced file is missing".to_string()
     } else {
         format!("not sound: {} finding(s)", audit.findings())
     }
@@ -330,7 +328,7 @@ fn store_block(
     verbose: bool,
 ) -> Result<bool> {
     if store.checked == 0 {
-        return say(out, &format!("{name}: holds nothing"));
+        return say(out, &format!("{name}: empty"));
     }
     for (digest, error) in &store.unreadable {
         if !say(out, &format!("{name}: could not read {digest}: {error}"))? {
@@ -339,12 +337,12 @@ fn store_block(
     }
     let mut clauses = vec![format!("{} file(s)", store.checked)];
     if !store.unreadable.is_empty() {
-        clauses.push(format!("{} not read", store.unreadable.len()));
+        clauses.push(format!("{} unreadable", store.unreadable.len()));
     }
     if !store.damaged.is_empty() {
         clauses.push(format!("{} damaged", store.damaged.len()));
     } else if store.unreadable.is_empty() {
-        clauses.push("every one still what its name says".to_string());
+        clauses.push("all match their hashes".to_string());
     }
     listing(
         out,
@@ -363,7 +361,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         if !say(
             out,
             &format!(
-                "claims: segment {digest} is not held; {successor} names it as the one sealed before it"
+                "claims: segment {digest} is missing; {successor} names it as its predecessor"
             ),
         )? {
             return Ok(false);
@@ -373,7 +371,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         if !say(
             out,
             &format!(
-                "claims: segment {digest} is not held; the open head names it as the last one sealed"
+                "claims: segment {digest} is missing; the open segment names it as its predecessor"
             ),
         )? {
             return Ok(false);
@@ -390,7 +388,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     for (digest, error) in &log.broken {
         if !say(
             out,
-            &format!("claims: segment {digest} will not read back: {error}"),
+            &format!("claims: segment {digest} cannot be parsed: {error}"),
         )? {
             return Ok(false);
         }
@@ -398,28 +396,28 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     if let Some(error) = &log.head_broken {
         if !say(
             out,
-            &format!("claims: the open head will not read back: {error}"),
+            &format!("claims: the open segment cannot be parsed: {error}"),
         )? {
             return Ok(false);
         }
     }
     let mut clauses = vec![
         if log.head_broken.is_none() {
-            format!("{} sealed segment(s) and the open head", log.segments)
+            format!("{} sealed segment(s) and the open segment", log.segments)
         } else {
             format!("{} sealed segment(s)", log.segments)
         },
         format!("{} claim(s)", log.claims),
     ];
     if !log.unreadable.is_empty() {
-        clauses.push(format!("{} not read", log.unreadable.len()));
+        clauses.push(format!("{} unreadable", log.unreadable.len()));
     }
     if !log.broken.is_empty() {
         clauses.push(format!("{} broken", log.broken.len()));
     }
     let lost = log.predecessor_missing.len() + usize::from(log.head_predecessor_missing.is_some());
     if lost > 0 {
-        clauses.push(format!("{lost} lost"));
+        clauses.push(format!("{lost} missing"));
     }
     if !log.damaged.is_empty() {
         clauses.push(format!("{} damaged", log.damaged.len()));
@@ -428,9 +426,9 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         && log.head_broken.is_none()
         && lost == 0
     {
-        clauses.push("read back whole".to_string());
+        clauses.push("all readable".to_string());
         if log.segments > 0 && log.chains.len() <= 1 {
-            clauses.push("chained from the open head back to the first".to_string());
+            clauses.push("one chain from the first segment to the open segment".to_string());
         }
     }
     listing(
@@ -459,7 +457,7 @@ fn listing(out: &mut impl Write, heading: &str, ids: &[String], verbose: bool) -
         }
         Ok(true)
     } else {
-        say(out, &format!("{heading}; --verbose names them"))
+        say(out, &format!("{heading}; --verbose lists them"))
     }
 }
 

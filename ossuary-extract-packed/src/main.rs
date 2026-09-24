@@ -111,7 +111,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "ossuary-extract-packed: run with --identify, with `list`, or with `unpack DIR`; a file's bytes on stdin either way"
+                "ossuary-extract-packed: expected --identify, or `list` or `unpack DIR` with the file on stdin"
             );
             ExitCode::FAILURE
         }
@@ -290,7 +290,7 @@ fn unpack<R: Read + Seek>(
                 // texts — and where the honest reason is this program's
                 // to say.
                 let reason = if locked {
-                    "encrypted, and there is no password to offer".to_string()
+                    "encrypted".to_string()
                 } else {
                     error.to_string()
                 };
@@ -310,7 +310,7 @@ fn unpack<R: Read + Seek>(
         }
         let spelled = file.name().to_string();
         let Some(name) = basename(&spelled) else {
-            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name"));
             continue;
         };
         // A name too long for the filesystem must not fail the whole zip
@@ -318,7 +318,7 @@ fn unpack<R: Read + Seek>(
         // spelled name goes on the record.
         let wearable = fits(&name);
         if wearable.is_empty() {
-            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name"));
             continue;
         }
         let announced = uniquify(wearable, &mut taken);
@@ -462,7 +462,7 @@ fn human_bytes(bytes: u64) -> String {
 /// unpacked incompletely must not read like one that unpacked whole —
 /// and onto stderr for whoever watches the run.
 fn stays_inside(spelled: &str, reason: &str) -> serde_json::Value {
-    let sentence = format!("entry {spelled} stayed inside: {reason}");
+    let sentence = format!("entry {spelled} not unpacked: {reason}");
     eprintln!("ossuary-extract-packed: {sentence}");
     json!({ "attribute": "prov:note", "value": sentence })
 }
@@ -731,7 +731,7 @@ mod tests {
         assert!(
             lines.contains(&json!({
                 "attribute": "prov:note",
-                "value": "entry secret.txt stayed inside: encrypted, and there is no password to offer",
+                "value": "entry secret.txt not unpacked: encrypted",
             })),
             "got {lines:#?}"
         );
@@ -768,7 +768,7 @@ mod tests {
                 line["attribute"] == "prov:note"
                     && line["value"]
                         .as_str()
-                        .is_some_and(|value| value.starts_with("entry torn.txt stayed inside: "))
+                        .is_some_and(|value| value.starts_with("entry torn.txt not unpacked: "))
             }),
             "got {lines:#?}"
         );
@@ -862,7 +862,7 @@ mod tests {
         assert!(
             lines.contains(&json!({
                 "attribute": "prov:note",
-                "value": "entry bomb.txt stayed inside: larger than 16 bytes",
+                "value": "entry bomb.txt not unpacked: larger than 16 bytes",
             })),
             "got {lines:#?}"
         );

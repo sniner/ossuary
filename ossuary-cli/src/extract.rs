@@ -45,14 +45,16 @@ pub fn extract(
         &mut narrate,
     )?;
     if settlement.ran == 0 {
-        println!("nothing ran; no extractor in the archive's list answered --identify");
+        println!(
+            "no extractor ran; none in the [extract] run list of config.toml responded to --identify"
+        );
     }
     // A single working round closes silently — that is every ordinary
     // run, and the verdicts have already told it. Only a real cascade
     // is news.
     if settlement.rounds > 1 && !quiet {
         eprintln!(
-            "settled after {} rounds: {} examinations in all",
+            "done after {} rounds, {} examinations in total",
             settlement.rounds, settlement.examinations
         );
     }
@@ -61,7 +63,7 @@ pub fn extract(
     // name.
     if settlement.examinations > 0 {
         println!(
-            "{} file(s) examined in all, {} derived file(s) taken in; run {}",
+            "{} file(s) examined in total, {} derived file(s) added; run {}",
             settlement.examinations, settlement.derived, settlement.run
         );
     }
@@ -89,10 +91,10 @@ fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>>
             let sightings = index.run_sightings(&run)?;
             if sightings.is_empty() {
                 return Err(if index.has_run(&run)? {
-                    anyhow!("run {id} named no file; nothing was examined")
+                    anyhow!("run {id} recorded no files; nothing examined")
                 } else {
                     anyhow!(
-                        "no run {id} on the record; `ossuary history` lists the runs; nothing was examined"
+                        "run {id} not found, nothing examined; `ossuary history` lists the runs"
                     )
                 });
             }
@@ -139,16 +141,16 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
         }
         Event::CaughtUp { segments } => {
             if !quiet {
-                eprintln!("catching the index up: {segments} sealed segment(s) it had not seen");
+                eprintln!("index updated: {segments} new log segment(s)");
             }
         }
         Event::Skipped { trouble, .. } => eprintln!("skipped: {}", trouble.spelled()),
         Event::Idle { source, full } => {
             if *full {
-                println!("nothing of a kind {source} reads is on the record");
+                println!("no recorded file of a type {source} reads");
             } else {
                 println!(
-                    "nothing waiting for {source}; no file of a kind it reads stands unexamined"
+                    "nothing waiting for {source}; every file of a type it reads has been examined"
                 );
             }
         }
@@ -167,7 +169,7 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
         }
         Event::Named { source, count } => {
             if !quiet {
-                eprintln!("{count} file(s) named for {source}");
+                eprintln!("{count} file(s) given for {source}");
             }
         }
         Event::Remarked {
@@ -201,7 +203,7 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
             }
             if !failures.is_empty() {
                 eprintln!(
-                    "{} could not be examined, offered again next run:",
+                    "{} could not be examined, will be retried on the next run:",
                     failures.len()
                 );
                 for (subject, error) in *failures {
@@ -215,13 +217,16 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
 /// The rehearsal's verdict: what was tried, and that nothing stands
 /// changed for it.
 fn rehearsal_verdict(source: &Source, tally: &Tally, already: usize) -> String {
-    let mut verdict = vec![format!("{} file(s) rehearsed by {source}", tally.examined)];
+    let mut verdict = vec![format!(
+        "{} file(s) examined by {source} (dry run)",
+        tally.examined
+    )];
     if tally.nothing > 0 {
-        verdict.push(format!("{} had nothing to tell", tally.nothing));
+        verdict.push(format!("{} found nothing", tally.nothing));
     }
     if already > 0 {
         verdict.push(format!(
-            "{already} already examined; --full rehearses them anew"
+            "{already} already examined; --full examines them again"
         ));
     }
     format!("{}; nothing written", verdict.join("; "))
@@ -238,19 +243,19 @@ fn verdict(source: &Source, tally: &Tally, already: usize) -> String {
     if taken > 0 {
         verdict.push(if tally.known > 0 {
             format!(
-                "{taken} derived file(s) taken in, {} of them bytes the archive already held",
+                "{taken} derived file(s) added, {} of them already in the archive",
                 tally.known
             )
         } else {
-            format!("{taken} derived file(s) taken in")
+            format!("{taken} derived file(s) added")
         });
     }
     if tally.nothing > 0 {
-        verdict.push(format!("{} had nothing to tell", tally.nothing));
+        verdict.push(format!("{} found nothing", tally.nothing));
     }
     if already > 0 {
         verdict.push(format!(
-            "{already} already examined; --full examines them anew"
+            "{already} already examined; --full examines them again"
         ));
     }
     verdict.join("; ")

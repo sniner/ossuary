@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-extract-image"
-description = "Image extractor for ossuary archives: EXIF, XMP and IPTC fields and the pixel raster, speaking the extractor protocol"
+description = "Image extractor for ossuary archives: EXIF, XMP and IPTC metadata and the pixel format"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

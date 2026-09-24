@@ -80,7 +80,7 @@ pub fn verify(vault: &Path) -> Result<()> {
     let mark = fs::read_to_string(vault.join(MARK)).ok();
     if mark.as_deref().map(str::trim) != Some(MARK_LINE) {
         bail!(
-            "{}: not a mailvault archive; its {MARK} mark would say so",
+            "{}: not an archive of the Python mailvault; its {MARK} file is missing or not format 1",
             vault.display()
         );
     }
@@ -107,7 +107,7 @@ pub fn run(
     verify(vault)?;
     let mut tally = Tally::new("import");
 
-    say.line("reading the vault's log: where every message was seen");
+    say.line("reading the log files");
     let gathered = gather(&vault.join("meta"), names, &mut tally)?;
     say.line(format_args!(
         "{} in {}, filed in {}",
@@ -139,7 +139,9 @@ pub fn run(
             let closed = takeover.memo.map_or(Ok(()), Memo::commit);
             return Err(match closed {
                 Ok(()) => error,
-                Err(more) => error.context(format!("and the memo did not commit: {more:#}")),
+                Err(more) => error.context(format!(
+                    "and the import progress could not be saved: {more:#}"
+                )),
             });
         }
         if let Some(memo) = takeover.memo {
@@ -272,7 +274,7 @@ fn gather(meta: &Path, names: &[String], tally: &mut Tally) -> Result<Gathered> 
         logs: 0,
         sightings: 0,
     };
-    let listing = |dir: &Path| format!("{}: listing the log", dir.display());
+    let listing = |dir: &Path| format!("{}: listing the log files", dir.display());
     let mut files = Vec::new();
     for shard in fs::read_dir(meta).with_context(|| listing(meta))? {
         let shard = shard.with_context(|| listing(meta))?.path();
@@ -304,10 +306,10 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
     let Some(head) = lines.next() else {
         bail!("empty, not a log file");
     };
-    let header: Header = serde_json::from_str(head).context("its header is not one")?;
+    let header: Header = serde_json::from_str(head).context("invalid header line")?;
     if !LOG_VERSIONS.contains(&header.version) {
         bail!(
-            "written by a newer mailvault (log version {}); upgrade this program to read it",
+            "written by a newer version of the Python mailvault (log version {}); update ossuary-mailvault to read it",
             header.version
         );
     }
@@ -324,8 +326,8 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
         // holding one would make every place of this file unreadable.
         if !valid_name(mailbox) {
             bail!(
-                "its mailbox {mailbox:?} cannot name a place; letters, digits, '.', '_' \
-                 and '-' only; rename it in the vault's log or leave it out"
+                "invalid mailbox name {mailbox:?} (letters, digits, '.', '_' and '-' only); \
+                 rename it in the log file, or import only the other mailboxes by naming them"
             );
         }
     }
@@ -373,12 +375,12 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
 /// checked once all of it is seen.
 fn read_message(vault: &Path, store_id: &str) -> Result<Vec<u8>> {
     let (path, compressed) = message_path(vault, store_id).with_context(|| {
-        format!("{store_id}: the vault names this message and holds no file for it")
+        format!("{store_id}: listed in the log, but the message file is missing")
     })?;
     let raw = fs::read(&path).with_context(|| format!("{}: could not be read", path.display()))?;
     let bytes = if compressed {
         zstd::decode_all(&raw[..])
-            .with_context(|| format!("{}: would not decompress", path.display()))?
+            .with_context(|| format!("{}: decompression failed", path.display()))?
     } else {
         raw
     };

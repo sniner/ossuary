@@ -39,7 +39,7 @@ use fuse as door;
 #[cfg(target_os = "macos")]
 use nfs as door;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-compile_error!("ossuary-mount has a door for macOS (NFS) and one for Linux (FUSE) only");
+compile_error!("ossuary-mount supports only macOS (NFS) and Linux (FUSE)");
 
 use forest::{Forest, Kind, Sighting};
 use record::Record;
@@ -48,27 +48,25 @@ use record::Record;
 #[command(
     name = "ossuary-mount",
     version,
-    about = "The record as a read-only filesystem: every place it knows, browsable in a file manager and readable by any program"
+    about = "Mount an ossuary archive as a read-only filesystem, each file at its recorded path"
 )]
 struct Cli {
-    /// The archive to mount; standing in it is enough
+    /// The archive to work in
     #[arg(long, value_name = "DIR", env = "OSSUARY_ARCHIVE", default_value = ".")]
     archive: PathBuf,
 
-    /// Where the view appears; created when missing, and a directory this
-    /// command created goes with the mount when it ends. The command
-    /// stays in the foreground; Ctrl-C gives the directory back
+    /// The directory to mount on; created if missing, and then removed
+    /// again on unmount
     #[arg(value_name = "DIR")]
     mountpoint: PathBuf,
 
-    /// Show the record as it stood at this moment, UTC: what was known
-    /// then, including what was retracted since. 2026-01-01 closes at
-    /// that day's end, 2026-01-01T08:00:00 at the second, a trailing Z
-    /// welcome; a run id closes after that run's last claim
+    /// Show the archive as it was at TIME (UTC): 2026-01-01 (end of that
+    /// day), 2026-01-01T08:00:00 (trailing Z optional), or a run id (after
+    /// that run's last claim)
     #[arg(long, value_name = "TIME")]
     as_of: Option<String>,
 
-    /// Answers and errors only; the run keeps its narration to itself
+    /// Print only errors
     #[arg(short, long)]
     quiet: bool,
 }
@@ -97,9 +95,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Some(given) => {
             let (view, closed) = at(&index, given)?;
             let stood = if ossuary_core::Run::spelled(given) {
-                format!(", as it stood after run {given}, at {}", closed.as_str())
+                format!(", as of run {given} ({})", closed.as_str())
             } else {
-                format!(", as it stood at {}", closed.as_str())
+                format!(", as of {}", closed.as_str())
             };
             (view, closed, Some(stood))
         }
@@ -109,7 +107,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
     let made = !mountpoint.exists();
     std::fs::create_dir_all(&mountpoint)
-        .with_context(|| format!("{}: making the mountpoint", mountpoint.display()))?;
+        .with_context(|| format!("{}: creating the mountpoint", mountpoint.display()))?;
     let owner = std::fs::metadata(&mountpoint)
         .with_context(|| format!("{}: reading the mountpoint", mountpoint.display()))?;
     let (uid, gid) = {
@@ -169,16 +167,16 @@ impl Room<'_> {
         } = self;
         let stood = stood.unwrap_or("");
         self.tell(format_args!(
-            "the record stands at {place}, read-only, {files} file(s) in {folders} folder(s){stood}; Ctrl-C gives it back"
+            "mounted read-only at {place}: {files} file(s) in {folders} folder(s){stood}; press Ctrl-C to unmount"
         ));
         if *files == 0 {
-            self.tell("no places on the record yet; `ossuary ingest` fills the view");
+            self.tell("no files to show; add files with `ossuary ingest`");
         }
     }
 
     /// The room is given back.
     pub fn given_back(&self) {
-        self.tell(format_args!("{} given back", self.place));
+        self.tell(format_args!("{} unmounted", self.place));
     }
 }
 
@@ -186,7 +184,7 @@ impl Room<'_> {
 fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
-            "{}: not an ossuary archive; stand in one, name it with --archive, or begin one with `ossuary init`",
+            "{}: not an ossuary archive; run in an archive, name one with --archive, or create one with `ossuary init`",
             path.display()
         ),
         other => other.into(),
@@ -198,10 +196,7 @@ fn caught_up(archive: &Archive, quiet: bool) -> Result<Index> {
     let mut index = archive.index()?;
     let folded = index.fold(archive.log())?;
     if folded.segments > 0 && !quiet {
-        eprintln!(
-            "catching the index up: {} sealed segment(s) it had not seen",
-            folded.segments
-        );
+        eprintln!("index updated: {} new log segment(s)", folded.segments);
     }
     Ok(index)
 }
@@ -211,11 +206,9 @@ fn caught_up(archive: &Archive, quiet: bool) -> Result<Index> {
 fn at(index: &Index, given: &str) -> Result<(Index, Timestamp)> {
     match index.at(given) {
         Ok(Some(view)) => Ok(view),
-        Ok(None) => Err(anyhow!(
-            "no run {given} on the record; `ossuary history` lists the runs"
-        )),
+        Ok(None) => Err(anyhow!("no run {given}; `ossuary history` lists the runs")),
         Err(Error::Timestamp(_)) => Err(anyhow!(
-            "{given:?} is not a time; RFC 3339 like 2026-01-01T12:00:00Z, the date alone, or a run id"
+            "{given:?} is not a valid time; use RFC 3339 (2026-01-01T12:00:00Z), a date (2026-01-01) or a run id"
         )),
         Err(error) => Err(error.into()),
     }

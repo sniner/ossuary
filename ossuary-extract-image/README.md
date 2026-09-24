@@ -1,20 +1,26 @@
 # ossuary-extract-image
 
-*What the picture says about itself: the camera's words, the editor's
-words, the press desk's words, and the grid.*
+Records the EXIF, XMP and IPTC metadata of an image, and its dimensions
+and pixel format as stated in the file header.
 
-An [extractor](../docs/extractors.md) for ossuary: one program, four
-trades. It reads an image's bytes from stdin and answers under one of
-four contracts. `exif` is every EXIF field of the primary image in
-EXIF's own words; `xmp` every property of the XMP packet in XMP's;
-`iptc` every dataset of the IPTC-IIM record in IPTC's; `raster` what the
-file's header says about its pixel grid. It never touches the archive,
-and it derives no files; it only speaks.
+An [extractor](../docs/extractors.md) for ossuary with four contracts. It
+reads an image from stdin and prints the results of one contract:
+
+| Contract | Records |
+|---|---|
+| `exif` | every EXIF field of the primary image |
+| `xmp` | every property of the XMP packet |
+| `iptc` | every dataset of the IPTC-IIM record |
+| `raster` | width, height, bit depth, alpha channel and colour model |
+
+Each contract has its own source and its own receipts. The extractor does
+not access the archive and derives no files; `ossuary extract` runs it
+and records the results.
 
 ## The `exif` contract
 
-Every field of the primary image, the tag name kebab-cased under `exif:`
-and the value as the format stores it:
+Records every field of the primary image under `exif:`, with the tag
+name in kebab case and the value as stored in the file:
 
 ```
 exif:make = "Example Cameras Inc."
@@ -24,28 +30,28 @@ exif:f-number = "28/10"
 exif:iso-speed = 200
 ```
 
-Nothing is normalized. The date keeps EXIF's own colons, a rational
-stays the fraction it is (`28/10`, not `2.8`), text stays text, one value
-comes bare and several as a list. Turning `2019:07:14` into a date and
-`28/10` into f/2.8 is query-time business; the record holds what the
-camera said. See [the vocabulary](../docs/vocabulary.md#exif) for how
-these values are meant to be read.
+Values are not normalized. A date keeps the EXIF colons, a rational is
+written as a fraction (`28/10`, not `2.8`), and text stays text. A field
+with one value is recorded as that value, a field with several as a
+list. Conversions such as `28/10` to f/2.8 happen at query time; see
+[the vocabulary](../docs/vocabulary.md#exif).
 
-Left out: the thumbnail's fields, which describe the thumbnail; tags the
-EXIF reader cannot name, since numbering an unknown tag would freeze a
-guess into the record; opaque blobs, `MakerNote` and its kin, which
-have nothing to quote; and a TIFF's own layout, `StripOffsets`,
-`StripByteCounts`, `RowsPerStrip` and the tile equivalents, which say
-where bytes lie and nothing about the picture.
+Not recorded:
 
-Kinds it reads: `image/jpeg`, `image/tiff`, `image/png`, `image/webp`,
+- the thumbnail's fields
+- tags the EXIF reader has no name for
+- opaque binary fields such as `MakerNote`
+- TIFF layout fields: `StripOffsets`, `StripByteCounts`, `RowsPerStrip`
+  and the tile equivalents
+
+Supported types: `image/jpeg`, `image/tiff`, `image/png`, `image/webp`,
 `image/heif`, `image/heic`, `image/avif`.
 
 ## The `xmp` contract
 
-Every property of the XMP packet, the schema's prefix and the property's
-name kebab-cased and joined under `xmp:`, the value as the packet spells
-it:
+Records every property of the XMP packet under `xmp:`, named from the
+schema prefix and the property name in kebab case, with the value as
+written in the packet:
 
 ```
 xmp:dc-subject = ["alps", "summer"]
@@ -57,31 +63,35 @@ xmp:photoshop-city = "Wien"
 xmp:xmp-mm-document-id = "xmp.did:0f3c2a1e-6b7d-4e58-9a10-5c2d8e7f4b21"
 ```
 
-XMP is RDF, and RDF nests; the contract flattens it. A list (`rdf:Bag`,
-`rdf:Seq`) stands with every item as a value of the property. Of
-language alternatives (`rdf:Alt`) the default language (`x-default`)
-stands, the first where none is marked. A structure's fields join the
-path with a dash, so the city of `Iptc4xmpExt:LocationCreated` stands as
-`xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`; a list of
-structures, the edit history say, piles each field's values on the same
-attribute, in order. Values stay the packet's text: `"5"` is text, a
-date keeps its spelling.
+Nested RDF structures are flattened:
 
-The prefix is the one the XMP specification gives the namespace, not
-the one the file declared: a writer that spells Dublin Core `dcterms`
-still lands on `xmp:dc-…`, since the namespace URI is what the two have
-in common. A namespace this program does not know keeps the prefix the
-packet declared for it.
+- A list (`rdf:Bag`, `rdf:Seq`) is recorded with each item as a value of
+  the property.
+- Of language alternatives (`rdf:Alt`), the default language
+  (`x-default`) is recorded, or the first entry if none is marked.
+- The fields of a structure are appended to the property name with a
+  dash: the city of `Iptc4xmpExt:LocationCreated` becomes
+  `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`. In a list of
+  structures, such as the edit history, each field collects the values
+  of all entries, in order.
 
-Kinds it reads: `image/jpeg` (the extended packet of a large one
-included), `image/tiff`, `image/png`, `image/webp`, `image/heif`,
+Values are the packet's text: `"5"` is a string, and a date keeps its
+format.
+
+The prefix is the one the XMP specification assigns to the namespace,
+not the one declared in the file. A packet that declares Dublin Core as
+`dcterms` is still recorded as `xmp:dc-…`. A namespace this extractor
+does not know keeps the prefix declared in the packet.
+
+Supported types: `image/jpeg` (including the extended XMP packet of
+large files), `image/tiff`, `image/png`, `image/webp`, `image/heif`,
 `image/heic`, `image/avif`.
 
 ## The `iptc` contract
 
-Every dataset of the IPTC-IIM application record, the press vocabulary
-that predates XMP and still rides along in JPEGs and TIFFs, the
-dataset's name kebab-cased under `iptc:`:
+Records every dataset of the IPTC-IIM application record (the press
+metadata format that predates XMP and is still found in JPEG and TIFF
+files) under `iptc:`, with the dataset name in kebab case:
 
 ```
 iptc:object-name = "Squirrel"
@@ -92,17 +102,16 @@ iptc:date-created = "20060521"
 iptc:copyright-notice = "(c) 2006 by Someone"
 ```
 
-A dataset the record says several times, as it says keywords, stands
-with every value. The text is read as UTF-8 where the record declares it
-or the bytes hold as such, as Latin-1 otherwise, which is what writers
-of the undeclared kind used. Datasets this program cannot name, and the
-binary ones, are left out.
+A repeated dataset, such as keywords, is recorded with all its values.
+Text is read as UTF-8 if the record declares UTF-8 or the bytes are
+valid UTF-8, and as Latin-1 otherwise. Datasets without a known name and
+binary datasets are not recorded.
 
-Kinds it reads: `image/jpeg`, `image/tiff`.
+Supported types: `image/jpeg`, `image/tiff`.
 
 ## The `raster` contract
 
-What the header says about the pixel grid, as numbers to search by:
+Records the image dimensions and pixel format from the file header:
 
 ```
 raster:width = 6000
@@ -112,55 +121,55 @@ raster:alpha = false
 raster:color = "rgb"
 ```
 
-Width and height in pixels, bits per channel as stored, whether there
-is an alpha channel, and the colour model: `gray`, `rgb`, `cmyk` or
-`indexed`. Each format's own reader answers from the header alone, no
-pixel decoded, so the answer is the file's word and not a decoder's: a
-four-bit palette PNG says `4` and `indexed`, not the eight-bit RGB it
-would be expanded to. A JPEG's YCbCr counts as `rgb`, which is what it
-encodes. A TIFF that names no colour model, a multiband file, gets no
-`raster:color`. A HEIC or AVIF answers from its `meta` box, the
-codestream unopened: the primary picture's size, its bits per channel,
-an auxiliary alpha plane tied to it, and a grid of tiles as one
-picture. See [the vocabulary](../docs/vocabulary.md#rasterwidth) for
-the attributes.
+- `raster:width`, `raster:height`: size in pixels
+- `raster:depth`: bits per channel, as stored
+- `raster:alpha`: whether the image has an alpha channel
+- `raster:color`: the colour model, one of `gray`, `rgb`, `cmyk`,
+  `indexed`
 
-Where EXIF has an opinion on the same matter, `exif:pixel-x-dimension`,
-both stand, each under its own source. They may disagree; a picture
-resized after the camera wrote its word is exactly such a case, and the
-disagreement is a finding.
+Only the header is read; no pixels are decoded. The values describe the
+file as stored: a 4-bit palette PNG is recorded as `4` and `indexed`,
+not as 8-bit RGB. JPEG's YCbCr is recorded as `rgb`. A TIFF that states
+no colour model (a multiband file) gets no `raster:color`. For HEIC and
+AVIF the values come from the `meta` box: the size and bit depth of the
+primary image, an alpha plane attached to it, and a tiled grid counted
+as one image. See [the vocabulary](../docs/vocabulary.md#rasterwidth)
+for the attributes.
 
-Kinds it reads: `image/jpeg`, `image/png`, `image/tiff`, `image/webp`,
-`image/heif`, `image/heic`, `image/avif`. GIF and BMP wait for a header
-reader of their own; when one arrives, the contract's generation is
-raised and every image is looked at again.
+EXIF can contain the same information, for example
+`exif:pixel-x-dimension`. Both are kept, each under its own source. They
+can differ, for example when an image was resized after the camera
+wrote the EXIF data.
 
-## What it does not do
+Supported types: `image/jpeg`, `image/png`, `image/tiff`, `image/webp`,
+`image/heif`, `image/heic`, `image/avif`. GIF and BMP are not supported
+yet.
 
-Bytes without readable EXIF, XMP or IPTC, or without a header the
-`raster` contract reads, are an examination like any other, with
-nothing found: the file gets its receipt and is not offered again. Only
-failing to read stdin is a failure. The mime lists are dispatch, not a
-promise: a file named outright is examined whatever its kind, and the
-graceful answer to bytes it cannot make sense of is an empty one.
+## Files without metadata
+
+A file without readable EXIF, XMP or IPTC data, or without a header the
+`raster` contract can read, is examined with an empty result: it gets
+its receipt and is not offered again. Only a failure to read stdin is an
+error. The supported types decide which files `ossuary extract` offers;
+a file named on the command line is examined whatever its type, and
+bytes the extractor cannot read give an empty result.
 
 ## Running it
 
-Put the binary on the PATH beside `ossuary`, then:
+Put the binary on the PATH next to `ossuary`, then:
 
 ```console
 $ ossuary extract image
 $ ossuary extract image:xmp
 ```
 
-The first runs all four contracts, the second one of them; the same
-spellings hold under `[extract] run` in the archive's `config.toml`, so
-a bare `ossuary extract` runs them. `--full` looks at every image
-again, which is also what a raised generation of a contract causes on
-its own, since the generation is part of the source every claim
-carries.
+The first command runs all four contracts, the second only `xmp`. The
+same names can be listed under `[extract] run` in the archive's
+`config.toml`; a plain `ossuary extract` then runs them. `--full`
+examines every image again. When a new version raises a contract's
+generation, the next `ossuary extract` also examines every image again.
 
-It is a plain filter and stays testable by hand:
+To run it by hand:
 
 ```console
 $ ossuary-extract-image --identify

@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-extract-packed"
-description = "Archive extractor for ossuary archives, listing what a zip holds and unpacking it"
+description = "Zip extractor for ossuary archives: lists or unpacks the contents of a zip file"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

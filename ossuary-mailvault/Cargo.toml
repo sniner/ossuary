@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-mailvault"
-description = "Mail into an ossuary archive: whole mailboxes fetched over IMAP or MS Graph, every message on the record with the place it was seen in"
+description = "Fetches mail from IMAP and Microsoft 365 mailboxes into an ossuary archive"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

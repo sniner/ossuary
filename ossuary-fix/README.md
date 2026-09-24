@@ -2,55 +2,55 @@
 
 *Repair tool for 0.x archives after a breaking change.*
 
-Not to be confused with `ossuary maintain`, which keeps a sound archive
-sound and never rewrites what is sealed. `ossuary-fix` exists for 0.x
-archives after a breaking change, and it is allowed to break that
-promise: it does the dirty jobs a breaking change leaves behind. Once
-the archive format has settled it has no business on an archive.
+`ossuary-fix` updates an archive written by an older 0.x version after a
+breaking change in the vocabulary or the format. It is not the same as
+`ossuary maintain`, which keeps an archive in order and never rewrites a
+sealed segment; a fix may have to do that. `ossuary-fix` is meant only
+for 0.x archives. Once the archive format is stable, it should not be
+used on an archive.
 
-A 0.x archive collects scars: a word in the vocabulary that changed, a
-claim an older version should have said. The programs stay free of
-migration code; this one knows each scar by name and closes it. Each
-fix reads the whole log, works out what is missing, and writes exactly
-that; run twice, the second run finds nothing to do. `--dry-run` says
-what would be written and writes nothing.
+Between 0.x versions, attribute names change, and an older version may
+have left out claims that a newer version expects. The ossuary programs
+contain no migration code; each such change has a fix here instead, run
+as a subcommand. A fix reads the log, determines which claims are
+missing, and writes only those. Running it a second time writes nothing.
+With `--dry-run` it shows what it would write and writes nothing.
 
-So far every fix closes its scar the way the record closes everything,
-by adding. A scar that can only be closed by rewriting what is sealed
-is not ruled out: a segment is named by its bytes and chained by that
-name, so such a fix would re-seal the chain from there on. That is not
-a clean job, which is why this program lives beside the archive and
-not in it.
+So far every fix only adds claims. A future fix may have to rewrite
+sealed segments. Each segment is named by its hash and refers to the
+previous segment by that name, so such a fix would also rewrite every
+segment after the changed one.
 
 ```console
 $ ossuary-fix --dry-run origin
-3730 origin(s) would be said again as prov:origin
+3730 origin(s) would be copied to prov:origin
 $ ossuary-fix origin
-3730 origin(s) said again as prov:origin, in a segment of their own
+3730 origin(s) copied to prov:origin, in a separate segment
 ```
 
-A fix that restates what an older version said keeps the original
-moment, source and run, so as of any day the record reads as if the
-right word had been used from the start. Such claims stand in a
-segment of their own, sealed before and after, sorted among the old
-ones; they override nothing.
+A fix that restates claims written by an older version keeps their
+original time, source and run, so a query for any past date gives the
+same result as if the new attribute had been used from the start. The
+fix seals the open head before and after writing these claims, so they
+are in a separate segment, sorted by time among the old segments. They
+do not override any claim written later.
 
 ## The fixes
 
-- `origin` — until 0.6.3 a derived file's origin was recorded as
-  `derive:derived-from`; the word is `prov:origin` now, and the present
-  is asked in the new word, so a derived file whose origin stands only
-  under the old one is held but not placed: `find`, `ls` and the mount
-  no longer reach it. The fix says each origin still standing under the
-  old word again under the new one. The old claims stay as they were
-  said; an origin already standing as `prov:origin` is left alone
-- `packed` — until 0.7.0 the packed extractor spoke in a namespace named
-  after the one format it read: an archive's inventory stood on it as
-  `zip:entry`, an unpacked entry's path inside the archive stood on the
-  entry as `zip:path`. A place inside another content is now spelled
-  with a leading `@` and stands as `packed:path` on the archive and as
-  `file:path` on the entry, whatever the archive's format, so one `find`
-  term reaches both. The fix says each such place still standing only
-  under an old word again under the new one, `@` in front. The old
-  claims stay as they were said; a place already standing in the new
-  word is left alone
+- `origin`: until 0.6.3 the origin of a derived file was recorded as
+  `derive:derived-from`; it is now `prov:origin`. A derived file whose
+  origin is recorded only under the old attribute is still in the
+  archive, but `find`, `ls` and `ossuary-mount` do not show it. The fix
+  copies each standing `derive:derived-from` value to `prov:origin`. The
+  old claims are not changed; origins already recorded as `prov:origin`
+  are skipped
+- `packed`: until 0.7.0 the packed extractor read only zip files and
+  used the `zip` namespace: the entries of a zip file were recorded on
+  it as `zip:entry`, the path of an unpacked entry was recorded on the
+  entry as `zip:path`. Paths inside a packed file now begin with `@` and
+  are recorded as `packed:path` on the packed file and as `file:path` on
+  the entry, for every format, so one `find` term matches both. The fix
+  copies each standing `zip:entry` value to `packed:path` and each
+  standing `zip:path` value to `file:path`, with a leading `@`. The old
+  claims are not changed; paths already recorded under the new attribute
+  are skipped

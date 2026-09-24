@@ -1,99 +1,106 @@
 # ossuary-core
 
-*The archive itself: claims, segments, and the fold.*
+*Core library of the ossuary archive: claims, segments and the claim index.*
 
-This is the library every ossuary program stands on. It owns the archive
-— the content stores, the append-only claim log, the index folded out of
-that log — and nothing above it: no command line, no wording, no exit
-codes. [`ossuary`](../ossuary-cli/README.md) and
-[`ossuary-mount`](../ossuary-mount/README.md) are readers of this crate,
-and so is anything else that opens an archive.
+This is the library all ossuary programs use to read and write an
+archive: the content stores, the append-only claim log, and the index
+built from the log. It has no command line, prints nothing and sets no
+exit codes; that is left to the programs.
+[`ossuary`](../ossuary-cli/README.md) and
+[`ossuary-mount`](../ossuary-mount/README.md) are built on it, as is any
+other program that opens an archive.
 
-What this crate implements is written down separately, because the format
-has to outlive the software that writes it:
+The archive format is documented separately from this code:
 
-* [The archive format](../docs/format.md) — layout, claims, segments, and
-  how to read an archive with nothing but a shell
-* [The attribute vocabulary](../docs/vocabulary.md) — what the words mean
-* [The extractor protocol](../docs/extractors.md) — the contract this
-  crate speaks to extractor programs over pipes
+* [The archive format](../docs/format.md): layout, claims, segments, and
+  how to read an archive with standard shell tools
+* [The attribute vocabulary](../docs/vocabulary.md): the attributes and
+  what they mean
+* [The extractor protocol](../docs/extractors.md): how this crate
+  communicates with extractor programs over pipes
 
-## What an archive is
+## Archive layout
 
-A directory that says so. A one-line `FORMAT` mark names the generation
-and the constants the stores cannot be opened without — the hash
-algorithm and the shard depths. Beneath it:
+An archive is a directory with a one-line `FORMAT` file. The file
+records the format generation and the parameters needed to open the
+stores: the hash algorithm and the shard depths. The directory contains:
 
 | | |
 |---|---|
-| `content/` | the files as they arrived, each named by the hash of its own bytes |
-| `derived/` | what tools made of them — unpacked attachments, extracted text — apart from the originals by topology, not by flag |
-| `claims/`, `head.jsonl` | the log: every claim ever made, sealed segment by sealed segment |
-| `config.toml` | policy for writing — what ingest leaves out, whether new entries are compressed, which extractors a bare `extract` runs. Reading never needs it |
-| `cache/` | the query index and the ingest walk's memory. Disposable: deleting it costs a slow first answer, never a fact |
+| `content/` | the ingested files, unchanged, each named by the hash of its content |
+| `derived/` | files produced by extractors (unpacked attachments, extracted text), stored separately from the originals |
+| `claims/`, `head.jsonl` | the log: every claim ever written, in sealed segments (`claims/`) and the open head (`head.jsonl`) |
+| `config.toml` | settings for writing: which paths ingest excludes, whether new entries are compressed, which extractors `extract` runs when none is named. Not needed for reading |
+| `cache/` | the query index and the list of files ingest has already seen. Can be deleted; it is rebuilt, and the next query and ingest take longer |
 
-The blob stores are [immure](https://github.com/sniner/immure). A mark
-this build does not know is refused rather than guessed at — a layout
-never seen before would look familiar in exactly the wrong way.
+The stores are [immure](https://github.com/sniner/immure) stores.
+`Archive::open` refuses a `FORMAT` file with an unknown generation or
+content (`Error::ArchiveGeneration`, `Error::BadMark`) instead of
+guessing at the layout.
 
-## The shape of the API
+## API overview
 
 ```rust
-use ossuary_core::{Archive, Attribute};
+use ossuary_core::{Archive, Attribute, Scope, Term};
 
-let archive = Archive::open("/home/john/archive")?;   // the mark, the config, the stores, the log
-let mut index = archive.index()?;                     // the cache in cache/index.sqlite
-index.fold(archive.log())?;                           // catch it up: new segments once, the head afresh
+let archive = Archive::open("/home/john/archive")?;   // reads FORMAT and config.toml, opens the stores and the log
+let mut index = archive.index()?;                     // the index in cache/index.sqlite
+index.fold(archive.log())?;                           // update it: new sealed segments, then the head
 
-let mime = (Attribute::parse("file:mime")?, "image/jpeg".to_string());
-for subject in index.find(&[mime], &[])? {
+let mime = Term::Attribute(Attribute::parse("file:mime")?, "image/jpeg".to_string());
+for subject in index.find(&[mime], &[], Scope::Present)? {
     println!("{}", subject.as_str());
 }
 ```
 
-**Claims.** `Claim` with its `Subject`, `Attribute`, `Value`, `Timestamp`
-and `Source` is the whole vocabulary of the record. `Claim::assert`,
-`Claim::retract_value` and `Claim::retract_attribute` build one;
-`parse_line` and `to_line` are the format's own JSON spelling, and they
-agree with each other. Nothing is ever edited: taking a statement back is
-one more claim.
+**Claims.** A `Claim` is built from a `Subject`, an `Attribute`, a
+`Value`, a `Timestamp`, a `Source` and a `Run`. `Claim::assert`,
+`Claim::retract_value` and `Claim::retract_attribute` create one;
+`Claim::parse_line` and `Claim::to_line` read and write the JSON line
+format, and round-trip. Claims are never edited: a retraction is a new
+claim.
 
-**The log.** `Log::append` writes to the open head, `Log::seal` closes it
-into a sealed segment named by its own digest, `Log::segments` and
-`Log::read` read them back. `Manifests` keep the segment list answerable
-without walking the store.
+**The log.** `Log::append` appends a claim to the open head, and
+`Log::seal` turns the head into a sealed segment named by its digest.
+`Log::segments` lists the sealed segments and `Log::read` reads one.
+`Manifests` are per-segment summaries in `cache/` (claim count, time
+range, namespaces, subjects); with them, `Log::segments` does not need
+to read every segment.
 
-**The index.** `Index` is a fold of the log into SQLite and is a cache in
-the strict sense — every answer it gives is derivable from the log alone.
-`about` answers the whole history of one subject, `values` and `values_in`
-what stands, `find` the query language's terms, `under` a place in the
-forest, `standing_as_of` the record as it was known at a moment,
-`resolve` and `matching` a shortened hex name, `worklist` what an
-extractor has not examined yet.
+**The index.** `Index` folds the log into SQLite. It is a cache:
+everything in it can be rebuilt from the log. `about` returns every
+claim about one subject, `values` and `values_in` the standing values of
+an attribute or a namespace, `find` the subjects that match query terms,
+`under` the files below a path, `standing_as_of` the standing values of
+an attribute at a given time, `resolve` and `matching` look up subjects
+by hex prefix, and `worklist` lists the files an extractor has not
+examined yet.
 
-**The verbs.** `ingest` walks roots and takes files in; `examine` runs
-extractor programs over their worklists — identify, hand over the bytes,
-funnel the answer through the claim grammar, write the receipt — and
-narrates itself to an `Observer` rather than to a terminal; `annotate`
-puts the user's word on files already on the record; `lay_out` decides
-where an export's files land; `audit_store` and `audit_log` prove the
-archive against itself, and `mend` closes a break the audit found in the
-chain without rewriting anything sealed.
+**Operations.** `ingest` walks the given paths and adds their files to
+the archive. `examine` runs extractor programs over the files they have
+not examined yet: it identifies each extractor, sends it the file
+content, checks its output and records the result with a receipt. It
+reports progress as `Event`s to an `Observer` and prints nothing itself.
+`annotate` records user tags and comments on files already in the
+archive, `retract` retracts claims, `lay_out` computes the target paths
+of an export, `audit_store` and `audit_log` check the stores and the log
+for damage, and `mend` repairs a break in the segment chain found by
+`audit_log` without rewriting any sealed segment.
 
-Errors are one `Error` enum. `Error::spelled` is the sentence a caller
-can hand to a user without rewording it.
+All errors are variants of one `Error` enum. `Error::spelled` returns the
+error with its causes as one line, ready to show to a user.
 
 ## Using it
 
-The crate is a workspace member and is depended on by path:
+The crate is a workspace member and is used as a path dependency:
 
 ```toml
 [dependencies]
 ossuary-core = { path = "../ossuary-core" }
 ```
 
-It forbids unsafe code, and the SQLite it uses is bundled — no system
-library is needed to build it.
+It forbids unsafe code. SQLite is bundled, so no system library is
+needed to build it.
 
 ```console
 $ cargo test -p ossuary-core
@@ -101,4 +108,4 @@ $ cargo test -p ossuary-core
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0, see [LICENSE](../LICENSE).

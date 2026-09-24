@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-cli"
-description = "The command line onto an ossuary archive"
+description = "Command-line interface for ossuary archives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -83,7 +83,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "ossuary-extract-pdf: run with --identify, with `text DIR`, or with `attachments DIR`; a file's bytes on stdin either way"
+                "ossuary-extract-pdf: expected --identify, or `text DIR` or `attachments DIR` with the file on stdin"
             );
             ExitCode::FAILURE
         }
@@ -242,7 +242,7 @@ fn pdftotext(bytes: Vec<u8>) -> std::io::Result<Harvest> {
         Ok(Harvest::Text(text))
     } else if documents_own_fault(status.code()) {
         Ok(Harvest::Refused(if status.code() == Some(3) {
-            "this document forbids text extraction".to_string()
+            "the document does not permit text extraction".to_string()
         } else {
             format!("pdftotext could not read this document ({status})")
         }))
@@ -294,7 +294,7 @@ fn junk_verdict(text: &str) -> Option<String> {
     }
     (junk * 2 > ink).then(|| {
         let percent = (junk * 100 + ink / 2) / ink;
-        format!("{percent}% of the text is not characters at all; harvest discarded")
+        format!("{percent}% of the extracted characters are invalid; text discarded")
     })
 }
 
@@ -333,28 +333,25 @@ fn attachments(
         let Some(spelled) = specification.name(&document) else {
             lines.push(stays_inside(
                 &format!("{:?}", specification.stream),
-                "no file name in it",
+                "no file name",
             ));
             continue;
         };
         let Some(name) = basename(&spelled) else {
-            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name"));
             continue;
         };
         let wearable = fits(&name);
         if wearable.is_empty() {
-            lines.push(stays_inside(&format!("{spelled:?}"), "no file name in it"));
+            lines.push(stays_inside(&format!("{spelled:?}"), "no file name"));
             continue;
         }
         let Ok(object) = document.get_object(specification.stream) else {
-            lines.push(stays_inside(
-                &spelled,
-                "its file is missing from the document",
-            ));
+            lines.push(stays_inside(&spelled, "embedded file missing"));
             continue;
         };
         let Ok(stream) = object.as_stream() else {
-            lines.push(stays_inside(&spelled, "its file is no stream"));
+            lines.push(stays_inside(&spelled, "embedded file damaged"));
             continue;
         };
         // The bound is checked before decoding as well as after: a
@@ -647,7 +644,7 @@ fn inner(spelled: &str) -> String {
 /// that gave up its attachments incompletely must not read like one
 /// that gave them whole — and onto stderr for whoever watches the run.
 fn stays_inside(spelled: &str, reason: &str) -> serde_json::Value {
-    let sentence = format!("attachment {spelled} stayed inside: {reason}");
+    let sentence = format!("attachment {spelled} not extracted: {reason}");
     eprintln!("ossuary-extract-pdf: {sentence}");
     json!({ "attribute": "prov:note", "value": sentence })
 }
@@ -1340,7 +1337,7 @@ mod tests {
             lines,
             vec![json!({
                 "attribute": "prov:note",
-                "value": "attachment zeros.bin stayed inside: larger than 1 KiB"
+                "value": "attachment zeros.bin not extracted: larger than 1 KiB"
             })]
         );
     }

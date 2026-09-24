@@ -10,53 +10,49 @@ use ossuary_core::{Break, Cause, Fixity, Timestamp, Twin, Weeded};
 
 use crate::{open, say};
 
-/// What `ossuary maintain` can do. Every repair adds to the archive
-/// and rewrites nothing — the record of what went wrong stays. The one
-/// thing that goes is a copy in `derived/` of what `content/` holds
-/// too, which no claim and no reader ever reaches.
+/// The maintenance commands. `mend` only adds to the archive and
+/// rewrites nothing; `weed` removes copies in `derived/` of files that
+/// `content/` also contains.
 #[derive(Subcommand)]
 pub(crate) enum Maintenance {
-    /// Join the pieces of a broken chain, and keep the break on the
-    /// record
+    /// Join a broken chain of sealed segments and record each break
     ///
     /// Where `audit` finds the chain of sealed segments in more than one
-    /// piece, a head lost and begun anew or a sealed segment gone, this
-    /// closes each break with a mend: a segment of no claims that names
-    /// the two ends it joins, stored like any other. Nothing already
-    /// sealed is touched, and the segment after the break still names
-    /// what it named, so the record keeps saying what was lost and where.
-    /// What was lost stays lost: take it in again first, if it can be
-    /// had. A break behind a segment that is held but damaged is left
-    /// alone; a mend stands in for what is gone, not for what is damaged.
-    /// Reads the whole log, as the audit does. Exits 1 when a break was
-    /// left open.
+    /// piece, because an open segment was lost and started again or a
+    /// sealed segment is missing, mend closes each break with a mend: a
+    /// segment without claims that names the two segments it joins.
+    /// Sealed segments are not changed, and the segment after the break
+    /// still names its original predecessor, so the record still shows
+    /// what was lost and where. Lost claims are not recovered; record
+    /// them again first if possible. A break after a segment that is
+    /// present but damaged is left open. Reads the whole log, like
+    /// `audit`. Exits 1 if a break was left open.
     Mend {
-        /// Say what would be mended and write nothing
+        /// Show what would be mended, write nothing
         #[arg(long)]
         dry_run: bool,
     },
-    /// Take out of derived/ what content/ holds as well
+    /// Remove files from derived/ that are also in content/
     ///
-    /// A file won as a derived file, an attachment out of a mail say,
-    /// and later taken in as an original stands in both stores under
-    /// the same name, and content/ answers for it first: the copy in
-    /// derived/ answers nothing, and no claim names a store. Both
-    /// copies are read whole and proved against their name before
-    /// anything goes. Both sound, the copy in derived/ is taken out;
-    /// damaged in derived/ and sound in content/, taken out as well.
-    /// Damaged in content/ and sound in derived/, it stays and says so;
-    /// --repair sets the damaged original aside under a name of its
-    /// own, every byte kept, and stores the sound bytes in its place.
-    /// Damaged in both stores, or unreadable in either, it stays:
-    /// restore it from a copy of the archive. Nothing the claims speak
-    /// of goes missing at any step. Exits 1 when a file was left
-    /// standing.
+    /// A file first extracted as a derived file (an attachment from a
+    /// mail, for example) and later ingested as an original is stored in
+    /// both content/ and derived/ under the same name. Only the copy in
+    /// content/ is used. weed checks both copies against their hash
+    /// before removing anything. If both are sound, or only the copy in
+    /// derived/ is damaged, the copy in derived/ is removed. If the copy
+    /// in content/ is damaged and the one in derived/ is sound, both are
+    /// kept; --repair moves the damaged file aside, keeping all its
+    /// bytes, stores the sound copy in its place and removes the copy in
+    /// derived/. If both are damaged, or either cannot be read, both are
+    /// kept: restore the file from a backup of the archive. No recorded
+    /// file is lost at any step. Exits 1 if a file was left in both.
     Weed {
-        /// Say what would be taken out and write nothing
+        /// Show what would be removed, write nothing
         #[arg(long)]
         dry_run: bool,
-        /// Where the original is damaged and the copy in derived/ sound,
-        /// set the original aside and store the sound bytes in its place
+        /// If the copy in content/ is damaged and the one in derived/ is
+        /// sound, move the damaged file aside and store the sound copy
+        /// in its place
         #[arg(long)]
         repair: bool,
     },
@@ -76,24 +72,21 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     if !quiet {
         eprintln!("archive {}", archive.root().display());
-        eprintln!("reading every sealed segment and the open head");
+        eprintln!("reading every sealed segment and the open segment");
     }
     let log = ossuary_core::audit_log(archive.log())?;
     if log.chains.len() <= 1 {
-        let line = "the chain is whole, nothing to mend";
+        let line = "the chain is complete, nothing to mend";
         if log.mended.is_empty() {
             println!("{line}");
         } else {
-            println!(
-                "{line}; {} mended break(s) stand on the record",
-                log.mended.len()
-            );
+            println!("{line}; {} break(s) mended earlier", log.mended.len());
         }
         return Ok(ExitCode::SUCCESS);
     }
     if log.breaks.is_empty() {
         println!(
-            "the chain is in {} pieces that no break explains; `ossuary audit` lists the pieces",
+            "the chain is in {} pieces with no identifiable break; `ossuary audit` lists the pieces",
             log.chains.len()
         );
         return Ok(ExitCode::FAILURE);
@@ -102,13 +95,13 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
     for (index, brk) in log.breaks.iter().enumerate() {
         println!("break {}: {}", index + 1, describe(brk));
         if !brk.sure {
-            println!("  left open; which chain stands right before this one is not certain");
+            println!("  left open; the chain before this one cannot be determined");
             left_open += 1;
             continue;
         }
         if !brk.mendable() {
             println!(
-                "  left open; the segment is held but damaged; restore it from a copy of the archive"
+                "  left open; the segment is present but damaged; restore it from a backup of the archive"
             );
             left_open += 1;
             continue;
@@ -119,7 +112,7 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         }
         match ossuary_core::mend(archive.log(), brk)? {
             Some(segment) if brk.before.is_none() => println!(
-                "  mended as {}; the open head now follows the mend",
+                "  mended as {}; the open segment now follows the mend",
                 segment.digest()
             ),
             Some(segment) => println!("  mended as {}", segment.digest()),
@@ -142,20 +135,20 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
 /// A break in a line: its two ends, and what the record says happened
 /// between them.
 fn describe(brk: &Break) -> String {
-    let before = brk.before.as_deref().unwrap_or("the open head");
+    let before = brk.before.as_deref().unwrap_or("the open segment");
     match &brk.cause {
         Cause::HeadLost => format!(
-            "after {} and before {before}, a head was lost, its claims with it; nothing recorded between {} and {} survived",
+            "after {} and before {before}, an open segment was lost with its claims; the claims recorded between {} and {} are lost",
             brk.after,
             when(brk.from.as_ref()),
             when(brk.to.as_ref()),
         ),
         Cause::SegmentLost(segment) => format!(
-            "after {} and before {before}, segment {segment} is not held; the mend keeps its name on the record",
+            "after {} and before {before}, segment {segment} is missing; the mend records its name",
             brk.after,
         ),
         Cause::SegmentUnreadable(segment) => format!(
-            "after {} and before {before}, segment {segment} is held but will not read back",
+            "after {} and before {before}, segment {segment} is present but unreadable",
             brk.after,
         ),
     }
@@ -179,14 +172,17 @@ fn weed(root: &Path, dry_run: bool, repair: bool, verbose: bool, quiet: bool) ->
     if !quiet {
         eprintln!("archive {}", archive.root().display());
         eprintln!(
-            "looking through derived/ for files content/ holds too, both copies read whole and proved against their name"
+            "looking for files in both content/ and derived/, checking both copies against their hash"
         );
     }
     let twins = ossuary_core::twins(&archive)?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     if twins.is_empty() {
-        say(&mut out, "no file is held by both stores; nothing to weed")?;
+        say(
+            &mut out,
+            "no file is in both content/ and derived/; nothing to weed",
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     let mut released = 0;
@@ -216,26 +212,26 @@ fn weed(root: &Path, dry_run: bool, repair: bool, verbose: bool, quiet: bool) ->
                 let how = if twin.derived == Fixity::Damaged {
                     "damaged in derived/, sound in content/"
                 } else {
-                    "both copies true to their names"
+                    "both copies sound"
                 };
                 if dry_run {
-                    format!("{digest}: {how}; would be taken out of derived/")
+                    format!("{digest}: {how}; would be removed from derived/")
                 } else {
-                    format!("{digest}: {how}; taken out of derived/")
+                    format!("{digest}: {how}; removed from derived/")
                 }
             }
             Weeded::Repaired { aside } => {
                 repaired += 1;
                 if dry_run {
                     format!(
-                        "{digest}: damaged in content/, sound in derived/; would be set aside and the sound bytes stored in its place"
+                        "{digest}: damaged in content/, sound in derived/; the damaged copy would be moved aside and replaced with the sound one"
                     )
                 } else {
                     // The run named the archive once; a file inside it
                     // reads as it reads inside it.
                     let aside = aside.strip_prefix(archive.root()).unwrap_or(&aside);
                     format!(
-                        "{digest}: damaged in content/, sound in derived/; the original set aside as {}, the sound bytes stored in its place, the copy in derived/ taken out",
+                        "{digest}: damaged in content/, sound in derived/; damaged copy moved to {}, replaced with the sound copy, copy in derived/ removed",
                         aside.display()
                     )
                 }
@@ -271,8 +267,8 @@ fn weed_verdict(
 ) -> String {
     let would = if dry_run { "would be " } else { "" };
     let mut clauses = vec![
-        format!("{twins} file(s) held by both stores"),
-        format!("{released} {would}taken out of derived/"),
+        format!("{twins} file(s) in both content/ and derived/"),
+        format!("{released} {would}removed from derived/"),
     ];
     if repaired > 0 {
         clauses.push(format!(
@@ -280,13 +276,13 @@ fn weed_verdict(
         ));
     }
     if standing > 0 {
-        clauses.push(format!("{standing} left standing"));
+        clauses.push(format!("{standing} left unchanged"));
     }
     let mut verdict = clauses.join(", ");
     if dry_run {
         verdict.push_str("; --dry-run, nothing written");
     } else if released + repaired > 0 {
-        verdict.push_str("; content/ answers for every one of them");
+        verdict.push_str("; every file is still in content/");
     }
     verdict
 }
@@ -296,25 +292,25 @@ fn weed_verdict(
 fn standing_reason(twin: &Twin, repair: bool) -> String {
     match (&twin.content, &twin.derived) {
         (Fixity::Unreadable(error), _) => {
-            format!("could not read the copy in content/: {error}; left standing")
+            format!("could not read the copy in content/: {error}; left unchanged")
         }
         (_, Fixity::Unreadable(error)) => {
-            format!("could not read the copy in derived/: {error}; left standing")
+            format!("could not read the copy in derived/: {error}; left unchanged")
         }
         (Fixity::Damaged, Fixity::Damaged) => {
-            "damaged in both stores; left standing, restore it from a copy of the archive"
+            "damaged in both content/ and derived/; left unchanged, restore it from a backup of the archive"
                 .to_string()
         }
         (Fixity::Damaged, Fixity::Sound) if repair => {
-            "damaged in content/, sound in derived/; left standing, the copy in derived/ went away under this run"
+            "damaged in content/, sound in derived/; left unchanged, the copy in derived/ disappeared during this run"
                 .to_string()
         }
         (Fixity::Damaged, Fixity::Sound) => {
-            "damaged in content/, sound in derived/; left standing, `ossuary maintain weed --repair` stores the sound bytes in the original's place"
+            "damaged in content/, sound in derived/; left unchanged, `ossuary maintain weed --repair` replaces the damaged copy with the sound one"
                 .to_string()
         }
         // A sound original is releasable whatever the derived copy is,
         // short of unreadable, and those cases are answered above.
-        (Fixity::Sound, _) => "left standing".to_string(),
+        (Fixity::Sound, _) => "left unchanged".to_string(),
     }
 }

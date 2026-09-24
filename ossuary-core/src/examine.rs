@@ -213,7 +213,7 @@ pub fn examine(
     };
     if names.is_empty() {
         return Err(Error::Extract(
-            "no extractors to run; name one, like `ossuary extract pdf`, or list this archive's own under [extract] in config.toml".to_string(),
+            "no extractors to run; name one, as in `ossuary extract pdf`, or list them under [extract] in config.toml".to_string(),
         ));
     }
 
@@ -241,15 +241,17 @@ pub fn examine(
         return Err(Error::Extract(match runs.as_slice() {
             [only] => match &only.identity.contract {
                 Some(contract) => format!(
-                    "`{}` hands no files back under its {contract} contract; --temp-dir is where derived files would wait; run this without it",
+                    "`{}` writes no derived files under its {contract} contract; run without --temp-dir",
                     only.program
                 ),
                 None => format!(
-                    "`{}` hands no files back; --temp-dir is where derived files would wait; run this without it",
+                    "`{}` writes no derived files; run without --temp-dir",
                     only.program
                 ),
             },
-            _ => "no files would come back from this run; --temp-dir is where derived files wait; run this without it".to_string(),
+            _ => {
+                "no extractor in this run writes derived files; run without --temp-dir".to_string()
+            }
         }));
     }
 
@@ -333,7 +335,7 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
         total += examined;
         if round == MAX_ROUNDS {
             return Err(Error::Extract(format!(
-                "round {MAX_ROUNDS} still examined files; {} never runs dry; what is recorded so far stands. Fix the extractor, then run this again",
+                "stopped after {MAX_ROUNDS} rounds: {} still had files to examine; the claims recorded so far are kept. Fix the extractor, then run again",
                 busy.join(", ")
             )));
         }
@@ -385,7 +387,7 @@ fn parse_listed(listed: &str) -> Result<(&str, Option<&str>)> {
     };
     if !well_formed(name) || contract.is_some_and(|contract| !well_formed(contract)) {
         return Err(Error::Extract(format!(
-            "{listed:?} does not name an extractor; the form is NAME or NAME:CONTRACT, lowercase letters, digits and dashes"
+            "{listed:?} is not an extractor name; use NAME or NAME:CONTRACT, with lowercase letters, digits and dashes"
         )));
     }
     Ok((name, contract))
@@ -420,12 +422,12 @@ fn prepare(listed: &str) -> Result<Vec<Run>> {
                 Some(identity) => vec![identity],
                 None if offered.is_empty() => {
                     return Err(Error::Extract(format!(
-                        "`{program}` names no contracts; run it whole, as `ossuary extract {name}`"
+                        "`{program}` has no named contracts; run it as `ossuary extract {name}`"
                     )));
                 }
                 None => {
                     return Err(Error::Extract(format!(
-                        "`{program}` offers no contract named {wanted:?}; it offers {}",
+                        "`{program}` has no contract named {wanted:?}; available contracts: {}",
                         offered.join(", ")
                     )));
                 }
@@ -667,7 +669,7 @@ fn identify(program: &str) -> Result<Vec<Identity>> {
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::Extract(format!(
-                    "no `{program}` on PATH; install it, then run this again"
+                    "`{program}` not found on PATH; install it, then run again"
                 ))
             } else {
                 Error::Io {
@@ -700,12 +702,12 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
     for line in answer.lines().filter(|line| !line.trim().is_empty()) {
         let identity: Identity = serde_json::from_str(line.trim()).map_err(|error| {
             Error::Extract(format!(
-                "`{program} --identify` did not answer in the extractor protocol: {error}"
+                "`{program} --identify` output does not follow the extractor protocol: {error}"
             ))
         })?;
         if identity.protocol != 1 {
             return Err(Error::Extract(format!(
-                "`{program}` speaks extractor protocol {}, this build speaks 1; upgrade ossuary",
+                "`{program}` uses extractor protocol {}, this version supports 1; upgrade ossuary",
                 identity.protocol
             )));
         }
@@ -713,14 +715,14 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
             && !well_formed(contract)
         {
             return Err(Error::Extract(format!(
-                "`{program}` announces a contract named {contract:?}; a contract's name is lowercase letters, digits and dashes"
+                "`{program}` offers a contract named {contract:?}; a contract name may contain only lowercase letters, digits and dashes"
             )));
         }
         identities.push(identity);
     }
     if identities.is_empty() {
         return Err(Error::Extract(format!(
-            "`{program} --identify` answered nothing; an extractor announces itself in at least one line"
+            "`{program} --identify` printed nothing; an extractor must print at least one identify line"
         )));
     }
     if identities.len() > 1 {
@@ -728,13 +730,13 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
         for identity in &identities {
             let Some(contract) = &identity.contract else {
                 return Err(Error::Extract(format!(
-                    "`{program}` announces {} contracts and one line names none; with several, every line says which it is",
+                    "`{program}` offers {} contracts and one of them has no name; with several contracts, each must be named",
                     identities.len()
                 )));
             };
             if !seen.insert(contract.as_str()) {
                 return Err(Error::Extract(format!(
-                    "`{program}` announces the contract {contract:?} twice"
+                    "`{program}` offers the contract {contract:?} twice"
                 )));
             }
         }
@@ -751,14 +753,17 @@ fn scratch_parent(archive: &Archive, temp_dir: Option<&Path>) -> Result<PathBuf>
         None => archive.root().join("cache").join("tmp"),
     };
     std::fs::create_dir_all(&parent).map_err(|error| Error::Io {
-        context: format!("{}: creating the place for derived files", parent.display()),
+        context: format!(
+            "{}: creating the directory for derived files",
+            parent.display()
+        ),
         source: error,
     })?;
     // The extractor takes the path as its argument; handed over absolute,
     // it holds whatever the extractor's working directory turns out to be.
     std::path::absolute(&parent).map_err(|error| Error::Io {
         context: format!(
-            "{}: resolving the place for derived files",
+            "{}: resolving the directory for derived files",
             parent.display()
         ),
         source: error,
@@ -865,14 +870,14 @@ fn try_one(
             [one] => (archive.derived(), one.clone()),
             _ => {
                 return Err(Error::Extract(
-                    "not held; the log speaks of it, neither store holds its bytes".to_string(),
+                    "recorded, but neither content/ nor derived/ contains it".to_string(),
                 ));
             }
         },
     };
     let mut reader = store
         .reader(&digest)?
-        .ok_or_else(|| Error::Extract("gone between naming and reading".to_string()))?;
+        .ok_or_else(|| Error::Extract("no longer present in content/ or derived/".to_string()))?;
 
     // A fresh directory per file: names cannot collide across files, and
     // dropping it sweeps everything — announced files once they are taken
@@ -880,7 +885,10 @@ fn try_one(
     let scratch = scratch_parent
         .map(|parent| {
             tempfile::TempDir::new_in(parent).map_err(|error| Error::Io {
-                context: format!("{}: making a directory for derived files", parent.display()),
+                context: format!(
+                    "{}: creating a directory for derived files",
+                    parent.display()
+                ),
                 source: error,
             })
         })
@@ -927,14 +935,14 @@ fn converse(
     // end-of-file.
     let mut stdin = child.stdin.take().expect("stdin was piped");
     std::io::copy(reader, &mut stdin).map_err(|error| Error::Io {
-        context: "handing the bytes over".to_string(),
+        context: "writing the file to the extractor".to_string(),
         source: error,
     })?;
     drop(stdin);
     // Both pipes drained together: an extractor that complains at length
     // while its findings wait must not block on either.
     let output = child.wait_with_output().map_err(|error| Error::Io {
-        context: "reading the findings".to_string(),
+        context: "reading the extractor's output".to_string(),
         source: error,
     })?;
     let remarks = unprefixed(program, &String::from_utf8_lossy(&output.stderr));
@@ -942,9 +950,9 @@ fn converse(
         // The reason on one line, as a failure list wants it.
         let complaint = remarks.lines().collect::<Vec<_>>().join("; ");
         return Err(Error::Extract(if complaint.is_empty() {
-            format!("`{program}` gave up on it ({})", output.status)
+            format!("`{program}` failed ({})", output.status)
         } else {
-            format!("`{program}` gave up on it ({}): {complaint}", output.status)
+            format!("`{program}` failed ({}): {complaint}", output.status)
         }));
     }
     Ok((
@@ -984,7 +992,7 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
     for line in answer.lines().filter(|line| !line.trim().is_empty()) {
         let parsed: Line = serde_json::from_str(line).map_err(|error| {
             Error::Extract(format!(
-                "`{program}` answered outside the protocol: {line:?}: {error}"
+                "`{program}` printed a line outside the extractor protocol: {line:?}: {error}"
             ))
         })?;
         match parsed {
@@ -996,12 +1004,12 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
             } => {
                 let Some(scratch) = scratch else {
                     return Err(Error::Extract(format!(
-                        "`{program}` announced {name:?}, but its identify line does not say it derives; no directory was handed over"
+                        "`{program}` announced the derived file {name:?}, but its identify line does not declare `derives`"
                     )));
                 };
                 if !bare(&name) {
                     return Err(Error::Extract(format!(
-                        "`{program}` announced {name:?}; a derived file's name is bare, no path in it"
+                        "`{program}` announced {name:?}; a derived file name must not contain a path"
                     )));
                 }
                 if !announced.insert(name.clone()) {
@@ -1012,7 +1020,7 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
                 let path = scratch.join(&name);
                 if !path.is_file() {
                     return Err(Error::Extract(format!(
-                        "`{program}` announced {name:?} but wrote no such file"
+                        "`{program}` announced {name:?} but did not write it"
                     )));
                 }
                 derived.push(Derivation {
@@ -1036,7 +1044,7 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
             } => spoken.push((name, Attribute::parse(&attribute)?, value)),
             _ => {
                 return Err(Error::Extract(format!(
-                    "`{program}` answered outside the protocol: {line:?}"
+                    "`{program}` printed a line outside the extractor protocol: {line:?}"
                 )));
             }
         }
@@ -1047,7 +1055,7 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
             .find(|derivation| derivation.name == name)
         else {
             return Err(Error::Extract(format!(
-                "`{program}` spoke about {name:?}, a file it never announced"
+                "`{program}` reported attributes for {name:?}, a file it did not announce"
             )));
         };
         derivation.findings.push((attribute, value));
@@ -1102,7 +1110,7 @@ mod tests {
         let error = converse(&mut command, "sh", &mut bytes).unwrap_err();
         let spelled = error.to_string();
         assert!(
-            spelled.contains("gave up on it") && spelled.contains("cannot read this"),
+            spelled.contains("`sh` failed") && spelled.contains("cannot read this"),
             "{spelled}"
         );
     }

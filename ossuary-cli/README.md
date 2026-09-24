@@ -1,118 +1,154 @@
 # ossuary-cli
 
-*The command line onto an archive — the `ossuary` binary.*
+*The `ossuary` command.*
 
-Everything a person does with an archive goes through this one command:
-beginning it, taking files in, running extractors over them, asking what
-is known, and getting the bytes back out. The crate is thin on purpose —
-parsing, wording and exit codes live here, every decision about the
-archive itself in [`ossuary-core`](../ossuary-core/README.md).
+All work with an archive goes through this command: creating it, adding
+files, running extractors, querying what is recorded, and getting files
+back out. This crate handles argument parsing, output and exit codes;
+the archive logic is in [`ossuary-core`](../ossuary-core/README.md).
 
 ```console
 $ cargo build --release      # target/release/ossuary
 ```
 
-## Naming the archive
+## Selecting the archive
 
-Every command takes `--archive DIR`. Standing inside the archive is
-enough, and so is setting `OSSUARY_ARCHIVE` once for the shell session;
-the flag wins over the environment, and `.` is the fallback. Two more
-flags are global: `-q`/`--quiet` keeps the narration to itself and leaves
-answers and errors alone, `-v`/`--verbose` spells out names where a count
-would otherwise stand.
+Every command takes `--archive DIR`. Without it, `OSSUARY_ARCHIVE` is
+used if set, otherwise the current directory. Two more options are
+global: `-q`/`--quiet` prints only results and errors, `-v`/`--verbose`
+lists every item where the output would otherwise show only a count.
 
-Answers go to stdout, narration to stderr — so `ossuary find --id … | …`
-pipes the answer and nothing else. A closed pipe ends the answer without
-making the run a failure.
+Results go to stdout, progress messages to stderr, so `ossuary find --id
+… | …` pipes only the results. If the reading end of a pipe is closed
+early, the output stops and the command still exits with success.
 
-## The verbs
+## Commands
 
 | | |
 |---|---|
-| `init` | begin an empty archive — or complete one already standing. `--algorithm` is the one choice made for good, and only when the archive begins |
-| `ingest` | take directory trees and single files in; everything of one call arrives as one run, and a file no longer at a place the record stands by has that place taken back. `--tag` puts the user's word on the whole batch, `--full` looks at every file anew, `--collect` judges nothing gone (for an inbox emptied after every run), `--emptied` takes back every place under a directory emptied on purpose or gone altogether, `--dry-run` counts and measures what would go in and what would be taken back, and writes nothing |
-| `extract` | run extractors over what they have not examined — see below. `--dry-run` shows what named files' examination would record, and writes nothing |
-| `annotate` | put `user:tag` and `user:comment` on files already on the record |
-| `retract` | take a statement back: it no longer stands, the record keeps it. Files and `attribute=value` pairs mix freely; `attribute=..` takes back every standing value; `--dry-run` says what would fall |
+| `init` | create an empty archive, or add missing files to an existing one. `--algorithm` sets the hash algorithm; it can only be chosen when the archive is created |
+| `ingest` | add directory trees and single files; all files of one call form one run. Recorded paths under a named directory whose file no longer exists are retracted. `--tag` tags every file the run records, `--full` reads every file again, `--collect` retracts nothing (for an inbox that is emptied after every run), `--emptied` retracts the recorded paths under a directory that was emptied on purpose or removed, `--dry-run` counts what would be added and retracted, and writes nothing |
+| `extract` | run extractors on files they have not examined yet, see below. `--dry-run` shows what would be recorded for the named files, and writes nothing |
+| `annotate` | add `user:tag` and `user:comment` to recorded files |
+| `retract` | retract values: they are no longer standing, and the record keeps them. Files and `attribute=value` pairs can be mixed; `attribute=..` retracts all standing values of the attribute; `--dry-run` shows what would be retracted |
 | `seal` | close the open segment; its claims become part of the sealed log |
-| `about` | the whole record of one file, oldest first; naming attributes or a `namespace:` narrows it |
-| `standing` | what stands on one file — the outcome after retractions, where `about` tells the story. Attributes or a `namespace:` narrow it; exactly one attribute answers its values bare, one per line. Exits 1 when nothing stands, so a script can test for it |
-| `find` | every file on which all the terms hold, shown with the fields the question named. A name without a colon is a field of the claim — `run`, `source`, `time`, `retract`. Only files still lying somewhere answer; `--all` asks the record, every claim ever written, retractions included; `--as-of TIME` a day's knowledge |
-| `attributes` | every attribute standing on the record, sorted, one per line — the words a question can be asked in. Namespaces like `exif:` narrow it; `--count` puts the number of files each stands on in front |
-| `history` | every run on the record, oldest first: when it closed, its id, what it wrote, who spoke in it — the moments `--as-of` can be asked for, and the ids `export`, `extract` and `--as-of` take |
-| `ls`, `tree` | what stands at one place, one level of it — or everything below it |
-| `id` | the name a file would answer to, and whether the archive already holds it. Nothing is taken in |
-| `get` | one file's bytes to stdout, or to `--output FILE` |
-| `export` | files back out as they arrived: whole runs by id, single files by name, mixed freely. `--dry-run` says what would land where |
-| `audit` | prove the archive intact: every byte against its name, the record against the stores. Exits 1 when findings stand |
-| `maintain mend` | join the pieces of a broken chain of sealed segments, and keep the break on the record. Nothing sealed is rewritten; `--dry-run` says what would be mended. Exits 1 when a break was left open |
-| `maintain weed` | take out of `derived/` what `content/` holds as well, both copies proved against their name first. `--repair` mends a damaged original from its sound derived copy, the damaged one set aside; `--dry-run` says what would go. Exits 1 when a file was left standing |
+| `about` | all claims about one file, oldest first; attributes or a `namespace:` restrict the output |
+| `standing` | the standing values of one file, with retractions applied, where `about` shows every claim. Attributes or a `namespace:` restrict the output; with exactly one attribute, only its values are printed, one per line. Exits 1 if there is no standing value, so a script can test for it |
+| `find` | files that match all terms, shown with the attributes the query selects. A name without a colon is a field of the claim, such as `run`, `source`, `time` or `retract`. Only files that are still present are listed; `--all` searches every claim ever written, retractions included; `--as-of TIME` searches what was recorded up to TIME |
+| `attributes` | all attributes with standing values, sorted, one per line: the attribute names a query can use. Namespaces like `exif:` restrict the list; `--count` prefixes each attribute with the number of files that have it |
+| `history` | all runs, oldest first: when each run ended, its id, what it wrote, and the sources of its claims. These are the times `--as-of` accepts and the ids `export`, `extract` and `--as-of` take |
+| `ls`, `tree` | the recorded files and folders at a path, one level (`ls`) or everything below it (`tree`) |
+| `id` | the name a file would have in the archive, and whether the archive already contains it. Nothing is added |
+| `get` | one file's content to stdout, or to `--output FILE` |
+| `export` | copy files out of the archive under their recorded paths: runs by id, single files by name, in any mix. `--dry-run` shows where each file would be written |
+| `audit` | check the archive: every file against its hash, every claim readable, no segment or referenced file missing. Exits 1 if there are findings |
+| `maintain mend` | join a broken chain of sealed segments and record each break. Sealed segments are not rewritten; `--dry-run` shows what would be mended. Exits 1 if a break was left open |
+| `maintain weed` | remove files from `derived/` that `content/` also contains, after checking both copies against their hash. `--repair` replaces a damaged file in `content/` with its sound copy from `derived/` and keeps the damaged one aside; `--dry-run` shows what would be removed. Exits 1 if a file was left in both |
 
 `--json` on `about`, `standing`, `find`, `attributes`, `history`, `ls`
-and `audit` keeps the JSON spelling, one object per line, for `jq`.
+and `audit` prints JSON, one object per line, for `jq`.
 `--as-of TIME` on `find`, `attributes`, `history`, `ls`, `tree`,
-`standing`, `about` and `export` answers with what the archive knew at
-TIME — the axis is claim time, never the file's own, and a date alone
-closes at that day's end. A run id in place of the time closes the view
-after that run's last claim.
+`standing`, `about` and `export` uses only what was recorded up to TIME.
+TIME is the time a claim was written, not a time of the file itself; a
+date alone means the end of that day. A run id in place of a time means
+the end of that run.
 
-Files are named by the hex digest of their content. A beginning of it is
-enough wherever a name is asked for, as long as it names only one file.
+Files are named by the hex digest of their content. Wherever a name is
+expected, a prefix is enough as long as it matches only one file.
 
-### Asking
+### Ingesting
 
-`find` takes `attribute=value` terms that must all hold, and the question
-is also the projection: the filters show themselves until a bare
-attribute stands among the terms — then only the bare ones show,
-explicit beats implicit. `*` and `?` match within text values, `low..high` asks for a value
-in a range with either side open, a bare `..` asks only that the
-attribute stands at all, and a value in double quotes is literal — no
-glob, no range. `--missing exif:` turns the question around: which files
-have no EXIF on record. Only standing values answer; what was retracted
-no longer counts.
+For each file, `ingest` records its path, name, host, size, MIME type
+and modification time (`file:path`, `file:name`, `prov:host`,
+`file:size`, `file:mime`, `file:modified`). Files unchanged since the
+last run on the same host are skipped, so a repeated ingest of the same
+directory reads only new and changed files; `--full` reads everything
+again. A tag given with `--tag` is added only to the files the run
+records, so files skipped as unchanged are not tagged unless `--full`
+is given. `--dry-run` also prints the total size, which shows a large
+file included by mistake before it is hashed.
 
-A name without a colon is a field of the claim itself — `subject`,
-`attribute`, `value`, `time`, `source`, `run`, `retract` — and a field
-term asks about the claim behind a value, for every attribute term at
-once: `find run=RUN file:name` is what a run named, `find source=user
-user:tag` what you tagged yourself, `find time=2026-09-01..` what was
-written since September, a date read as `--as-of` reads it, the whole
-day — and `retract=true file:path=*` a path that
-was taken back, where `retract=true file:path` is any retraction with
-the paths shown. A field term shows nothing of itself; a bare field
-name shows the field. `--all` asks the record instead of the standing
-set — every claim ever written, retractions included — and is the one
-way to `retract=true`, what was ever taken back.
+A recorded path under a named directory whose file no longer exists is
+retracted. The file's content and its other claims are kept, and
+`--as-of` a time before the run still shows the path. No paths are
+retracted
 
-`--id` prints the full names alone, ready to pipe into `about`, `get`,
+- under a directory that could not be read,
+- under a path that `config.toml` excludes,
+- for a path named as a single file,
+- under a named directory in which no file was found at all, as with a
+  mount point with nothing mounted. `ingest` prints a note for each
+  such directory.
+
+`--emptied` retracts the recorded paths under the named directories
+even if a directory is empty or no longer exists. `--collect` retracts
+nothing; it is meant for a directory that is emptied after every run,
+such as an inbox, whose files are to be kept in the archive.
+
+### Querying
+
+`find` takes `attribute=value` terms, and a file must match all of them.
+The terms also select what is shown: the attributes of the terms, unless
+a bare attribute is among the terms; then only the bare attributes are
+shown. `*` and `?` are wildcards in text values, `low..high` matches a
+value in a range with either end open, a bare `..` matches any value
+(the attribute must be present), and a value in double quotes is
+literal, without wildcards or range. `--missing exif:` inverts the
+query: files without EXIF data. Only standing values are searched;
+retracted values are ignored.
+
+A name without a colon is a field of the claim: `subject`, `attribute`,
+`value`, `time`, `source`, `run`, `retract`. A field term applies to the
+claims behind all attribute terms: `find run=RUN file:name` lists the
+files a run recorded, `find source=user user:tag` the tags you set
+yourself, `find time=2026-09-01..` what was recorded since September (a
+date covers the whole day, as with `--as-of`), and `find --all
+retract=true file:path=*` the retracted paths, where `retract=true
+file:path` finds any retraction and shows the paths. A field term shows
+nothing itself; a bare field name shows the field. `--all` searches
+every claim ever written instead of the standing values, retractions
+included, and is required for the `retract` field.
+
+For each value, a field term uses the claim that recorded the value
+last. Claims written before runs were recorded have no run. Two range
+terms on the same attribute may be matched by two different values; a
+single `low..high` term must be matched by one value.
+
+`--id` prints only the full names, for piping into `about`, `get`,
 `annotate` or `export`.
 
-`attributes` answers the question before the question: which words are
-there to ask in. Every attribute standing on the record, sorted, one
-per line and bare — the tokens `find` takes as a projection, so
-`ossuary find $(ossuary attributes mail:)` shows everything known about
-mail. Naming namespaces narrows the list to them; `--count` puts the
-number of files each attribute stands on in front of it, the way
-`uniq -c` speaks, so `sort -rn` ranks them. Only standing values speak:
-an attribute every value of which was retracted is not among the words,
-because no `find` could reach it.
+`attributes` lists the names a query can use: every attribute with
+standing values, sorted, one per line, without values. `find` takes
+these names to select what is shown, so `ossuary find $(ossuary
+attributes mail:)` shows everything recorded about mail. Namespaces
+restrict the list; `--count` prefixes each attribute with the number of
+files that have it, as `uniq -c` does, so `sort -rn` ranks them. An
+attribute whose values were all retracted is not listed, since `find`
+cannot match it.
 
 ### Extracting
 
-`ossuary extract NAME` runs `ossuary-extract-NAME` from the PATH and
-every contract that program offers; `NAME:CONTRACT` runs one of them, and
-the same spelling holds in the archive's `[extract] run` list. A bare
-`ossuary extract` runs that list in rounds until a whole round examines
-nothing new — so mail → attachment → text runs to its end in one call.
-Naming subjects runs no rounds: the named files are examined once, now,
-and a named file is handed over even when its kind is not one the
-extractor reads. A whole run's files are named by its dashed id — runs
-and files mix freely, the grammar `export` speaks — and the closing line
-names the call's own run id, which every claim it wrote carries. `--dry-run`
-shows what the named files' examination would record — claims, and each
-derived file with name, kind and size — and writes nothing, receipt
-included. `--full` ignores standing receipts; `--temp-dir` moves the
-place derived files wait in off `cache/tmp`.
+`ossuary extract NAME` runs `ossuary-extract-NAME` from the PATH with
+every contract that program offers; `NAME:CONTRACT` runs one of them.
+The archive's `[extract] run` list in `config.toml` uses the same form.
+A bare `ossuary extract` runs that list in rounds until a round finds
+nothing new to examine, so a chain like mail → attachment → text is
+processed in one call. Every examined file is recorded as examined
+(`prov:examined`), whether anything was found or not, so a repeated
+call examines only new files, and an interrupted call continues where
+it stopped. A new extractor version examines all files again.
+
+Naming files runs a single round: the named files are examined once,
+and a named file is passed to the extractor even if it is not of a type
+the extractor reads. A run id selects every file of that run; runs and
+files can be mixed, as with `export`. The last line prints the run id
+of the call, which is recorded with every claim it wrote. `--dry-run`
+shows what would be recorded for the named files (claims, and each
+derived file with name, type and size) and writes nothing, not even the
+record that a file was examined. `--full` examines files again even if they were
+examined before. `--temp-dir` sets the directory where derived files
+are kept until they are stored, instead of `cache/tmp` in the archive;
+a local disk can be faster when the archive is on a network share.
 
 The extractors that ship with ossuary:
 [image](../ossuary-extract-image/README.md),
@@ -120,23 +156,23 @@ The extractors that ship with ossuary:
 [packed](../ossuary-extract-packed/README.md),
 [pdf](../ossuary-extract-pdf/README.md).
 
-## Outside verbs
+## External commands
 
-A verb this command does not know is looked for on the PATH: `ossuary mount
-~/view` becomes `ossuary-mount ~/view`. The child *becomes* this process —
-signals and exit code included — and inherits the archive resolved: however it
-was named, the child sees one absolute `OSSUARY_ARCHIVE` and resolves nothing
-itself. That is how [`ossuary-mount`](../ossuary-mount/README.md) and
-[`ossuary-mailvault`](../ossuary-mailvault/README.md) arrive without
-weighing this crate down.
+A command that `ossuary` does not know is run as a separate program
+from the PATH: `ossuary mount ~/view` runs `ossuary-mount ~/view`. The
+program replaces the `ossuary` process, so signals and the exit code
+pass through unchanged. It receives the archive as an absolute path in
+`OSSUARY_ARCHIVE`, however the archive was given.
+[`ossuary-mount`](../ossuary-mount/README.md) and
+[`ossuary-mailvault`](../ossuary-mailvault/README.md) are such programs.
 
 ## Exit codes
 
-`0` is the answer given, `1` everything else: an archive that will not
-open, a name that matches nothing or too much, a file an extractor could
-not examine, an audit with findings, `standing` with nothing standing.
-Failures are named on stderr and survive `-q`.
+`0` means success, `1` everything else: an archive that cannot be
+opened, a name that matches no file or more than one, a file an
+extractor could not examine, an audit with findings, `standing` with no
+standing value. Errors are printed on stderr, also with `-q`.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0, see [LICENSE](../LICENSE).

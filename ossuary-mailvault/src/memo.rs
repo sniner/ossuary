@@ -92,7 +92,7 @@ impl Memo {
                 .with_context(|| format!("{}: creating cache/", dir.display()))?;
         }
         let connection = Connection::open(path)
-            .with_context(|| format!("{}: the memo would not open", path.display()))?;
+            .with_context(|| format!("{}: could not be opened", path.display()))?;
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS resume (
                  account     TEXT NOT NULL,

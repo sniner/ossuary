@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-extract-mail"
-description = "Mail extractor for ossuary archives, reading message headers and unpacking what a mail carries"
+description = "Mail extractor for ossuary archives: message headers, attachments and nested messages"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

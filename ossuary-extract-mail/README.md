@@ -1,15 +1,14 @@
 # ossuary-extract-mail
 
-*An internet message in, its own voice out — and what it carries handed
-over as files of their own.*
+Records the headers of an email message, and extracts its attachments
+and nested messages as derived files.
 
-An [extractor](../docs/extractors.md) for ossuary. It reads a message's
-bytes from stdin, answers with the headers the message speaks about
-itself, and writes every attachment and every nested message into the
-directory it was given, each announced as content of its own. It never
-touches the archive.
+An [extractor](../docs/extractors.md) for ossuary. It reads a message
+from stdin, prints its headers, and writes every attachment and every
+nested message into the output directory it was given. It does not
+access the archive; `ossuary extract` runs it and records the results.
 
-## What it puts on the record
+## Recorded attributes
 
 ```
 file:mime = "message/rfc822"
@@ -20,76 +19,79 @@ mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"
 mail:message-id = "<74a2f19c@mail.example.org>"
 ```
 
-Eleven headers are spoken: `from`, `sender`, `reply-to`, `to`, `cc`,
-`bcc`, `subject`, `date`, `message-id`, `in-reply-to`, `references` —
-the message's own voice, and the message-id family that threads it. The
-transport's trail — `received`, `return-path`, the `x-` families — is the
-journey, not the message, and stays untold.
+Eleven headers are recorded: `from`, `sender`, `reply-to`, `to`, `cc`,
+`bcc`, `subject`, `date`, `message-id`, `in-reply-to` and `references`.
+Transport headers (`received`, `return-path`, the `x-` headers) are not
+recorded.
 
-Values are unfolded and their RFC 2047 encoded words decoded — that is
-conversion, not tidying. Everything else stands as the mail spells it:
-the date keeps its own calendar, addresses keep their display names,
-commas and angle brackets. A raw byte no charset accounts for reads as
-U+FFFD rather than silencing its whole header.
+Folded values are unfolded, and RFC 2047 encoded words are decoded.
+Nothing else is changed: the date keeps its original format, and
+addresses keep their display names, commas and angle brackets. A byte
+that no charset can decode is replaced with U+FFFD; the rest of the
+header is kept.
 
-## What it hands over
+## Attachments
 
-Every attachment and every nested message becomes a derived file, taken
-into the archive with `prov:origin` naming the mail it came out
-of. Announced with the kind the mail itself declared — not a guess from
-the bytes — and under the name the mail spelled, flattened to a bare file
-name. A forwarded message nobody named gets `message.eml`, a nameless
-attachment `attachment`. Where two names collide a counter slips in
-before the extension, a name longer than a filesystem takes is cut to
-fit, and the name the mail spelled goes on the record either way: its
-last element as `file:name`, the whole of it with a leading `@` as
-`file:path`, the attachment's place inside the mail spelled the way
-every inner place is (`@invoice.pdf`), so `find file:path=*.pdf`
-reaches it wherever it lay. An `@`-led place places nothing by itself;
-the attachment is present while its mail is. A forwarded message nobody
-named has neither: `message.eml` is this extractor's handle, not the
-mail's word. An attachment's `mail:content-id` is recorded on the
-attachment, not on the mail.
+Every attachment and every nested message becomes a derived file, with
+`prov:origin` pointing to the message. Its type is the content type the
+message declares for it, not one detected from the bytes.
 
-Body parts without a name stay inside: they are the mail speaking, not
-the mail carrying.
+The file is written under the name given in the message, reduced to a
+bare file name. An unnamed nested message is written as `message.eml`,
+an unnamed attachment as `attachment`. If two names collide, a counter
+is added before the extension; a name too long for the filesystem is
+shortened.
 
-## Kinds it reads, and the gate behind them
+The name from the message is recorded in full, whatever name the file
+was written under:
 
-`message/rfc822` and — deliberately — `text/plain`. Ingest's sniff cannot
-tell a mail from any other text, so every text file passes through here
-once. What decides is the bytes themselves: a header section of
-well-formed fields from byte zero, holding at least two distinct names
-only mail uses. One is not enough — any prose may mention `Date:` at the
-start of a line.
+- `file:name`: the last element of the name
+- `file:path`: the full name with a leading `@`, which marks a location
+  inside another file (`@invoice.pdf`)
 
-* **Not a message** → an examination with nothing found. Exit 0, no
-  output; the receipt keeps those bytes from being offered again.
-* **A message** → `message/rfc822` goes on the record beside the sniffed
-  `text/plain`. Both stand: the record keeps every word, and choosing
-  between them is the reader's business.
-* **An mbox** — a `From ` separator line with a message behind it — is a
-  mailbox, not a message. Nothing is unpacked and no header is spoken,
-  but the recognized kind goes on the record as `application/mbox`, so a
-  future mailbox reader finds its work waiting.
+`find file:path=*.pdf` therefore also finds attachments. A path with a
+leading `@` is not a filesystem location: `find` returns the attachment
+as long as it returns the message. An unnamed nested message gets
+neither attribute, because `message.eml` is not a name from the message.
+An attachment's `mail:content-id` is recorded on the attachment, not on
+the message.
 
-Only failing to read stdin or to write a carried file is a failure.
+Body parts without a name are not extracted.
+
+## Supported types
+
+`message/rfc822` and `text/plain`. `text/plain` is included because
+ingest cannot distinguish a message from other text, so every text
+file is examined once. A file counts as a message if it starts with a
+header section of well-formed fields that contains at least two
+different header names used only in mail. One is not enough, since any text can
+have a line starting with `Date:`.
+
+* **Not a message**: an empty result. The file gets its receipt and is
+  not offered again.
+* **A message**: `file:mime = "message/rfc822"` is recorded in addition
+  to the `text/plain` detected at ingest. Both values are kept.
+* **An mbox file** (a `From ` separator line followed by a message):
+  nothing is extracted and no headers are recorded, but
+  `file:mime = "application/mbox"` is recorded.
+
+Only a failure to read stdin or to write an extracted file is an error.
 
 ## Running it
 
-Put the binary on the PATH beside `ossuary`, then:
+Put the binary on the PATH next to `ossuary`, then:
 
 ```console
 $ ossuary extract mail
 ```
 
-Or list it under `[extract] run` in the archive's `config.toml`. A bare
-`ossuary extract` runs its list in rounds, which is what a mail wants:
-the attachment this extractor hands back is offered to whichever
-extractor reads its kind in the next round, so mail → attachment → text
-settles in one call.
+Or add it to `[extract] run` in the archive's `config.toml`. A plain
+`ossuary extract` runs the listed extractors in rounds until a round
+examines nothing new. An attachment extracted in one round is examined
+by the extractor for its type in the next, so message, attachment and
+the attachment's text are all processed in one call.
 
-Testable by hand:
+To run it by hand:
 
 ```console
 $ ossuary-extract-mail --identify
@@ -98,4 +100,4 @@ $ mkdir /tmp/out && ossuary-extract-mail /tmp/out < message.eml
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+Apache License 2.0 (see [LICENSE](../LICENSE)).

@@ -106,8 +106,8 @@ fn caught_up(archive: &Archive, say: Say) -> Result<Index> {
     let folded = index.fold(archive.log())?;
     if folded.segments > 0 {
         say.line(format_args!(
-            "catching the index up: {} it had not seen",
-            counted(folded.segments, "sealed segment", "sealed segments")
+            "index updated: {}",
+            counted(folded.segments, "new log segment", "new log segments")
         ));
     }
     Ok(index)
@@ -351,7 +351,9 @@ impl Fetch<'_> {
             }
             Err(Stop::Caller(error)) => Err(match closed {
                 Ok(()) => error,
-                Err(more) => error.context(format!("and the memo did not commit: {more:#}")),
+                Err(more) => {
+                    error.context(format!("and the resume point could not be saved: {more:#}"))
+                }
             }),
         }
     }
@@ -434,7 +436,7 @@ impl Fetch<'_> {
         let name = place::folder(&account.name, folder);
         let Some(id) = client.resolve(folder).map(str::to_string) else {
             tally.failed.push(format!(
-                "{name}: no such folder in the mailbox; it offers {}",
+                "{name}: no such folder; the mailbox has {}",
                 client.folders().join(", ")
             ));
             return Ok(());
@@ -451,34 +453,36 @@ impl Fetch<'_> {
             let owned = client.owns(&point.link);
             if !owned {
                 self.say.line(format_args!(
-                    "{name}: the resume point names another host, fetching the folder whole"
+                    "{name}: the saved resume point points to another host; ignoring it and fetching all messages"
                 ));
             }
             owned
         });
         let mut from = point.as_ref().map(|point| point.link.as_str());
         let mut how = if self.options.full {
-            "everything, as --full asks"
+            "full fetch (--full)"
         } else if from.is_some() {
-            "carrying on from the last run"
+            "resuming from the last run"
         } else {
-            "first fetch, the whole folder"
+            "first fetch"
         };
         let round = match client.round(&id, from) {
             Ok(round) => round,
             Err(Halt::Expired) => {
                 self.say.line(format_args!(
-                    "{name}: the server no longer honours the resume point ({} old), fetching the folder whole",
-                    point.as_ref().map_or_else(|| "an unknown time".to_string(), crate::memo::Delta::age)
+                    "{name}: the resume point has expired (age {}); fetching all messages",
+                    point
+                        .as_ref()
+                        .map_or_else(|| "unknown".to_string(), crate::memo::Delta::age)
                 ));
                 from = None;
-                how = "the whole folder";
+                how = "full fetch";
                 match client.round(&id, None) {
                     Ok(round) => round,
                     Err(Halt::Expired | Halt::Failed(_)) => {
-                        tally
-                            .failed
-                            .push(format!("{name}: the server would not start a round"));
+                        tally.failed.push(format!(
+                            "{name}: the server did not list the folder's messages"
+                        ));
                         return Ok(());
                     }
                 }
@@ -489,7 +493,7 @@ impl Fetch<'_> {
             }
         };
         let gone = if round.gone > 0 {
-            format!(", {} gone from the folder", round.gone)
+            format!(", {} removed from the folder", round.gone)
         } else {
             String::new()
         };
@@ -505,7 +509,7 @@ impl Fetch<'_> {
         let (landed, missed) = self.graph_land(&name, client, &round.offered, tally)?;
         if missed > 0 {
             self.say.line(format_args!(
-                "{name}: {} not fetched; the resume point stays, and the next run asks for them again",
+                "{name}: {} not fetched; the next run tries them again",
                 counted(missed, "message", "messages")
             ));
             return Ok(());
@@ -521,10 +525,10 @@ impl Fetch<'_> {
                 self.memo.advance_delta(&account.name, folder, &link)?;
             }
             Some(_) => self.say.line(format_args!(
-                "{name}: no messages offered, resume point not started; the next run asks again"
+                "{name}: no messages listed; no resume point saved"
             )),
             None => self.say.line(format_args!(
-                "{name}: the round ended without a resume point; the next run fetches the folder whole"
+                "{name}: the server returned no resume point; the next run fetches all messages again"
             )),
         }
         Ok(())
@@ -536,15 +540,12 @@ impl Fetch<'_> {
 /// otherwise — or when `full` asks for everything.
 fn carry_on(resume: Option<Resume>, uidvalidity: u32, full: bool) -> (u32, String) {
     match resume {
-        _ if full => (0, "everything, as --full asks".to_string()),
+        _ if full => (0, "full fetch (--full)".to_string()),
         Some(point) if point.uidvalidity == uidvalidity => {
-            (point.uid, format!("carrying on above UID {}", point.uid))
+            (point.uid, format!("resuming above UID {}", point.uid))
         }
-        Some(_) => (
-            0,
-            "the server renumbered the folder, fetching it whole".to_string(),
-        ),
-        None => (0, "first fetch, the whole folder".to_string()),
+        Some(_) => (0, "full fetch (UIDVALIDITY changed)".to_string()),
+        None => (0, "first fetch".to_string()),
     }
 }
 
@@ -1185,7 +1186,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 tally.failed,
-                ["m365/Drafts: no such folder in the mailbox; it offers Inbox"]
+                ["m365/Drafts: no such folder; the mailbox has Inbox"]
             );
         }
 

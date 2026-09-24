@@ -20,12 +20,12 @@ pub struct Plan {
     /// What the claims are, as the sentence counts them: `origin(s)`.
     pub unit: &'static str,
     /// What is done to them, past participle first, so the sentence can
-    /// say both `3 origin(s) said again as prov:origin` and `would be
-    /// said again as prov:origin`.
+    /// say both `3 origin(s) copied to prov:origin` and `would be copied
+    /// to prov:origin`.
     pub done: &'static str,
     /// What to say when there is nothing to append.
     pub nothing: &'static str,
-    /// Findings beside the count, each a short clause: `3 already stood`.
+    /// Findings beside the count, each a short clause: `3 already recorded`.
     pub notes: Vec<String>,
 }
 
@@ -56,14 +56,11 @@ impl Plan {
     pub fn sentence(&self, dry_run: bool) -> String {
         let count = self.claims.len();
         let mut sentence = if count == 0 {
-            format!("nothing to say: {}", self.nothing)
+            format!("nothing to do: {}", self.nothing)
         } else if dry_run {
             format!("{count} {} would be {}", self.unit, self.done)
         } else if self.apart {
-            format!(
-                "{count} {} {}, in a segment of their own",
-                self.unit, self.done
-            )
+            format!("{count} {} {}, in a separate segment", self.unit, self.done)
         } else {
             format!("{count} {} {}", self.unit, self.done)
         };
@@ -100,9 +97,9 @@ mod tests {
             claims,
             apart,
             unit: "tag(s)",
-            done: "said again",
-            nothing: "every tag stands",
-            notes: vec!["1 already stood".to_string()],
+            done: "copied",
+            nothing: "every tag is recorded",
+            notes: vec!["1 already recorded".to_string()],
         }
     }
 
@@ -148,19 +145,19 @@ mod tests {
         let one = plan(vec![claim("2026-09-01T10:00:00Z")], true);
         assert_eq!(
             one.sentence(true),
-            "1 tag(s) would be said again; 1 already stood"
+            "1 tag(s) would be copied; 1 already recorded"
         );
         assert_eq!(
             one.sentence(false),
-            "1 tag(s) said again, in a segment of their own; 1 already stood"
+            "1 tag(s) copied, in a separate segment; 1 already recorded"
         );
         assert_eq!(
             plan(vec![claim("2026-09-01T10:00:00Z")], false).sentence(false),
-            "1 tag(s) said again; 1 already stood"
+            "1 tag(s) copied; 1 already recorded"
         );
         assert_eq!(
             plan(Vec::new(), true).sentence(false),
-            "nothing to say: every tag stands; 1 already stood"
+            "nothing to do: every tag is recorded; 1 already recorded"
         );
     }
 }
