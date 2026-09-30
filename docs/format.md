@@ -295,11 +295,11 @@ Reconstructing the archive from the directory tree and, if the stores
 are sealed, the key:
 
 1. Read `FORMAT`: generation, algorithm, depths.
-2. Walk `claims/`, decompress (`zstd -dc`) and unseal each entry, check
-   that the first line has `ossuary-segment`, and order the segments as
-   above. Every `previous` a header names must be among them, or a mend
-   must be placed in front of the segment that names it; otherwise the
-   named segment is missing.
+2. Walk `claims/`, unseal each entry if it is sealed, decompress it
+   (`zstd -dc`), check that the first line has `ossuary-segment`, and
+   order the segments as above. Every `previous` a header names must be
+   among them, or a mend must be placed in front of the segment that
+   names it; otherwise the named segment is missing.
 3. Concatenate, append `head.jsonl`: this is the complete claim log.
 4. Walk `content/` and `derived/` the same way for the content itself;
    each file can be checked against its name with the algorithm's
@@ -308,7 +308,8 @@ are sealed, the key:
 
 None of these steps needs this project: a shell, `zstd`, `jq` and the
 coreutils hash tools are enough. Step 5 is optional; `grep` over the
-log already shows everything recorded about a blob.
+log already shows everything recorded about a blob. [Reading an archive
+without ossuary](recovery.md) works through these steps with examples.
 
 ## Evolution
 

@@ -483,6 +483,8 @@ software:
 
 * [The archive format](docs/format.md): layout, claims, segments, and
   how to recover an archive with nothing but a shell
+* [Reading an archive without ossuary](docs/recovery.md): getting files
+  back from an uncompressed or compressed archive, with examples
 * [The attribute vocabulary](docs/vocabulary.md): what each attribute
   means, and how current claims become an answer
 * [The extractor protocol](docs/extractors.md): how an extractor, in

@@ -5,6 +5,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **[Reading an archive without ossuary](docs/recovery.md)** shows with examples how to get files
+  back from an uncompressed or compressed archive with a shell, `zstd` and `jq`: which file is
+  which, restoring every file under its path, and checking the archive
+
 ## [0.10.1] - 2026-09-24
 
 ### Added
