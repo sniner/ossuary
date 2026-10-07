@@ -5,12 +5,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-07
+
 ### Breaking changes
 
 - **`previous` in a segment header is a list.** A sealed segment and the open segment name the
   segments sealed before them as `"previous":["3c1e…"]`, with one name in an archive written as
-  one line. A segment can then name the last segments of two lines, which merging two archives
-  into one record needs. An archive written by 0.10.1 or earlier is not read until
+  one line. A segment can then name the last segments of two lines, which `ossuary merge`
+  needs. An archive written by 0.10.1 or earlier is not read until
   `ossuary-fix previous` has rewritten its headers; every command stops at the first segment in
   the old form. `audit` and `maintain mend` read a record with several first segments: a line
   merged into the chain is listed as such and is not a break. No schema version moves
