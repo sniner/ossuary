@@ -371,17 +371,21 @@ impl Config {
             return Ok(self.accounts.iter().collect());
         }
         for name in names {
-            if !self.accounts.iter().any(|account| &account.name == name) {
-                bail!(
-                    "{name}: no such account in {}; known accounts: {}",
-                    self.path.display(),
-                    self.accounts
-                        .iter()
-                        .map(|account| account.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+            if self.accounts.iter().any(|account| &account.name == name) {
+                continue;
             }
+            if self.accounts.is_empty() {
+                bail!("{name}: no such account in {}", self.path.display());
+            }
+            bail!(
+                "{name}: no such account in {}; known accounts: {}",
+                self.path.display(),
+                self.accounts
+                    .iter()
+                    .map(|account| account.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         Ok(self
             .accounts
@@ -656,7 +660,18 @@ mod tests {
             .map(|account| account.name.as_str())
             .collect();
         assert_eq!(names, ["a", "b"]);
-        assert!(config.chosen(&["c".to_string()]).is_err());
+        let unknown = config.chosen(&["c".to_string()]).err().unwrap();
+        assert!(
+            unknown.to_string().ends_with("known accounts: a, b"),
+            "{unknown:#}"
+        );
+
+        let empty = load("").unwrap();
+        let unknown = empty.chosen(&["c".to_string()]).err().unwrap();
+        assert!(
+            !unknown.to_string().contains("known accounts"),
+            "no list when there is nothing to list: {unknown:#}"
+        );
     }
 
     #[test]
