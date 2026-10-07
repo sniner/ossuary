@@ -17,6 +17,11 @@
 //! on the PATH, handed the archive in `OSSUARY_ARCHIVE`, linking the
 //! core. Its mailboxes stand in `mailvault.toml` in the archive root.
 
+// `assert!(x.is_empty())` reads as the statement it makes; the form
+// clippy suggests, `assert_eq!(x, [] as [T; 0])`, says the same and
+// names the type for nothing.
+#![cfg_attr(test, allow(clippy::assert_is_empty))]
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

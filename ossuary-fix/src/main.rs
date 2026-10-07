@@ -21,6 +21,11 @@
 //! subcommand to its fix. Adding a fix is one file, one variant of
 //! [`Command`] with its help text, and one arm of the match in [`run`].
 
+// `assert!(x.is_empty())` reads as the statement it makes; the form
+// clippy suggests, `assert_eq!(x, [] as [T; 0])`, says the same and
+// names the type for nothing.
+#![cfg_attr(test, allow(clippy::assert_is_empty))]
+
 mod fixes;
 mod plan;
 mod record;
