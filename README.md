@@ -356,6 +356,48 @@ archive as it was when the first ingest finished, even if two runs
 finished in the same second. `export` and `extract` also take a run id
 for all files of a run, and `find run=ID` shows what a run wrote.
 
+## Merging two archives
+
+`merge DIR` takes the archive at DIR into the current one: every file
+and every sealed segment is copied, files already present are skipped,
+and the open segment of the current archive is made to follow the last
+segment of both. The archive at DIR is left as it was, apart from its
+open segment being sealed; it can be deleted afterwards or kept and
+merged again later, which copies only what is new. This is how a mail
+archive kept separately with `ossuary mailvault` ends up in the main
+archive:
+
+```console
+$ ossuary --archive ~/archive merge ~/mail-archive --dry-run
+would copy 1204 file(s) to content/ (3 already here), 2410 file(s) to derived/ (0 already here) and 14 sealed segment(s) (0 already here), and seal the 36 claim(s) in the other archive's open segment as one more; nothing written
+$ ossuary --archive ~/archive merge ~/mail-archive
+merged: 1204 file(s) copied to content/ (3 already here), 2410 file(s) copied to derived/, 15 segment(s) copied; the other archive's open segment was sealed as 7a83…; this archive's open segment was sealed as 1fee…; the open segment now follows 1fee… and 7a83…; 4 mailbox resume point(s) taken over
+```
+
+Nothing sealed is rewritten in either archive. The merged archive has
+two first segments, and `audit` lists the other archive's segments as
+a line merged into the chain. All claims keep their time, source and
+run, so `--as-of` and `history` read across both as if they had always
+been one record. A file that is in both archives has the same name in
+both and is stored once.
+
+Both archives must use the same hash algorithm. An archive with
+another one is merged with `--rehash`: every file is hashed anew with
+the current archive's algorithm on the way in, and the other archive's
+claims are written with the new names, segment for segment, with their
+time, source and run unchanged. The other archive's chain of segments
+is not carried over. This is also how an archive moves to another hash
+algorithm: create an empty archive with `init --algorithm`, then merge
+the old one into it with `--rehash`. The merge stops before
+joining the chains if a file in the other archive is damaged, if
+`audit` has findings for its chain of segments, or if both
+`mailvault.toml` files use one account name for different mailboxes,
+because `mailbox:place` records the account name. `--force` merges
+anyway. What was copied before a stop stays and is not copied again.
+`config.toml` and `mailvault.toml` are not merged; compare them by hand.
+`ossuary mailvault` carries on where the other archive's fetches left
+off for every folder the current archive has not fetched itself.
+
 ## Browsing
 
 `ls` shows one directory level of the recorded paths, `tree` shows

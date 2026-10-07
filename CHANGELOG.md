@@ -17,6 +17,19 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`ossuary merge DIR` takes another archive into the current one.** Every file and every sealed
+  segment of the other archive is copied, files already present are skipped, both open segments
+  are sealed, and the open segment of the current archive is made to follow the last segment of
+  both. Nothing sealed is rewritten in either archive, and the other archive can be merged again
+  later. `audit` shows the merged segments as a line merged into the chain. The resume points of
+  `ossuary mailvault` are taken over for folders the current archive has not fetched. Both
+  archives must use the same hash algorithm; a damaged file, a finding in the other archive's
+  chain, or an account name used for different mailboxes in both `mailvault.toml` files stops the
+  merge unless `--force` is given. `--dry-run` shows what would be copied. An archive with
+  another hash algorithm is merged with `--rehash`: its files are hashed anew on the way in and
+  its claims replayed with the new names, with time, source and run unchanged; its chain of
+  segments is not carried over. An empty archive created with `init --algorithm` and a
+  `merge --rehash` of the old one move an archive to another hash algorithm
 - **`ossuary-fix previous` rewrites segment headers into the list form.** It is the first fix that
   rewrites sealed segments: each rewritten segment gets a new name, every segment after it is
   rewritten to name it, the old files are removed from `claims/`, and the query index in `cache/`

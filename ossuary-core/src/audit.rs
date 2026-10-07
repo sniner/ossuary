@@ -64,7 +64,7 @@ use crate::log::{Contents, Log};
 /// is a reference like the claim's own subject, and the audit follows
 /// both — a derived file's origin must be held no less than the derived
 /// file itself.
-const LINKS: [&str; 1] = ["prov:origin"];
+pub(crate) const LINKS: [&str; 1] = ["prov:origin"];
 
 /// One blob store's fixity: every entry read whole, its bytes re-hashed
 /// against the name they are filed under.
@@ -240,6 +240,20 @@ impl LogAudit {
             .iter()
             .filter(|brk| brk.cause == Cause::HeadLost)
             .count()
+    }
+
+    /// How many findings the log alone stands for: damage, segments
+    /// that will not read, segments and heads that are gone, a loop.
+    #[must_use]
+    pub fn findings(&self) -> usize {
+        self.damaged.len()
+            + self.unreadable.len()
+            + self.broken.len()
+            + usize::from(self.head_broken.is_some())
+            + self.predecessor_missing.len()
+            + usize::from(self.head_predecessor_missing.is_some())
+            + self.heads_lost()
+            + self.looped.len()
     }
 }
 
@@ -871,17 +885,7 @@ impl Audit {
     #[must_use]
     pub fn findings(&self) -> usize {
         let store = |report: &StoreAudit| report.damaged.len() + report.unreadable.len();
-        store(&self.content)
-            + store(&self.derived)
-            + self.log.damaged.len()
-            + self.log.unreadable.len()
-            + self.log.broken.len()
-            + usize::from(self.log.head_broken.is_some())
-            + self.log.predecessor_missing.len()
-            + usize::from(self.log.head_predecessor_missing.is_some())
-            + self.log.heads_lost()
-            + self.log.looped.len()
-            + self.missing.len()
+        store(&self.content) + store(&self.derived) + self.log.findings() + self.missing.len()
     }
 
     /// Whether the archive is sound: no finding stands. Observations

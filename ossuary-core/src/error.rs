@@ -170,6 +170,38 @@ pub enum Error {
     /// apart, so one variant carries them all.
     #[error("{0}")]
     Extract(String),
+
+    /// A merge of an archive with itself.
+    #[error("{}: cannot merge an archive with itself; name another archive", .0.display())]
+    MergeSelf(std::path::PathBuf),
+
+    /// The two archives name their files by different hashes, so the
+    /// other archive's names mean nothing here. Its files have to be
+    /// hashed anew and its claims rewritten to the new names, which is
+    /// what `--rehash` does.
+    #[error(
+        "the archives use different hash algorithms ({ours} here, {theirs} there); pass --rehash to add the other archive's files under this archive's hash and replay its claims with the new names"
+    )]
+    MergeAlgorithm { ours: String, theirs: String },
+
+    /// A rehash asked for between archives with the same hash, where a
+    /// merge keeps the other archive's segments as they are.
+    #[error(
+        "both archives use {0}; drop --rehash, a merge keeps the other archive's segments as they are"
+    )]
+    MergeSameHash(String),
+
+    /// Claims about files the other archive does not hold cannot be
+    /// given the new name: there are no bytes to hash.
+    #[error(
+        "{0} claim(s) are about files the other archive does not hold and cannot be rewritten; restore the files from a backup of that archive, or pass --force to leave those claims out"
+    )]
+    MergeMissing(usize),
+
+    /// The other archive has no sealed segment and nothing to seal, so
+    /// there is no segment for this archive's open segment to name.
+    #[error("{}: the archive holds no claims; nothing to merge", .0.display())]
+    MergeNothing(std::path::PathBuf),
 }
 
 impl Error {

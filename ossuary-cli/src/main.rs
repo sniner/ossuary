@@ -19,6 +19,7 @@ mod browse;
 mod export;
 mod extract;
 mod maintain;
+mod merge;
 mod output;
 
 #[derive(Parser)]
@@ -27,7 +28,7 @@ mod output;
     version,
     about = "A personal archive that keeps files permanently and records what is known about them",
     after_help = "Commands by group:
-  archive    init, audit, maintain
+  archive    init, audit, maintain, merge
   record     ingest, extract, annotate, retract, seal
   query      about, standing, find, attributes, history, ls, tree, id
   retrieve   get, export
@@ -558,6 +559,63 @@ enum Command {
     /// Repair and clean up the archive
     #[command(subcommand)]
     Maintain(maintain::Maintenance),
+    /// Take another archive into this one
+    ///
+    /// Copies every file and every sealed segment of the archive at DIR
+    /// into this archive. A file that is already here is not copied
+    /// again: the same content has the same name in both archives. Then
+    /// the open segments of both archives are sealed, and the open
+    /// segment of this archive is made to follow the last segment of
+    /// each. Nothing already sealed is changed in either archive, and
+    /// the other archive is left as it was apart from the seal. It can
+    /// be kept and merged again later, or deleted.
+    ///
+    /// Afterwards `audit` shows the other archive's segments as a line
+    /// merged into the chain. `ossuary mailvault` carries on where the
+    /// other archive's fetches left off, for the folders this archive
+    /// has not fetched itself. config.toml and mailvault.toml are not
+    /// merged; compare them by hand. A copy in derived/ of a file that
+    /// content/ also holds is removed by `ossuary maintain weed`.
+    ///
+    /// Both archives must use the same hash algorithm, unless --rehash
+    /// is given: then every file of the other archive is hashed anew
+    /// with this archive's algorithm on the way in, and the other
+    /// archive's claims are written here with the new names, segment
+    /// for segment, with their time, source and run unchanged. Its
+    /// chain of segments is not carried over, and `audit` shows no
+    /// merged line. This is also the way to move an archive to another
+    /// hash algorithm: create an empty archive with `init --algorithm`
+    /// and merge the old one into it with --rehash. A claim about a
+    /// file the other archive no longer holds cannot be rewritten and
+    /// stops the merge; --force leaves such claims out.
+    ///
+    /// A damaged file in the other archive, a finding in its chain of
+    /// segments, or an account name that both mailvault.toml files use
+    /// for different mailboxes stops the merge before the chains are
+    /// joined; --force merges anyway. Files copied before a stop stay
+    /// and are not copied again. Exits 1 if the merge was stopped or a
+    /// damaged file or a claim was left out.
+    Merge {
+        /// The archive to take in
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+
+        /// Hash the other archive's files anew and replay its claims
+        /// with the new names; for an archive with another hash
+        /// algorithm
+        #[arg(long)]
+        rehash: bool,
+
+        /// Show what would be copied, write nothing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Merge in spite of findings in the other archive, clashing
+        /// account names, damaged files and, with --rehash, claims about
+        /// files the other archive lacks
+        #[arg(long)]
+        force: bool,
+    },
     // An outside verb: `ossuary NAME …` becomes `ossuary-NAME …` from
     // the PATH, the way `mount` arrives without weighing this tool
     // down. The resolved archive travels in the environment; the rest
@@ -716,6 +774,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
         Command::Maintain(task) => maintain::run(&cli.archive, &task, cli.verbose, quiet),
+        Command::Merge {
+            dir,
+            rehash,
+            dry_run,
+            force,
+        } => merge::merge(
+            &cli.archive,
+            &dir,
+            merge::Options {
+                rehash,
+                dry_run,
+                force,
+            },
+            quiet,
+        ),
         Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }
 }
