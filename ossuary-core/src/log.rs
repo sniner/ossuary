@@ -4,7 +4,7 @@
 //! the only mutable file an archive has. Sealing closes it: the file's bytes
 //! go into the claims store verbatim as an ordinary entry, and a fresh head
 //! begins. Nothing is reformatted on the way — what was appended is what is
-//! sealed — and a sealed segment is never compacted, merged or rewritten:
+//! sealed, and a sealed segment is never compacted, combined or rewritten:
 //! superseded and retracted claims stay where they were written, which for
 //! an archive is not a limitation but the point. The head seals itself
 //! once it grows to [`SEAL_AT`]; sealing by hand remains for closing it
@@ -12,12 +12,16 @@
 //!
 //! Segments hang together. The fresh head that a seal begins names, in
 //! its header, the segment just sealed — so every segment but the first
-//! knows the one before it, and the open head knows the last. A sealed
-//! segment that goes missing leaves a name nothing answers to, in the
-//! header of its successor or of the head: that is what an audit follows.
-//! What the chain cannot show is a loss at its very end that the head was
-//! rewritten to hide — the head is the one mutable file — which is a job
-//! for a copy of the latest digest kept outside the archive.
+//! knows the one before it, and the open head knows the last. The header
+//! member is a list: a segment can name several segments sealed before
+//! it, which is how two archives are merged into one record with two
+//! first segments. An archive written as one line has one name in every
+//! list. A sealed segment that goes missing leaves a name nothing answers
+//! to, in the header of its successor or of the head: that is what an
+//! audit follows. What the chain cannot show is a loss at its very end
+//! that the head was rewritten to hide (the head is the one mutable
+//! file), which is a job for a copy of the latest digest kept outside the
+//! archive.
 //!
 //! A break in the chain is closed by a mend, never by rewriting: a segment
 //! of no claims whose header names the two ends it joins — `previous`, the
@@ -37,7 +41,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use immure::{Digest, Store};
 use serde::{Deserialize, Serialize};
@@ -78,11 +82,13 @@ const SEAL_AT: u64 = 1024 * 1024;
 struct Header {
     #[serde(rename = "ossuary-segment")]
     generation: u32,
-    /// The digest of the segment sealed before this one, as the claims
-    /// store files it: bare hex. Absent from the first segment of an
-    /// archive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous: Option<String>,
+    /// The digests of the segments sealed before this one, as the claims
+    /// store files them: bare hex. One name in an archive written as one
+    /// line, several where lines were merged. Absent from a first
+    /// segment. A string in place of the list is refused: the member has
+    /// one form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    previous: Vec<String>,
     /// Present on a mend and nothing else: the segment carries no claims
     /// and stands in for a break in the chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,13 +118,13 @@ struct Generation {
 }
 
 /// The header as it stands in a file, newline included: the generation,
-/// the segment sealed before this one when there is one, and the mend's
-/// members when the segment is one.
-fn header_line(previous: Option<&Digest>, mend: Option<&Mend>) -> String {
+/// the segments sealed before this one when there are any, and the
+/// mend's members when the segment is one.
+fn header_line(previous: &[Digest], mend: Option<&Mend>) -> String {
     let hex = |digest: &Digest| digest.as_str().to_string();
     let header = serde_json::to_string(&Header {
         generation: GENERATION,
-        previous: previous.map(hex),
+        previous: previous.iter().map(hex).collect(),
         mend: mend.map(|mend| MendHeader {
             before: mend.before.as_ref().map(hex),
             replaces: mend.replaces.as_ref().map(hex),
@@ -186,21 +192,21 @@ impl Segment {
     }
 }
 
-/// A segment read back whole: the segment it follows, and its claims.
+/// A segment read back whole: the segments it follows, and its claims.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Contents {
-    previous: Option<Digest>,
+    previous: Vec<Digest>,
     mend: Option<Mend>,
     claims: Vec<Claim>,
 }
 
 impl Contents {
-    /// The segment sealed before this one, as its header names it.
-    ///
-    /// `None` for the first segment of an archive.
+    /// The segments sealed before this one, as its header names them:
+    /// one in an archive written as one line, several where lines were
+    /// merged, none for a first segment.
     #[must_use]
-    pub fn previous(&self) -> Option<&Digest> {
-        self.previous.as_ref()
+    pub fn previous(&self) -> &[Digest] {
+        &self.previous
     }
 
     /// What the segment says as a mend, when it is one.
@@ -292,7 +298,7 @@ impl Log {
         let fresh = file.metadata().map_err(io)?.len() == 0;
         let mut lines = String::new();
         if fresh {
-            lines.push_str(&header_line(None, None));
+            lines.push_str(&header_line(&[], None));
         }
         lines.push_str(&claim.to_line());
         lines.push('\n');
@@ -328,7 +334,7 @@ impl Log {
         match fs::read_to_string(&self.head) {
             Ok(text) => parse_segment(&text),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Contents {
-                previous: None,
+                previous: Vec::new(),
                 mend: None,
                 claims: Vec::new(),
             }),
@@ -381,8 +387,11 @@ impl Log {
         let mut name = self.head.file_name().unwrap_or_default().to_os_string();
         name.push(".tmp");
         let tmp = self.head.with_file_name(name);
-        fs::write(&tmp, header_line(Some(entry.digest()), None))
-            .map_err(io("writing the new head"))?;
+        fs::write(
+            &tmp,
+            header_line(std::slice::from_ref(entry.digest()), None),
+        )
+        .map_err(io("writing the new head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
 
         if let Some(manifests) = &self.manifests {
@@ -414,7 +423,7 @@ impl Log {
     ///
     /// [`Error::Store`] from the store.
     pub fn mend(&self, previous: &Digest, mend: &Mend) -> Result<Segment> {
-        let line = header_line(Some(previous), Some(mend));
+        let line = header_line(std::slice::from_ref(previous), Some(mend));
         let (_, entry) = self.store.add(line.as_bytes())?;
         if let Some(manifests) = &self.manifests {
             // Best effort, as at sealing time.
@@ -426,7 +435,8 @@ impl Log {
         })
     }
 
-    /// Make the open head name `segment` as the last one sealed before it.
+    /// Make the open head name `segments` as the ones sealed before it:
+    /// one after a mend, two after a merge.
     ///
     /// The one rewrite the log allows, because the head is the one file
     /// nothing has sealed yet: its header changes, its claims stay as
@@ -438,7 +448,7 @@ impl Log {
     ///
     /// Everything [`head_contents`](Log::head_contents) can answer, and
     /// [`Error::Io`] replacing the head file.
-    pub fn head_follows(&self, segment: &Digest) -> Result<()> {
+    pub fn head_follows(&self, segments: &[Digest]) -> Result<()> {
         let text = match fs::read_to_string(&self.head) {
             Ok(text) => text,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -462,7 +472,7 @@ impl Log {
         let mut name = self.head.file_name().unwrap_or_default().to_os_string();
         name.push(".tmp");
         let tmp = self.head.with_file_name(name);
-        let mut lines = header_line(Some(segment), None);
+        let mut lines = header_line(segments, None);
         lines.push_str(claims);
         fs::write(&tmp, lines).map_err(io("rewriting the head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))
@@ -509,10 +519,18 @@ impl Log {
         Ok(segments)
     }
 
-    /// The claims store itself — the audit's door to walking every
-    /// sealed segment as the store holds it, manifests left out of it.
-    pub(crate) fn store(&self) -> &Store {
+    /// The claims store itself: for the audit and for repair tools that
+    /// read every sealed segment as the store holds it, manifests left
+    /// out of it.
+    #[must_use]
+    pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// The open segment's file, whether or not it exists yet.
+    #[must_use]
+    pub fn head_path(&self) -> &Path {
+        &self.head
     }
 
     /// Read one sealed segment back: its claims, in the order recorded.
@@ -567,7 +585,11 @@ fn parse_segment(text: &str) -> Result<Contents> {
             .transpose()
             .map_err(|_| Error::SegmentHeader(first.to_string()))
     };
-    let previous = digest(header.previous.as_deref())?;
+    let previous = header
+        .previous
+        .iter()
+        .map(|hex| Digest::parse(hex).map_err(|_| Error::SegmentHeader(first.to_string())))
+        .collect::<Result<Vec<_>>>()?;
     let mend = match header.mend {
         Some(mend) => Some(Mend {
             before: digest(mend.before.as_deref())?,
@@ -681,7 +703,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("head.jsonl")).unwrap(),
             format!(
-                "{{\"ossuary-segment\":1,\"previous\":\"{}\"}}\n",
+                "{{\"ossuary-segment\":1,\"previous\":[\"{}\"]}}\n",
                 segment.digest()
             ),
             "and the header names the segment just sealed"
@@ -724,15 +746,15 @@ mod tests {
 
         assert_eq!(
             log.contents(first.digest()).unwrap().previous(),
-            None,
+            &[] as &[Digest],
             "the first segment of an archive follows nothing"
         );
         assert_eq!(
             log.contents(second.digest()).unwrap().previous(),
-            Some(first.digest())
+            std::slice::from_ref(first.digest())
         );
         let head = log.head_contents().unwrap();
-        assert_eq!(head.previous(), Some(second.digest()));
+        assert_eq!(head.previous(), std::slice::from_ref(second.digest()));
         assert_eq!(head.claims().len(), 1);
         assert_ne!(
             first.digest(),
@@ -754,7 +776,7 @@ mod tests {
         let contents = log.contents(entry.digest()).unwrap();
 
         assert_eq!(contents.claims().len(), 1);
-        assert_eq!(contents.previous(), None);
+        assert!(contents.previous().is_empty());
     }
 
     #[test]
@@ -762,7 +784,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
         let (_, entry) = store
-            .add(b"{\"ossuary-segment\":1,\"previous\":\"the one before\"}\n")
+            .add(b"{\"ossuary-segment\":1,\"previous\":[\"the one before\"]}\n")
             .unwrap();
         let log = Log::new(store, dir.path().join("head.jsonl"));
 
@@ -770,6 +792,59 @@ mod tests {
             log.contents(entry.digest()),
             Err(Error::SegmentHeader(_))
         ));
+    }
+
+    #[test]
+    fn a_predecessor_spelled_as_a_string_is_a_broken_header() {
+        // The member has one form, the list. A header written by a
+        // build from before the list is not read as a list of one;
+        // ossuary-fix rewrites it.
+        let dir = TempDir::new().unwrap();
+        let store = store_in(&dir);
+        let line = format!(
+            "{{\"ossuary-segment\":1,\"previous\":\"{}\"}}\n",
+            "ab".repeat(32)
+        );
+        let (_, entry) = store.add(line.as_bytes()).unwrap();
+        let log = Log::new(store, dir.path().join("head.jsonl"));
+
+        assert!(matches!(
+            log.contents(entry.digest()),
+            Err(Error::SegmentHeader(_))
+        ));
+    }
+
+    #[test]
+    fn a_head_can_name_several_segments_and_seals_naming_them() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("own", "2026-09-01T00:00:00Z")).unwrap();
+        let own = log.seal().unwrap().unwrap();
+        let merged = Digest::parse(&"cd".repeat(32)).unwrap();
+
+        log.head_follows(&[own.digest().clone(), merged.clone()])
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("head.jsonl")).unwrap(),
+            format!(
+                "{{\"ossuary-segment\":1,\"previous\":[\"{}\",\"{}\"]}}\n",
+                own.digest(),
+                merged
+            )
+        );
+        log.append(&claim("after", "2026-09-02T00:00:00Z")).unwrap();
+        let sealed = log.seal().unwrap().unwrap();
+        assert_eq!(
+            log.contents(sealed.digest()).unwrap().previous(),
+            &[own.digest().clone(), merged][..],
+            "sealed, the segment names both"
+        );
+        assert_eq!(
+            log.head_contents().unwrap().previous(),
+            std::slice::from_ref(sealed.digest()),
+            "and the fresh head names the one segment just sealed"
+        );
     }
 
     #[test]
@@ -791,7 +866,7 @@ mod tests {
             .unwrap();
 
         let contents = log.contents(mend.digest()).unwrap();
-        assert_eq!(contents.previous(), Some(first.digest()));
+        assert_eq!(contents.previous(), std::slice::from_ref(first.digest()));
         assert_eq!(contents.claims(), &[]);
         let read = contents.mend().expect("a mend says so");
         assert_eq!(read.before(), Some(second.digest()));
@@ -817,7 +892,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
         let (_, entry) = store
-            .add(b"{\"ossuary-segment\":1,\"previous\":\"a1\",\"mend\":{\"before\":\"the one after\"}}\n")
+            .add(b"{\"ossuary-segment\":1,\"previous\":[\"abababababababababababababababababababababababababababababababab\"],\"mend\":{\"before\":\"the one after\"}}\n")
             .unwrap();
         let log = Log::new(store, dir.path().join("head.jsonl"));
 
@@ -836,13 +911,14 @@ mod tests {
         let sealed = log.seal().unwrap().unwrap();
         fs::remove_file(dir.path().join("head.jsonl")).unwrap();
         log.append(&claim("anew", "2026-09-02T00:00:00Z")).unwrap();
-        assert_eq!(log.head_contents().unwrap().previous(), None);
+        assert!(log.head_contents().unwrap().previous().is_empty());
         let mend = log.mend(sealed.digest(), &Mend::default()).unwrap();
 
-        log.head_follows(mend.digest()).unwrap();
+        log.head_follows(std::slice::from_ref(mend.digest()))
+            .unwrap();
 
         let head = log.head_contents().unwrap();
-        assert_eq!(head.previous(), Some(mend.digest()));
+        assert_eq!(head.previous(), std::slice::from_ref(mend.digest()));
         assert_eq!(head.claims().len(), 1, "the claim appended anew stays");
         assert_eq!(head.claims()[0].value(), Some(&json!("anew")));
     }
@@ -853,15 +929,15 @@ mod tests {
         let log = log_in(&dir);
         let segment = Digest::parse(&"ab".repeat(32)).unwrap();
 
-        log.head_follows(&segment).unwrap();
+        log.head_follows(std::slice::from_ref(&segment)).unwrap();
 
         let head = log.head_contents().unwrap();
-        assert_eq!(head.previous(), Some(&segment));
+        assert_eq!(head.previous(), std::slice::from_ref(&segment));
         assert!(head.claims().is_empty());
         log.append(&claim("after", "2026-09-02T00:00:00Z")).unwrap();
         assert_eq!(
             log.head_contents().unwrap().previous(),
-            Some(&segment),
+            std::slice::from_ref(&segment),
             "an append finds the header standing and adds nothing of its own"
         );
     }
@@ -878,7 +954,7 @@ mod tests {
         let segment = Digest::parse(&"ab".repeat(32)).unwrap();
 
         assert!(matches!(
-            log.head_follows(&segment),
+            log.head_follows(std::slice::from_ref(&segment)),
             Err(Error::BadLine { line: 2, .. })
         ));
         assert_eq!(

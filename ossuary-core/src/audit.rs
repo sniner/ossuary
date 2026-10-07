@@ -34,6 +34,19 @@
 //! seen and the chain joined over it. Nothing is rewritten for that —
 //! the segment after the break still names what it named.
 //!
+//! A record can have more than one first segment: a segment names every
+//! segment sealed before it, and after a merge of two archives one
+//! segment names the last segment of each. The audit reads the chains
+//! so that a segment continues the chain of the first segment it names,
+//! and every other segment it names ends its chain there, merged in.
+//! Which chain continues is a matter of presentation; whatever the
+//! choice, the same segments are reachable from the head. A chain that
+//! begins at a first segment and ends merged into another is a whole
+//! line of the record, not a break: its beginning is a first segment,
+//! not a head lost. A chain whose end nothing follows is where a loss
+//! begins, and the chain after the loss is paired with it in the order
+//! of first claims, as the breaks have always been paired.
+//!
 //! The whole pass works from the truth tiers alone: stores, segments,
 //! head. The cache is never consulted — an audit is the tool for the day
 //! nothing else is trusted, so it leans on nothing the archive could
@@ -183,15 +196,17 @@ pub struct LogAudit {
     /// store entry answers to it.
     pub head_predecessor_missing: Option<String>,
     /// The chains the readable segments form, oldest first, mends
-    /// counted among their links. A whole record is one chain from the
-    /// first segment to the open head; every further chain begins at a
-    /// break.
+    /// counted among their links. A whole record written as one line is
+    /// one chain from the first segment to the open head. A record
+    /// merged from several archives has one such chain and, for every
+    /// line merged in, a chain from that line's first segment to the
+    /// segment it was merged into ([`Chain::joined`]). Every other
+    /// chain begins at a break.
     pub chains: Vec<Chain>,
-    /// The breaks between the chains, in order: the break before
-    /// `chains[i + 1]` is `breaks[i]`. A break where a head was lost is
-    /// a finding; one where a segment is lost is counted as
-    /// [`predecessor_missing`](LogAudit::predecessor_missing) or
-    /// [`head_predecessor_missing`](LogAudit::head_predecessor_missing)
+    /// The breaks between the chains, oldest first. A break where a
+    /// head was lost is a finding; one where a segment is lost is
+    /// counted as [`predecessor_missing`](LogAudit::predecessor_missing)
+    /// or [`head_predecessor_missing`](LogAudit::head_predecessor_missing)
     /// already; one behind a segment that is held but will not read is
     /// counted for that.
     pub breaks: Vec<Break>,
@@ -229,7 +244,8 @@ impl LogAudit {
 }
 
 /// One unbroken run of segments: from a segment that follows nothing
-/// held to the last one that anything follows, or to the open head.
+/// held to the last one that anything follows, to the open head, or to
+/// where the chain was merged into another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chain {
     /// The sealed segments in chain order, mends among them.
@@ -237,12 +253,25 @@ pub struct Chain {
     /// Whether the open head continues the chain. Only the last chain
     /// can, and a chain of no segments is the open head alone.
     pub open_head: bool,
+    /// Where the chain was merged into another, when it was: the
+    /// segment, or the open head, that names the chain's last segment
+    /// among its predecessors without continuing the chain.
+    pub joined: Option<Joined>,
     /// Claims in the chain, the open head's included when it is part.
     pub claims: usize,
     /// When the chain's first claim was recorded.
     pub from: Option<Timestamp>,
     /// When the chain's last claim was recorded.
     pub to: Option<Timestamp>,
+}
+
+/// What a merged chain was merged into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Joined {
+    /// A sealed segment, by name.
+    Segment(String),
+    /// The open head.
+    Head,
 }
 
 /// Why a chain begins where it does, when it is not the first.
@@ -311,7 +340,7 @@ pub struct Mended {
 
 /// One readable segment, as the chain walk needs it.
 struct Link {
-    previous: Option<String>,
+    previous: Vec<String>,
     mend: Option<(Option<String>, Option<String>)>,
     claims: usize,
     first: Option<Timestamp>,
@@ -399,7 +428,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
 fn link(contents: &Contents) -> Link {
     let hex = |digest: &Digest| digest.as_str().to_string();
     Link {
-        previous: contents.previous().map(hex),
+        previous: contents.previous().iter().map(hex).collect(),
         mend: contents
             .mend()
             .map(|mend| (mend.before().map(hex), mend.replaces().map(hex))),
@@ -418,8 +447,9 @@ fn chain(
     links: &BTreeMap<String, Link>,
     open: Option<&Link>,
 ) {
-    // Why a segment begins a chain, from what it names as sealed before
-    // it — or `None` when that is held and readable, so nothing begins.
+    // Why a segment begins a chain, from the first segment it names as
+    // sealed before it, or `None` when that is held and readable, so
+    // nothing begins.
     let cause = |previous: Option<&String>| -> Option<Cause> {
         match previous {
             None => Some(Cause::HeadLost),
@@ -428,24 +458,13 @@ fn chain(
             Some(_) => None,
         }
     };
-    let head_previous = open.and_then(|open| open.previous.as_deref());
+    let head_previous = open.and_then(|open| open.previous.first().map(String::as_str));
     let mut pending: BTreeMap<&str, Cause> = links
         .iter()
-        .filter_map(|(name, link)| {
-            cause(link.previous.as_ref()).map(|cause| (name.as_str(), cause))
-        })
+        .filter_map(|(name, link)| cause(link.previous.first()).map(|cause| (name.as_str(), cause)))
         .collect();
 
-    // Who follows whom, by `previous`. A mend that stands in front of a
-    // sealed segment is not in this map yet: it comes in only where it
-    // closes a pending break.
-    let mut successor: BTreeMap<&str, &str> = BTreeMap::new();
-    for (name, link) in links {
-        let stands_before_sealed = matches!(&link.mend, Some((Some(_), _)));
-        if let (Some(previous), false) = (&link.previous, stands_before_sealed) {
-            successor.insert(previous, name);
-        }
-    }
+    let (mut successor, joins) = follow(report, held, links, open);
     apply_mends(
         report,
         held,
@@ -454,6 +473,16 @@ fn chain(
         &mut pending,
         &mut successor,
     );
+
+    // A segment lost in front of a chain, as the chain's first segment
+    // names it. A mended loss is no longer pending and is not counted.
+    for (start, cause) in &pending {
+        if let Cause::SegmentLost(previous) = cause {
+            report
+                .predecessor_missing
+                .push(((*start).to_string(), previous.clone()));
+        }
+    }
 
     // Walk each chain from its beginning to where nothing follows. A
     // segment no walk from a beginning reaches follows something held
@@ -479,7 +508,14 @@ fn chain(
         if visited.contains(start) {
             continue;
         }
-        let (chain, looped) = walk(start, links, &successor, head_previous, &mut visited);
+        let (chain, looped) = walk(
+            start,
+            links,
+            &successor,
+            &joins,
+            head_previous,
+            &mut visited,
+        );
         if looped {
             // A chain that comes round to itself has no first segment
             // and no cause; the mends on it are what closed the circle.
@@ -503,35 +539,98 @@ fn chain(
             .then_with(|| a.segments.first().cmp(&b.segments.first()))
     });
 
-    // The open head: the end of the chain it continues, or — naming
-    // nothing held — a chain of its own, last. In an archive with
-    // nothing sealed the head is where the record begins.
     if let Some(open) = open {
-        if let Some((chain, _)) = chains.iter_mut().find(|(chain, _)| chain.open_head) {
-            chain.claims += open.claims;
-            if chain.from.is_none() {
-                chain.from.clone_from(&open.first);
-            }
-            if open.last.is_some() {
-                chain.to.clone_from(&open.last);
-            }
-        } else {
-            let cause = match &open.previous {
-                None if held.is_empty() => None,
-                previous => cause(previous.as_ref()),
-            };
-            let chain = Chain {
-                segments: Vec::new(),
-                open_head: true,
-                claims: open.claims,
-                from: open.first.clone(),
-                to: open.last.clone(),
-            };
-            chains.push((chain, cause));
-        }
+        let cause = match open.previous.first() {
+            None if held.is_empty() => None,
+            previous => cause(previous),
+        };
+        with_head(report, &mut chains, open, cause);
     }
+    report.predecessor_missing.sort();
     breaks_between(report, chains);
 }
+
+/// The open head into the chains: the end of the chain it continues,
+/// or, naming nothing held, a chain of its own, last, with `cause`
+/// saying why. In an archive with nothing sealed the head is where the
+/// record begins.
+fn with_head(
+    report: &mut LogAudit,
+    chains: &mut Vec<(Chain, Option<Cause>)>,
+    open: &Link,
+    cause: Option<Cause>,
+) {
+    if let Some((chain, _)) = chains.iter_mut().find(|(chain, _)| chain.open_head) {
+        chain.claims += open.claims;
+        if chain.from.is_none() {
+            chain.from.clone_from(&open.first);
+        }
+        if open.last.is_some() {
+            chain.to.clone_from(&open.last);
+        }
+        return;
+    }
+    if let Some(Cause::SegmentLost(previous)) = &cause {
+        report.head_predecessor_missing = Some(previous.clone());
+    }
+    let chain = Chain {
+        segments: Vec::new(),
+        open_head: true,
+        joined: None,
+        claims: open.claims,
+        from: open.first.clone(),
+        to: open.last.clone(),
+    };
+    chains.push((chain, cause));
+}
+
+/// Who follows whom: a segment continues the chain of the first
+/// segment it names, and every further segment it names has its chain
+/// end there, merged in. A segment merged in that is not held is a loss
+/// no mend can stand in for, counted here. A mend that stands in front
+/// of a sealed segment is not in the map yet: it comes in only where it
+/// closes a pending break.
+fn follow<'a>(
+    report: &mut LogAudit,
+    held: &BTreeSet<String>,
+    links: &'a BTreeMap<String, Link>,
+    open: Option<&'a Link>,
+) -> (BTreeMap<&'a str, &'a str>, BTreeMap<&'a str, Joined>) {
+    let mut successor: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut joins: BTreeMap<&str, Joined> = BTreeMap::new();
+    for (name, link) in links {
+        let stands_before_sealed = matches!(&link.mend, Some((Some(_), _)));
+        if let (Some(previous), false) = (link.previous.first(), stands_before_sealed) {
+            successor.insert(previous, name);
+        }
+        for merged in link.previous.iter().skip(1) {
+            if held.contains(merged) {
+                joins.insert(merged, Joined::Segment(name.clone()));
+            } else {
+                report
+                    .predecessor_missing
+                    .push((name.clone(), merged.clone()));
+            }
+        }
+    }
+    if let Some(open) = open {
+        for merged in open.previous.iter().skip(1) {
+            if held.contains(merged) {
+                joins.insert(merged, Joined::Head);
+            } else {
+                report
+                    .predecessor_missing
+                    .push((HEAD.to_string(), merged.clone()));
+            }
+        }
+    }
+    (successor, joins)
+}
+
+/// The name the open head goes by where a sealed segment's name is
+/// expected: in [`LogAudit::predecessor_missing`], for a segment the
+/// head names as merged in that is not held.
+pub const HEAD: &str = "head";
 
 /// Apply every mend: one in front of a pending break closes it — the
 /// end before the break is then followed by the mend, and the mend by
@@ -550,7 +649,7 @@ fn apply_mends<'a>(
         let Some((before, replaces)) = &link.mend else {
             continue;
         };
-        let Some(previous) = &link.previous else {
+        let Some(previous) = link.previous.first() else {
             report.idle_mends.push(name.clone());
             continue;
         };
@@ -596,69 +695,62 @@ fn tie(a: &Chain, b: &Chain) -> bool {
 }
 
 /// The breaks between the chains, into the report with the chains
-/// themselves: the first chain begins where the archive does, and every
-/// later beginning is a break, named for what the segment after it
-/// says. A segment gone is counted as such wherever it is named —
-/// behind the first chain too, where it is nobody's break.
+/// themselves. A chain whose end nothing follows is an open end; the
+/// next chain in time order that begins with a cause is paired with
+/// it as a break. A chain that begins with a cause while no end is
+/// open is a beginning of the record: the archive's first chain, or a
+/// line merged in whole. A chain that ends merged into another, or at
+/// the open head, leaves no end open.
 fn breaks_between(report: &mut LogAudit, chains: Vec<(Chain, Option<Cause>)>) {
-    for index in 1..chains.len() {
-        let (earlier, _) = &chains[index - 1];
+    let mut open: Option<usize> = None;
+    for index in 0..chains.len() {
         let (later, cause) = &chains[index];
-        let (Some(after), Some(cause)) = (earlier.segments.last(), cause) else {
-            continue;
-        };
-        // The ends are sure when the earlier chain is surely the one
-        // right before the later: no tie with its own predecessor
-        // either, or it might be the one standing here.
-        let sure = !tie(earlier, later)
-            && index
-                .checked_sub(2)
-                .is_none_or(|before| !tie(&chains[before].0, earlier));
-        report.breaks.push(Break {
-            after: after.clone(),
-            before: later.segments.first().cloned(),
-            cause: cause.clone(),
-            from: earlier.to.clone(),
-            to: later.from.clone(),
-            sure,
-        });
-    }
-    let lost = chains
-        .first()
-        .map(|(chain, cause)| (chain.segments.first().cloned(), cause.clone()))
-        .into_iter()
-        .chain(
-            report
-                .breaks
-                .iter()
-                .map(|brk| (brk.before.clone(), Some(brk.cause.clone()))),
-        );
-    for (segment, cause) in lost {
-        let Some(Cause::SegmentLost(previous)) = cause else {
-            continue;
-        };
-        match segment {
-            Some(segment) => report.predecessor_missing.push((segment, previous)),
-            None => report.head_predecessor_missing = Some(previous),
+        if let (Some(earlier), Some(cause)) = (open, cause) {
+            let (earlier_chain, _) = &chains[earlier];
+            if let Some(after) = earlier_chain.segments.last() {
+                // The ends are sure when the earlier chain is surely the
+                // one right before the later: no tie with its own
+                // predecessor either, or it might be the one standing
+                // here.
+                let sure = !tie(earlier_chain, later)
+                    && earlier
+                        .checked_sub(1)
+                        .is_none_or(|before| !tie(&chains[before].0, earlier_chain));
+                report.breaks.push(Break {
+                    after: after.clone(),
+                    before: later.segments.first().cloned(),
+                    cause: cause.clone(),
+                    from: earlier_chain.to.clone(),
+                    to: later.from.clone(),
+                    sure,
+                });
+            }
         }
+        open = if later.open_head || later.joined.is_some() {
+            None
+        } else {
+            Some(index)
+        };
     }
-    report.predecessor_missing.sort();
     report.chains = chains.into_iter().map(|(chain, _)| chain).collect();
 }
 
 /// One chain from `start`: along `successor` until nothing follows,
 /// marking each segment visited on the way — and whether the walk came
-/// round to a segment already walked, which no chain does.
+/// round to a segment already walked, which no chain does. A chain
+/// that nothing follows may end merged into another, as `joins` says.
 fn walk<'a>(
     start: &'a str,
     links: &'a BTreeMap<String, Link>,
     successor: &BTreeMap<&'a str, &'a str>,
+    joins: &BTreeMap<&'a str, Joined>,
     head_previous: Option<&str>,
     visited: &mut BTreeSet<&'a str>,
 ) -> (Chain, bool) {
     let mut chain = Chain {
         segments: Vec::new(),
         open_head: false,
+        joined: None,
         claims: 0,
         from: None,
         to: None,
@@ -682,10 +774,11 @@ fn walk<'a>(
         if head_previous == Some(at) {
             chain.open_head = true;
         }
-        match successor.get(at) {
-            Some(next) => at = next,
-            None => return (chain, false),
-        }
+        let Some(next) = successor.get(at) else {
+            chain.joined = joins.get(at).cloned();
+            return (chain, false);
+        };
+        at = next;
     }
 }
 
@@ -1112,7 +1205,10 @@ mod tests {
             .log()
             .mend(first.digest(), &Mend::default())
             .unwrap();
-        archive.log().head_follows(mend.digest()).unwrap();
+        archive
+            .log()
+            .head_follows(std::slice::from_ref(mend.digest()))
+            .unwrap();
 
         let audit = run(&archive);
 
@@ -1171,7 +1267,7 @@ mod tests {
         );
         assert_eq!(
             archive.log().contents(third.digest()).unwrap().previous(),
-            Some(second.digest()),
+            std::slice::from_ref(second.digest()),
             "nothing sealed was rewritten"
         );
         assert_eq!(
@@ -1559,5 +1655,202 @@ mod tests {
             1,
             "the blob it spoke of turns unrecorded, an observation, not a second finding"
         );
+    }
+
+    /// A sealed segment written straight into the claims store, as a
+    /// second archive's segments arrive in a merge: the header names
+    /// `previous`, the claims follow.
+    fn sealed(archive: &Archive, previous: &[&Digest], claims: &[Claim]) -> Digest {
+        let mut text = if previous.is_empty() {
+            "{\"ossuary-segment\":1}\n".to_string()
+        } else {
+            let names: Vec<String> = previous.iter().map(|d| format!("\"{d}\"")).collect();
+            format!(
+                "{{\"ossuary-segment\":1,\"previous\":[{}]}}\n",
+                names.join(",")
+            )
+        };
+        for claim in claims {
+            text.push_str(&claim.to_line());
+            text.push('\n');
+        }
+        let (_, entry) = archive.log().store().add(text.as_bytes()).unwrap();
+        entry.digest().clone()
+    }
+
+    /// One claim about bytes held by the content store, recorded at
+    /// `at` without touching the open head.
+    fn held_claim(archive: &Archive, bytes: &[u8], at: &str) -> Claim {
+        let (_, entry) = archive.content().add(bytes).unwrap();
+        Claim::assert(
+            Subject::parse(entry.digest().as_str()).unwrap(),
+            Attribute::parse("file:size").unwrap(),
+            json!(bytes.len()),
+            Timestamp::parse(at).unwrap(),
+            Source::parse("test").unwrap(),
+            crate::claim::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_line_merged_in_is_a_whole_chain_and_no_break() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take_at(&archive, b"own first", "2026-09-05T00:00:00Z");
+        let own = archive.log().seal().unwrap().unwrap();
+        // The other archive's line, older than this one's.
+        let b1 = sealed(
+            &archive,
+            &[],
+            &[held_claim(
+                &archive,
+                b"merged first",
+                "2026-09-01T00:00:00Z",
+            )],
+        );
+        let b2 = sealed(
+            &archive,
+            &[&b1],
+            &[held_claim(
+                &archive,
+                b"merged second",
+                "2026-09-02T00:00:00Z",
+            )],
+        );
+        archive
+            .log()
+            .head_follows(&[own.digest().clone(), b2.clone()])
+            .unwrap();
+        take_at(&archive, b"after the merge", "2026-09-06T00:00:00Z");
+
+        let audit = run(&archive);
+
+        assert!(audit.is_sound());
+        assert_eq!(audit.log.chains.len(), 2);
+        assert_eq!(
+            audit.log.chains[0].segments,
+            vec![b1.as_str().to_string(), b2.as_str().to_string()],
+            "the merged line, oldest, stands first"
+        );
+        assert_eq!(audit.log.chains[0].joined, Some(Joined::Head));
+        assert!(!audit.log.chains[0].open_head);
+        assert_eq!(audit.log.chains[1].segments, vec![name(&own)]);
+        assert!(audit.log.chains[1].open_head);
+        assert_eq!(audit.log.chains[1].joined, None);
+        assert!(audit.log.breaks.is_empty());
+        assert_eq!(audit.log.heads_lost(), 0);
+        assert_eq!(audit.log.claims, 4);
+
+        // Sealed, the head's segment names both, and the merged line
+        // ends in that segment.
+        let sealed = archive.log().seal().unwrap().unwrap();
+        let audit = run(&archive);
+        assert!(audit.is_sound());
+        assert_eq!(audit.log.chains.len(), 2);
+        assert_eq!(
+            audit.log.chains[0].joined,
+            Some(Joined::Segment(name(&sealed)))
+        );
+        assert_eq!(
+            audit.log.chains[1].segments,
+            vec![name(&own), name(&sealed)],
+            "the own line continues through the segment that merged"
+        );
+        assert!(audit.log.breaks.is_empty());
+    }
+
+    #[test]
+    fn a_segment_merged_in_that_is_not_held_is_a_loss() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"own");
+        let own = archive.log().seal().unwrap().unwrap();
+        let ghost = Digest::parse(&"cd".repeat(32)).unwrap();
+        archive
+            .log()
+            .head_follows(&[own.digest().clone(), ghost.clone()])
+            .unwrap();
+
+        let audit = run(&archive);
+
+        assert_eq!(
+            audit.log.predecessor_missing,
+            vec![(HEAD.to_string(), ghost.as_str().to_string())]
+        );
+        assert!(audit.log.head_predecessor_missing.is_none());
+        assert_eq!(audit.findings(), 1);
+        assert_eq!(audit.log.chains.len(), 1, "the own line, whole");
+        assert!(audit.log.breaks.is_empty());
+    }
+
+    #[test]
+    fn a_loss_inside_a_merged_line_is_a_break_of_that_line() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take_at(&archive, b"own", "2026-09-05T00:00:00Z");
+        let own = archive.log().seal().unwrap().unwrap();
+        let b1 = sealed(
+            &archive,
+            &[],
+            &[held_claim(&archive, b"b1", "2026-09-01T00:00:00Z")],
+        );
+        let b2 = sealed(
+            &archive,
+            &[&b1],
+            &[held_claim(&archive, b"b2", "2026-09-02T00:00:00Z")],
+        );
+        let b3 = sealed(
+            &archive,
+            &[&b2],
+            &[held_claim(&archive, b"b3", "2026-09-03T00:00:00Z")],
+        );
+        lose(&archive, &b2);
+        archive
+            .log()
+            .head_follows(&[own.digest().clone(), b3.clone()])
+            .unwrap();
+
+        let audit = run(&archive);
+
+        assert_eq!(audit.log.chains.len(), 3);
+        assert_eq!(audit.log.chains[0].segments, vec![b1.as_str().to_string()]);
+        assert_eq!(audit.log.chains[1].segments, vec![b3.as_str().to_string()]);
+        assert_eq!(audit.log.chains[1].joined, Some(Joined::Head));
+        assert!(audit.log.chains[2].open_head);
+        assert_eq!(
+            audit.log.breaks,
+            vec![Break {
+                after: b1.as_str().to_string(),
+                before: Some(b3.as_str().to_string()),
+                cause: Cause::SegmentLost(b2.as_str().to_string()),
+                from: Some(Timestamp::parse("2026-09-01T00:00:00Z").unwrap()),
+                to: Some(Timestamp::parse("2026-09-03T00:00:00Z").unwrap()),
+                sure: true,
+            }],
+            "the break is within the merged line; the own line's first segment is no break"
+        );
+        assert_eq!(
+            audit.log.predecessor_missing,
+            vec![(b3.as_str().to_string(), b2.as_str().to_string())]
+        );
+        assert_eq!(audit.log.heads_lost(), 0);
+        assert_eq!(audit.findings(), 1);
+
+        let mend = crate::mend::mend(archive.log(), &audit.log.breaks[0])
+            .unwrap()
+            .expect("mendable");
+        let audit = run(&archive);
+        assert!(audit.is_sound());
+        assert_eq!(audit.log.chains.len(), 2);
+        assert_eq!(
+            audit.log.chains[0].segments,
+            vec![
+                b1.as_str().to_string(),
+                name(&mend),
+                b3.as_str().to_string()
+            ]
+        );
+        assert_eq!(audit.log.chains[0].joined, Some(Joined::Head));
     }
 }

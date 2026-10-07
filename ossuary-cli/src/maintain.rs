@@ -75,7 +75,13 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         eprintln!("reading every sealed segment and the open segment");
     }
     let log = ossuary_core::audit_log(archive.log())?;
-    if log.chains.len() <= 1 {
+    // A line merged into the chain is not a piece of a broken one.
+    let pieces = log
+        .chains
+        .iter()
+        .filter(|chain| chain.joined.is_none())
+        .count();
+    if pieces <= 1 && log.breaks.is_empty() {
         let line = "the chain is complete, nothing to mend";
         if log.mended.is_empty() {
             println!("{line}");
@@ -86,8 +92,7 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
     }
     if log.breaks.is_empty() {
         println!(
-            "the chain is in {} pieces with no identifiable break; `ossuary audit` lists the pieces",
-            log.chains.len()
+            "the chain is in {pieces} pieces with no identifiable break; `ossuary audit` lists the pieces"
         );
         return Ok(ExitCode::FAILURE);
     }

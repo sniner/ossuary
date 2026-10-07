@@ -1,25 +1,30 @@
 //! The fixer: a repair tool for 0.x archives after a breaking change.
 //!
 //! A 0.x archive collects scars: a word in the vocabulary that changed,
-//! a claim an older version should have said. The programs stay free of
-//! migration code; this one knows each scar by name and closes it. So
-//! far every fix closes its scar the way the record closes everything,
-//! by adding. A scar that can only be closed by rewriting what is sealed
-//! is not ruled out; a segment is named by its bytes and chained by that
-//! name, so such a fix re-seals the chain from there on. That is not a
-//! clean job, which is why it lives here and not in the archive.
+//! a claim an older version should have said, a header member that
+//! changed its form. The programs stay free of migration code; this one
+//! knows each scar by name and closes it. Most fixes close their scar
+//! the way the record closes everything, by adding. A scar in what is
+//! sealed is closed by rewriting: a segment is named by its bytes and
+//! chained by that name, so such a fix renames the segment and every
+//! segment after it. That is not a clean job, which is why it lives
+//! here and not in the archive.
 //!
-//! The shape: a fix is one module under [`fixes`], a function from the
-//! log to a [`Plan`], the claims it would append and the words for
-//! saying so. Everything else is shared: [`record`] reads the log whole
-//! and replays an attribute's standing set, [`plan`] appends what a
-//! plan holds and speaks the sentence, and this file maps each
+//! The shape: a fix is one module under [`fixes`]. One that adds claims
+//! is a function from the log to a [`Plan`], the claims it would append
+//! and the words for saying so; [`record`] reads the log whole and
+//! replays an attribute's standing set, and [`plan`] appends what a
+//! plan holds. One that changes what is sealed is a function from the
+//! archive to a [`Rewrite`](rewrite::Rewrite), the edit of one segment
+//! and the words; [`rewrite`] reads every segment, works out the new
+//! names along the chain, and writes the result. This file maps each
 //! subcommand to its fix. Adding a fix is one file, one variant of
 //! [`Command`] with its help text, and one arm of the match in [`run`].
 
 mod fixes;
 mod plan;
 mod record;
+mod rewrite;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -35,7 +40,7 @@ use crate::plan::Plan;
     name = "ossuary-fix",
     version,
     about = "Repair tool for 0.x archives after a breaking change",
-    after_help = "Each fix reads the log and writes only the claims that are missing.
+    after_help = "Each fix reads the whole log and writes only what is missing or in an old form.
 Running a fix again writes nothing."
 )]
 struct Cli {
@@ -85,6 +90,21 @@ enum Command {
     /// The old claims are not changed. Paths already recorded under the
     /// new attribute are skipped.
     Packed,
+    /// Rewrite segment headers so that `previous` is a list
+    ///
+    /// Until 0.10.1 the header of a sealed segment named the segment
+    /// sealed before it as a string: `"previous":"3c1e…"`. It is now a
+    /// list, `"previous":["3c1e…"]`, so that a segment can name several
+    /// segments. The current version does not read the old form: every
+    /// command stops at the first such header. This fix rewrites the
+    /// header of every segment in the old form and of the open segment.
+    /// A sealed segment is named by its hash, so each rewritten segment
+    /// gets a new name, and every segment after it is rewritten to name
+    /// it. Claims are not changed. The old files are removed from
+    /// claims/ after the new ones are written. The query index in
+    /// cache/ is removed and rebuilt by the next command. Make a copy of
+    /// the archive first.
+    Previous,
 }
 
 fn main() -> ExitCode {
@@ -98,20 +118,33 @@ fn main() -> ExitCode {
     }
 }
 
-/// The one path every fix takes: open, plan, say, and append unless
-/// rehearsing.
+/// The one path every fix takes: open, plan, write unless rehearsing,
+/// say.
 fn run(cli: &Cli) -> Result<ExitCode> {
     let archive = open(&cli.archive)?;
-    let log = archive.log();
-    let plan: Plan = match cli.command {
-        Command::Origin => fixes::origin::plan(log)?,
-        Command::Packed => fixes::packed::plan(log)?,
+    let sentence = match cli.command {
+        Command::Origin => claims(cli, &archive, &fixes::origin::plan(archive.log())?)?,
+        Command::Packed => claims(cli, &archive, &fixes::packed::plan(archive.log())?)?,
+        Command::Previous => segments(cli, &archive, &fixes::previous::plan(&archive)?)?,
     };
-    if !cli.dry_run {
-        plan.apply(log)?;
-    }
-    println!("{}", plan.sentence(cli.dry_run));
+    println!("{sentence}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// A fix that adds claims: appended unless rehearsing.
+fn claims(cli: &Cli, archive: &Archive, plan: &Plan) -> Result<String> {
+    if !cli.dry_run {
+        plan.apply(archive.log())?;
+    }
+    Ok(plan.sentence(cli.dry_run))
+}
+
+/// A fix that rewrites segments: written unless rehearsing.
+fn segments(cli: &Cli, archive: &Archive, rewrite: &rewrite::Rewrite) -> Result<String> {
+    if !cli.dry_run {
+        rewrite.apply(archive)?;
+    }
+    Ok(rewrite.sentence(cli.dry_run))
 }
 
 fn open(root: &Path) -> Result<Archive> {

@@ -1444,7 +1444,9 @@ version = "0.10.1"
 dependencies = [
  "anyhow",
  "clap",
+ "immure",
  "ossuary-core",
+ "serde",
  "serde_json",
  "tempfile",
 ]

@@ -9,17 +9,24 @@ sealed segment; a fix may have to do that. `ossuary-fix` is meant only
 for 0.x archives. Once the archive format is stable, it should not be
 used on an archive.
 
-Between 0.x versions, attribute names change, and an older version may
-have left out claims that a newer version expects. The ossuary programs
-contain no migration code; each such change has a fix here instead, run
-as a subcommand. A fix reads the log, determines which claims are
-missing, and writes only those. Running it a second time writes nothing.
-With `--dry-run` it shows what it would write and writes nothing.
+Between 0.x versions, attribute names change, an older version may
+have left out claims that a newer version expects, and the form of a
+segment header may change. The ossuary programs contain no migration
+code; each such change has a fix here instead, run as a subcommand. A
+fix reads the whole log and writes only what is missing or in an old
+form. Running it a second time writes nothing. With `--dry-run` it shows
+what it would write and writes nothing.
 
-So far every fix only adds claims. A future fix may have to rewrite
-sealed segments. Each segment is named by its hash and refers to the
-previous segment by that name, so such a fix would also rewrite every
-segment after the changed one.
+Most fixes only add claims. A fix that changes a sealed segment rewrites
+it: each segment is named by its hash, and every later segment names
+its predecessor by that name, so the rewritten segment gets a new name,
+and every segment after it is rewritten to name it. The old files are
+removed from `claims/` after the new ones are written, and the query
+index in `cache/` is removed with them; the next command rebuilds it.
+Make a copy of the archive before running such a fix. An archive
+written by a version before the change is not read by the current
+version until the fix has run: every command stops at the first segment
+in the old form.
 
 ```console
 $ ossuary-fix --dry-run origin
@@ -54,3 +61,10 @@ do not override any claim written later.
   standing `zip:path` value to `file:path`, with a leading `@`. The old
   claims are not changed; paths already recorded under the new attribute
   are skipped
+- `previous`: until 0.10.1 the header of a sealed segment named the
+  segment sealed before it as a string, `"previous":"3c1e…"`. It is now
+  a list, `"previous":["3c1e…"]`, so that a segment can name several
+  segments. The fix rewrites the header of every segment in the old form
+  and of the open segment, along the whole chain, as described above.
+  Claims are not changed. Run it before any other command on an archive
+  written by 0.10.1 or earlier

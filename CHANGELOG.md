@@ -5,8 +5,22 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`previous` in a segment header is a list.** A sealed segment and the open segment name the
+  segments sealed before them as `"previous":["3c1e…"]`, with one name in an archive written as
+  one line. A segment can then name the last segments of two lines, which merging two archives
+  into one record needs. An archive written by 0.10.1 or earlier is not read until
+  `ossuary-fix previous` has rewritten its headers; every command stops at the first segment in
+  the old form. `audit` and `maintain mend` read a record with several first segments: a line
+  merged into the chain is listed as such and is not a break. No schema version moves
+
 ### Added
 
+- **`ossuary-fix previous` rewrites segment headers into the list form.** It is the first fix that
+  rewrites sealed segments: each rewritten segment gets a new name, every segment after it is
+  rewritten to name it, the old files are removed from `claims/`, and the query index in `cache/`
+  is removed and rebuilt by the next command. Make a copy of the archive first
 - **[Reading an archive without ossuary](docs/recovery.md)** shows with examples how to get files
   back from an uncompressed or compressed archive with a shell, `zstd` and `jq`: which file is
   which, restoring every file under its path, and checking the archive

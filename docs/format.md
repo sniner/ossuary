@@ -212,18 +212,23 @@ line is its header, a JSON object that names the segment's format:
 Every line after it is a claim, in the order recorded.
 
 From the second segment of an archive on, the header also names the
-segment sealed before it, by digest (the hex name under which the
-claims store keeps it):
+segments sealed before it, by digest (the hex name under which the
+claims store keeps it), as a list:
 
 ```json
-{"ossuary-segment": 1, "previous": "3c1e…"}
+{"ossuary-segment": 1, "previous": ["3c1e…"]}
 ```
 
+In an archive written as one line of segments the list has one
+element. A segment that follows the last segments of two lines names
+both; that is how two archives become one record (see the chain
+below). `previous` is always a list, and a reader does not accept a
+string in its place.
+
 `ossuary-segment` is the only member every header has; `previous` is
-absent only from the first segment of an archive. A reader skips header
-members it does not know: generation 1 may gain members that add
-information to a header, and none of them changes how the claims after
-it are read.
+absent from a first segment. A reader skips header members it does not
+know: generation 1 may gain members that add information to a header,
+and none of them changes how the claims after it are read.
 
 The open segment is `head.jsonl` in the archive root. It has the same
 format, claims are appended to it as they are written, and it is the
@@ -233,7 +238,7 @@ the store is), and a new `head.jsonl` is started. When to seal is up to
 the software; a reader must not assume anything about a segment's size.
 
 A sealed segment is immutable like everything else in a store, and the
-format adds its own rule: **segments are never compacted, merged or
+format adds its own rule: **segments are never compacted, combined or
 rewritten.** Superseded and retracted claims stay where they were
 written.
 
@@ -252,6 +257,20 @@ chain cannot show a loss at its end: the head is the only mutable file,
 and a head rewritten to name an earlier segment leaves a chain that
 looks complete. Keeping the digest of the latest segment somewhere
 outside the archive closes that gap.
+
+**Several first segments.** A record can have more than one first
+segment. When the segments of a second archive are stored in the
+claims store of a first, unchanged, and the head names the last segment
+of each, `"previous": ["a2…", "b3…"]`, the record has two lines that
+meet at that head, and at the segment the head becomes when it is
+sealed. A reader that walks back from the head over every name in
+every `previous` reaches every segment of both lines. A first segment
+the walk reaches began a line. A first segment the walk does not reach
+is where a lost head was begun anew, as before. A line can be merged in
+again later: the segment that merges it names the line's new last
+segment, and the walk back from there reaches segments it already
+knows. The order of claims across segments stays the order of their
+first claims' `time`, as in a record of one line.
 
 **The mend.** A break in the chain is closed by adding a segment, never
 by rewriting one. A mend is a segment without claims whose header names
@@ -273,9 +292,9 @@ other segment; when that head is sealed, the resulting segment names
 the mend in the same way.
 
 A reader builds the chain with mends applied: a segment whose
-`previous` is absent or not in the store is preceded by the mend whose
-`before` names it, if there is one, and the chain continues from that
-mend's `previous`. The segment after the break still names the segment
+`previous` is absent, or whose first name in `previous` is not in the
+store, is preceded by the mend whose `before` names it, if there is
+one, and the chain continues from that mend's `previous`. The segment after the break still names the segment
 it named before, so the record still shows what was lost and where. A
 mend in front of a segment whose `previous` is in the store closes no
 gap and is not part of the chain.
@@ -297,9 +316,9 @@ are sealed, the key:
 1. Read `FORMAT`: generation, algorithm, depths.
 2. Walk `claims/`, unseal each entry if it is sealed, decompress it
    (`zstd -dc`), check that the first line has `ossuary-segment`, and
-   order the segments as above. Every `previous` a header names must be
-   among them, or a mend must be placed in front of the segment that
-   names it; otherwise the named segment is missing.
+   order the segments as above. Every segment a header's `previous`
+   names must be among them, or a mend must be placed in front of the
+   segment that names it; otherwise the named segment is missing.
 3. Concatenate, append `head.jsonl`: this is the complete claim log.
 4. Walk `content/` and `derived/` the same way for the content itself;
    each file can be checked against its name with the algorithm's

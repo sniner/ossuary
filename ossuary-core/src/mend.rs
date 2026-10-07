@@ -44,7 +44,7 @@ pub fn mend(log: &Log, brk: &Break) -> Result<Option<Segment>> {
     };
     let segment = log.mend(&previous, &Mend::new(before.clone(), replaces))?;
     if before.is_none() {
-        log.head_follows(segment.digest())?;
+        log.head_follows(std::slice::from_ref(segment.digest()))?;
     }
     Ok(Some(segment))
 }
@@ -117,17 +117,17 @@ mod tests {
         );
         assert_eq!(
             archive.log().head_contents().unwrap().previous(),
-            Some(anew.digest()),
+            std::slice::from_ref(anew.digest()),
             "the head was not touched"
         );
         assert_eq!(
             archive.log().contents(anew.digest()).unwrap().previous(),
-            None,
+            &[] as &[Digest],
             "nor the segment after the break"
         );
         assert_eq!(
             archive.log().contents(mended.digest()).unwrap().previous(),
-            Some(first.digest())
+            std::slice::from_ref(first.digest())
         );
     }
 
@@ -147,10 +147,10 @@ mod tests {
             .expect("mendable");
 
         let head = archive.log().head_contents().unwrap();
-        assert_eq!(head.previous(), Some(mended.digest()));
+        assert_eq!(head.previous(), std::slice::from_ref(mended.digest()));
         assert_eq!(head.claims().len(), 1, "with its claim kept");
         let contents = archive.log().contents(mended.digest()).unwrap();
-        assert_eq!(contents.previous(), Some(first.digest()));
+        assert_eq!(contents.previous(), std::slice::from_ref(first.digest()));
         assert_eq!(contents.mend().unwrap().before(), None);
         assert!(run(&archive).is_sound());
     }

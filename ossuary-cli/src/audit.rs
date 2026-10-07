@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use ossuary_core::{Audit, Cause, Chain, Fixity, LogAudit, StoreAudit, Timestamp};
+use ossuary_core::{Audit, Break, Cause, Chain, Fixity, Joined, LogAudit, StoreAudit, Timestamp};
 
 use crate::{open, say};
 
@@ -155,12 +155,12 @@ fn fixity_word(fixity: &Fixity) -> &'static str {
 /// its span, then each break with what the record says of it and what
 /// to do; and the mends that stand, whole chain or not.
 fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
-    if log.chains.len() > 1 {
+    if pieces(log) > 1 {
         if !say(
             out,
             &format!(
                 "the chain of sealed segments is broken: {} separate chains, expected one",
-                log.chains.len()
+                pieces(log)
             ),
         )? {
             return Ok(false);
@@ -170,21 +170,19 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
                 return Ok(false);
             }
         }
-        for (index, brk) in log.breaks.iter().enumerate() {
+        for brk in &log.breaks {
+            let after = chain_after(log, brk);
             let line = match &brk.cause {
                 Cause::HeadLost => format!(
-                    "  chain {} starts after a lost open segment: the claims recorded between {} and {} are lost; repeat the runs of that period, then run `ossuary maintain mend` to join the chains",
-                    index + 2,
+                    "  chain {after} starts after a lost open segment: the claims recorded between {} and {} are lost; repeat the runs of that period, then run `ossuary maintain mend` to join the chains",
                     when(brk.from.as_ref()),
                     when(brk.to.as_ref()),
                 ),
                 Cause::SegmentLost(segment) => format!(
-                    "  chain {} starts after segment {segment}, which is missing; restore it from a backup of the archive, or run `ossuary maintain mend` to join the chains (the mend records the missing segment's name)",
-                    index + 2,
+                    "  chain {after} starts after segment {segment}, which is missing; restore it from a backup of the archive, or run `ossuary maintain mend` to join the chains (the mend records the missing segment's name)",
                 ),
                 Cause::SegmentUnreadable(segment) => format!(
-                    "  chain {} starts after segment {segment}, which is present but unreadable; restore it from a backup of the archive",
-                    index + 2,
+                    "  chain {after} starts after segment {segment}, which is present but unreadable; restore it from a backup of the archive",
                 ),
             };
             if !say(out, &line)? {
@@ -194,11 +192,23 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
                 && !say(
                     out,
                     &format!(
-                        "  the chain before chain {} cannot be determined; `ossuary maintain mend` leaves this break open",
-                        index + 2
+                        "  the chain before chain {after} cannot be determined; `ossuary maintain mend` leaves this break open"
                     ),
                 )?
             {
+                return Ok(false);
+            }
+        }
+    } else {
+        let merged: Vec<String> = log
+            .chains
+            .iter()
+            .filter(|chain| chain.joined.is_some())
+            .map(describe)
+            .collect();
+        if !merged.is_empty() {
+            let heading = format!("{} line(s) merged into the chain", merged.len());
+            if !listing(out, &heading, &merged, verbose)? {
                 return Ok(false);
             }
         }
@@ -301,7 +311,33 @@ fn describe(chain: &Chain) -> String {
         clauses.push(format!("{} claim(s)", chain.claims));
         span(&mut clauses);
     }
+    match &chain.joined {
+        Some(Joined::Segment(segment)) => clauses.push(format!("merged into {segment}")),
+        Some(Joined::Head) => clauses.push("merged into the open segment".to_string()),
+        None => {}
+    }
     clauses.join(", ")
+}
+
+/// The chains that are not lines merged into another: one in a whole
+/// record, more where the chain is broken.
+fn pieces(log: &LogAudit) -> usize {
+    log.chains
+        .iter()
+        .filter(|chain| chain.joined.is_none())
+        .count()
+}
+
+/// The number, as the listing counts them, of the chain that begins
+/// after a break; 0 when no chain does, which the audit never reports.
+fn chain_after(log: &LogAudit, brk: &Break) -> usize {
+    log.chains
+        .iter()
+        .position(|chain| match &brk.before {
+            Some(first) => chain.segments.first() == Some(first),
+            None => chain.open_head && chain.segments.is_empty(),
+        })
+        .map_or(0, |index| index + 1)
 }
 
 /// A claim time for a line, or the word for none.
@@ -427,8 +463,15 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         && lost == 0
     {
         clauses.push("all readable".to_string());
-        if log.segments > 0 && log.chains.len() <= 1 {
-            clauses.push("one chain from the first segment to the open segment".to_string());
+        if log.segments > 0 && pieces(log) <= 1 && log.breaks.is_empty() {
+            let merged = log.chains.len() - pieces(log);
+            if merged == 0 {
+                clauses.push("one chain from the first segment to the open segment".to_string());
+            } else {
+                clauses.push(format!(
+                    "one chain to the open segment, {merged} line(s) merged into it"
+                ));
+            }
         }
     }
     listing(
@@ -530,6 +573,11 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
                 "segments": chain.segments.len(),
                 "claims": chain.claims,
                 "open_head": chain.open_head,
+                "merged_into": match &chain.joined {
+                    Some(Joined::Segment(segment)) => Some(segment.as_str()),
+                    Some(Joined::Head) => Some("head"),
+                    None => None,
+                },
                 "from": chain.from,
                 "to": chain.to,
             }));
