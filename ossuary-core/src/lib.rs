@@ -19,7 +19,6 @@
 // clippy suggests, `assert_eq!(x, [] as [T; 0])`, says the same and
 // names the type for nothing.
 #![cfg_attr(test, allow(clippy::assert_is_empty))]
-
 #![forbid(unsafe_code)]
 
 mod accession;
