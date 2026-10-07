@@ -313,9 +313,9 @@ fn render(segment: &Segment, names: &BTreeMap<&str, String>) -> String {
             .cloned()
             .unwrap_or_else(|| name.clone())
     };
-    let previous: Vec<String> = segment.previous.iter().map(&rename).collect();
+    let previous: Vec<String> = segment.previous.iter().map(rename).collect();
     let mend = segment.mend.as_ref().map(|mend| MendHeader {
-        before: mend.before.as_ref().map(&rename),
+        before: mend.before.as_ref().map(rename),
         replaces: mend.replaces.clone(),
         extra: mend.extra.clone(),
     });
