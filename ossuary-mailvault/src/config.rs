@@ -11,9 +11,14 @@
 //! archive carries the recipe. That puts a mailbox's login where the
 //! archive lies — the secrets themselves belong in a password manager,
 //! and any key can be given as `KEY_cmd` instead: a command whose first
-//! line is the value, run only under `--allow-exec`, and only when the
-//! account is reached, so a command that fails costs that account and
-//! nothing else.
+//! line is the value, run only when the account is reached, so a
+//! command that fails costs that account and nothing else.
+//!
+//! The commands run as the user, so whoever can write the file can run
+//! anything as them, and without a command can still send the password
+//! elsewhere by changing the host. No flag can guard that; the
+//! directory the file lies in does. Where the archive root is shared,
+//! `--accounts` names a file in a directory that is not.
 //!
 //! An account is reached one of two ways, and `backend` says which:
 //! `imap`, the default, with a host and a password; or `msgraph`, a
@@ -22,7 +27,7 @@
 //! other are refused, not skipped.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -34,6 +39,101 @@ pub const FILE_NAME: &str = "mailvault.toml";
 /// What a `KEY_cmd` ends in.
 const CMD: &str = "_cmd";
 
+/// Where the accounts are read from.
+#[derive(Debug, Clone)]
+pub enum Source {
+    /// `mailvault.toml` in the archive root.
+    Archive(PathBuf),
+    /// A file named with `--accounts`.
+    Named(PathBuf),
+}
+
+impl Source {
+    /// The file itself.
+    #[must_use]
+    pub fn path(&self) -> PathBuf {
+        match self {
+            Self::Archive(root) => root.join(FILE_NAME),
+            Self::Named(path) => path.clone(),
+        }
+    }
+
+    /// The `ossuary mailvault` command line that reads or writes this
+    /// file, for a hint.
+    #[must_use]
+    pub fn command(&self, verb: &str) -> String {
+        match self {
+            Self::Archive(_) => format!("ossuary mailvault {verb}"),
+            Self::Named(path) => format!("ossuary mailvault {verb} --accounts {}", path.display()),
+        }
+    }
+
+    /// The accounts, read strictly.
+    ///
+    /// # Errors
+    ///
+    /// No file, a file that will not read, a key this build does not
+    /// know, two accounts of one name, or a name that cannot stand on
+    /// the record.
+    pub fn load(&self) -> Result<Config> {
+        let path = self.path();
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return anyhow!("{}: {error}", path.display());
+            }
+            match self {
+                Self::Archive(root) => anyhow!(
+                    "{}: no {FILE_NAME}; create one with `{}`",
+                    root.display(),
+                    self.command("init")
+                ),
+                Self::Named(_) => anyhow!(
+                    "{}: no such file; create one with `{}`",
+                    path.display(),
+                    self.command("init")
+                ),
+            }
+        })?;
+        let mut config: Config =
+            toml::from_str(&text).with_context(|| path.display().to_string())?;
+        let mut names = std::collections::HashSet::new();
+        for account in &config.accounts {
+            if !valid_name(&account.name) {
+                bail!(
+                    "{}: invalid account name {:?}; use only letters, digits, '.', '_' \
+                     and '-'",
+                    path.display(),
+                    account.name
+                );
+            }
+            if !names.insert(account.name.as_str()) {
+                bail!(
+                    "{}: two accounts named {:?}; account names must be unique",
+                    path.display(),
+                    account.name
+                );
+            }
+        }
+        config.path = path;
+        Ok(config)
+    }
+
+    /// Write [`STARTER`] to the file. One already there is left as it
+    /// is; answers whether the file was written.
+    ///
+    /// # Errors
+    ///
+    /// The file could not be written.
+    pub fn begin(&self) -> Result<bool> {
+        let path = self.path();
+        if path.exists() {
+            return Ok(false);
+        }
+        std::fs::write(&path, STARTER).with_context(|| format!("writing {}", path.display()))?;
+        Ok(true)
+    }
+}
+
 /// The file `init` writes: an example of each kind of account, every
 /// one commented out, so the file as written fetches nothing.
 pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[account]] table each.
@@ -42,8 +142,9 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 #
 # Any key except name, backend and folders can be given as KEY_cmd
 # instead: a command that prints the value on its first line, most
-# often password_cmd. Commands run only with
-# `ossuary mailvault fetch --allow-exec`.
+# often password_cmd. The commands run as you, so keep this file where
+# nobody else can write, or keep it elsewhere and name it with
+# `ossuary mailvault fetch --accounts FILE`.
 
 # An IMAP mailbox with all keys.
 #
@@ -101,6 +202,9 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 pub struct Config {
     #[serde(default, rename = "account")]
     pub accounts: Vec<Account>,
+    /// The file the accounts were read from, for messages.
+    #[serde(skip)]
+    pub path: PathBuf,
 }
 
 /// One mailbox and how to reach it.
@@ -256,47 +360,6 @@ impl<'de> Deserialize<'de> for Account {
 }
 
 impl Config {
-    /// Read the file at `root`, strictly.
-    ///
-    /// # Errors
-    ///
-    /// No file, a file that will not read, a key this build does not
-    /// know, two accounts of one name, or a name that cannot stand on
-    /// the record.
-    pub fn load(root: &Path) -> Result<Self> {
-        let path = root.join(FILE_NAME);
-        let text = std::fs::read_to_string(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                anyhow!(
-                    "{}: no {FILE_NAME}; create one with `ossuary mailvault init`",
-                    root.display()
-                )
-            } else {
-                anyhow!("{}: {error}", path.display())
-            }
-        })?;
-        let config: Config = toml::from_str(&text).with_context(|| path.display().to_string())?;
-        let mut names = std::collections::HashSet::new();
-        for account in &config.accounts {
-            if !valid_name(&account.name) {
-                bail!(
-                    "{}: invalid account name {:?}; use only letters, digits, '.', '_' \
-                     and '-'",
-                    path.display(),
-                    account.name
-                );
-            }
-            if !names.insert(account.name.as_str()) {
-                bail!(
-                    "{}: two accounts named {:?}; account names must be unique",
-                    path.display(),
-                    account.name
-                );
-            }
-        }
-        Ok(config)
-    }
-
     /// The accounts asked for, in the file's order — every one when
     /// nothing was named.
     ///
@@ -310,7 +373,8 @@ impl Config {
         for name in names {
             if !self.accounts.iter().any(|account| &account.name == name) {
                 bail!(
-                    "{name}: no such account in {FILE_NAME}; known accounts: {}",
+                    "{name}: no such account in {}; known accounts: {}",
+                    self.path.display(),
                     self.accounts
                         .iter()
                         .map(|account| account.name.as_str())
@@ -325,21 +389,6 @@ impl Config {
             .filter(|account| names.contains(&account.name))
             .collect())
     }
-}
-
-/// Write [`STARTER`] at `root`. A `mailvault.toml` already there is left
-/// as it is; answers whether the file was written.
-///
-/// # Errors
-///
-/// The file could not be written.
-pub fn begin(root: &Path) -> Result<bool> {
-    let path = root.join(FILE_NAME);
-    if path.exists() {
-        return Ok(false);
-    }
-    std::fs::write(&path, STARTER).with_context(|| format!("writing {}", path.display()))?;
-    Ok(true)
 }
 
 /// A name opens every `mailbox:place` value, and the first colon ends
@@ -365,10 +414,10 @@ impl Account {
     ///
     /// # Errors
     ///
-    /// A command configured but not allowed, a command that fails or
-    /// prints nothing, or plaintext IMAP to anything but this machine.
-    pub fn reach(&self, allow_exec: bool) -> Result<Reach> {
-        let reach = self.build(|key| self.run(key, allow_exec))?;
+    /// A command that fails or prints nothing, or plaintext IMAP to
+    /// anything but this machine.
+    pub fn reach(&self) -> Result<Reach> {
+        let reach = self.build(|key| self.run(key))?;
         if let Reach::Imap(imap) = &reach {
             if !imap.tls && !loopback(&imap.host) {
                 bail!(
@@ -402,12 +451,9 @@ impl Account {
     }
 
     /// The value of `key`: the first line the `KEY_cmd` command prints.
-    fn run(&self, key: &str, allow_exec: bool) -> Result<String> {
+    fn run(&self, key: &str) -> Result<String> {
         let cmd = &self.commands[key];
         let name = &self.name;
-        if !allow_exec {
-            bail!("{name}: {key}{CMD} is set in {FILE_NAME}; pass --allow-exec to run it");
-        }
         // Only stdout is the command's answer. Its stderr and its
         // stdin stay with the terminal: a password manager asks for
         // a passphrase there, and says there what went wrong.
@@ -443,7 +489,7 @@ impl Imap {
     pub fn password(&self, name: &str) -> Result<&str> {
         self.password.as_deref().ok_or_else(|| {
             anyhow!(
-                "{name}: no password configured; set password{CMD} (a command that prints it) or password in {FILE_NAME}"
+                "{name}: no password configured; set password{CMD} (a command that prints it) or password"
             )
         })
     }
@@ -459,7 +505,7 @@ impl Graph {
     pub fn secret(&self, name: &str) -> Result<&str> {
         self.client_secret.as_deref().ok_or_else(|| {
             anyhow!(
-                "{name}: no client_secret configured; set client_secret{CMD} (a command that prints it) or client_secret in {FILE_NAME}"
+                "{name}: no client_secret configured; set client_secret{CMD} (a command that prints it) or client_secret"
             )
         })
     }
@@ -472,11 +518,11 @@ mod tests {
     fn load(text: &str) -> Result<Config> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE_NAME), text).unwrap();
-        Config::load(dir.path())
+        Source::Archive(dir.path().to_path_buf()).load()
     }
 
-    fn imap(account: &Account, allow_exec: bool) -> Result<Imap> {
-        match account.reach(allow_exec)? {
+    fn imap(account: &Account) -> Result<Imap> {
+        match account.reach()? {
             Reach::Imap(imap) => Ok(imap),
             Reach::Graph(_) => panic!("{}: an imap account was expected", account.name),
         }
@@ -521,14 +567,14 @@ mod tests {
     #[test]
     fn begin_writes_the_starter_once_and_leaves_a_file_standing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(begin(dir.path()).unwrap());
+        assert!(Source::Archive(dir.path().to_path_buf()).begin().unwrap());
         assert_eq!(
             std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap(),
             STARTER
         );
 
         std::fs::write(dir.path().join(FILE_NAME), "# mine\n").unwrap();
-        assert!(!begin(dir.path()).unwrap());
+        assert!(!Source::Archive(dir.path().to_path_buf()).begin().unwrap());
         assert_eq!(
             std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap(),
             "# mine\n"
@@ -542,16 +588,13 @@ mod tests {
                 "[[account]]\nname = \"a\"\nhost = \"{host}\"\ntls = false\nuser = \"u\"\n"
             ))
             .unwrap();
-            assert!(
-                imap(&config.accounts[0], false).is_ok(),
-                "{host} is this machine"
-            );
+            assert!(imap(&config.accounts[0]).is_ok(), "{host} is this machine");
         }
         let config = load(
             "[[account]]\nname = \"a\"\nhost = \"imap.example.org\"\ntls = false\nuser = \"u\"\n",
         )
         .unwrap();
-        let refused = imap(&config.accounts[0], false).err().unwrap();
+        let refused = imap(&config.accounts[0]).err().unwrap();
         assert!(
             refused.to_string().contains("allowed only for localhost"),
             "{refused:#}"
@@ -565,7 +608,7 @@ mod tests {
         )
         .unwrap();
         let account = &config.accounts[0];
-        let imap = imap(account, false).unwrap();
+        let imap = imap(account).unwrap();
         assert_eq!((imap.port, imap.tls), (993, true));
         assert!(account.folders.is_none());
 
@@ -617,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_runs_only_when_allowed_and_any_key_may_be_commanded() {
+    fn any_key_may_be_commanded() {
         let config = load(
             "[[account]]\nname = \"a\"\nhost_cmd = \"echo imap.example.org\"\n\
              user = \"nobody\"\nuser_cmd = \"printf 'john\\\\nignored'\"\n\
@@ -625,13 +668,7 @@ mod tests {
         )
         .unwrap();
         let account = &config.accounts[0];
-        let refused = imap(account, false).err().unwrap();
-        assert!(
-            refused.to_string().contains("host_cmd is set in"),
-            "{refused:#}"
-        );
-
-        let imap = imap(account, true).unwrap();
+        let imap = imap(account).unwrap();
         assert_eq!(imap.host, "imap.example.org");
         assert_eq!(
             imap.user, "john",
@@ -648,14 +685,14 @@ mod tests {
              [[account]]\nname = \"c\"\nhost = \"h\"\nuser = \"u\"\n",
         )
         .unwrap();
-        let failed = imap(&config.accounts[0], true).err().unwrap();
+        let failed = imap(&config.accounts[0]).err().unwrap();
         assert!(
             failed.to_string().contains("password_cmd failed"),
             "{failed:#}"
         );
-        let silent = imap(&config.accounts[1], true).err().unwrap();
+        let silent = imap(&config.accounts[1]).err().unwrap();
         assert!(silent.to_string().contains("printed nothing"), "{silent:#}");
-        let none = imap(&config.accounts[2], true).unwrap();
+        let none = imap(&config.accounts[2]).unwrap();
         let missing = none.password("c").err().unwrap();
         assert!(
             missing.to_string().contains("no password configured"),
@@ -697,8 +734,7 @@ mod tests {
         .unwrap();
         let account = &config.accounts[0];
         assert_eq!(account.folders.as_deref(), Some(&["Inbox".to_string()][..]));
-        assert!(account.reach(false).is_err(), "two commands, not allowed");
-        let Reach::Graph(graph) = account.reach(true).unwrap() else {
+        let Reach::Graph(graph) = account.reach().unwrap() else {
             panic!("an msgraph account was expected");
         };
         assert_eq!(

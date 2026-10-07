@@ -5,6 +5,18 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary mailvault` reads the accounts from a file outside the archive with
+  `--accounts FILE`.** A `KEY_cmd` in `mailvault.toml` runs as the user, and the rest of the file
+  decides where the password goes, so the file is only as safe as the directory it lies in. When
+  the archive root is writable by others, `init --accounts FILE` writes the file elsewhere and
+  `folders` and `fetch` read it from there; `import` refuses the option
+- **`ossuary mailvault` runs `KEY_cmd` commands without `--allow-exec`.** The flag protected
+  nothing: whoever can write `mailvault.toml` can send the password to another host without any
+  command running, and everyone with a `password_cmd` passed the flag on every run. It is
+  removed; a call that still passes it is refused. Remove it from cron entries and scripts
+
 ## [0.11.0] - 2026-10-07
 
 ### Breaking changes

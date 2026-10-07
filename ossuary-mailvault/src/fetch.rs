@@ -50,8 +50,6 @@ use crate::tally::Tally;
 pub struct Options {
     /// Fetch every message, the resume point notwithstanding.
     pub full: bool,
-    /// Let `password_cmd` and `client_secret_cmd` run.
-    pub allow_exec: bool,
     /// Count what would be fetched, fetch nothing.
     pub dry_run: bool,
 }
@@ -138,7 +136,7 @@ impl Fetch<'_> {
     fn account(&self, account: &Account, tally: &mut Tally) -> Result<Result<()>> {
         // Everything that can say no before the first byte is fetched
         // says it here: the commanded keys, the login, the folder list.
-        match account.reach(self.options.allow_exec) {
+        match account.reach() {
             Ok(Reach::Imap(imap)) => self.imap_account(account, &imap, tally),
             Ok(Reach::Graph(graph)) => self.graph_account(account, &graph, tally),
             Err(error) => Ok(Err(error)),
@@ -681,11 +679,7 @@ mod tests {
     }
 
     fn options(full: bool, dry_run: bool) -> Options {
-        Options {
-            full,
-            allow_exec: false,
-            dry_run,
-        }
+        Options { full, dry_run }
     }
 
     fn fetch(bench: &Bench, mailbox: &mut Fake, full: bool, dry_run: bool) -> Tally {
@@ -822,7 +816,7 @@ mod tests {
         }
 
         fn graph(account: &Account) -> config::Graph {
-            match account.reach(false).unwrap() {
+            match account.reach().unwrap() {
                 Reach::Graph(graph) => graph,
                 Reach::Imap(_) => unreachable!(),
             }

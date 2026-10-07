@@ -15,7 +15,8 @@
 //!
 //! An outside verb of the trusted family, like `ossuary-mount`: found
 //! on the PATH, handed the archive in `OSSUARY_ARCHIVE`, linking the
-//! core. Its mailboxes stand in `mailvault.toml` in the archive root.
+//! core. Its mailboxes stand in `mailvault.toml` in the archive root,
+//! or in a file named with `--accounts`.
 
 // `assert!(x.is_empty())` reads as the statement it makes; the form
 // clippy suggests, `assert_eq!(x, [] as [T; 0])`, says the same and
@@ -41,7 +42,7 @@ mod remote;
 mod tally;
 mod utf7;
 
-use config::{Account, Config, Reach};
+use config::{Account, Config, Reach, Source};
 use graph::Graph;
 use memo::Memo;
 use output::Say;
@@ -72,6 +73,13 @@ struct Cli {
     )]
     archive: PathBuf,
 
+    /// Read the accounts from FILE instead of mailvault.toml in the
+    /// archive
+    // Not `accounts`: that id is the ACCOUNT positional of fetch and
+    // folders, and a global option of the same id is not propagated.
+    #[arg(long = "accounts", global = true, value_name = "FILE")]
+    accounts_file: Option<PathBuf>,
+
     /// Print only results and errors
     #[arg(short, long, global = true)]
     quiet: bool,
@@ -100,11 +108,6 @@ enum Command {
         /// when none is given
         #[arg(value_name = "ACCOUNT")]
         accounts: Vec<String>,
-
-        /// Run the commands given as *_cmd keys in mailvault.toml, such as
-        /// password_cmd
-        #[arg(long)]
-        allow_exec: bool,
     },
     /// Fetch new mail from the accounts in mailvault.toml
     ///
@@ -120,11 +123,6 @@ enum Command {
         /// already in the archive are not stored again
         #[arg(long)]
         full: bool,
-
-        /// Run the commands given as *_cmd keys in mailvault.toml, such as
-        /// password_cmd
-        #[arg(long)]
-        allow_exec: bool,
 
         /// Show what would be fetched, write nothing
         #[arg(long)]
@@ -167,47 +165,44 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         archive,
+        accounts_file: named,
         quiet,
         command,
     } = cli;
     let say = Say::new(quiet);
     let archive = open(&archive)?;
+    let source = match named {
+        Some(path) => Source::Named(path),
+        None => Source::Archive(archive.root().to_path_buf()),
+    };
     let memo_path = archive.root().join("cache").join(memo::FILE_NAME);
     // Everything that can say no before the archive is touched says it
     // before the memo is opened — the memo is a file, and a refused
     // call should make none.
     match command {
         Command::Init => {
-            init(&archive)?;
+            init(&source)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Folders {
-            accounts,
-            allow_exec,
-        } => {
-            let config = Config::load(archive.root())?;
-            let chosen = chosen(&archive, &config, &accounts)?;
-            folders(&chosen, allow_exec)
+        Command::Folders { accounts } => {
+            let config = source.load()?;
+            let chosen = chosen(&config, &accounts)?;
+            folders(&chosen)
         }
         Command::Fetch {
             accounts,
             full,
-            allow_exec,
             dry_run,
         } => {
             say.line(format_args!("archive {}", archive.root().display()));
-            let config = Config::load(archive.root())?;
-            let chosen = chosen(&archive, &config, &accounts)?;
+            let config = source.load()?;
+            let chosen = chosen(&config, &accounts)?;
             let memo = Memo::open(&memo_path)?;
             let tally = fetch::run(
                 &archive,
                 &chosen,
                 &memo,
-                &fetch::Options {
-                    full,
-                    allow_exec,
-                    dry_run,
-                },
+                &fetch::Options { full, dry_run },
                 say,
             )?;
             Ok(finish(&tally, dry_run))
@@ -218,6 +213,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             full,
             dry_run,
         } => {
+            if let Source::Named(path) = &source {
+                bail!(
+                    "--accounts {}: import reads no accounts; drop --accounts",
+                    path.display()
+                );
+            }
             say.line(format_args!("archive {}", archive.root().display()));
             import::verify(&vault)?;
             let memo = Memo::open(&memo_path)?;
@@ -240,13 +241,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
 /// The accounts named, or all of them; an error when there are none at
 /// all.
-fn chosen<'a>(archive: &Archive, config: &'a Config, names: &[String]) -> Result<Vec<&'a Account>> {
+fn chosen<'a>(config: &'a Config, names: &[String]) -> Result<Vec<&'a Account>> {
     let chosen = config.chosen(names)?;
     if chosen.is_empty() {
         bail!(
-            "{}: no accounts in {}; add or uncomment an [[account]] table for each mailbox",
-            archive.root().display(),
-            config::FILE_NAME
+            "{}: no accounts; add or uncomment an [[account]] table for each mailbox",
+            config.path.display()
         );
     }
     Ok(chosen)
@@ -254,11 +254,11 @@ fn chosen<'a>(archive: &Archive, config: &'a Config, names: &[String]) -> Result
 
 /// Every folder of each account on stdout. An account that cannot be
 /// reached is reported on stderr, and the others are still listed.
-fn folders(accounts: &[&Account], allow_exec: bool) -> Result<ExitCode> {
+fn folders(accounts: &[&Account]) -> Result<ExitCode> {
     let mut out = std::io::stdout().lock();
     let mut failed = 0;
     for account in accounts {
-        let names = match account_folders(account, allow_exec) {
+        let names = match account_folders(account) {
             Ok(names) => names,
             Err(error) => {
                 eprintln!("{error:#}");
@@ -285,8 +285,8 @@ fn folders(accounts: &[&Account], allow_exec: bool) -> Result<ExitCode> {
 }
 
 /// The folders of one account, as the server names them.
-fn account_folders(account: &Account, allow_exec: bool) -> Result<Vec<String>> {
-    match account.reach(allow_exec)? {
+fn account_folders(account: &Account) -> Result<Vec<String>> {
+    match account.reach()? {
         Reach::Imap(imap) => {
             let password = imap.password(&account.name)?;
             let mut remote = Remote::connect(&account.name, &imap, password)?;
@@ -302,15 +302,16 @@ fn account_folders(account: &Account, allow_exec: bool) -> Result<Vec<String>> {
 }
 
 /// A `mailvault.toml` to fill in, unless one stands already.
-fn init(archive: &Archive) -> Result<()> {
-    let root = archive.root().display();
-    let name = config::FILE_NAME;
-    if config::begin(archive.root())? {
+fn init(source: &Source) -> Result<()> {
+    let path = source.path();
+    if source.begin()? {
         println!(
-            "{root}: {name} written with commented-out examples; fill in your mailboxes, then run `ossuary mailvault fetch`"
+            "{}: written with commented-out examples; fill in your mailboxes, then run `{}`",
+            path.display(),
+            source.command("fetch")
         );
     } else {
-        println!("{root}: {name} already exists, not overwritten");
+        println!("{}: already exists, not overwritten", path.display());
     }
     Ok(())
 }

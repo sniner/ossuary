@@ -18,7 +18,7 @@ attachments, `ossuary find` searches, `ossuary get` retrieves a message.
 
 ```console
 $ cd /home/john/archive
-$ ossuary mailvault fetch --allow-exec
+$ ossuary mailvault fetch
 archive /home/john/archive
 example.org: 2 folders
 example.org:INBOX: resuming above UID 1180, 24 messages to fetch
@@ -31,11 +31,12 @@ example.org:Sent: resuming above UID 310, 0 messages to fetch
 [outside verb](../ossuary-cli/README.md#outside-verbs): `ossuary` finds it
 on the PATH as `ossuary-mailvault`, and it can also be called directly
 under that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every
-ossuary command.
+ossuary command, and `--accounts FILE` to read the accounts from a file
+outside the archive (see [Who may write the file](#who-may-write-the-file)).
 
 | | |
 |---|---|
-| `init` | writes a `mailvault.toml` with an example of each kind of account, all commented out. An existing `mailvault.toml` is not overwritten |
+| `init` | writes a `mailvault.toml` with an example of each kind of account, all commented out. An existing `mailvault.toml` is not overwritten. With `--accounts FILE`, the file is written there |
 | `folders` | lists the folders of the accounts in `mailvault.toml`, one `account:folder` per line |
 | `fetch` | fetches the mailboxes listed in `mailvault.toml` |
 | `import` | imports an archive of the Python mailvault |
@@ -67,7 +68,7 @@ password = "bridge-password"
 |---|---|
 | `name` | the account name used in every `mailbox:place` claim. After a rename, new claims use the new name and existing claims keep the old one. Resume points are stored by name, so the first fetch after a rename fetches every folder in full |
 | `host`, `port`, `tls` | the server; port `993` with TLS by default. `tls = false` is allowed only for a bridge on localhost and is rejected for any other host |
-| `user`, `password` | the login. Any key can be given as `KEY_cmd` instead, most often `password_cmd`: a command that prints the value on its first line, for example from a password manager. Commands run only with `--allow-exec`, and only when their account is fetched; their prompts and error messages appear on the terminal. If both `KEY` and `KEY_cmd` are set, the command's value is used. `name`, `backend` and `folders` cannot be given as commands |
+| `user`, `password` | the login. Any key can be given as `KEY_cmd` instead, most often `password_cmd`: a command that prints the value on its first line, for example from a password manager. A command runs only when its account is fetched; its prompts and error messages appear on the terminal. If both `KEY` and `KEY_cmd` are set, the command's value is used. `name`, `backend` and `folders` cannot be given as commands |
 | `folders` | the folders to fetch; all folders when omitted. Folder names differ between accounts: Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on a German account. `ossuary mailvault folders` lists the names the server uses |
 
 A Microsoft 365 mailbox is fetched over Microsoft's MS Graph API instead of
@@ -101,6 +102,33 @@ IMAP account.
 
 To fetch only some accounts, name them:
 `ossuary mailvault fetch example.org`.
+
+## Who may write the file
+
+A `KEY_cmd` is a shell command. It runs as the user who runs
+`ossuary mailvault`, with everything that user can reach. Whoever can
+write `mailvault.toml` can therefore run any command as that user, every
+time the mail is fetched. No command is even needed: `host` can be changed
+to a server the writer controls, and the password goes there, whether
+written into the file or printed by `password_cmd`.
+
+None of this needs a hostile person. An archive on a share that several
+accounts can write to, or a sync client that overwrites files, has the
+same effect.
+
+The protection is the file's location. The file is as safe as the
+directory it lies in, so that has to be a directory nobody else can write
+to. When the archive root is not such a directory, keep the file
+elsewhere and name it on every call:
+
+```console
+$ ossuary mailvault init --accounts ~/.config/ossuary/mailvault.toml
+$ ossuary mailvault fetch --accounts ~/.config/ossuary/mailvault.toml
+```
+
+`ossuary merge` compares the accounts of two archives by the
+`mailvault.toml` in each archive root; a file named with `--accounts` is
+not part of that check.
 
 ## What is recorded
 
@@ -221,7 +249,7 @@ value.
 ## Exit codes
 
 `0` when everything was fetched or imported. `1` when anything failed,
-and when the archive cannot be opened, `mailvault.toml` cannot be read, or
+and when the archive cannot be opened, the accounts cannot be read, or
 the directory given to `import` is not a Python mailvault archive.
 
 ## License
