@@ -386,9 +386,12 @@ another one is merged with `--rehash`: every file is hashed anew with
 the current archive's algorithm on the way in, and the other archive's
 claims are written with the new names, segment for segment, with their
 time, source and run unchanged. The other archive's chain of segments
-is not carried over. This is also how an archive moves to another hash
-algorithm: create an empty archive with `init --algorithm`, then merge
-the old one into it with `--rehash`. The merge stops before
+is not carried over. A rehash is done once: merging the same archive
+again with `--rehash` writes its claims a second time, because only
+files are recognised as already present. This is also how an archive
+moves to another hash algorithm: create an empty archive with
+`init --algorithm`, then merge the old one into it with `--rehash`. The
+merge stops before
 joining the chains if a file in the other archive is damaged, if
 `audit` has findings for its chain of segments, or if both
 `mailvault.toml` files use one account name for different mailboxes,

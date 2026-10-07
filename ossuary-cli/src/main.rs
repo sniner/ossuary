@@ -583,11 +583,13 @@ enum Command {
     /// archive's claims are written here with the new names, segment
     /// for segment, with their time, source and run unchanged. Its
     /// chain of segments is not carried over, and `audit` shows no
-    /// merged line. This is also the way to move an archive to another
-    /// hash algorithm: create an empty archive with `init --algorithm`
-    /// and merge the old one into it with --rehash. A claim about a
-    /// file the other archive no longer holds cannot be rewritten and
-    /// stops the merge; --force leaves such claims out.
+    /// merged line. A rehash is done once: merging the same archive
+    /// again with --rehash writes its claims a second time. This is
+    /// also the way to move an archive to another hash algorithm:
+    /// create an empty archive with `init --algorithm` and merge the
+    /// old one into it with --rehash. A claim about a file the other
+    /// archive no longer holds cannot be rewritten and stops the merge;
+    /// --force leaves such claims out.
     ///
     /// A damaged file in the other archive, a finding in its chain of
     /// segments, or an account name that both mailvault.toml files use
