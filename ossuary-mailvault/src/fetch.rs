@@ -45,8 +45,8 @@ use ossuary_core::{
 use serde_json::json;
 
 use crate::config::{self, Account, Reach};
-use crate::graph::{Graph, Halt, Round};
-use crate::memo::{ImapResume, Memo};
+use crate::graph::{Graph, Halt, Miss, Round};
+use crate::memo::{ImapResume, Memo, Pending};
 use crate::output::{Say, counted};
 use crate::place;
 use crate::remote::{Mailbox, Remote, Stop};
@@ -61,6 +61,14 @@ pub struct Options {
 
 /// How many messages land between two commits of the resume point.
 const COMMIT_EVERY: usize = 25;
+
+/// How many runs may fail to fetch a pending message before it is
+/// given up.
+const GIVE_UP_AFTER: u32 = 3;
+
+/// How many messages in a row the server may refuse before the rest
+/// of the folder is left for the next run.
+const STOP_AFTER: usize = 10;
 
 /// Fetch the accounts into the archive.
 ///
@@ -411,8 +419,14 @@ impl Fetch<'_> {
         if !resumed {
             self.memo.clear_pending(&account.name, folder)?;
         }
-        self.memo
-            .add_pending(&account.name, folder, &round.offered)?;
+        self.memo.add_pending(
+            &account.name,
+            folder,
+            round
+                .offered
+                .iter()
+                .map(|message| (message.id.as_str(), &message.tags)),
+        )?;
         match round.link {
             // The link is the server's own "caught up here", so an
             // unchanged folder records it too. The exception is a first
@@ -435,9 +449,12 @@ impl Fetch<'_> {
 
     /// Every message on the folder's pending list, one request each,
     /// with the marks the listing reported. A message stored, and one
-    /// the server no longer has, comes off the list; one the server
-    /// would not return stays on it and is named in the tally. Returns
-    /// how many stayed.
+    /// the server no longer has, comes off the list. One the server
+    /// refuses is named in the tally and stays on the list, until it
+    /// has been refused in [`GIVE_UP_AFTER`] runs. The rest of the list
+    /// is left for the next run when the server refuses [`STOP_AFTER`]
+    /// messages in a row, or gives no usable answer at all. Returns
+    /// how many are left on the list.
     fn graph_land(
         &self,
         account: &Account,
@@ -446,26 +463,57 @@ impl Fetch<'_> {
         client: &mut Graph<'_>,
         tally: &mut Tally,
     ) -> Result<usize> {
-        let pending = self.memo.pending(&account.name, folder)?;
+        let pending: Vec<Pending<Vec<String>>> = self.memo.pending(&account.name, folder)?;
         let mut progress = self.say.progress();
-        let mut missed = 0;
+        let mut left = 0;
         let mut gone = 0;
+        let mut refused_in_a_row = 0;
         self.memo.begin()?;
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
-                Ok(Some(bytes)) => {
-                    self.land(name, &bytes, Some(&message.tags), tally)?;
+                Ok(bytes) => {
+                    self.land(name, &bytes, Some(&message.detail), tally)?;
                     self.memo
                         .remove_pending(&account.name, folder, &message.id)?;
+                    refused_in_a_row = 0;
                 }
-                Ok(None) => {
+                Err(Miss::Gone) => {
                     gone += 1;
                     self.memo
                         .remove_pending(&account.name, folder, &message.id)?;
+                    refused_in_a_row = 0;
                 }
-                Err(error) => {
-                    missed += 1;
-                    tally.failed.push(format!("{name}: {error:#}"));
+                Err(Miss::Refused(error)) => {
+                    refused_in_a_row += 1;
+                    if message.attempts + 1 >= GIVE_UP_AFTER {
+                        self.memo
+                            .remove_pending(&account.name, folder, &message.id)?;
+                        tally.failed.push(format!(
+                            "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full lists it again"
+                        ));
+                    } else {
+                        self.memo.fail_pending(&account.name, folder, &message.id)?;
+                        tally.failed.push(format!("{name}: {error:#}"));
+                        left += 1;
+                    }
+                    if refused_in_a_row >= STOP_AFTER {
+                        let rest = pending.len() - done - 1;
+                        left += rest;
+                        tally.failed.push(format!(
+                            "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
+                            counted(rest, "message", "messages")
+                        ));
+                        break;
+                    }
+                }
+                Err(Miss::Unreachable(error)) => {
+                    let rest = pending.len() - done;
+                    left += rest;
+                    tally.failed.push(format!(
+                        "{name}: {error:#}; {} left for the next run",
+                        counted(rest, "message", "messages")
+                    ));
+                    break;
                 }
             }
             // Committed in batches: a run that dies repeats at most a
@@ -487,7 +535,7 @@ impl Fetch<'_> {
                 counted(gone, "message", "messages")
             ));
         }
-        Ok(missed)
+        Ok(left)
     }
 
     /// One Graph folder: a delta round from its link on, or whole. The
@@ -564,7 +612,9 @@ impl Fetch<'_> {
         // the round carries on from its link; a round from scratch
         // lists it again.
         let left = if from.is_some() {
-            self.memo.pending(&account.name, folder)?.len()
+            self.memo
+                .pending::<Vec<String>>(&account.name, folder)?
+                .len()
         } else {
             0
         };
@@ -589,11 +639,11 @@ impl Fetch<'_> {
         }
 
         self.graph_listed(account, folder, &name, from.is_some(), round)?;
-        let missed = self.graph_land(account, folder, &name, client, tally)?;
-        if missed > 0 {
+        let left = self.graph_land(account, folder, &name, client, tally)?;
+        if left > 0 {
             self.say.line(format_args!(
                 "{name}: {} not fetched; the next run tries them again",
-                counted(missed, "message", "messages")
+                counted(left, "message", "messages")
             ));
         }
         Ok(())
@@ -869,7 +919,6 @@ mod tests {
         use serde_json::json;
 
         use super::*;
-        use crate::graph::Offered;
         use crate::graph::stub::{Reply, Stub};
 
         const USER: &str = "john@example.com";
@@ -1172,15 +1221,26 @@ mod tests {
             assert!(link(&bench).unwrap().ends_with("/delta/fresh"));
         }
 
+        /// The list pending for `Inbox`, in listing order.
+        fn pending_list(bench: &Bench) -> Vec<Pending<Vec<String>>> {
+            bench.memo.pending("m365", "Inbox").unwrap()
+        }
+
         /// The ids pending for `Inbox`, in listing order.
         fn pending(bench: &Bench) -> Vec<String> {
-            bench
-                .memo
-                .pending("m365", "Inbox")
-                .unwrap()
+            pending_list(bench)
                 .into_iter()
                 .map(|message| message.id)
                 .collect()
+        }
+
+        /// A pending entry as the memo hands it back.
+        fn entry(id: &str, tags: &[&str], attempts: u32) -> Pending<Vec<String>> {
+            Pending {
+                id: id.to_string(),
+                detail: tags.iter().map(ToString::to_string).collect(),
+                attempts,
+            }
         }
 
         /// The server refuses `id` with a status that is not retried.
@@ -1321,12 +1381,124 @@ mod tests {
             fetch(&bench, &stub, &account, false, false);
 
             assert_eq!(
-                bench.memo.pending("m365", "Inbox").unwrap(),
-                [Offered {
-                    id: "M2".to_string(),
-                    tags: vec!["Blue".to_string()]
-                }],
-                "listed once, with the newer marks"
+                pending_list(&bench),
+                [entry("M2", &["Blue"], 2)],
+                "listed once, with the newer marks, and the refusals of both runs counted"
+            );
+        }
+
+        #[test]
+        fn a_message_refused_in_three_runs_is_given_up() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            first_round(&stub, &["M1", "M2"], "one");
+            refuse(&stub, "M2");
+            next_round(&stub, "one", &[], "one");
+
+            fetch(&bench, &stub, &account, false, false);
+            assert_eq!(pending_list(&bench), [entry("M2", &[], 1)]);
+            let second = fetch(&bench, &stub, &account, false, false);
+            assert_eq!(pending_list(&bench), [entry("M2", &[], 2)]);
+            assert_eq!(
+                second.failed,
+                ["m365:Inbox: message M2: HTTP 403 ErrorAccessDenied: denied"]
+            );
+
+            let third = fetch(&bench, &stub, &account, false, false);
+
+            assert!(pending(&bench).is_empty(), "given up: off the list");
+            assert_eq!(
+                third.failed,
+                [
+                    "m365:Inbox: message M2: HTTP 403 ErrorAccessDenied: denied; given up after 3 runs, --full lists it again"
+                ]
+            );
+
+            // --full lists it again, and it gets a fresh count.
+            first_round(&stub, &["M1", "M2"], "fresh");
+            let full = fetch(&bench, &stub, &account, true, false);
+            assert_eq!(full.failed.len(), 1);
+            assert_eq!(pending_list(&bench), [entry("M2", &[], 1)]);
+        }
+
+        #[test]
+        fn ten_refusals_in_a_row_leave_the_rest_of_the_folder_for_the_next_run() {
+            let bench = bench();
+            let account = m365();
+            let ids: Vec<String> = (1..=12).map(|n| format!("M{n}")).collect();
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let stub = stub(&[]);
+            first_round(&stub, &ids, "one");
+            for id in &ids {
+                refuse(&stub, id);
+            }
+
+            let tally = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(
+                tally.failed.len(),
+                11,
+                "ten refusals and the stop: {:?}",
+                tally.failed
+            );
+            assert_eq!(
+                tally.failed[10],
+                "m365:Inbox: 10 messages in a row refused; 2 messages left for the next run"
+            );
+            let list = pending_list(&bench);
+            assert_eq!(list.len(), 12, "all still pending");
+            assert_eq!(
+                list.iter().filter(|message| message.attempts == 1).count(),
+                10,
+                "the ten refused count a run, the two not asked do not"
+            );
+            let asked = stub
+                .seen()
+                .iter()
+                .filter(|seen| seen.target.ends_with("/$value"))
+                .count();
+            assert_eq!(asked, 10, "M11 and M12 are not asked for");
+        }
+
+        #[test]
+        fn a_server_that_stops_answering_leaves_the_rest_pending_uncounted() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1", "M3"]);
+            first_round(&stub, &["M1", "M2", "M3"], "one");
+            // M2 answers 401, and the tenant will not renew the token:
+            // nothing after M2 can be asked for.
+            stub.script(
+                &format!("GET /v1.0/users/{USER}/messages/M2/$value"),
+                vec![Reply::bytes(401, b"")],
+            );
+            stub.script(
+                "POST /tenant/oauth2/v2.0/token",
+                vec![
+                    Reply::json(200, &json!({ "access_token": "tok" })),
+                    Reply::json(401, &json!({ "error": "invalid_client" })),
+                ],
+            );
+
+            let tally = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(tally.stored, 1, "M1 is in");
+            assert_eq!(tally.failed.len(), 1, "{:?}", tally.failed);
+            assert!(
+                tally.failed[0].ends_with("; 2 messages left for the next run"),
+                "{:?}",
+                tally.failed
+            );
+            assert_eq!(
+                pending_list(&bench),
+                [entry("M2", &[], 0), entry("M3", &[], 0)],
+                "neither counts a failed run: the server was gone, not the message"
+            );
+            assert!(link(&bench).unwrap().ends_with("/delta/one"));
+            assert!(
+                stub.seen().iter().all(|seen| !seen.target.contains("/M3/")),
+                "M3 is not asked for"
             );
         }
 

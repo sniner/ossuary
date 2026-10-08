@@ -7,17 +7,18 @@
 //! here. Three tables:
 //!
 //! - `resume` (account, folder, state): one row per folder, `state`
-//!   is JSON whose shape the backend decides. IMAP keeps the folder's
-//!   UIDVALIDITY and the highest UID fetched under it; the next run
-//!   asks the server only for what lies above. MS Graph keeps the
-//!   delta link the server handed out at the end of the last listing,
-//!   and when, so an expired link can be reported with its age. A
-//!   state the backend cannot read, because the account was switched
-//!   to another backend, counts as none.
-//! - `pending` (account, folder, id, detail): the messages a listing
-//!   reported that are not in the archive yet, `detail` again JSON of
-//!   the backend's choosing. Graph keeps the categories there. A
-//!   message is removed when it is stored.
+//!   is a [`Resume`] as JSON, tagged with the backend that wrote it.
+//!   IMAP keeps the folder's UIDVALIDITY and the highest UID fetched
+//!   under it; the next run asks the server only for what lies above.
+//!   MS Graph keeps the delta link the server handed out at the end of
+//!   the last listing, and when, so an expired link can be reported
+//!   with its age. A point written by the other backend, because the
+//!   account was switched, counts as none.
+//! - `pending` (account, folder, id, detail, attempts): the messages a
+//!   listing reported that are not in the archive yet. `detail` is
+//!   JSON of the backend's choosing; Graph keeps the categories there.
+//!   `attempts` counts the runs that failed to fetch the message. A
+//!   message is removed when it is stored, or when it is given up.
 //! - `imported` (`store_id`, place): for the takeover of a Python
 //!   mailvault archive, which places of each of its messages are on
 //!   the record, so an interrupted import carries on and a message
@@ -35,8 +36,6 @@ use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-
-use crate::graph::Offered;
 
 /// The memo's file name in `cache/`.
 pub const FILE_NAME: &str = "mailvault.sqlite";
@@ -56,6 +55,25 @@ pub struct ImapResume {
 pub struct GraphResume {
     pub link: String,
     pub issued: i64,
+}
+
+/// A folder's resume point, as the backend that fetched it wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "backend", rename_all = "lowercase")]
+pub enum Resume {
+    Imap(ImapResume),
+    Graph(GraphResume),
+}
+
+/// One entry of a folder's pending list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending<T> {
+    pub id: String,
+    /// What the listing reported about the message, as the backend
+    /// wrote it.
+    pub detail: T,
+    /// How many runs failed to fetch it.
+    pub attempts: u32,
 }
 
 impl GraphResume {
@@ -107,10 +125,11 @@ impl Memo {
                  PRIMARY KEY (account, folder)
              );
              CREATE TABLE IF NOT EXISTS pending (
-                 account TEXT NOT NULL,
-                 folder  TEXT NOT NULL,
-                 id      TEXT NOT NULL,
-                 detail  TEXT NOT NULL,
+                 account  TEXT NOT NULL,
+                 folder   TEXT NOT NULL,
+                 id       TEXT NOT NULL,
+                 detail   TEXT NOT NULL,
+                 attempts INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY (account, folder, id)
              );
              CREATE TABLE IF NOT EXISTS imported (
@@ -153,19 +172,31 @@ impl Memo {
         Ok(())
     }
 
-    /// The folder's resume point read as `T`: `None` for a folder
-    /// never fetched, and for a state written by another backend.
-    fn resume<T: DeserializeOwned>(&self, account: &str, folder: &str) -> Result<Option<T>> {
+    /// The folder's resume point: `None` for a folder never fetched.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing, or a state column that is not the JSON this
+    /// program writes.
+    pub fn resume(&self, account: &str, folder: &str) -> Result<Option<Resume>> {
         let mut statement = self
             .connection
             .prepare_cached("SELECT state FROM resume WHERE account = ?1 AND folder = ?2")?;
         let state: Option<String> = statement
             .query_row(params![account, folder], |row| row.get(0))
             .optional()?;
-        Ok(state.and_then(|state| serde_json::from_str(&state).ok()))
+        state
+            .map(|state| {
+                serde_json::from_str(&state).with_context(|| {
+                    format!(
+                        "{account}:{folder}: the resume point in cache/{FILE_NAME} is not readable; delete the file"
+                    )
+                })
+            })
+            .transpose()
     }
 
-    fn set_resume<T: Serialize>(&self, account: &str, folder: &str, state: &T) -> Result<()> {
+    fn set_resume(&self, account: &str, folder: &str, state: &Resume) -> Result<()> {
         let mut statement = self.connection.prepare_cached(
             "INSERT INTO resume (account, folder, state) VALUES (?1, ?2, ?3)
              ON CONFLICT (account, folder) DO UPDATE SET state = excluded.state",
@@ -174,13 +205,17 @@ impl Memo {
         Ok(())
     }
 
-    /// Where an IMAP folder's fetch carries on.
+    /// Where an IMAP folder's fetch carries on: `None` for a folder
+    /// never fetched, and for one last fetched over Graph.
     ///
     /// # Errors
     ///
-    /// `SQLite` refusing.
+    /// As [`resume`](Self::resume).
     pub fn imap_resume(&self, account: &str, folder: &str) -> Result<Option<ImapResume>> {
-        self.resume(account, folder)
+        Ok(match self.resume(account, folder)? {
+            Some(Resume::Imap(point)) => Some(point),
+            _ => None,
+        })
     }
 
     /// A message of the IMAP folder is in: the fetch carries on above
@@ -200,16 +235,20 @@ impl Memo {
             },
             _ => resume,
         };
-        self.set_resume(account, folder, &next)
+        self.set_resume(account, folder, &Resume::Imap(next))
     }
 
-    /// Where an MS Graph folder's listings carry on.
+    /// Where an MS Graph folder's listings carry on: `None` for a
+    /// folder never listed, and for one last fetched over IMAP.
     ///
     /// # Errors
     ///
-    /// `SQLite` refusing.
+    /// As [`resume`](Self::resume).
     pub fn graph_resume(&self, account: &str, folder: &str) -> Result<Option<GraphResume>> {
-        self.resume(account, folder)
+        Ok(match self.resume(account, folder)? {
+            Some(Resume::Graph(point)) => Some(point),
+            _ => None,
+        })
     }
 
     /// A listing of the Graph folder is complete: the next run carries
@@ -225,55 +264,93 @@ impl Memo {
             link: link.to_string(),
             issued: now(),
         };
-        self.set_resume(account, folder, &resume)
+        self.set_resume(account, folder, &Resume::Graph(resume))
     }
 
     /// The messages of the folder an earlier listing reported that are
-    /// not stored yet, with the categories it reported, in the order
-    /// they were listed.
+    /// not stored yet, in the order they were listed, each with its
+    /// detail read as `T`.
     ///
     /// # Errors
     ///
     /// `SQLite` refusing, or a detail column that is not the JSON this
     /// program writes.
-    pub fn pending(&self, account: &str, folder: &str) -> Result<Vec<Offered>> {
+    pub fn pending<T: DeserializeOwned>(
+        &self,
+        account: &str,
+        folder: &str,
+    ) -> Result<Vec<Pending<T>>> {
         let mut statement = self.connection.prepare_cached(
-            "SELECT id, detail FROM pending WHERE account = ?1 AND folder = ?2 ORDER BY rowid",
+            "SELECT id, detail, attempts FROM pending WHERE account = ?1 AND folder = ?2
+             ORDER BY rowid",
         )?;
         let rows = statement.query_map(params![account, folder], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
         })?;
         let mut pending = Vec::new();
         for row in rows {
-            let (id, detail) = row?;
-            let tags = serde_json::from_str(&detail)
-                .with_context(|| format!("pending message {id}: detail is not a JSON list"))?;
-            pending.push(Offered { id, tags });
+            let (id, detail, attempts) = row?;
+            let detail = serde_json::from_str(&detail).with_context(|| {
+                format!("pending message {id}: the detail in cache/{FILE_NAME} is not readable")
+            })?;
+            pending.push(Pending {
+                id,
+                detail,
+                attempts,
+            });
         }
         Ok(pending)
     }
 
     /// Put the messages a listing reported on the folder's pending
-    /// list. A message already on the list gets the categories of the
-    /// newer listing.
+    /// list, each with its detail written as JSON. A message already on
+    /// the list gets the detail of the newer listing and keeps its
+    /// attempts.
     ///
     /// # Errors
     ///
     /// `SQLite` refusing.
-    pub fn add_pending(&self, account: &str, folder: &str, offered: &[Offered]) -> Result<()> {
+    pub fn add_pending<'a, T: Serialize>(
+        &self,
+        account: &str,
+        folder: &str,
+        listed: impl IntoIterator<Item = (&'a str, T)>,
+    ) -> Result<()> {
         let mut statement = self.connection.prepare_cached(
             "INSERT INTO pending (account, folder, id, detail) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (account, folder, id) DO UPDATE SET detail = excluded.detail",
         )?;
-        for message in offered {
-            let detail = serde_json::to_string(&message.tags)?;
-            statement.execute(params![account, folder, message.id, detail])?;
+        for (id, detail) in listed {
+            statement.execute(params![
+                account,
+                folder,
+                id,
+                serde_json::to_string(&detail)?
+            ])?;
         }
         Ok(())
     }
 
-    /// The message is stored, or the server no longer has it: take it
-    /// off the folder's pending list.
+    /// One more run failed to fetch the message.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn fail_pending(&self, account: &str, folder: &str, id: &str) -> Result<()> {
+        let mut statement = self.connection.prepare_cached(
+            "UPDATE pending SET attempts = attempts + 1
+             WHERE account = ?1 AND folder = ?2 AND id = ?3",
+        )?;
+        statement.execute(params![account, folder, id])?;
+        Ok(())
+    }
+
+    /// The message is stored, the server no longer has it, or it is
+    /// given up: take it off the folder's pending list.
     ///
     /// # Errors
     ///
@@ -417,45 +494,73 @@ mod tests {
             None,
             "the account was switched to IMAP: a first fetch"
         );
+        assert!(matches!(
+            memo.resume("a", "Inbox").unwrap(),
+            Some(Resume::Graph(_))
+        ));
         memo.advance_imap("a", "Inbox", at(7, 40)).unwrap();
         assert_eq!(memo.graph_resume("a", "Inbox").unwrap(), None);
         assert_eq!(memo.imap_resume("a", "Inbox").unwrap(), Some(at(7, 40)));
     }
 
     #[test]
+    fn a_resume_point_that_is_not_json_is_an_error_not_a_first_fetch() {
+        let (_dir, memo) = memo();
+        memo.connection
+            .execute("INSERT INTO resume VALUES ('a', 'Inbox', 'not json')", [])
+            .unwrap();
+        let error = memo.imap_resume("a", "Inbox").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("a:Inbox: the resume point in cache/mailvault.sqlite is not readable; delete the file"),
+            "{error:#}"
+        );
+    }
+
+    /// A pending entry as the memo hands it back.
+    fn entry(id: &str, tags: &[&str], attempts: u32) -> Pending<Vec<String>> {
+        Pending {
+            id: id.to_string(),
+            detail: tags.iter().map(ToString::to_string).collect(),
+            attempts,
+        }
+    }
+
+    /// A message as a listing reports it, for `add_pending`.
+    fn listed(id: &'static str, tags: &[&str]) -> (&'static str, Vec<String>) {
+        (id, tags.iter().map(ToString::to_string).collect())
+    }
+
+    #[test]
     fn the_pending_list_is_kept_per_folder_in_listing_order() {
         let (_dir, memo) = memo();
-        let offered = |id: &str, tags: &[&str]| Offered {
-            id: id.to_string(),
-            tags: tags.iter().map(ToString::to_string).collect(),
-        };
-        assert!(memo.pending("a", "Inbox").unwrap().is_empty());
+        let pending = |folder: &str| memo.pending::<Vec<String>>("a", folder).unwrap();
+        assert!(pending("Inbox").is_empty());
 
-        memo.add_pending("a", "Inbox", &[offered("M2", &["Red"]), offered("M1", &[])])
+        memo.add_pending("a", "Inbox", [listed("M2", &["Red"]), listed("M1", &[])])
             .unwrap();
-        memo.add_pending("a", "Sent", &[offered("S1", &[])])
-            .unwrap();
+        memo.add_pending("a", "Sent", [listed("S1", &[])]).unwrap();
         assert_eq!(
-            memo.pending("a", "Inbox").unwrap(),
-            [offered("M2", &["Red"]), offered("M1", &[])]
+            pending("Inbox"),
+            [entry("M2", &["Red"], 0), entry("M1", &[], 0)]
         );
 
-        memo.add_pending("a", "Inbox", &[offered("M2", &["Blue"])])
+        memo.fail_pending("a", "Inbox", "M2").unwrap();
+        memo.add_pending("a", "Inbox", [listed("M2", &["Blue"])])
             .unwrap();
         assert_eq!(
-            memo.pending("a", "Inbox").unwrap(),
-            [offered("M2", &["Blue"]), offered("M1", &[])],
-            "a newer listing replaces the categories"
+            pending("Inbox"),
+            [entry("M2", &["Blue"], 1), entry("M1", &[], 0)],
+            "a newer listing replaces the detail and keeps the attempts"
         );
 
         memo.remove_pending("a", "Inbox", "M2").unwrap();
-        assert_eq!(memo.pending("a", "Inbox").unwrap(), [offered("M1", &[])]);
+        assert_eq!(pending("Inbox"), [entry("M1", &[], 0)]);
 
         memo.clear_pending("a", "Inbox").unwrap();
-        assert!(memo.pending("a", "Inbox").unwrap().is_empty());
+        assert!(pending("Inbox").is_empty());
         assert_eq!(
-            memo.pending("a", "Sent").unwrap(),
-            [offered("S1", &[])],
+            pending("Sent"),
+            [entry("S1", &[], 0)],
             "another folder's list is untouched"
         );
         memo.compact().unwrap();

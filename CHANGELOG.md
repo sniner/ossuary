@@ -20,7 +20,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a large folder could never get past its first fetch. The resume point is now saved as soon
   as the listing is complete, together with the list of messages still to fetch. A run that is
   interrupted, and a message the server did not return, leave messages on that list; the next
-  run fetches those first and then only what changed
+  run fetches those first and then only what changed. A message the server refuses in three
+  runs is given up and named; `--full` lists it again. When the server refuses ten messages in
+  a row, or stops answering, the rest of the folder is left for the next run instead of being
+  tried message by message
 - **`ossuary mailvault fetch` retries a download whose response broke off.** A response body
   that timed out or was cut short was reported as a failed message without a second attempt.
   It is now retried like a request that got no response

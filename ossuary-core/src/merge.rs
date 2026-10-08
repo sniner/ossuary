@@ -951,7 +951,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE resume (account TEXT NOT NULL, folder TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (account, folder));
-                 CREATE TABLE pending (account TEXT NOT NULL, folder TEXT NOT NULL, id TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (account, folder, id));",
+                 CREATE TABLE pending (account TEXT NOT NULL, folder TEXT NOT NULL, id TEXT NOT NULL, detail TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (account, folder, id));",
             )
             .unwrap();
         for (account, folder, uid) in rows {
@@ -961,7 +961,7 @@ mod tests {
                     rusqlite::params![
                         account,
                         folder,
-                        format!(r#"{{"uidvalidity":1,"uid":{uid}}}"#)
+                        format!(r#"{{"backend":"imap","uidvalidity":1,"uid":{uid}}}"#)
                     ],
                 )
                 .unwrap();

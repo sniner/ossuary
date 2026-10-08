@@ -206,7 +206,10 @@ message is taken off the list when it is stored. A run that is
 interrupted, and a message the server did not return, leave messages on
 the list; the next run reports how many are pending and fetches those
 before it asks the server what changed. A message that is no longer in
-the folder when its turn comes is skipped.
+the folder when its turn comes is skipped. A message the server refuses
+in three runs is given up and named in the report; `--full` lists it
+again. When the server refuses ten messages in a row, or stops answering
+at all, the rest of the folder is left for the next run.
 
 `--full` fetches every folder in full. `--dry-run` shows what a run would
 fetch and writes nothing. The progress of both goes to stderr, one line

@@ -110,6 +110,20 @@ pub enum Halt {
     Failed(anyhow::Error),
 }
 
+/// Why a message was not handed over.
+#[derive(Debug)]
+pub enum Miss {
+    /// The server has no message under this id any more: deleted, or
+    /// moved to another folder since it was listed.
+    Gone,
+    /// The server refused this one message. Others may still come.
+    Refused(anyhow::Error),
+    /// No usable answer from the server: no complete response after
+    /// the retries, or a token that could not be renewed. The next
+    /// message will not come either.
+    Unreachable(anyhow::Error),
+}
+
 /// A mailbox reached: logged in, its folders known.
 pub struct Graph<'a> {
     agent: Agent,
@@ -458,28 +472,33 @@ impl<'a> Graph<'a> {
         }
     }
 
-    /// The message's bytes, as sent; `None` when the server says the
-    /// message is gone: deleted, or moved to another folder since it
-    /// was listed.
+    /// The message's bytes, as sent.
     ///
     /// # Errors
     ///
-    /// A server that will not hand it over, a 404 for any other reason
-    /// included.
-    pub fn message(&mut self, id: &str) -> Result<Option<Vec<u8>>> {
+    /// [`Miss::Gone`] when the server says the message is gone,
+    /// [`Miss::Refused`] when it will not hand it over, a 404 for any
+    /// other reason included, [`Miss::Unreachable`] when it gave no
+    /// usable answer at all.
+    pub fn message(&mut self, id: &str) -> Result<Vec<u8>, Miss> {
         let url = format!(
             "{}/users/{}/messages/{id}/$value",
             self.base, self.account.user
         );
         let answer = self
             .get(&url, None)
-            .with_context(|| format!("message {}", shortened(id)))?;
+            .with_context(|| format!("message {}", shortened(id)))
+            .map_err(Miss::Unreachable)?;
         if answer.status == 200 {
-            Ok(Some(answer.body))
+            Ok(answer.body)
         } else if answer.gone() {
-            Ok(None)
+            Err(Miss::Gone)
         } else {
-            bail!("message {}: {}", shortened(id), answer.trouble())
+            Err(Miss::Refused(anyhow!(
+                "message {}: {}",
+                shortened(id),
+                answer.trouble()
+            )))
         }
     }
 
@@ -973,7 +992,7 @@ mod tests {
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
 
-        let bytes = graph.message("M1").unwrap().unwrap();
+        let bytes = graph.message("M1").unwrap();
 
         assert_eq!(bytes, b"Subject: hi\r\n\r\nbody");
         let asked: Vec<_> = stub
@@ -999,7 +1018,7 @@ mod tests {
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
 
-        let bytes = graph.message("M1").unwrap().unwrap();
+        let bytes = graph.message("M1").unwrap();
 
         assert_eq!(bytes, b"Subject: hi\r\n\r\nbody");
         let asked = stub
@@ -1023,15 +1042,22 @@ mod tests {
         );
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
-        let refused = graph.message("M1").unwrap_err();
         assert_eq!(
-            refused.to_string(),
+            refused(graph.message("M1")),
             "message M1: HTTP 403 ErrorAccessDenied: Access is denied."
         );
     }
 
+    /// The words of a [`Miss::Refused`]; anything else fails the test.
+    fn refused(missed: Result<Vec<u8>, Miss>) -> String {
+        match missed {
+            Err(Miss::Refused(error)) => error.to_string(),
+            other => panic!("not refused: {other:?}"),
+        }
+    }
+
     #[test]
-    fn a_message_the_server_no_longer_has_is_none() {
+    fn a_message_the_server_no_longer_has_is_gone() {
         let stub = plain();
         let key = format!("GET /v1.0/users/{USER}/messages/M1/$value");
         stub.script(
@@ -1043,7 +1069,30 @@ mod tests {
         );
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
-        assert_eq!(graph.message("M1").unwrap(), None);
+        assert!(matches!(graph.message("M1"), Err(Miss::Gone)));
+    }
+
+    #[test]
+    fn a_token_that_cannot_be_renewed_makes_the_server_unreachable() {
+        let stub = plain();
+        stub.script(
+            TOKEN,
+            vec![
+                token("tok"),
+                Reply::json(
+                    401,
+                    &json!({ "error": "invalid_client", "error_description": "AADSTS7000222: The provided client secret keys are expired." }),
+                ),
+            ],
+        );
+        let key = format!("GET /v1.0/users/{USER}/messages/M1/$value");
+        stub.script(&key, vec![Reply::bytes(401, b"")]);
+        let account = account();
+        let mut graph = reach(&stub, "m365", &account).unwrap();
+        let Err(Miss::Unreachable(error)) = graph.message("M1") else {
+            panic!("a token the tenant will not renew is not this message's fault");
+        };
+        assert!(format!("{error:#}").contains("AADSTS7000222"), "{error:#}");
     }
 
     #[test]
@@ -1062,14 +1111,12 @@ mod tests {
         );
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
-        let refused = graph.message("M1").unwrap_err();
         assert_eq!(
-            refused.to_string(),
+            refused(graph.message("M1")),
             "message M1: HTTP 404 MailboxNotEnabledForRESTAPI: The mailbox is either inactive, soft-deleted, or is hosted on-premise."
         );
-        let bare = graph.message("M1").unwrap_err();
         assert_eq!(
-            bare.to_string(),
+            refused(graph.message("M1")),
             "message M1: HTTP 404",
             "no code is not gone either"
         );
