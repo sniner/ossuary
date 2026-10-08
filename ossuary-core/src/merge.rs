@@ -950,15 +950,19 @@ mod tests {
         let connection = Connection::open(path).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE resume (account TEXT NOT NULL, folder TEXT NOT NULL, uidvalidity INTEGER NOT NULL, uid INTEGER NOT NULL, PRIMARY KEY (account, folder));
-                 CREATE TABLE delta (account TEXT NOT NULL, folder TEXT NOT NULL, link TEXT NOT NULL, issued INTEGER NOT NULL, PRIMARY KEY (account, folder));",
+                "CREATE TABLE resume (account TEXT NOT NULL, folder TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (account, folder));
+                 CREATE TABLE pending (account TEXT NOT NULL, folder TEXT NOT NULL, id TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (account, folder, id));",
             )
             .unwrap();
         for (account, folder, uid) in rows {
             connection
                 .execute(
-                    "INSERT INTO resume VALUES (?1, ?2, 1, ?3)",
-                    rusqlite::params![account, folder, uid],
+                    "INSERT INTO resume VALUES (?1, ?2, ?3)",
+                    rusqlite::params![
+                        account,
+                        folder,
+                        format!(r#"{{"uidvalidity":1,"uid":{uid}}}"#)
+                    ],
                 )
                 .unwrap();
         }
@@ -967,7 +971,9 @@ mod tests {
     fn resume(path: &Path) -> Vec<(String, String, u32)> {
         let connection = Connection::open(path).unwrap();
         let mut statement = connection
-            .prepare("SELECT account, folder, uid FROM resume ORDER BY account, folder")
+            .prepare(
+                "SELECT account, folder, json_extract(state, '$.uid') FROM resume ORDER BY account, folder",
+            )
             .unwrap();
         statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))

@@ -196,12 +196,17 @@ deleted; the next fetch then fetches every folder in full, and no claim is
 lost. UIDs are not recorded as claims.
 
 For a Microsoft 365 folder, the resume point is the delta link the server
-returns at the end of a fetch. The next run starts from it and gets only
+returns at the end of a listing. The next run starts from it and gets only
 what changed since; messages deleted or moved away in the meantime are
 counted. Delta links expire; an expired link means one full fetch of the
-folder, and the run prints how old the link was. The link is saved only
-when every listed message was fetched. A message the server did not
-return is reported, and the next run tries it again.
+folder, and the run prints how old the link was. A run first lists the
+folder, then fetches the listed messages one by one. The link and the
+list are saved in `cache/` as soon as the listing is complete, and each
+message is taken off the list when it is stored. A run that is
+interrupted, and a message the server did not return, leave messages on
+the list; the next run reports how many are pending and fetches those
+before it asks the server what changed. A message that is no longer in
+the folder when its turn comes is skipped.
 
 `--full` fetches every folder in full. `--dry-run` shows what a run would
 fetch and writes nothing. The progress of both goes to stderr, one line

@@ -216,7 +216,7 @@ impl Takeover<'_> {
         // with all its places recorded is not even read.
         let said = self
             .memo
-            .map(|memo| memo.said(store_id))
+            .map(|memo| memo.imported(store_id))
             .transpose()?
             .flatten();
         let (known, recorded) = match said {
@@ -320,7 +320,7 @@ impl Takeover<'_> {
         if let Some(memo) = self.memo {
             for pending in batch.iter() {
                 let places: Vec<&String> = pending.places.iter().map(|(place, _)| place).collect();
-                memo.say(&pending.store_id, &places)?;
+                memo.mark_imported(&pending.store_id, &places)?;
             }
             memo.commit()?;
             memo.begin()?;
@@ -715,7 +715,7 @@ mod tests {
             "no bytes, no claim — the memo alone never answers"
         );
         assert_eq!(
-            bench.memo.said(&id(TWO)).unwrap().unwrap().len(),
+            bench.memo.imported(&id(TWO)).unwrap().unwrap().len(),
             1,
             "the place that was not said is not remembered as said"
         );

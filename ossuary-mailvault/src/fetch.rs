@@ -13,16 +13,21 @@
 //! out at the end of the last round: the next round starts from it and
 //! is handed only what changed. A link the server no longer honours
 //! costs one whole round; so does a link that was never handed out.
-//! Graph also says which marks the mailbox has on each message — its
-//! categories — and those go on the record as `mailbox:tag`: said as
-//! seen, and taken back where they stood and are gone, so what stands
-//! is the marks as of the last sighting.
+//! A round only lists ids; the link is saved once the listing is
+//! complete, and the ids go on the folder's pending list in the memo.
+//! The messages are then fetched one by one, each removed from the
+//! list as it is stored. A run that stops early, and a message the
+//! server did not return, leave entries on the list, and the next run
+//! fetches those first. Graph also lists the categories of each
+//! message, and those are recorded as `mailbox:tag`: as listed, and
+//! retracted when a message is listed again without them, so the
+//! record holds the categories as of the last listing.
 //!
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
 //! the fetcher has to tell about it. The resume point moves forward
-//! only over what has landed: by batches over IMAP, at the end of the
-//! round over Graph. It lives in `cache/`: losing it costs one whole
+//! only over what has landed: by batches over IMAP, by the pending
+//! list over Graph. It lives in `cache/`: losing it costs one whole
 //! fetch of the folder, never a claim.
 //!
 //! One account failing costs that account: the password, the login,
@@ -40,8 +45,8 @@ use ossuary_core::{
 use serde_json::json;
 
 use crate::config::{self, Account, Reach};
-use crate::graph::{Graph, Halt, Offered};
-use crate::memo::{Memo, Resume};
+use crate::graph::{Graph, Halt, Round};
+use crate::memo::{ImapResume, Memo};
 use crate::output::{Say, counted};
 use crate::place;
 use crate::remote::{Mailbox, Remote, Stop};
@@ -94,6 +99,9 @@ pub fn run(
             tally.failed.push(format!("{error:#}"));
         }
     }
+    // The pending lists of this run are mostly deleted again by now;
+    // without this the file keeps their size.
+    memo.compact()?;
     Ok(tally)
 }
 
@@ -272,7 +280,7 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
-        let resume = self.memo.resume(&account.name, folder)?;
+        let resume = self.memo.imap_resume(&account.name, folder)?;
         let (above, how) = carry_on(resume, opened.uidvalidity, self.options.full);
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
@@ -309,10 +317,10 @@ impl Fetch<'_> {
                 frontier += 1;
             }
             if frontier > 0 {
-                self.memo.advance(
+                self.memo.advance_imap(
                     &account.name,
                     folder,
-                    Resume {
+                    ImapResume {
                         uidvalidity: opened.uidvalidity,
                         uid: uids[frontier - 1],
                     },
@@ -331,10 +339,10 @@ impl Fetch<'_> {
             // A folder with nothing above the point still has one: the
             // promise it was seen under, and where the next run asks
             // from — an empty folder is not a folder never fetched.
-            self.memo.advance(
+            self.memo.advance_imap(
                 &account.name,
                 folder,
-                Resume {
+                ImapResume {
                     uidvalidity: opened.uidvalidity,
                     uid: above,
                 },
@@ -388,43 +396,104 @@ impl Fetch<'_> {
         Ok(Ok(()))
     }
 
-    /// Every message the round offered, one request each, with the
-    /// marks the round said it carries: how many landed, and how many
-    /// the server kept — those are named in the tally.
+    /// The listing is complete: the link and the ids are saved
+    /// together, before the first message is fetched. A round from
+    /// scratch lists the folder whole and replaces an earlier list.
+    fn graph_listed(
+        &self,
+        account: &Account,
+        folder: &str,
+        name: &str,
+        resumed: bool,
+        round: Round,
+    ) -> Result<()> {
+        self.memo.begin()?;
+        if !resumed {
+            self.memo.clear_pending(&account.name, folder)?;
+        }
+        self.memo
+            .add_pending(&account.name, folder, &round.offered)?;
+        match round.link {
+            // The link is the server's own "caught up here", so an
+            // unchanged folder records it too. The exception is a first
+            // round that listed nothing: an empty folder and a mailbox
+            // not answering properly yet look alike from here, and the
+            // link would claim coverage of mail nobody listed. That
+            // costs one more round next time, on an empty folder.
+            Some(link) if resumed || !round.offered.is_empty() => {
+                self.memo.advance_graph(&account.name, folder, &link)?;
+            }
+            Some(_) => self.say.line(format_args!(
+                "{name}: no messages listed; no resume point saved"
+            )),
+            None => self.say.line(format_args!(
+                "{name}: the server returned no resume point; the next run fetches all messages again"
+            )),
+        }
+        self.memo.commit()
+    }
+
+    /// Every message on the folder's pending list, one request each,
+    /// with the marks the listing reported. A message stored, and one
+    /// the server no longer has, comes off the list; one the server
+    /// would not return stays on it and is named in the tally. Returns
+    /// how many stayed.
     fn graph_land(
         &self,
+        account: &Account,
+        folder: &str,
         name: &str,
         client: &mut Graph<'_>,
-        offered: &[Offered],
         tally: &mut Tally,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<usize> {
+        let pending = self.memo.pending(&account.name, folder)?;
         let mut progress = self.say.progress();
-        let mut landed = 0;
         let mut missed = 0;
-        for (done, message) in offered.iter().enumerate() {
+        let mut gone = 0;
+        self.memo.begin()?;
+        for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
-                Ok(bytes) => {
+                Ok(Some(bytes)) => {
                     self.land(name, &bytes, Some(&message.tags), tally)?;
-                    landed += 1;
+                    self.memo
+                        .remove_pending(&account.name, folder, &message.id)?;
+                }
+                Ok(None) => {
+                    gone += 1;
+                    self.memo
+                        .remove_pending(&account.name, folder, &message.id)?;
                 }
                 Err(error) => {
                     missed += 1;
                     tally.failed.push(format!("{name}: {error:#}"));
                 }
             }
+            // Committed in batches: a run that dies repeats at most a
+            // batch, and the bytes dedup.
+            if (done + 1) % COMMIT_EVERY == 0 {
+                self.memo.commit()?;
+                self.memo.begin()?;
+            }
             progress.update(
                 done + 1,
-                &format!("{name}: {} of {} fetched", done + 1, offered.len()),
+                &format!("{name}: {} of {} fetched", done + 1, pending.len()),
             );
         }
         progress.finish();
-        Ok((landed, missed))
+        self.memo.commit()?;
+        if gone > 0 {
+            self.say.line(format_args!(
+                "{name}: {} no longer in the folder, skipped",
+                counted(gone, "message", "messages")
+            ));
+        }
+        Ok(missed)
     }
 
-    /// One Graph folder: a delta round from its link on, or whole; then
-    /// every message the round offered. The link moves forward only
-    /// when all of them landed — a message the server would not hand
-    /// over is named, and the next run asks for it again.
+    /// One Graph folder: a delta round from its link on, or whole. The
+    /// link and the ids the round listed are saved before any message
+    /// is fetched, then everything pending for the folder is fetched,
+    /// what an earlier run left included.
     fn graph_folder(
         &self,
         account: &Account,
@@ -443,7 +512,7 @@ impl Fetch<'_> {
         let point = if self.options.full {
             None
         } else {
-            self.memo.delta(&account.name, folder)?
+            self.memo.graph_resume(&account.name, folder)?
         };
         // A link out of cache/ is held to the host mail is asked of
         // before it is followed; one naming another host is worth
@@ -472,7 +541,7 @@ impl Fetch<'_> {
                     "{name}: the resume point has expired (age {}); fetching all messages",
                     point
                         .as_ref()
-                        .map_or_else(|| "unknown".to_string(), crate::memo::Delta::age)
+                        .map_or_else(|| "unknown".to_string(), crate::memo::GraphResume::age)
                 ));
                 from = None;
                 how = "full fetch";
@@ -491,6 +560,20 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
+        // What an earlier run left on the list is still to fetch when
+        // the round carries on from its link; a round from scratch
+        // lists it again.
+        let left = if from.is_some() {
+            self.memo.pending(&account.name, folder)?.len()
+        } else {
+            0
+        };
+        if left > 0 {
+            self.say.line(format_args!(
+                "{name}: {} pending from the last run",
+                counted(left, "message", "messages")
+            ));
+        }
         let gone = if round.gone > 0 {
             format!(", {} removed from the folder", round.gone)
         } else {
@@ -501,34 +584,17 @@ impl Fetch<'_> {
             counted(round.offered.len(), "message", "messages")
         ));
         if self.options.dry_run {
-            tally.would += round.offered.len();
+            tally.would += left + round.offered.len();
             return Ok(());
         }
 
-        let (landed, missed) = self.graph_land(&name, client, &round.offered, tally)?;
+        self.graph_listed(account, folder, &name, from.is_some(), round)?;
+        let missed = self.graph_land(account, folder, &name, client, tally)?;
         if missed > 0 {
             self.say.line(format_args!(
                 "{name}: {} not fetched; the next run tries them again",
                 counted(missed, "message", "messages")
             ));
-            return Ok(());
-        }
-        match round.link {
-            // The link says "caught up here" in the server's words, so
-            // an unchanged folder records it too — except on a first
-            // round that offered nothing: an empty folder and a mailbox
-            // not answering properly yet look alike from here, and the
-            // link would claim coverage of mail nobody showed. One
-            // more round next time, on a folder that had nothing in it.
-            Some(link) if from.is_some() || landed > 0 => {
-                self.memo.advance_delta(&account.name, folder, &link)?;
-            }
-            Some(_) => self.say.line(format_args!(
-                "{name}: no messages listed; no resume point saved"
-            )),
-            None => self.say.line(format_args!(
-                "{name}: the server returned no resume point; the next run fetches all messages again"
-            )),
         }
         Ok(())
     }
@@ -537,7 +603,7 @@ impl Fetch<'_> {
 /// Where a folder's fetch carries on from, and how to say so: above
 /// the last UID when the server's promise still holds, from the start
 /// otherwise — or when `full` asks for everything.
-fn carry_on(resume: Option<Resume>, uidvalidity: u32, full: bool) -> (u32, String) {
+fn carry_on(resume: Option<ImapResume>, uidvalidity: u32, full: bool) -> (u32, String) {
     match resume {
         _ if full => (0, "full fetch (--full)".to_string()),
         Some(point) if point.uidvalidity == uidvalidity => {
@@ -559,8 +625,8 @@ mod tests {
     use super::*;
     use crate::remote::Folder;
 
-    fn at(uidvalidity: u32, uid: u32) -> Resume {
-        Resume { uidvalidity, uid }
+    fn at(uidvalidity: u32, uid: u32) -> ImapResume {
+        ImapResume { uidvalidity, uid }
     }
 
     #[test]
@@ -692,8 +758,8 @@ mod tests {
         tally
     }
 
-    fn point(bench: &Bench) -> Option<Resume> {
-        bench.memo.resume("example.org", "INBOX").unwrap()
+    fn point(bench: &Bench) -> Option<ImapResume> {
+        bench.memo.imap_resume("example.org", "INBOX").unwrap()
     }
 
     #[test]
@@ -803,6 +869,7 @@ mod tests {
         use serde_json::json;
 
         use super::*;
+        use crate::graph::Offered;
         use crate::graph::stub::{Reply, Stub};
 
         const USER: &str = "john@example.com";
@@ -921,7 +988,7 @@ mod tests {
         fn link(bench: &Bench) -> Option<String> {
             bench
                 .memo
-                .delta("m365", "Inbox")
+                .graph_resume("m365", "Inbox")
                 .unwrap()
                 .map(|point| point.link)
         }
@@ -1105,8 +1172,85 @@ mod tests {
             assert!(link(&bench).unwrap().ends_with("/delta/fresh"));
         }
 
+        /// The ids pending for `Inbox`, in listing order.
+        fn pending(bench: &Bench) -> Vec<String> {
+            bench
+                .memo
+                .pending("m365", "Inbox")
+                .unwrap()
+                .into_iter()
+                .map(|message| message.id)
+                .collect()
+        }
+
+        /// The server refuses `id` with a status that is not retried.
+        fn refuse(stub: &Stub, id: &str) {
+            stub.script(
+                &format!("GET /v1.0/users/{USER}/messages/{id}/$value"),
+                vec![Reply::json(
+                    403,
+                    &json!({ "error": { "code": "ErrorAccessDenied", "message": "denied" } }),
+                )],
+            );
+        }
+
         #[test]
-        fn a_message_the_server_keeps_leaves_the_point_standing() {
+        fn a_message_the_server_keeps_stays_pending_under_the_saved_link() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1", "M3"]);
+            offer(
+                &stub,
+                None,
+                &[marked("M1", &[]), marked("M2", &["Red"]), marked("M3", &[])],
+                "one",
+            );
+            refuse(&stub, "M2");
+
+            let tally = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(tally.stored, 2, "the two handed over are in");
+            assert_eq!(tally.failed.len(), 1);
+            assert!(
+                tally.failed[0].starts_with("m365:Inbox: message M2: HTTP 403"),
+                "{:?}",
+                tally.failed
+            );
+            assert!(
+                link(&bench).unwrap().ends_with("/delta/one"),
+                "the listing was complete, so the link is saved"
+            );
+            assert_eq!(pending(&bench), ["M2"]);
+
+            // Next run: the server hands M2 over now, the round from
+            // the link offers nothing new.
+            let (_, m2) = message("M2");
+            stub.script(
+                &format!("GET /v1.0/users/{USER}/messages/M2/$value"),
+                vec![Reply::bytes(200, &message("M2").0)],
+            );
+            next_round(&stub, "one", &[], "two");
+            let again = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!((again.stored, again.known), (1, 0), "only M2 is fetched");
+            assert!(again.failed.is_empty(), "{:?}", again.failed);
+            assert_eq!(
+                standing_tags(&bench, &m2),
+                ["Red"],
+                "with the marks the listing reported"
+            );
+            assert!(pending(&bench).is_empty());
+            assert!(link(&bench).unwrap().ends_with("/delta/two"));
+            let asked = stub
+                .seen()
+                .iter()
+                .filter(|seen| seen.target.ends_with("/$value"))
+                .count();
+            assert_eq!(asked, 4, "M1, M2, M3, then M2 again; nothing else");
+        }
+
+        #[test]
+        fn a_message_gone_since_the_listing_is_skipped_not_kept_pending() {
             let bench = bench();
             let account = m365();
             let stub = stub(&["M1"]);
@@ -1121,14 +1265,112 @@ mod tests {
 
             let tally = fetch(&bench, &stub, &account, false, false);
 
-            assert_eq!(tally.stored, 1, "the one handed over is in");
+            assert_eq!(tally.stored, 1);
+            assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+            assert!(pending(&bench).is_empty());
+            assert!(link(&bench).unwrap().ends_with("/delta/one"));
+        }
+
+        #[test]
+        fn a_404_without_the_gone_code_keeps_the_message_pending() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            first_round(&stub, &["M1", "M2"], "one");
+            stub.script(
+                &format!("GET /v1.0/users/{USER}/messages/M2/$value"),
+                vec![Reply::json(
+                    404,
+                    &json!({ "error": { "code": "ResourceNotFound", "message": "Resource could not be discovered." } }),
+                )],
+            );
+
+            let tally = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(tally.stored, 1);
             assert_eq!(tally.failed.len(), 1);
             assert!(
-                tally.failed[0].starts_with("m365:Inbox: message M2: HTTP 404"),
+                tally.failed[0].starts_with("m365:Inbox: message M2: HTTP 404 ResourceNotFound"),
                 "{:?}",
                 tally.failed
             );
-            assert_eq!(link(&bench), None, "so the next run asks for M2 again");
+            assert_eq!(
+                pending(&bench),
+                ["M2"],
+                "not gone, so not taken off the list"
+            );
+            assert!(link(&bench).unwrap().ends_with("/delta/one"));
+        }
+
+        #[test]
+        fn a_round_that_lists_a_pending_message_again_renews_its_marks() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            offer(
+                &stub,
+                None,
+                &[marked("M1", &[]), marked("M2", &["Red"])],
+                "one",
+            );
+            refuse(&stub, "M2");
+            fetch(&bench, &stub, &account, false, false);
+            assert_eq!(pending(&bench), ["M2"]);
+
+            offer(&stub, Some("one"), &[marked("M2", &["Blue"])], "two");
+            fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(
+                bench.memo.pending("m365", "Inbox").unwrap(),
+                [Offered {
+                    id: "M2".to_string(),
+                    tags: vec!["Blue".to_string()]
+                }],
+                "listed once, with the newer marks"
+            );
+        }
+
+        #[test]
+        fn a_round_from_scratch_replaces_the_pending_list() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            first_round(&stub, &["M1", "M2"], "one");
+            refuse(&stub, "M2");
+            fetch(&bench, &stub, &account, false, false);
+            assert_eq!(pending(&bench), ["M2"]);
+
+            // M2 is gone from the mailbox; --full lists the folder
+            // whole and M2 is not asked for again.
+            first_round(&stub, &["M1"], "fresh");
+            let full = fetch(&bench, &stub, &account, true, false);
+
+            assert_eq!((full.stored, full.known), (0, 1));
+            assert!(full.failed.is_empty(), "{:?}", full.failed);
+            assert!(pending(&bench).is_empty());
+            let asked = stub
+                .seen()
+                .iter()
+                .filter(|seen| seen.target.ends_with("/M2/$value"))
+                .count();
+            assert_eq!(asked, 1, "only in the first run");
+        }
+
+        #[test]
+        fn a_dry_run_counts_what_is_pending_too() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            first_round(&stub, &["M1", "M2"], "one");
+            refuse(&stub, "M2");
+            fetch(&bench, &stub, &account, false, false);
+            next_round(&stub, "one", &["M3"], "two");
+
+            let rehearsed = fetch(&bench, &stub, &account, false, true);
+
+            assert_eq!((rehearsed.would, rehearsed.claims), (2, 0), "M2 and M3");
+            assert_eq!(pending(&bench), ["M2"], "a rehearsal moves nothing");
+            assert!(link(&bench).unwrap().ends_with("/delta/one"));
         }
 
         #[test]
@@ -1193,7 +1435,7 @@ mod tests {
             first_round(&stub, &["M1"], "one");
             bench
                 .memo
-                .advance_delta("m365", "Inbox", "https://evil.example.com/delta")
+                .advance_graph("m365", "Inbox", "https://evil.example.com/delta")
                 .unwrap();
 
             let tally = fetch(&bench, &stub, &account, false, false);

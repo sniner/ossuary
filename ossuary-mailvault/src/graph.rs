@@ -66,6 +66,10 @@ const EXPIRED_CODES: [&str; 4] = [
     "resyncchangesuploaddifferences",
 ];
 
+/// What a 404 for a message carries when the message itself is gone:
+/// deleted, or moved to another folder since it was listed.
+const GONE_CODE: &str = "erroritemnotfound";
+
 /// The most a message may be — Graph itself stops well below.
 const MESSAGE_AT_MOST: u64 = 512 * 1024 * 1024;
 
@@ -217,6 +221,16 @@ impl Answer {
         format!("HTTP {}{said}", self.status)
     }
 
+    /// The error code Graph puts in the body, lower-cased, when there
+    /// is one.
+    fn code(&self) -> Option<String> {
+        self.json::<Failure>()
+            .ok()
+            .and_then(|failure| failure.error)
+            .and_then(|error| error.code)
+            .map(|code| code.to_ascii_lowercase())
+    }
+
     /// Whether the delta link this answers to is no longer honoured.
     fn expired(&self) -> bool {
         if self.status == EXPIRED_STATUS {
@@ -225,11 +239,17 @@ impl Answer {
         if !(400..500).contains(&self.status) {
             return false;
         }
-        self.json::<Failure>()
-            .ok()
-            .and_then(|failure| failure.error)
-            .and_then(|error| error.code)
-            .is_some_and(|code| EXPIRED_CODES.contains(&code.to_ascii_lowercase().as_str()))
+        self.code()
+            .is_some_and(|code| EXPIRED_CODES.contains(&code.as_str()))
+    }
+
+    /// Whether the message this answers for is no longer on the server.
+    /// A 404 alone is not enough: the server answers 404 for a mailbox
+    /// it cannot reach or an id it cannot parse as well, and a message
+    /// taken off the pending list on such an answer would not be listed
+    /// again.
+    fn gone(&self) -> bool {
+        self.status == 404 && self.code().as_deref() == Some(GONE_CODE)
     }
 }
 
@@ -438,21 +458,29 @@ impl<'a> Graph<'a> {
         }
     }
 
-    /// The message's bytes, as sent.
+    /// The message's bytes, as sent; `None` when the server says the
+    /// message is gone: deleted, or moved to another folder since it
+    /// was listed.
     ///
     /// # Errors
     ///
-    /// A server that will not hand it over.
-    pub fn message(&mut self, id: &str) -> Result<Vec<u8>> {
+    /// A server that will not hand it over, a 404 for any other reason
+    /// included.
+    pub fn message(&mut self, id: &str) -> Result<Option<Vec<u8>>> {
         let url = format!(
             "{}/users/{}/messages/{id}/$value",
             self.base, self.account.user
         );
-        let answer = self.get(&url, None)?;
-        if answer.status != 200 {
-            bail!("message {}: {}", shortened(id), answer.trouble());
+        let answer = self
+            .get(&url, None)
+            .with_context(|| format!("message {}", shortened(id)))?;
+        if answer.status == 200 {
+            Ok(Some(answer.body))
+        } else if answer.gone() {
+            Ok(None)
+        } else {
+            bail!("message {}: {}", shortened(id), answer.trouble())
         }
-        Ok(answer.body)
     }
 
     /// The trouble, named — with the way forward when the status says
@@ -496,17 +524,22 @@ impl<'a> Graph<'a> {
             if let Some(prefer) = prefer {
                 request = request.header("Prefer", prefer);
             }
-            let answer = match request.call() {
-                Ok(response) => Answer::read(response)?,
-                Err(error) if attempt < RETRIES => {
+            // A body cut short or stalled is a failure of the same kind
+            // as no response at all: the request is sent again whole.
+            let read = request
+                .call()
+                .map_err(anyhow::Error::from)
+                .and_then(Answer::read);
+            let answer = match read {
+                Ok(answer) => answer,
+                Err(_) if attempt < RETRIES => {
                     sleep(backoff(attempt));
                     attempt += 1;
-                    let _ = error;
                     continue;
                 }
                 Err(error) => {
-                    return Err(anyhow!(error).context(format!(
-                        "no response from {} after {} attempts",
+                    return Err(error.context(format!(
+                        "no complete response from {} after {} attempts",
                         host_of(url),
                         attempt + 1
                     )));
@@ -599,6 +632,9 @@ pub mod stub {
         pub status: u16,
         pub headers: Vec<(String, String)>,
         pub body: Vec<u8>,
+        /// Announce the body whole, send half of it and close: the
+        /// client's read of the body fails.
+        pub cut: bool,
     }
 
     impl Reply {
@@ -607,6 +643,7 @@ pub mod stub {
                 status,
                 headers: vec![("Content-Type".to_string(), "application/json".to_string())],
                 body: body.to_string().into_bytes(),
+                cut: false,
             }
         }
 
@@ -615,11 +652,17 @@ pub mod stub {
                 status,
                 headers: Vec::new(),
                 body: body.to_vec(),
+                cut: false,
             }
         }
 
         pub fn header(mut self, name: &str, value: &str) -> Self {
             self.headers.push((name.to_string(), value.to_string()));
+            self
+        }
+
+        pub fn cut(mut self) -> Self {
+            self.cut = true;
             self
         }
     }
@@ -740,7 +783,12 @@ pub mod stub {
         out.push_str("\r\n");
         let mut stream = reader.into_inner();
         stream.write_all(out.as_bytes()).unwrap();
-        stream.write_all(&reply.body).unwrap();
+        let sent = if reply.cut {
+            reply.body.len() / 2
+        } else {
+            reply.body.len()
+        };
+        stream.write_all(&reply.body[..sent]).unwrap();
         let _ = stream.flush();
     }
 }
@@ -925,7 +973,7 @@ mod tests {
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
 
-        let bytes = graph.message("M1").unwrap();
+        let bytes = graph.message("M1").unwrap().unwrap();
 
         assert_eq!(bytes, b"Subject: hi\r\n\r\nbody");
         let asked: Vec<_> = stub
@@ -938,7 +986,52 @@ mod tests {
     }
 
     #[test]
+    fn a_body_cut_short_is_asked_for_again() {
+        let stub = plain();
+        let key = format!("GET /v1.0/users/{USER}/messages/M1/$value");
+        stub.script(
+            &key,
+            vec![
+                Reply::bytes(200, b"Subject: hi\r\n\r\nbody").cut(),
+                Reply::bytes(200, b"Subject: hi\r\n\r\nbody"),
+            ],
+        );
+        let account = account();
+        let mut graph = reach(&stub, "m365", &account).unwrap();
+
+        let bytes = graph.message("M1").unwrap().unwrap();
+
+        assert_eq!(bytes, b"Subject: hi\r\n\r\nbody");
+        let asked = stub
+            .seen()
+            .iter()
+            .filter(|seen| seen.target.ends_with("/$value"))
+            .count();
+        assert_eq!(asked, 2);
+    }
+
+    #[test]
     fn a_message_refused_is_named_with_the_servers_words() {
+        let stub = plain();
+        let key = format!("GET /v1.0/users/{USER}/messages/M1/$value");
+        stub.script(
+            &key,
+            vec![Reply::json(
+                403,
+                &json!({ "error": { "code": "ErrorAccessDenied", "message": "Access is denied." } }),
+            )],
+        );
+        let account = account();
+        let mut graph = reach(&stub, "m365", &account).unwrap();
+        let refused = graph.message("M1").unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "message M1: HTTP 403 ErrorAccessDenied: Access is denied."
+        );
+    }
+
+    #[test]
+    fn a_message_the_server_no_longer_has_is_none() {
         let stub = plain();
         let key = format!("GET /v1.0/users/{USER}/messages/M1/$value");
         stub.script(
@@ -950,10 +1043,35 @@ mod tests {
         );
         let account = account();
         let mut graph = reach(&stub, "m365", &account).unwrap();
+        assert_eq!(graph.message("M1").unwrap(), None);
+    }
+
+    #[test]
+    fn a_404_for_any_other_reason_is_refused_not_gone() {
+        let stub = plain();
+        let key = format!("GET /v1.0/users/{USER}/messages/M1/$value");
+        stub.script(
+            &key,
+            vec![
+                Reply::json(
+                    404,
+                    &json!({ "error": { "code": "MailboxNotEnabledForRESTAPI", "message": "The mailbox is either inactive, soft-deleted, or is hosted on-premise." } }),
+                ),
+                Reply::bytes(404, b""),
+            ],
+        );
+        let account = account();
+        let mut graph = reach(&stub, "m365", &account).unwrap();
         let refused = graph.message("M1").unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "message M1: HTTP 404 ErrorItemNotFound: The specified object was not found in the store."
+            "message M1: HTTP 404 MailboxNotEnabledForRESTAPI: The mailbox is either inactive, soft-deleted, or is hosted on-premise."
+        );
+        let bare = graph.message("M1").unwrap_err();
+        assert_eq!(
+            bare.to_string(),
+            "message M1: HTTP 404",
+            "no code is not gone either"
         );
     }
 

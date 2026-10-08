@@ -5,6 +5,26 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`cache/mailvault.sqlite` has a new layout.** The resume points of IMAP and Microsoft 365
+  folders are in one table, as JSON, next to the list of messages still to fetch. Delete the
+  file; the next fetch then fetches every folder in full. The file is compacted at the end of
+  every fetch
+
+### Fixed
+
+- **`ossuary mailvault fetch` no longer fetches a whole Microsoft 365 folder again after one
+  message failed.** The resume point was saved only when every listed message had been fetched,
+  so one failed download out of many thousands cost a full fetch of the folder on the next run,
+  and a large folder could never get past its first fetch. The resume point is now saved as soon
+  as the listing is complete, together with the list of messages still to fetch. A run that is
+  interrupted, and a message the server did not return, leave messages on that list; the next
+  run fetches those first and then only what changed
+- **`ossuary mailvault fetch` retries a download whose response broke off.** A response body
+  that timed out or was cut short was reported as a failed message without a second attempt.
+  It is now retried like a request that got no response
+
 ## [0.11.1] - 2026-10-07
 
 ### Changed
