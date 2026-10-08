@@ -108,8 +108,16 @@ pub fn run(
         }
     }
     // The pending lists of this run are mostly deleted again by now;
-    // without this the file keeps their size.
-    memo.compact()?;
+    // without this the file keeps their size. A file that stays large
+    // costs nothing but space, so this does not fail the run.
+    if !options.dry_run {
+        if let Err(error) = memo.compact() {
+            say.line(format_args!(
+                "cache/{}: not compacted ({error:#}); the file keeps its size until a later run compacts it",
+                crate::memo::FILE_NAME
+            ));
+        }
+    }
     Ok(tally)
 }
 
@@ -440,6 +448,9 @@ impl Fetch<'_> {
             Some(_) => self.say.line(format_args!(
                 "{name}: no messages listed; no resume point saved"
             )),
+            None if resumed => self.say.line(format_args!(
+                "{name}: the server returned no resume point; the next run lists the changes since the last one again"
+            )),
             None => self.say.line(format_args!(
                 "{name}: the server returned no resume point; the next run fetches all messages again"
             )),
@@ -611,17 +622,15 @@ impl Fetch<'_> {
         // What an earlier run left on the list is still to fetch when
         // the round carries on from its link; a round from scratch
         // lists it again.
-        let left = if from.is_some() {
-            self.memo
-                .pending::<Vec<String>>(&account.name, folder)?
-                .len()
+        let left: Vec<Pending<Vec<String>>> = if from.is_some() {
+            self.memo.pending(&account.name, folder)?
         } else {
-            0
+            Vec::new()
         };
-        if left > 0 {
+        if !left.is_empty() {
             self.say.line(format_args!(
                 "{name}: {} pending from the last run",
-                counted(left, "message", "messages")
+                counted(left.len(), "message", "messages")
             ));
         }
         let gone = if round.gone > 0 {
@@ -634,7 +643,14 @@ impl Fetch<'_> {
             counted(round.offered.len(), "message", "messages")
         ));
         if self.options.dry_run {
-            tally.would += left + round.offered.len();
+            // A message listed again while still pending is one fetch.
+            let pending: HashSet<&str> = left.iter().map(|message| message.id.as_str()).collect();
+            let new = round
+                .offered
+                .iter()
+                .filter(|message| !pending.contains(message.id.as_str()))
+                .count();
+            tally.would += left.len() + new;
             return Ok(());
         }
 
@@ -1536,11 +1552,15 @@ mod tests {
             first_round(&stub, &["M1", "M2"], "one");
             refuse(&stub, "M2");
             fetch(&bench, &stub, &account, false, false);
-            next_round(&stub, "one", &["M3"], "two");
+            next_round(&stub, "one", &["M2", "M3"], "two");
 
             let rehearsed = fetch(&bench, &stub, &account, false, true);
 
-            assert_eq!((rehearsed.would, rehearsed.claims), (2, 0), "M2 and M3");
+            assert_eq!(
+                (rehearsed.would, rehearsed.claims),
+                (2, 0),
+                "M2 once, though pending and listed again, and M3"
+            );
             assert_eq!(pending(&bench), ["M2"], "a rehearsal moves nothing");
             assert!(link(&bench).unwrap().ends_with("/delta/one"));
         }

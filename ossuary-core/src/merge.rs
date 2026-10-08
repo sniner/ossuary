@@ -541,8 +541,13 @@ pub fn take_memo(ours: &Archive, theirs: &Archive) -> Result<Option<usize>> {
         if !ours_tables.contains(&table) {
             continue;
         }
-        // Same program, same schema: the columns line up. A row for an
-        // account and folder this archive knows is kept as it is here.
+        // A table with other columns was written by another version of
+        // the fetcher and is left alone; it costs that version's
+        // folders one full fetch. Where the columns line up, a row for
+        // an account and folder this archive knows is kept as it is.
+        if columns(&connection, "main", &table)? != columns(&connection, "theirs", &table)? {
+            continue;
+        }
         rows += connection.execute(
             &format!("INSERT OR IGNORE INTO main.{table} SELECT * FROM theirs.{table}"),
             [],
@@ -550,6 +555,15 @@ pub fn take_memo(ours: &Archive, theirs: &Archive) -> Result<Option<usize>> {
     }
     connection.execute_batch("COMMIT")?;
     Ok(Some(rows))
+}
+
+/// The columns of one table of an attached database, by name, in order.
+fn columns(connection: &Connection, schema: &str, table: &str) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA {schema}.table_info({table})"))?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(names)
 }
 
 /// The tables of one attached database, by name.
@@ -1011,5 +1025,30 @@ mod tests {
             ],
             "our own resume point stays"
         );
+    }
+
+    #[test]
+    fn a_memory_of_another_layout_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let ours = archive(&dir, "a");
+        let theirs = archive(&dir, "b");
+        let to = ours.root().join("cache").join(MAILVAULT_MEMO);
+        memo_with(&to, &[("work", "INBOX", 100)]);
+        let from = theirs.root().join("cache").join(MAILVAULT_MEMO);
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        Connection::open(&from)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE resume (account TEXT NOT NULL, folder TEXT NOT NULL, uidvalidity INTEGER NOT NULL, uid INTEGER NOT NULL, PRIMARY KEY (account, folder));
+                 INSERT INTO resume VALUES ('work', 'Sent', 1, 7);",
+            )
+            .unwrap();
+
+        assert_eq!(
+            take_memo(&ours, &theirs).unwrap(),
+            Some(0),
+            "other columns, nothing taken over"
+        );
+        assert_eq!(resume(&to).len(), 1);
     }
 }

@@ -197,7 +197,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             say.line(format_args!("archive {}", archive.root().display()));
             let config = source.load()?;
             let chosen = chosen(&config, &accounts)?;
-            let memo = Memo::open(&memo_path)?;
+            let memo = opened(&memo_path, say, "every folder is fetched in full")?;
             let tally = fetch::run(
                 &archive,
                 &chosen,
@@ -221,7 +221,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             say.line(format_args!("archive {}", archive.root().display()));
             import::verify(&vault)?;
-            let memo = Memo::open(&memo_path)?;
+            let memo = opened(&memo_path, say, "the import reads every message again")?;
             say.line(format_args!(
                 "importing the Python mailvault archive at {}",
                 vault.display()
@@ -237,6 +237,19 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(finish(&tally, dry_run))
         }
     }
+}
+
+/// The memo, opened; when it had an older layout and was emptied, a
+/// line says so and what that costs this command.
+fn opened(path: &Path, say: Say, costs: &str) -> Result<Memo> {
+    let memo = Memo::open(path)?;
+    if memo.reset() {
+        say.line(format_args!(
+            "cache/{}: older layout, emptied; {costs}",
+            memo::FILE_NAME
+        ));
+    }
+    Ok(memo)
 }
 
 /// The accounts named, or all of them; an error when there are none at

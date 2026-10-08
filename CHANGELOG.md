@@ -8,9 +8,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`cache/mailvault.sqlite` has a new layout.** The resume points of IMAP and Microsoft 365
-  folders are in one table, as JSON, next to the list of messages still to fetch. Delete the
-  file; the next fetch then fetches every folder in full. The file is compacted at the end of
-  every fetch
+  folders are in one table, as JSON, next to the list of messages still to fetch. A file with
+  the old layout is emptied on the next run, which says so and fetches every folder in full.
+  The file is compacted at the end of a fetch once its deleted rows take up a megabyte
 
 ### Fixed
 

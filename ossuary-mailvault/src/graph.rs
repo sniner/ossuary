@@ -551,6 +551,13 @@ impl<'a> Graph<'a> {
                 .and_then(Answer::read);
             let answer = match read {
                 Ok(answer) => answer,
+                Err(error) if too_large(&error) => {
+                    return Err(error.context(format!(
+                        "the response from {} is larger than {} MiB and was not read",
+                        host_of(url),
+                        MESSAGE_AT_MOST / (1024 * 1024)
+                    )));
+                }
                 Err(_) if attempt < RETRIES => {
                     sleep(backoff(attempt));
                     attempt += 1;
@@ -577,6 +584,16 @@ impl<'a> Graph<'a> {
             return Ok(answer);
         }
     }
+}
+
+/// Whether the read stopped because the body passed [`MESSAGE_AT_MOST`].
+/// Asking again would get the same body; the other read failures are
+/// worth a retry.
+fn too_large(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ureq::Error>(),
+        Some(ureq::Error::BodyExceedsLimit(_))
+    )
 }
 
 /// The pause before retry number `attempt`: doubling, capped.

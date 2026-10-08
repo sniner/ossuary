@@ -40,6 +40,10 @@ use serde::{Deserialize, Serialize};
 /// The memo's file name in `cache/`.
 pub const FILE_NAME: &str = "mailvault.sqlite";
 
+/// How much space deleted rows must take up before [`Memo::compact`]
+/// rewrites the file.
+const COMPACT_FROM: i64 = 1024 * 1024;
+
 /// An IMAP folder's resume point: what the server promised about its
 /// UIDs, and the highest one fetched under that promise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +95,17 @@ impl GraphResume {
     }
 }
 
+/// Whether the file has a `resume` table of an older layout, one
+/// without the `state` column. `CREATE TABLE IF NOT EXISTS` would keep
+/// it, and the first read would fail on the missing column.
+fn older_layout(connection: &Connection) -> Result<bool> {
+    let mut statement = connection.prepare("PRAGMA table_info(resume)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(!columns.is_empty() && !columns.iter().any(|column| column == "state"))
+}
+
 /// Seconds since the epoch, as the memo stamps them.
 fn now() -> i64 {
     SystemTime::now()
@@ -102,10 +117,15 @@ fn now() -> i64 {
 
 pub struct Memo {
     connection: Connection,
+    /// Whether the file had an older layout and was emptied on open.
+    reset: bool,
 }
 
 impl Memo {
-    /// Open the memo at `path`, making file and schema as needed.
+    /// Open the memo at `path`, making file and schema as needed. A
+    /// file with an older layout is emptied: it is cache, and the
+    /// tables of the older layout cannot be read. [`reset`](Self::reset)
+    /// says when that happened.
     ///
     /// # Errors
     ///
@@ -117,6 +137,14 @@ impl Memo {
         }
         let connection = Connection::open(path)
             .with_context(|| format!("{}: could not be opened", path.display()))?;
+        let reset = older_layout(&connection)?;
+        if reset {
+            connection.execute_batch(
+                "DROP TABLE IF EXISTS resume;
+                 DROP TABLE IF EXISTS delta;
+                 DROP TABLE IF EXISTS said;",
+            )?;
+        }
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS resume (
                  account TEXT NOT NULL,
@@ -138,7 +166,14 @@ impl Memo {
                  PRIMARY KEY (store_id, place)
              );",
         )?;
-        Ok(Self { connection })
+        Ok(Self { connection, reset })
+    }
+
+    /// Whether the file had an older layout and was emptied on open:
+    /// every folder is fetched in full, and an import starts over.
+    #[must_use]
+    pub fn reset(&self) -> bool {
+        self.reset
     }
 
     /// Begin a transaction: many small writes, one sync.
@@ -159,17 +194,26 @@ impl Memo {
         Ok(())
     }
 
-    /// Give the space of deleted rows back to the file system. The
-    /// pending list of a large folder is written and deleted again
-    /// within one run, and the file would otherwise keep that size.
-    /// Not inside a transaction.
+    /// Give the space of deleted rows back to the file system, when
+    /// there is [`COMPACT_FROM`] or more of it. The pending list of a
+    /// large folder is written and deleted again within one run, and
+    /// the file would otherwise keep that size. Not inside a
+    /// transaction. Returns whether the file was rewritten.
     ///
     /// # Errors
     ///
     /// `SQLite` refusing.
-    pub fn compact(&self) -> Result<()> {
+    pub fn compact(&self) -> Result<bool> {
+        let pragma = |name: &str| -> Result<i64> {
+            Ok(self
+                .connection
+                .query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))?)
+        };
+        if pragma("freelist_count")? * pragma("page_size")? < COMPACT_FROM {
+            return Ok(false);
+        }
         self.connection.execute_batch("VACUUM")?;
-        Ok(())
+        Ok(true)
     }
 
     /// The folder's resume point: `None` for a folder never fetched.
@@ -268,8 +312,9 @@ impl Memo {
     }
 
     /// The messages of the folder an earlier listing reported that are
-    /// not stored yet, in the order they were listed, each with its
-    /// detail read as `T`.
+    /// not stored yet, each with its detail read as `T`. The order is
+    /// the listing's as far as `SQLite` keeps it, which a compaction
+    /// need not; nothing depends on it.
     ///
     /// # Errors
     ///
@@ -531,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pending_list_is_kept_per_folder_in_listing_order() {
+    fn the_pending_list_is_kept_per_folder() {
         let (_dir, memo) = memo();
         let pending = |folder: &str| memo.pending::<Vec<String>>("a", folder).unwrap();
         assert!(pending("Inbox").is_empty());
@@ -563,7 +608,70 @@ mod tests {
             [entry("S1", &[], 0)],
             "another folder's list is untouched"
         );
-        memo.compact().unwrap();
+    }
+
+    #[test]
+    fn the_file_is_compacted_once_the_deleted_rows_amount_to_something() {
+        let (dir, memo) = memo();
+        let path = dir.path().join("cache").join(FILE_NAME);
+        assert!(!memo.compact().unwrap(), "nothing deleted, nothing to do");
+
+        let detail = "x".repeat(200);
+        let ids: Vec<String> = (0..10_000).map(|n| format!("M{n}")).collect();
+        memo.begin().unwrap();
+        memo.add_pending("a", "Inbox", ids.iter().map(|id| (id.as_str(), &detail)))
+            .unwrap();
+        memo.commit().unwrap();
+        let full = fs::metadata(&path).unwrap().len();
+        memo.clear_pending("a", "Inbox").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            full,
+            "deleted, still that size"
+        );
+
+        assert!(memo.compact().unwrap());
+        assert!(fs::metadata(&path).unwrap().len() < full / 4);
+        assert!(
+            !memo.compact().unwrap(),
+            "and now there is nothing to give back"
+        );
+    }
+
+    #[test]
+    fn a_file_with_an_older_layout_is_emptied_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache").join(FILE_NAME);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE resume (account TEXT NOT NULL, folder TEXT NOT NULL,
+                     uidvalidity INTEGER NOT NULL, uid INTEGER NOT NULL,
+                     PRIMARY KEY (account, folder));
+                 INSERT INTO resume VALUES ('a', 'INBOX', 7, 40);
+                 CREATE TABLE delta (account TEXT NOT NULL, folder TEXT NOT NULL,
+                     link TEXT NOT NULL, issued INTEGER NOT NULL,
+                     PRIMARY KEY (account, folder));
+                 CREATE TABLE said (store_id TEXT NOT NULL, place TEXT NOT NULL,
+                     PRIMARY KEY (store_id, place));",
+            )
+            .unwrap();
+
+        let memo = Memo::open(&path).unwrap();
+
+        assert!(memo.reset());
+        assert_eq!(
+            memo.imap_resume("a", "INBOX").unwrap(),
+            None,
+            "a first fetch"
+        );
+        memo.advance_imap("a", "INBOX", at(7, 40)).unwrap();
+        assert_eq!(memo.imap_resume("a", "INBOX").unwrap(), Some(at(7, 40)));
+
+        let again = Memo::open(&path).unwrap();
+        assert!(!again.reset(), "the new layout is kept");
+        assert_eq!(again.imap_resume("a", "INBOX").unwrap(), Some(at(7, 40)));
     }
 
     #[test]
