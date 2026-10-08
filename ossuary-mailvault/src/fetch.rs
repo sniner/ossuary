@@ -59,6 +59,33 @@ pub struct Options {
     pub dry_run: bool,
 }
 
+/// One folder of one account: the pair the memo is keyed by, and its
+/// name as the record and every line about it have it.
+struct Place<'a> {
+    account: &'a str,
+    folder: &'a str,
+    name: String,
+}
+
+impl<'a> Place<'a> {
+    fn new(account: &'a str, folder: &'a str) -> Self {
+        Self {
+            account,
+            folder,
+            name: place::folder(account, folder),
+        }
+    }
+}
+
+/// What a pass over a folder's pending list came to.
+#[derive(Default)]
+struct Landed {
+    /// Still on the list after the pass.
+    left: usize,
+    /// Taken off because the server no longer has them.
+    gone: usize,
+}
+
 /// How many messages land between two commits of the resume point.
 const COMMIT_EVERY: usize = 25;
 
@@ -288,7 +315,8 @@ impl Fetch<'_> {
         folder: &str,
         tally: &mut Tally,
     ) -> Result<()> {
-        let name = place::folder(&account.name, folder);
+        let place = Place::new(&account.name, folder);
+        let name = &place.name;
         let opened = match mailbox.examine(folder) {
             Ok(opened) => opened,
             Err(error) => {
@@ -296,7 +324,7 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
-        let resume = self.memo.imap_resume(&account.name, folder)?;
+        let resume = self.memo.imap_resume(place.account, place.folder)?;
         let (above, how) = carry_on(resume, opened.uidvalidity, self.options.full);
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
@@ -323,7 +351,7 @@ impl Fetch<'_> {
         let mut frontier = 0;
         self.memo.begin()?;
         let outcome = mailbox.fetch(&uids, &mut |uid, bytes| {
-            self.land(&name, bytes, None, tally)?;
+            self.land(name, bytes, None, tally)?;
             // The message is on the record; the next run may start above
             // the highest UID with nothing missing below it. Committed in
             // batches: a run that dies repeats at most a batch, and the
@@ -334,8 +362,8 @@ impl Fetch<'_> {
             }
             if frontier > 0 {
                 self.memo.advance_imap(
-                    &account.name,
-                    folder,
+                    place.account,
+                    place.folder,
                     ImapResume {
                         uidvalidity: opened.uidvalidity,
                         uid: uids[frontier - 1],
@@ -356,8 +384,8 @@ impl Fetch<'_> {
             // promise it was seen under, and where the next run asks
             // from — an empty folder is not a folder never fetched.
             self.memo.advance_imap(
-                &account.name,
-                folder,
+                place.account,
+                place.folder,
                 ImapResume {
                     uidvalidity: opened.uidvalidity,
                     uid: above,
@@ -393,7 +421,7 @@ impl Fetch<'_> {
             Ok(secret) => secret.to_string(),
             Err(error) => return Ok(Err(error)),
         };
-        let mut client = match Graph::connect(&account.name, graph, secret) {
+        let mut client = match Graph::connect(&account.name, graph, secret, self.say) {
             Ok(client) => client,
             Err(error) => return Ok(Err(error)),
         };
@@ -415,21 +443,15 @@ impl Fetch<'_> {
     /// The listing is complete: the link and the ids are saved
     /// together, before the first message is fetched. A round from
     /// scratch lists the folder whole and replaces an earlier list.
-    fn graph_listed(
-        &self,
-        account: &Account,
-        folder: &str,
-        name: &str,
-        resumed: bool,
-        round: Round,
-    ) -> Result<()> {
+    fn graph_listed(&self, place: &Place<'_>, resumed: bool, round: Round) -> Result<()> {
+        let name = &place.name;
         self.memo.begin()?;
         if !resumed {
-            self.memo.clear_pending(&account.name, folder)?;
+            self.memo.clear_pending(place.account, place.folder)?;
         }
         self.memo.add_pending(
-            &account.name,
-            folder,
+            place.account,
+            place.folder,
             round
                 .offered
                 .iter()
@@ -443,7 +465,7 @@ impl Fetch<'_> {
             // link would claim coverage of mail nobody listed. That
             // costs one more round next time, on an empty folder.
             Some(link) if resumed || !round.offered.is_empty() => {
-                self.memo.advance_graph(&account.name, folder, &link)?;
+                self.memo.advance_graph(place.account, place.folder, &link)?;
             }
             Some(_) => self.say.line(format_args!(
                 "{name}: no messages listed; no resume point saved"
@@ -468,48 +490,81 @@ impl Fetch<'_> {
     /// how many are left on the list.
     fn graph_land(
         &self,
-        account: &Account,
-        folder: &str,
-        name: &str,
+        place: &Place<'_>,
         client: &mut Graph<'_>,
         tally: &mut Tally,
     ) -> Result<usize> {
-        let pending: Vec<Pending<Vec<String>>> = self.memo.pending(&account.name, folder)?;
-        let mut progress = self.say.progress();
-        let mut left = 0;
-        let mut gone = 0;
-        let mut refused_in_a_row = 0;
+        let pending: Vec<Pending<Vec<String>>> = self.memo.pending(place.account, place.folder)?;
         self.memo.begin()?;
+        let outcome = self.graph_each(place, &pending, client, tally);
+        // What came off the list before the trouble stays off it
+        // either way.
+        let closed = self.memo.commit();
+        match outcome {
+            Ok(Landed { left, gone }) => {
+                closed?;
+                if gone > 0 {
+                    self.say.line(format_args!(
+                        "{}: {} no longer in the folder, skipped",
+                        place.name,
+                        counted(gone, "message", "messages")
+                    ));
+                }
+                Ok(left)
+            }
+            Err(error) => Err(match closed {
+                Ok(()) => error,
+                Err(more) => {
+                    error.context(format!("and the pending list could not be saved: {more:#}"))
+                }
+            }),
+        }
+    }
+
+    /// The loop of [`graph_land`](Self::graph_land), inside the
+    /// transaction it opened.
+    fn graph_each(
+        &self,
+        place: &Place<'_>,
+        pending: &[Pending<Vec<String>>],
+        client: &mut Graph<'_>,
+        tally: &mut Tally,
+    ) -> Result<Landed> {
+        let name = &place.name;
+        let mut progress = self.say.progress();
+        let mut landed = Landed::default();
+        let mut refused_in_a_row = 0;
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
                 Ok(bytes) => {
                     self.land(name, &bytes, Some(&message.detail), tally)?;
                     self.memo
-                        .remove_pending(&account.name, folder, &message.id)?;
+                        .remove_pending(place.account, place.folder, &message.id)?;
                     refused_in_a_row = 0;
                 }
                 Err(Miss::Gone) => {
-                    gone += 1;
+                    landed.gone += 1;
                     self.memo
-                        .remove_pending(&account.name, folder, &message.id)?;
+                        .remove_pending(place.account, place.folder, &message.id)?;
                     refused_in_a_row = 0;
                 }
                 Err(Miss::Refused(error)) => {
                     refused_in_a_row += 1;
                     if message.attempts + 1 >= GIVE_UP_AFTER {
                         self.memo
-                            .remove_pending(&account.name, folder, &message.id)?;
+                            .remove_pending(place.account, place.folder, &message.id)?;
                         tally.failed.push(format!(
                             "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full lists it again"
                         ));
                     } else {
-                        self.memo.fail_pending(&account.name, folder, &message.id)?;
+                        self.memo
+                            .fail_pending(place.account, place.folder, &message.id)?;
                         tally.failed.push(format!("{name}: {error:#}"));
-                        left += 1;
+                        landed.left += 1;
                     }
                     if refused_in_a_row >= STOP_AFTER {
                         let rest = pending.len() - done - 1;
-                        left += rest;
+                        landed.left += rest;
                         tally.failed.push(format!(
                             "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
                             counted(rest, "message", "messages")
@@ -519,7 +574,7 @@ impl Fetch<'_> {
                 }
                 Err(Miss::Unreachable(error)) => {
                     let rest = pending.len() - done;
-                    left += rest;
+                    landed.left += rest;
                     tally.failed.push(format!(
                         "{name}: {error:#}; {} left for the next run",
                         counted(rest, "message", "messages")
@@ -539,14 +594,7 @@ impl Fetch<'_> {
             );
         }
         progress.finish();
-        self.memo.commit()?;
-        if gone > 0 {
-            self.say.line(format_args!(
-                "{name}: {} no longer in the folder, skipped",
-                counted(gone, "message", "messages")
-            ));
-        }
-        Ok(left)
+        Ok(landed)
     }
 
     /// One Graph folder: a delta round from its link on, or whole. The
@@ -560,7 +608,8 @@ impl Fetch<'_> {
         folder: &str,
         tally: &mut Tally,
     ) -> Result<()> {
-        let name = place::folder(&account.name, folder);
+        let place = Place::new(&account.name, folder);
+        let name = &place.name;
         let Some(id) = client.resolve(folder).map(str::to_string) else {
             tally.failed.push(format!(
                 "{name}: no such folder; the mailbox has {}",
@@ -571,7 +620,7 @@ impl Fetch<'_> {
         let point = if self.options.full {
             None
         } else {
-            self.memo.graph_resume(&account.name, folder)?
+            self.memo.graph_resume(place.account, place.folder)?
         };
         // A link out of cache/ is held to the host mail is asked of
         // before it is followed; one naming another host is worth
@@ -623,7 +672,7 @@ impl Fetch<'_> {
         // the round carries on from its link; a round from scratch
         // lists it again.
         let left: Vec<Pending<Vec<String>>> = if from.is_some() {
-            self.memo.pending(&account.name, folder)?
+            self.memo.pending(place.account, place.folder)?
         } else {
             Vec::new()
         };
@@ -654,8 +703,8 @@ impl Fetch<'_> {
             return Ok(());
         }
 
-        self.graph_listed(account, folder, &name, from.is_some(), round)?;
-        let left = self.graph_land(account, folder, &name, client, tally)?;
+        self.graph_listed(&place, from.is_some(), round)?;
+        let left = self.graph_land(&place, client, tally)?;
         if left > 0 {
             self.say.line(format_args!(
                 "{name}: {} not fetched; the next run tries them again",
@@ -1041,6 +1090,7 @@ mod tests {
                 "s3cret".to_string(),
                 stub.url(),
                 &format!("{}/v1.0", stub.url()),
+                Say::new(true),
             )
             .unwrap();
             let mut tally = Tally::new("fetch");
@@ -1607,6 +1657,7 @@ mod tests {
                 "s3cret".to_string(),
                 stub.url(),
                 &format!("{}/v1.0", stub.url()),
+                Say::new(true),
             )
             .unwrap();
             let mut tally = Tally::new("fetch");

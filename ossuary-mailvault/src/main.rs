@@ -187,7 +187,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Folders { accounts } => {
             let config = source.load()?;
             let chosen = chosen(&config, &accounts)?;
-            folders(&chosen)
+            folders(&chosen, say)
         }
         Command::Fetch {
             accounts,
@@ -267,11 +267,11 @@ fn chosen<'a>(config: &'a Config, names: &[String]) -> Result<Vec<&'a Account>> 
 
 /// Every folder of each account on stdout. An account that cannot be
 /// reached is reported on stderr, and the others are still listed.
-fn folders(accounts: &[&Account]) -> Result<ExitCode> {
+fn folders(accounts: &[&Account], say: Say) -> Result<ExitCode> {
     let mut out = std::io::stdout().lock();
     let mut failed = 0;
     for account in accounts {
-        let names = match account_folders(account) {
+        let names = match account_folders(account, say) {
             Ok(names) => names,
             Err(error) => {
                 eprintln!("{error:#}");
@@ -298,7 +298,7 @@ fn folders(accounts: &[&Account]) -> Result<ExitCode> {
 }
 
 /// The folders of one account, as the server names them.
-fn account_folders(account: &Account) -> Result<Vec<String>> {
+fn account_folders(account: &Account, say: Say) -> Result<Vec<String>> {
     match account.reach()? {
         Reach::Imap(imap) => {
             let password = imap.password(&account.name)?;
@@ -309,7 +309,7 @@ fn account_folders(account: &Account) -> Result<Vec<String>> {
         }
         Reach::Graph(graph) => {
             let secret = graph.secret(&account.name)?.to_string();
-            Ok(Graph::connect(&account.name, &graph, secret)?.folders())
+            Ok(Graph::connect(&account.name, &graph, secret, say)?.folders())
         }
     }
 }

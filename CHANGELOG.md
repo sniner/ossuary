@@ -11,6 +11,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   folders are in one table, as JSON, next to the list of messages still to fetch. A file with
   the old layout is emptied on the next run, which says so and fetches every folder in full.
   The file is compacted at the end of a fetch once its deleted rows take up a megabyte
+- **`ossuary mailvault fetch` says when it waits before asking Microsoft 365 again**, with the
+  pause and the attempt, where it was silent for up to a minute
 
 ### Fixed
 

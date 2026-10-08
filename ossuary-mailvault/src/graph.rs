@@ -27,6 +27,7 @@ use serde::de::DeserializeOwned;
 use ureq::Agent;
 
 use crate::config;
+use crate::output::Say;
 
 /// Where mail is asked of.
 pub const GRAPH: &str = "https://graph.microsoft.com/v1.0";
@@ -137,6 +138,7 @@ pub struct Graph<'a> {
     token: String,
     /// The folders in the server's order, each path with its id.
     folders: Vec<(String, String)>,
+    say: Say,
 }
 
 /// One page of any listing.
@@ -275,8 +277,13 @@ impl<'a> Graph<'a> {
     ///
     /// A tenant that issues no token, or a server that will not list
     /// the folders — the permission not granted, most often.
-    pub fn connect(name: &'a str, account: &'a config::Graph, secret: String) -> Result<Self> {
-        Self::reach(name, account, secret, LOGIN, GRAPH)
+    pub fn connect(
+        name: &'a str,
+        account: &'a config::Graph,
+        secret: String,
+        say: Say,
+    ) -> Result<Self> {
+        Self::reach(name, account, secret, LOGIN, GRAPH, say)
     }
 
     /// [`connect`](Self::connect) against services standing elsewhere.
@@ -290,6 +297,7 @@ impl<'a> Graph<'a> {
         secret: String,
         login: &str,
         base: &str,
+        say: Say,
     ) -> Result<Self> {
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
@@ -307,6 +315,7 @@ impl<'a> Graph<'a> {
             base: base.trim_end_matches('/').to_string(),
             token: String::new(),
             folders: Vec::new(),
+            say,
         };
         graph.token = graph.fetch_token()?;
         let root = format!(
@@ -558,8 +567,17 @@ impl<'a> Graph<'a> {
                         MESSAGE_AT_MOST / (1024 * 1024)
                     )));
                 }
-                Err(_) if attempt < RETRIES => {
-                    sleep(backoff(attempt));
+                Err(error) if attempt < RETRIES => {
+                    let pause = backoff(attempt);
+                    self.say.line(format_args!(
+                        "{}: {}: {error:#}; retrying in {}s, attempt {} of {}",
+                        self.name,
+                        host_of(url),
+                        pause.as_secs(),
+                        attempt + 2,
+                        RETRIES + 1
+                    ));
+                    sleep(pause);
                     attempt += 1;
                     continue;
                 }
@@ -577,7 +595,17 @@ impl<'a> Graph<'a> {
                 continue;
             }
             if RETRY_STATUS.contains(&answer.status) && attempt < RETRIES {
-                sleep(pause_for(&answer, attempt));
+                let pause = pause_for(&answer, attempt);
+                self.say.line(format_args!(
+                    "{}: {}: HTTP {}; retrying in {}s, attempt {} of {}",
+                    self.name,
+                    host_of(url),
+                    answer.status,
+                    pause.as_secs(),
+                    attempt + 2,
+                    RETRIES + 1
+                ));
+                sleep(pause);
                 attempt += 1;
                 continue;
             }
@@ -885,6 +913,7 @@ mod tests {
             "s3cret".to_string(),
             stub.url(),
             &format!("{}/v1.0", stub.url()),
+            Say::new(true),
         )
     }
 

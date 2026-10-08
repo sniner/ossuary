@@ -268,6 +268,9 @@ impl Memo {
     /// highest UID seen is the one to carry on from. A new UIDVALIDITY
     /// starts over.
     ///
+    /// A read and a write, two statements: call it inside a
+    /// transaction, as the fetch does.
+    ///
     /// # Errors
     ///
     /// `SQLite` refusing.
