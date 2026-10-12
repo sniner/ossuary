@@ -8,7 +8,7 @@ back out. This crate handles argument parsing, output and exit codes;
 the archive logic is in [`ossuary-core`](../ossuary-core/README.md).
 
 ```console
-$ cargo build --release      # target/release/ossuary
+$ cargo build --release      # builds ./target/release/ossuary
 ```
 
 ## Selecting the archive

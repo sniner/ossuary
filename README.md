@@ -37,26 +37,47 @@ versions and the programs that wrote the files. Typical uses:
 
 ## Installing
 
-With Homebrew on macOS or Linux, one command installs all programs:
+On macOS, one Homebrew command installs all programs:
 
 ```console
 $ brew install sniner/tap/ossuary
 ```
 
-Every [release](https://github.com/sniner/ossuary/releases) contains the
-built programs: for Linux on x86_64 and arm64, statically linked, and
-for macOS as universal binaries. There is one tarball per platform,
-named after the version and the platform, with all programs in it. To
-build from source:
+On Linux, every [release](https://github.com/sniner/ossuary/releases)
+has a tarball for x86_64 and one for arm64 (aarch64), each with all
+programs in it, statically linked. Unpack it into a directory on your
+`PATH`, for example `~/.local/bin`:
 
 ```console
-$ git clone https://github.com/sniner/ossuary
-$ cd ossuary && cargo build --release
+$ tar -xzf ossuary-*-x86_64-linux-musl.tar.gz -C ~/.local/bin
 ```
 
-Either way, put all programs on your `PATH`: extractors and outside
-verbs like `mount` are found there, they are not built in. Each crate's
-README describes what it does and what it needs:
+To upgrade, unpack the tarball of the new release the same way.
+
+With Rust installed ([rustup.rs](https://rustup.rs)), cargo builds and
+installs all programs from the `main` branch instead. The build also
+needs a C compiler: `build-essential` or your distribution's equivalent.
+
+```console
+$ cargo install --locked --git https://github.com/sniner/ossuary \
+    ossuary-cli ossuary-mount ossuary-mailvault ossuary-fix \
+    ossuary-extract-image ossuary-extract-mail \
+    ossuary-extract-packed ossuary-extract-pdf
+```
+
+To upgrade, run the same command again; cargo rebuilds the programs if
+`main` has new commits. The package
+[cargo-update](https://crates.io/crates/cargo-update) upgrades all
+programs installed with cargo at once:
+
+```console
+$ cargo install cargo-update
+$ cargo install-update --all --git
+```
+
+All programs have to be on the `PATH`: `ossuary` finds the extractors
+and outside verbs like `mount` there, they are not built in. Each
+crate's README describes what it does and what it needs:
 
 | | |
 |---|---|
