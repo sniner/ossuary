@@ -55,24 +55,32 @@ $ tar -xzf ossuary-*-x86_64-linux-musl.tar.gz -C ~/.local/bin
 To upgrade, unpack the tarball of the new release the same way.
 
 With Rust installed ([rustup.rs](https://rustup.rs)), cargo builds and
-installs all programs from the `main` branch instead. The build also
-needs a C compiler: `build-essential` or your distribution's equivalent.
+installs the programs from [crates.io](https://crates.io) instead. The
+build also needs a C compiler: `build-essential` or your distribution's
+equivalent.
 
 ```console
-$ cargo install --locked --git https://github.com/sniner/ossuary \
-    ossuary-cli ossuary-mount ossuary-mailvault ossuary-fix \
+$ cargo install --locked \
+    ossuary-cli ossuary-mount ossuary-mailvault \
     ossuary-extract-image ossuary-extract-mail \
     ossuary-extract-packed ossuary-extract-pdf
 ```
 
-To upgrade, run the same command again; cargo rebuilds the programs if
-`main` has new commits. The package
+To upgrade, run the same command again; cargo rebuilds each program
+that has a newer release. The package
 [cargo-update](https://crates.io/crates/cargo-update) upgrades all
 programs installed with cargo at once:
 
 ```console
 $ cargo install cargo-update
-$ cargo install-update --all --git
+$ cargo install-update --all
+```
+
+`ossuary-fix` is not on crates.io. If you need it, install it from the
+repository:
+
+```console
+$ cargo install --locked --git https://github.com/sniner/ossuary ossuary-fix
 ```
 
 All programs have to be on the `PATH`: `ossuary` finds the extractors

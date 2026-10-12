@@ -5,6 +5,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The programs are on crates.io**, all except `ossuary-fix`. The README lists the `cargo install`
+  command and how to upgrade
+
 ## [0.12.0] - 2026-10-08
 
 ### Changed
