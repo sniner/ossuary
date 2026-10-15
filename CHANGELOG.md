@@ -10,6 +10,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The programs are on crates.io**, all except `ossuary-fix`. The README lists the `cargo install`
   command and how to upgrade
 
+### Fixed
+
+- **`ossuary mailvault fetch` prints a retry on a line of its own.** On a terminal, the line
+  about waiting before asking Microsoft 365 again was appended to the progress count. The count
+  now continues on the line below it
+
 ## [0.12.0] - 2026-10-08
 
 ### Changed

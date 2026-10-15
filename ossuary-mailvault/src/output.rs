@@ -2,6 +2,24 @@
 //! under `--quiet`; the verdict goes to stdout and survives redirection.
 
 use std::fmt::Display;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// The progress line on the terminal at the moment, if any. A line
+/// printed meanwhile (a retry inside a fetch) clears it first and draws
+/// it again below; otherwise the line is appended to the count. Process
+/// wide, like stderr itself.
+static SHOWN: Mutex<Option<String>> = Mutex::new(None);
+
+fn shown() -> MutexGuard<'static, Option<String>> {
+    SHOWN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Writes a progress line over whatever the current line holds.
+fn draw(text: &str) {
+    use std::io::Write as _;
+    eprint!("\r\x1b[2K{text}");
+    let _ = std::io::stderr().flush();
+}
 
 #[derive(Clone, Copy)]
 pub struct Say {
@@ -14,8 +32,16 @@ impl Say {
     }
 
     pub fn line(self, text: impl Display) {
-        if !self.quiet {
-            eprintln!("{text}");
+        if self.quiet {
+            return;
+        }
+        let shown = shown();
+        match shown.as_deref() {
+            Some(progress) => {
+                eprintln!("\r\x1b[2K{text}");
+                draw(progress);
+            }
+            None => eprintln!("{text}"),
         }
     }
 
@@ -42,13 +68,13 @@ const SPARSE: usize = 500;
 
 impl Progress {
     pub fn update(&mut self, done: usize, text: &str) {
-        use std::io::Write as _;
         if !self.active {
             return;
         }
         if self.tty {
-            eprint!("\r\x1b[2K{text}");
-            let _ = std::io::stderr().flush();
+            let mut shown = shown();
+            draw(text);
+            *shown = Some(text.to_owned());
             self.dirty = true;
         } else if done % SPARSE == 0 {
             eprintln!("{text}");
@@ -58,6 +84,7 @@ impl Progress {
     /// Ends the self-overwriting line so the next one starts fresh.
     pub fn finish(&mut self) {
         if self.dirty {
+            *shown() = None;
             eprintln!();
             self.dirty = false;
         }
