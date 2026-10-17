@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-17
+
 ### Changed
 
 - **`ossuary mailvault` is no longer described as a proof of concept.** Its README calls it
