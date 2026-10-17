@@ -2,11 +2,10 @@
 
 *Fetch mail into an ossuary archive.*
 
-> **An early proof of concept.** This program is for trying out, not for
-> archiving mail that matters. It may change at any time, in any way,
-> without regard for what an earlier build wrote into an archive. For
-> mail you need to keep, use the Python tool
-> [mailvault](https://github.com/sniner/mailvault).
+> **Stable, but with little use behind it so far.** It has fetched far
+> fewer mailboxes, from far fewer servers, than the Python tool
+> [mailvault](https://github.com/sniner/mailvault), which remains the
+> safer choice for mail you need to keep.
 
 `ossuary mailvault` fetches mail over IMAP, or over MS Graph for a
 Microsoft 365 mailbox. Each message is stored once, however many folders

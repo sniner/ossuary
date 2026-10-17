@@ -5,6 +5,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary mailvault` is no longer described as a proof of concept.** Its README calls it
+  stable, with less use behind it than the Python mailvault
+
 ### Fixed
 
 - **`ossuary mailvault fetch` no longer gets stuck on an IMAP message the server will not hand
