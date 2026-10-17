@@ -5,6 +5,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ossuary mailvault fetch` no longer gets stuck on an IMAP message the server will not hand
+  over.** When the server refused such a message, the fetch of its folder stopped there, and every
+  later run stopped at the same place, so the messages after it were never fetched. When the
+  server sent nothing for it, the message was skipped without a word, and every later run fetched
+  everything above it again. Such a message now goes on the folder's list of messages still to
+  fetch, as on Microsoft 365, and the resume point moves past it. The next run fetches it first;
+  after three refused runs it is given up and named, and `--full` fetches it again. The other
+  messages of a refused fetch are asked for one at a time and stored
+
 ## [0.12.1] - 2026-10-15
 
 ### Added

@@ -195,6 +195,16 @@ written again. Like everything in `cache/`, the resume points can be
 deleted; the next fetch then fetches every folder in full, and no claim is
 lost. UIDs are not recorded as claims.
 
+A message the IMAP server will not hand over, because it refuses the
+fetch or sends nothing for a message the folder holds, goes on the
+folder's list of messages still to fetch, and the resume point moves past
+it. The next run reports how many are pending and fetches those first. A
+message that is no longer in the folder is taken off the list. As for
+Microsoft 365 below, a message refused in three runs is given up and
+named in the report, `--full` fetches it again, and ten refusals in a row
+leave the rest of the folder for the next run. A UIDVALIDITY that changed
+empties the list along with the resume point.
+
 For a Microsoft 365 folder, the resume point is the delta link the server
 returns at the end of a listing. The next run starts from it and gets only
 what changed since; messages deleted or moved away in the meantime are

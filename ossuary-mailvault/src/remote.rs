@@ -6,12 +6,14 @@
 //! What the fetch needs of a mailbox is the [`Mailbox`] trait; the
 //! server answers it here, and a test answers it from memory.
 
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use imap::Session;
 use imap::types::NameAttribute;
 use rustls::pki_types::ServerName;
@@ -23,6 +25,17 @@ use crate::utf7;
 /// A folder opened: what the server promised about its UIDs.
 pub struct Folder {
     pub uidvalidity: u32,
+}
+
+/// What became of one UID a fetch asked for.
+pub enum Got<'a> {
+    /// The message, whole.
+    Message(&'a [u8]),
+    /// The server would not hand it over: it refused the FETCH, or
+    /// answered without the message. A later run may get it.
+    Refused(anyhow::Error),
+    /// The answer leaves it out: the folder no longer holds it.
+    Gone,
 }
 
 /// Why a fetch stopped short.
@@ -53,18 +66,27 @@ pub trait Mailbox {
     /// A search the server refuses.
     fn uids_above(&mut self, above: u32) -> Result<Vec<u32>>;
 
-    /// Whole messages by UID, handed to `each` one at a time, in the
-    /// order the server sends them — which need not be ascending.
+    /// Whole messages by UID. Every UID asked for is handed to `each`
+    /// once, with what became of it, in the order the server answers,
+    /// which need not be ascending. `each` says whether to go on, and a
+    /// [`ControlFlow::Break`] from it is handed back.
     ///
     /// # Errors
     ///
     /// [`Stop::Server`] when the server will not go on, [`Stop::Caller`]
     /// with whatever `each` answered.
-    fn fetch(
-        &mut self,
-        uids: &[u32],
-        each: &mut dyn FnMut(u32, &[u8]) -> Result<()>,
-    ) -> Result<(), Stop>;
+    fn fetch(&mut self, uids: &[u32], each: &mut Each<'_>) -> Result<ControlFlow<()>, Stop>;
+}
+
+/// What [`Mailbox::fetch`] hands every UID to.
+pub type Each<'e> = dyn FnMut(u32, Got<'_>) -> Result<ControlFlow<()>> + 'e;
+
+/// What one FETCH command came to.
+enum Answer {
+    /// The server answered, and every UID asked for went to `each`.
+    Went(ControlFlow<()>),
+    /// The server refused the command as a whole.
+    Refused(anyhow::Error),
 }
 
 /// A connection, whichever way it was made: TLS to a server, plaintext
@@ -202,31 +224,126 @@ impl Mailbox for Remote {
         Ok(uids)
     }
 
-    /// PEEK keeps the fetch from marking anything read even where
-    /// EXAMINE would not.
-    fn fetch(
-        &mut self,
-        uids: &[u32],
-        each: &mut dyn FnMut(u32, &[u8]) -> Result<()>,
-    ) -> Result<(), Stop> {
+    /// A batch the server refuses is asked for again one UID at a time.
+    /// One message the server cannot hand over fails the whole FETCH,
+    /// and would otherwise take the rest of its batch with it on every
+    /// run.
+    fn fetch(&mut self, uids: &[u32], each: &mut Each<'_>) -> Result<ControlFlow<()>, Stop> {
         for batch in uids.chunks(BATCH) {
-            let set = batch
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let fetches = self
-                .session
-                .uid_fetch(&set, "(UID BODY.PEEK[])")
-                .context("fetching the messages failed")
-                .map_err(Stop::Server)?;
-            for fetch in &*fetches {
-                let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) else {
-                    continue;
-                };
-                each(uid, body).map_err(Stop::Caller)?;
+            let flow = match self.ask(batch, each)? {
+                Answer::Went(flow) => flow,
+                Answer::Refused(error) if batch.len() == 1 => {
+                    let error = error.context(format!("UID {}", batch[0]));
+                    each(batch[0], Got::Refused(error)).map_err(Stop::Caller)?
+                }
+                Answer::Refused(_) => self.one_by_one(batch, each)?,
+            };
+            if flow.is_break() {
+                return Ok(flow);
             }
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
+    }
+}
+
+impl Remote {
+    /// One FETCH for `batch`. PEEK keeps it from marking anything read
+    /// even where EXAMINE would not. A NO or BAD refuses this command
+    /// only; any other error means the connection is of no further use.
+    fn ask(&mut self, batch: &[u32], each: &mut Each<'_>) -> Result<Answer, Stop> {
+        let set = batch
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let fetches = match self.session.uid_fetch(&set, "(UID BODY.PEEK[])") {
+            Ok(fetches) => fetches,
+            Err(error @ (imap::Error::No(_) | imap::Error::Bad(_))) => {
+                return Ok(Answer::Refused(
+                    anyhow::Error::new(error).context("the server refused the fetch"),
+                ));
+            }
+            Err(error) => {
+                return Err(Stop::Server(
+                    anyhow::Error::new(error).context("fetching the messages failed"),
+                ));
+            }
+        };
+        let mut answered = HashSet::new();
+        for fetch in &*fetches {
+            // A server may add FETCH responses nobody asked for, such
+            // as flag changes of other messages.
+            let Some(uid) = fetch.uid.filter(|uid| batch.contains(uid)) else {
+                continue;
+            };
+            if !answered.insert(uid) {
+                continue;
+            }
+            let got = match fetch.body() {
+                Some(body) => Got::Message(body),
+                None => Got::Refused(anyhow!("UID {uid}: the server sent no message body")),
+            };
+            if each(uid, got).map_err(Stop::Caller)?.is_break() {
+                return Ok(Answer::Went(ControlFlow::Break(())));
+            }
+        }
+        let missing: Vec<u32> = batch
+            .iter()
+            .copied()
+            .filter(|uid| !answered.contains(uid))
+            .collect();
+        let held = self.still_held(&missing)?;
+        for uid in missing {
+            let got = if held.contains(&uid) {
+                Got::Refused(anyhow!(
+                    "UID {uid}: the server sent nothing for a message the folder holds"
+                ))
+            } else {
+                Got::Gone
+            };
+            if each(uid, got).map_err(Stop::Caller)?.is_break() {
+                return Ok(Answer::Went(ControlFlow::Break(())));
+            }
+        }
+        Ok(Answer::Went(ControlFlow::Continue(())))
+    }
+
+    /// Which of `uids` the folder still holds. A UID left out of a FETCH
+    /// answer is taken for gone only when the folder no longer holds it:
+    /// gone means it comes off the pending list for good. When the
+    /// server refuses the search, every one of them counts as held.
+    fn still_held(&mut self, uids: &[u32]) -> Result<HashSet<u32>, Stop> {
+        if uids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let set = uids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        match self.session.uid_search(format!("UID {set}")) {
+            Ok(found) => Ok(found),
+            Err(imap::Error::No(_) | imap::Error::Bad(_)) => Ok(uids.iter().copied().collect()),
+            Err(error) => Err(Stop::Server(
+                anyhow::Error::new(error).context("the UID search failed"),
+            )),
+        }
+    }
+
+    /// The UIDs of a refused batch, one FETCH each.
+    fn one_by_one(&mut self, batch: &[u32], each: &mut Each<'_>) -> Result<ControlFlow<()>, Stop> {
+        for &uid in batch {
+            let flow = match self.ask(&[uid], each)? {
+                Answer::Went(flow) => flow,
+                Answer::Refused(error) => {
+                    let error = error.context(format!("UID {uid}"));
+                    each(uid, Got::Refused(error)).map_err(Stop::Caller)?
+                }
+            };
+            if flow.is_break() {
+                return Ok(flow);
+            }
+        }
+        Ok(ControlFlow::Continue(()))
     }
 }

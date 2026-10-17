@@ -7,7 +7,9 @@
 //! server is asked only for what lies above that UID and answers with
 //! the new messages alone. If the promise changed, or there is no
 //! resume point, the folder is fetched whole: the bytes dedup in the
-//! store, and the places are said again.
+//! store, and the places are said again. A message the server will not
+//! hand over goes on the folder's pending list in the memo, and the
+//! point may pass it; the next run asks for the pending UIDs first.
 //!
 //! Over MS Graph the resume point is the delta link the server handed
 //! out at the end of the last round: the next round starts from it and
@@ -26,9 +28,9 @@
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
 //! the fetcher has to tell about it. The resume point moves forward
-//! only over what has landed: by batches over IMAP, by the pending
-//! list over Graph. It lives in `cache/`: losing it costs one whole
-//! fetch of the folder, never a claim.
+//! only over what has landed or is on the pending list. It lives in
+//! `cache/`: losing it costs one whole fetch of the folder, never a
+//! claim.
 //!
 //! One account failing costs that account: the password, the login,
 //! a folder that will not open are named in the tally, and the run
@@ -36,6 +38,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::ControlFlow;
 
 use anyhow::Result;
 use ossuary_core::{
@@ -47,9 +50,9 @@ use serde_json::json;
 use crate::config::{self, Account, Reach};
 use crate::graph::{Graph, Halt, Miss, Round};
 use crate::memo::{ImapResume, Memo, Pending};
-use crate::output::{Say, counted};
+use crate::output::{Progress, Say, counted};
 use crate::place;
-use crate::remote::{Mailbox, Remote, Stop};
+use crate::remote::{Each, Got, Mailbox, Remote, Stop};
 use crate::tally::Tally;
 
 pub struct Options {
@@ -84,6 +87,50 @@ struct Landed {
     left: usize,
     /// Taken off because the server no longer has them.
     gone: usize,
+}
+
+/// One pass over an IMAP folder: what it asks for, and how far the
+/// resume point may move.
+struct Walk<'a> {
+    /// The UIDs above the point, ascending.
+    uids: &'a [u32],
+    uidvalidity: u32,
+    /// The pending list the last run left: failed runs, by UID.
+    pending: HashMap<u32, u32>,
+    /// UIDs the next run need not ask for above the point: landed,
+    /// gone, given up, or on the pending list now.
+    passed: HashSet<u32>,
+    /// How many of `uids`, from the lowest, are passed.
+    frontier: usize,
+    /// UIDs handled so far, of `total`.
+    done: usize,
+    total: usize,
+    refused_in_a_row: usize,
+    gone: usize,
+    progress: Progress,
+}
+
+impl Walk<'_> {
+    /// Mark a UID above the point as passed. Answers the point to save
+    /// when that moved it. The point passes a UID only once everything
+    /// below it is passed: the server hands a batch back in its own
+    /// order, and a run that dies after the newest must not skip the
+    /// rest.
+    fn pass(&mut self, uid: u32) -> Option<ImapResume> {
+        self.passed.insert(uid);
+        let before = self.frontier;
+        while self
+            .uids
+            .get(self.frontier)
+            .is_some_and(|next| self.passed.contains(next))
+        {
+            self.frontier += 1;
+        }
+        (self.frontier > before).then(|| ImapResume {
+            uidvalidity: self.uidvalidity,
+            uid: self.uids[self.frontier - 1],
+        })
+    }
 }
 
 /// How many messages land between two commits of the resume point.
@@ -305,9 +352,10 @@ impl Fetch<'_> {
         Ok(Ok(()))
     }
 
-    /// One IMAP folder: from its resume point on, or whole. The
-    /// server's trouble ends the folder and is named in the tally; the
-    /// archive's or the memo's ends the run.
+    /// One IMAP folder: from its resume point on, or whole, and what
+    /// the last run left on the pending list first. The server's
+    /// trouble ends the folder and is named in the tally; the archive's
+    /// or the memo's ends the run.
     fn folder(
         &self,
         account: &Account,
@@ -325,6 +373,11 @@ impl Fetch<'_> {
             }
         };
         let resume = self.memo.imap_resume(place.account, place.folder)?;
+        // The pending list holds UIDs of the promise the point was saved
+        // under, and a fetch that does not carry on from the point asks
+        // for them anyway.
+        let resumed = !self.options.full
+            && resume.is_some_and(|point| point.uidvalidity == opened.uidvalidity);
         let (above, how) = carry_on(resume, opened.uidvalidity, self.options.full);
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
@@ -333,61 +386,106 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
+        let pending: Vec<Pending<()>> = if resumed {
+            self.memo.pending(place.account, place.folder)?
+        } else {
+            Vec::new()
+        };
+        let attempts: HashMap<u32, u32> = pending
+            .iter()
+            .filter_map(|message| Some((message.id.parse().ok()?, message.attempts)))
+            .collect();
+        // A run stopped short leaves pending UIDs above the point; they
+        // are asked for once, as pending.
+        let fresh = uids
+            .iter()
+            .filter(|uid| !attempts.contains_key(uid))
+            .count();
+        if !attempts.is_empty() {
+            self.say.line(format_args!(
+                "{name}: {} pending from the last run",
+                counted(attempts.len(), "message", "messages")
+            ));
+        }
         self.say.line(format_args!(
             "{name}: {how}, {} to fetch",
-            counted(uids.len(), "message", "messages")
+            counted(fresh, "message", "messages")
         ));
         if self.options.dry_run {
-            tally.would += uids.len();
+            tally.would += fresh + attempts.len();
             return Ok(());
         }
 
-        let mut progress = self.say.progress();
-        let mut done = 0;
-        // The point may only pass a UID once everything below it has
-        // landed: the server hands a batch back in its own order, and a
-        // run that dies after the newest must not skip the rest.
-        let mut landed = HashSet::new();
-        let mut frontier = 0;
+        let mut walk = Walk {
+            uids: &uids,
+            uidvalidity: opened.uidvalidity,
+            total: fresh + attempts.len(),
+            pending: attempts,
+            passed: HashSet::new(),
+            frontier: 0,
+            done: 0,
+            refused_in_a_row: 0,
+            gone: 0,
+            progress: self.say.progress(),
+        };
+        self.imap_walk(&place, mailbox, resumed, above, &mut walk, tally)?;
+        if walk.gone > 0 {
+            self.say.line(format_args!(
+                "{name}: {} no longer in the folder, skipped",
+                counted(walk.gone, "message", "messages")
+            ));
+        }
+        let left = self.memo.pending::<()>(place.account, place.folder)?.len();
+        if left > 0 {
+            self.say.line(format_args!(
+                "{name}: {} not fetched; the next run tries them again",
+                counted(left, "message", "messages")
+            ));
+        }
+        Ok(())
+    }
+
+    /// The fetches of [`folder`](Self::folder): the pending UIDs, then
+    /// the others above the point, committed every [`COMMIT_EVERY`]
+    /// messages.
+    fn imap_walk(
+        &self,
+        place: &Place<'_>,
+        mailbox: &mut impl Mailbox,
+        resumed: bool,
+        above: u32,
+        walk: &mut Walk<'_>,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let name = &place.name;
+        let uidvalidity = walk.uidvalidity;
+        let mut retry: Vec<u32> = walk.pending.keys().copied().collect();
+        retry.sort_unstable();
+        let fresh: Vec<u32> = walk
+            .uids
+            .iter()
+            .copied()
+            .filter(|uid| !walk.pending.contains_key(uid))
+            .collect();
         self.memo.begin()?;
-        let outcome = mailbox.fetch(&uids, &mut |uid, bytes| {
-            self.land(name, bytes, None, tally)?;
-            // The message is on the record; the next run may start above
-            // the highest UID with nothing missing below it. Committed in
-            // batches: a run that dies repeats at most a batch, and the
-            // bytes dedup.
-            landed.insert(uid);
-            while uids.get(frontier).is_some_and(|next| landed.contains(next)) {
-                frontier += 1;
-            }
-            if frontier > 0 {
-                self.memo.advance_imap(
-                    place.account,
-                    place.folder,
-                    ImapResume {
-                        uidvalidity: opened.uidvalidity,
-                        uid: uids[frontier - 1],
-                    },
-                )?;
-            }
-            done += 1;
-            if done % COMMIT_EVERY == 0 {
-                self.memo.commit()?;
-                self.memo.begin()?;
-            }
-            progress.update(done, &format!("{name}: {done} of {} fetched", uids.len()));
-            Ok(())
-        });
-        progress.finish();
+        if !resumed {
+            self.memo.clear_pending(place.account, place.folder)?;
+        }
+        let each: &mut Each<'_> = &mut |uid, got| self.imap_got(place, uid, got, walk, tally);
+        let mut outcome = mailbox.fetch(&retry, each);
+        if matches!(outcome, Ok(ControlFlow::Continue(()))) {
+            outcome = mailbox.fetch(&fresh, each);
+        }
+        walk.progress.finish();
         if outcome.is_ok() {
             // A folder with nothing above the point still has one: the
             // promise it was seen under, and where the next run asks
-            // from — an empty folder is not a folder never fetched.
+            // from. An empty folder is not a folder never fetched.
             self.memo.advance_imap(
                 place.account,
                 place.folder,
                 ImapResume {
-                    uidvalidity: opened.uidvalidity,
+                    uidvalidity,
                     uid: above,
                 },
             )?;
@@ -395,7 +493,7 @@ impl Fetch<'_> {
         // What landed before the trouble stays remembered either way.
         let closed = self.memo.commit();
         match outcome {
-            Ok(()) => closed,
+            Ok(_) => closed,
             Err(Stop::Server(error)) => {
                 tally.failed.push(format!("{name}: {error:#}"));
                 closed
@@ -407,6 +505,97 @@ impl Fetch<'_> {
                 }
             }),
         }
+    }
+
+    /// What became of one UID goes on the record: a message lands, one
+    /// the server refused goes on the pending list or stays there, one
+    /// gone comes off it. Says whether the fetch goes on: not after
+    /// [`STOP_AFTER`] refusals in a row.
+    fn imap_got(
+        &self,
+        place: &Place<'_>,
+        uid: u32,
+        got: Got<'_>,
+        walk: &mut Walk<'_>,
+        tally: &mut Tally,
+    ) -> Result<ControlFlow<()>> {
+        let name = &place.name;
+        let id = uid.to_string();
+        // Some for a UID the last run left on the pending list.
+        let attempts = walk.pending.get(&uid).copied();
+        match got {
+            Got::Message(bytes) => {
+                self.land(name, bytes, None, tally)?;
+                walk.refused_in_a_row = 0;
+                if attempts.is_some() {
+                    self.memo.remove_pending(place.account, place.folder, &id)?;
+                }
+            }
+            Got::Gone => {
+                walk.gone += 1;
+                walk.refused_in_a_row = 0;
+                if attempts.is_some() {
+                    self.memo.remove_pending(place.account, place.folder, &id)?;
+                }
+            }
+            Got::Refused(error) => {
+                walk.refused_in_a_row += 1;
+                self.imap_refused(place, &id, attempts, &error, tally)?;
+            }
+        }
+        if let Some(point) = walk.pass(uid) {
+            self.memo.advance_imap(place.account, place.folder, point)?;
+        }
+        walk.done += 1;
+        // Committed in batches: a run that dies repeats at most a
+        // batch, and the bytes dedup.
+        if walk.done % COMMIT_EVERY == 0 {
+            self.memo.commit()?;
+            self.memo.begin()?;
+        }
+        walk.progress.update(
+            walk.done,
+            &format!("{name}: {} of {} fetched", walk.done, walk.total),
+        );
+        if walk.refused_in_a_row >= STOP_AFTER {
+            tally.failed.push(format!(
+                "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
+                counted(walk.total - walk.done, "message", "messages")
+            ));
+            return Ok(ControlFlow::Break(()));
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// A UID the server refused: onto the pending list with one failed
+    /// run, one more failed run on it, or given up after
+    /// [`GIVE_UP_AFTER`].
+    fn imap_refused(
+        &self,
+        place: &Place<'_>,
+        id: &str,
+        attempts: Option<u32>,
+        error: &anyhow::Error,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let name = &place.name;
+        let attempts = if let Some(attempts) = attempts {
+            attempts
+        } else {
+            self.memo
+                .add_pending(place.account, place.folder, [(id, ())])?;
+            0
+        };
+        if attempts + 1 >= GIVE_UP_AFTER {
+            self.memo.remove_pending(place.account, place.folder, id)?;
+            tally.failed.push(format!(
+                "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full fetches it again"
+            ));
+        } else {
+            self.memo.fail_pending(place.account, place.folder, id)?;
+            tally.failed.push(format!("{name}: {error:#}"));
+        }
+        Ok(())
     }
 
     fn graph_account(
@@ -773,6 +962,8 @@ mod tests {
         /// Stop after this many messages, the way a dropped connection
         /// would.
         give_up_after: Option<usize>,
+        /// Messages the folder holds and the server will not hand over.
+        refused: BTreeSet<u32>,
     }
 
     impl Mailbox for Fake {
@@ -791,18 +982,21 @@ mod tests {
                 .collect())
         }
 
-        fn fetch(
-            &mut self,
-            uids: &[u32],
-            each: &mut dyn FnMut(u32, &[u8]) -> Result<()>,
-        ) -> Result<(), Stop> {
+        fn fetch(&mut self, uids: &[u32], each: &mut Each<'_>) -> Result<ControlFlow<()>, Stop> {
             for (handed, uid) in uids.iter().rev().enumerate() {
                 if self.give_up_after == Some(handed) {
                     return Err(Stop::Server(anyhow!("connection dropped")));
                 }
-                each(*uid, &self.messages[uid]).map_err(Stop::Caller)?;
+                let got = match self.messages.get(uid) {
+                    _ if self.refused.contains(uid) => Got::Refused(anyhow!("UID {uid}: NO")),
+                    Some(bytes) => Got::Message(bytes),
+                    None => Got::Gone,
+                };
+                if each(*uid, got).map_err(Stop::Caller)?.is_break() {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         }
     }
 
@@ -819,6 +1013,7 @@ mod tests {
                 })
                 .collect(),
             give_up_after: None,
+            refused: BTreeSet::new(),
         }
     }
 
@@ -976,6 +1171,160 @@ mod tests {
             "the rest lands, the one already held dedups"
         );
         assert_eq!(point(&bench), Some(at(7, 9)));
+    }
+
+    /// The folder's pending list: UID and failed runs.
+    fn imap_pending(bench: &Bench) -> Vec<(String, u32)> {
+        bench
+            .memo
+            .pending::<()>("example.org", "INBOX")
+            .unwrap()
+            .into_iter()
+            .map(|message| (message.id, message.attempts))
+            .collect()
+    }
+
+    #[test]
+    fn a_refused_message_goes_on_the_pending_list_and_the_point_passes_it() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(5);
+
+        let tally = fetch(&bench, &mut inbox, false, false);
+
+        assert_eq!(tally.stored, 2);
+        assert_eq!(tally.failed, ["example.org:INBOX: UID 5: NO"]);
+        assert_eq!(imap_pending(&bench), [("5".to_string(), 1)]);
+        assert_eq!(
+            point(&bench),
+            Some(at(7, 9)),
+            "the refused one is on the list, so nothing below 9 is missing"
+        );
+    }
+
+    #[test]
+    fn the_next_run_asks_for_a_pending_message_first_and_takes_it_off() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(5);
+        fetch(&bench, &mut inbox, false, false);
+
+        inbox.refused.clear();
+        inbox
+            .messages
+            .insert(11, b"Subject: 11\r\n\r\nbody 11".to_vec());
+        let tally = fetch(&bench, &mut inbox, false, false);
+
+        assert_eq!(tally.stored, 2, "the pending one and the new one");
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert!(imap_pending(&bench).is_empty());
+        assert_eq!(point(&bench), Some(at(7, 11)));
+    }
+
+    #[test]
+    fn a_message_refused_in_three_runs_is_given_up_and_full_fetches_it_again() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(5);
+        fetch(&bench, &mut inbox, false, false);
+        fetch(&bench, &mut inbox, false, false);
+        assert_eq!(imap_pending(&bench), [("5".to_string(), 2)]);
+
+        let third = fetch(&bench, &mut inbox, false, false);
+
+        assert_eq!(
+            third.failed,
+            ["example.org:INBOX: UID 5: NO; given up after 3 runs, --full fetches it again"]
+        );
+        assert!(imap_pending(&bench).is_empty());
+
+        inbox.refused.clear();
+        let full = fetch(&bench, &mut inbox, true, false);
+        assert_eq!(full.stored, 1, "the given-up one, at last");
+    }
+
+    #[test]
+    fn a_pending_message_no_longer_in_the_folder_comes_off_the_list() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(5);
+        fetch(&bench, &mut inbox, false, false);
+
+        inbox.refused.clear();
+        inbox.messages.remove(&5);
+        let tally = fetch(&bench, &mut inbox, false, false);
+
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert!(imap_pending(&bench).is_empty());
+    }
+
+    #[test]
+    fn ten_refusals_in_a_row_leave_the_rest_of_the_folder_for_the_next_run() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[1, 2]);
+        fetch(&bench, &mut inbox, false, false);
+        for uid in 3..=14 {
+            inbox.messages.insert(
+                uid,
+                format!("Subject: {uid}\r\n\r\nbody {uid}").into_bytes(),
+            );
+            inbox.refused.insert(uid);
+        }
+
+        let tally = fetch(&bench, &mut inbox, false, false);
+
+        assert_eq!(tally.failed.len(), 11, "{:?}", tally.failed);
+        assert_eq!(
+            tally.failed[10],
+            "example.org:INBOX: 10 messages in a row refused; 2 messages left for the next run"
+        );
+        assert_eq!(imap_pending(&bench).len(), 10);
+        assert_eq!(
+            point(&bench),
+            Some(at(7, 2)),
+            "handed back newest first: 3 and 4 were never asked for, so the point stays"
+        );
+
+        inbox.refused.clear();
+        let rest = fetch(&bench, &mut inbox, false, false);
+        assert!(rest.failed.is_empty(), "{:?}", rest.failed);
+        assert_eq!(rest.stored, 12);
+        assert!(imap_pending(&bench).is_empty());
+        assert_eq!(point(&bench), Some(at(7, 14)));
+    }
+
+    #[test]
+    fn a_renumbered_folder_takes_the_pending_list_with_it() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(5);
+        fetch(&bench, &mut inbox, false, false);
+
+        let mut renumbered = mailbox(8, &[1, 2]);
+        let tally = fetch(&bench, &mut renumbered, false, false);
+
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert!(
+            imap_pending(&bench).is_empty(),
+            "UID 5 meant another message there"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_counts_the_pending_messages_too() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(5);
+        fetch(&bench, &mut inbox, false, false);
+
+        let tally = fetch(&bench, &mut inbox, false, true);
+
+        assert_eq!(tally.would, 1);
+        assert_eq!(
+            imap_pending(&bench),
+            [("5".to_string(), 1)],
+            "and touches none"
+        );
     }
 
     mod graph {
