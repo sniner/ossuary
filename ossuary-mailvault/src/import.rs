@@ -1,7 +1,8 @@
 //! Importing an archive of the Python mailvault.
 //!
-//! Such an archive stores every message as a file named by the SHA-384
-//! of its bytes, and keeps a log of where each message was seen: one file
+//! Such an archive stores every message as a file named by the hash of
+//! its bytes (SHA-256, or SHA-384 in archives created before mailvault
+//! 0.18), and keeps a log of where each message was seen: one file
 //! per mailbox, folder and backup run, listing the messages seen there,
 //! with the time of the run in its header. Each message goes in through
 //! the same two steps as a fetched one (admit, then record), and each
@@ -27,10 +28,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use ossuary_core::{Admitted, Archive, Attribute, Sighting, Source, Timestamp, admit, record};
+use ossuary_core::{
+    Admitted, Algorithm, Archive, Attribute, Sighting, Source, Timestamp, admit, record,
+};
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest as _, Sha384};
 
 use crate::config::valid_name;
 use crate::memo::Memo;
@@ -49,6 +51,13 @@ const LOG_VERSIONS: [u32; 2] = [1, 2];
 /// How many messages are admitted before their claims are written into a
 /// segment of their own and the memo is committed.
 const BATCH: usize = 500;
+
+/// The hashes the Python mailvault names messages in. Their digests
+/// differ in length, so the length of a store id tells which one named
+/// it. The `hash` setting in the vault's configuration is not read: the
+/// file may live outside the vault, and without the setting the vault
+/// is SHA-384.
+const HASHES: [Algorithm; 2] = [Algorithm::Sha256, Algorithm::Sha384];
 
 /// The header line of one log file: where its messages were seen, and
 /// when: the start of the backup run, as Python's `isoformat()` of a UTC
@@ -451,6 +460,15 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
 /// Read whole: a mail is bounded in size, and the name can only be
 /// checked once all of it is seen.
 fn read_message(vault: &Path, store_id: &str) -> Result<Vec<u8>> {
+    let Some(hash) = HASHES
+        .into_iter()
+        .find(|hash| hash.hex_len() == store_id.len())
+    else {
+        bail!(
+            "{store_id}: listed in the log, but neither a SHA-256 nor a SHA-384 hash; \
+             if a newer version of the Python mailvault wrote it, update ossuary-mailvault"
+        );
+    };
     let (path, compressed) = message_path(vault, store_id).with_context(|| {
         format!("{store_id}: listed in the log, but the message file is missing")
     })?;
@@ -461,8 +479,7 @@ fn read_message(vault: &Path, store_id: &str) -> Result<Vec<u8>> {
     } else {
         raw
     };
-    let digest = format!("{:x}", Sha384::digest(&bytes));
-    if digest != store_id {
+    if hash.hash(&bytes).as_str() != store_id {
         bail!("{}: damaged", path.display());
     }
     Ok(bytes)
@@ -501,14 +518,14 @@ mod tests {
     const ONE: &[u8] = b"From: a@example.org\r\nSubject: one\r\n\r\nfirst";
     const TWO: &[u8] = b"From: b@example.org\r\nSubject: two\r\n\r\nsecond";
 
-    /// A small vault: two messages, one seen in two places, one
-    /// compressed; the newer log file dated, the older not.
-    fn vault(dir: &TempDir) -> PathBuf {
+    /// A small vault named in `hash`: two messages, one seen in two
+    /// places, one compressed; the newer log file dated, the older not.
+    fn vault(dir: &TempDir, hash: Algorithm) -> PathBuf {
         let root = dir.path().join("vault");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("FORMAT"), "mailvault archive format 1\n").unwrap();
-        let id_one = store(&root, ONE, false);
-        let id_two = store(&root, TWO, true);
+        let id_one = store(&root, hash, ONE, false);
+        let id_two = store(&root, hash, TWO, true);
         log(
             &root,
             r#"{"version": 2, "mailbox": "example.org", "folder": "INBOX", "date": "2024-03-05T10:00:00+00:00", "prev": null}"#,
@@ -522,8 +539,8 @@ mod tests {
         root
     }
 
-    fn store(root: &Path, bytes: &[u8], compressed: bool) -> String {
-        let id = format!("{:x}", Sha384::digest(bytes));
+    fn store(root: &Path, hash: Algorithm, bytes: &[u8], compressed: bool) -> String {
+        let id = hash.hash(bytes).as_str().to_string();
         let dir = root.join("mail").join(&id[..2]).join(&id[2..4]);
         fs::create_dir_all(&dir).unwrap();
         if compressed {
@@ -543,14 +560,15 @@ mod tests {
         for id in ids {
             writeln!(text, "{{\"store_id\": \"{id}\"}}").unwrap();
         }
-        let name = format!("{:x}", Sha384::digest(text.as_bytes()));
+        let name = id(text.as_bytes());
         let dir = root.join("meta").join(&name[..2]);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(format!("{name}.jsonl")), text).unwrap();
     }
 
+    /// The store id in the vault of [`bench`].
     fn id(bytes: &[u8]) -> String {
-        format!("{:x}", Sha384::digest(bytes))
+        Algorithm::Sha384.hash(bytes).as_str().to_string()
     }
 
     struct Bench {
@@ -560,9 +578,14 @@ mod tests {
         memo: Memo,
     }
 
+    /// A vault named in SHA-384, as every vault before mailvault 0.18.
     fn bench() -> Bench {
+        bench_in(Algorithm::Sha384)
+    }
+
+    fn bench_in(hash: Algorithm) -> Bench {
         let dir = TempDir::new().unwrap();
-        let vault = vault(&dir);
+        let vault = vault(&dir, hash);
         let archive = Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap();
         let memo = Memo::open(&archive.root().join("cache").join(crate::memo::FILE_NAME)).unwrap();
         Bench {
@@ -758,6 +781,34 @@ mod tests {
         assert_eq!(tally.stored, 1, "the other message went in");
         assert_eq!(tally.failed.len(), 1);
         assert!(tally.failed[0].contains("damaged"));
+    }
+
+    #[test]
+    fn a_sha256_vault_is_imported() {
+        let bench = bench_in(Algorithm::Sha256);
+        let tally = take(&bench, &[], false, false);
+        assert_eq!((tally.stored, tally.known), (2, 0));
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert_eq!(
+            standing(&bench, ONE, "mailbox:place"),
+            vec![json!("example.org:INBOX"), json!("example.org:\\Sent")]
+        );
+    }
+
+    #[test]
+    fn a_store_id_in_no_known_hash_fails_alone() {
+        let bench = bench();
+        // As long as a SHA-1 digest.
+        let store_id = "ab".repeat(20);
+        log(
+            &bench.vault,
+            r#"{"version": 2, "mailbox": "example.org", "folder": "INBOX", "date": null, "prev": null}"#,
+            &[&store_id],
+        );
+        let tally = take(&bench, &[], false, false);
+        assert_eq!(tally.stored, 2);
+        assert_eq!(tally.failed.len(), 1);
+        assert!(tally.failed[0].contains("neither a SHA-256 nor a SHA-384 hash"));
     }
 
     #[test]

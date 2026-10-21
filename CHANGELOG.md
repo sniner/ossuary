@@ -5,6 +5,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ossuary mailvault import` reads archives created by the Python tool mailvault 0.18 or
+  later.** These archives name their messages with SHA-256, and the import reported every
+  message in them as damaged and imported none
+
 ## [0.12.2] - 2026-10-17
 
 ### Changed
