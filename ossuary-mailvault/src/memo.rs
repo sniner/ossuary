@@ -4,7 +4,7 @@
 //!
 //! All of it is cache by the archive's own rule: losing the file costs
 //! time, never a claim, and no claim is ever built from what stands
-//! here. Three tables:
+//! here. Four tables:
 //!
 //! - `resume` (account, folder, state): one row per folder, `state`
 //!   is a [`Resume`] as JSON, tagged with the backend that wrote it.
@@ -23,11 +23,19 @@
 //!   mailvault archive, which places of each of its messages are on
 //!   the record, so an interrupted import carries on and a message
 //!   recorded with every place is not read again.
+//! - `compared` (account, folder, id, subject): the messages `fetch
+//!   --compare` fetched, by server id, and the subject each turned out
+//!   to be. A message the Message-ID cannot settle, such as one of two
+//!   copies on the server, would otherwise be fetched by every
+//!   `--compare`. `id` is the Graph id, or UIDVALIDITY and UID as
+//!   `uidvalidity/uid`, so a renumbered folder matches no row. Each
+//!   `--compare` removes the rows of messages no longer listed, no
+//!   longer at the place, or settled by the Message-ID.
 //!
 //! Server-side numbering like a UID belongs here and nowhere on a
 //! message's record: it means nothing once the UIDVALIDITY changes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -164,6 +172,13 @@ impl Memo {
                  store_id TEXT NOT NULL,
                  place    TEXT NOT NULL,
                  PRIMARY KEY (store_id, place)
+             );
+             CREATE TABLE IF NOT EXISTS compared (
+                 account TEXT NOT NULL,
+                 folder  TEXT NOT NULL,
+                 id      TEXT NOT NULL,
+                 subject TEXT NOT NULL,
+                 PRIMARY KEY (account, folder, id)
              );",
         )?;
         Ok(Self { connection, reset })
@@ -422,6 +437,57 @@ impl Memo {
             .connection
             .prepare_cached("DELETE FROM pending WHERE account = ?1 AND folder = ?2")?;
         statement.execute(params![account, folder])?;
+        Ok(())
+    }
+
+    /// The messages `fetch --compare` fetched from the folder: the
+    /// subject of each, by server id.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn compared(&self, account: &str, folder: &str) -> Result<HashMap<String, String>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT id, subject FROM compared WHERE account = ?1 AND folder = ?2",
+        )?;
+        let rows = statement.query_map(params![account, folder], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Remember that the message fetched under the server's `id` is
+    /// `subject`.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn add_compared(&self, account: &str, folder: &str, id: &str, subject: &str) -> Result<()> {
+        let mut statement = self.connection.prepare_cached(
+            "INSERT INTO compared (account, folder, id, subject) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (account, folder, id) DO UPDATE SET subject = excluded.subject",
+        )?;
+        statement.execute(params![account, folder, id, subject])?;
+        Ok(())
+    }
+
+    /// Forget these messages of the folder.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn remove_compared<'a>(
+        &self,
+        account: &str,
+        folder: &str,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<()> {
+        let mut statement = self.connection.prepare_cached(
+            "DELETE FROM compared WHERE account = ?1 AND folder = ?2 AND id = ?3",
+        )?;
+        for id in ids {
+            statement.execute(params![account, folder, id])?;
+        }
         Ok(())
     }
 
@@ -687,6 +753,36 @@ mod tests {
         assert_eq!(hours(47).age(), "47h");
         assert_eq!(hours(48).age(), "2d");
         assert_eq!(hours(24 * 30).age(), "30d");
+    }
+
+    #[test]
+    fn what_compare_fetched_is_remembered_per_folder() {
+        let (_dir, memo) = memo();
+        assert!(memo.compared("a", "Inbox").unwrap().is_empty());
+
+        memo.add_compared("a", "Inbox", "M1", "s1").unwrap();
+        memo.add_compared("a", "Inbox", "M2", "s2").unwrap();
+        memo.add_compared("a", "Inbox", "M1", "s3").unwrap();
+        memo.add_compared("a", "Sent", "M1", "s1").unwrap();
+        let known = |folder: &str| {
+            let mut rows: Vec<_> = memo.compared("a", folder).unwrap().into_iter().collect();
+            rows.sort();
+            rows
+        };
+        let row = |id: &str, subject: &str| (id.to_string(), subject.to_string());
+        assert_eq!(
+            known("Inbox"),
+            [row("M1", "s3"), row("M2", "s2")],
+            "fetched again, the newer subject counts"
+        );
+
+        memo.remove_compared("a", "Inbox", ["M1", "M9"]).unwrap();
+        assert_eq!(known("Inbox"), [row("M2", "s2")]);
+        assert_eq!(
+            known("Sent"),
+            [row("M1", "s1")],
+            "another folder's rows are untouched"
+        );
     }
 
     #[test]

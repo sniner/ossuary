@@ -47,8 +47,9 @@ use ossuary_core::{
 };
 use serde_json::json;
 
+use crate::compare::{self, Archived, Comparison, Split};
 use crate::config::{self, Account, Reach};
-use crate::graph::{Graph, Halt, Miss, Round};
+use crate::graph::{Graph, Halt, Miss, Offered, Round};
 use crate::memo::{ImapResume, Memo, Pending};
 use crate::output::{Progress, Say, counted};
 use crate::place;
@@ -58,6 +59,9 @@ use crate::tally::Tally;
 pub struct Options {
     /// Fetch every message, the resume point notwithstanding.
     pub full: bool,
+    /// List every message, the resume point notwithstanding, and fetch
+    /// those the archive does not hold under the same Message-ID.
+    pub compare: bool,
     /// Count what would be fetched, fetch nothing.
     pub dry_run: bool,
 }
@@ -158,8 +162,9 @@ pub fn run(
     say: Say,
 ) -> Result<Tally> {
     // Taking a mark back needs to know what stands, and only a Graph
-    // account says marks — an IMAP run leaves the index alone.
-    let record = if accounts.iter().any(|account| account.over_graph()) {
+    // account says marks; a comparison reads the archive's side from
+    // it. Otherwise an IMAP run leaves the index alone.
+    let record = if options.compare || accounts.iter().any(|account| account.over_graph()) {
         Some(caught_up(archive, say)?)
     } else {
         None
@@ -173,6 +178,7 @@ pub fn run(
         tag: Attribute::parse(place::TAG)?,
         record,
         said: RefCell::new(HashMap::new()),
+        landed: RefCell::new(Vec::new()),
         say,
     };
     let mut tally = Tally::new("fetch");
@@ -224,6 +230,10 @@ struct Fetch<'a> {
     /// see them yet, and a message met twice in one run must not take
     /// back what the run itself just said.
     said: RefCell<HashMap<String, BTreeSet<String>>>,
+    /// Under `--compare`, the messages stored in the current round, by
+    /// server id as the memo has it, with their subjects: what decides
+    /// whether another round is needed.
+    landed: RefCell<Vec<(String, String)>>,
     say: Say,
 }
 
@@ -254,7 +264,7 @@ impl Fetch<'_> {
         bytes: &[u8],
         tags: Option<&[String]>,
         tally: &mut Tally,
-    ) -> Result<()> {
+    ) -> Result<Subject> {
         let admitted = admit(self.archive.content(), bytes)?;
         let mut facts = vec![(self.place.clone(), json!(name))];
         for tag in tags.unwrap_or_default() {
@@ -279,6 +289,20 @@ impl Fetch<'_> {
         }
         if let Some(tags) = tags {
             self.take_back(admitted.subject(), tags, tally)?;
+        }
+        Ok(admitted.subject().clone())
+    }
+
+    /// Under `--compare`, note which subject the message fetched under
+    /// the server's `id` turned out to be: for the next round of this
+    /// run, and in the memo for later runs.
+    fn note(&self, place: &Place<'_>, id: &str, subject: &Subject) -> Result<()> {
+        if self.options.compare {
+            self.memo
+                .add_compared(place.account, place.folder, id, subject.as_str())?;
+            self.landed
+                .borrow_mut()
+                .push((id.to_string(), subject.as_str().to_string()));
         }
         Ok(())
     }
@@ -372,6 +396,9 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
+        if self.options.compare {
+            return self.imap_compare(&place, mailbox, opened.uidvalidity, tally);
+        }
         let resume = self.memo.imap_resume(place.account, place.folder)?;
         // The pending list holds UIDs of the promise the point was saved
         // under, and a fetch that does not carry on from the point asks
@@ -415,10 +442,44 @@ impl Fetch<'_> {
             tally.would += fresh + attempts.len();
             return Ok(());
         }
+        self.imap_fetch(
+            &place,
+            mailbox,
+            &uids,
+            opened.uidvalidity,
+            resumed,
+            above,
+            attempts,
+            tally,
+        )
+    }
 
+    /// The fetch of a folder once it is decided what to ask for: `uids`
+    /// above the point `above`, and the pending UIDs in `attempts` with
+    /// the runs that failed them.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the parts of one decision, made by two callers"
+    )]
+    fn imap_fetch(
+        &self,
+        place: &Place<'_>,
+        mailbox: &mut impl Mailbox,
+        uids: &[u32],
+        uidvalidity: u32,
+        resumed: bool,
+        above: u32,
+        attempts: HashMap<u32, u32>,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let name = &place.name;
+        let fresh = uids
+            .iter()
+            .filter(|uid| !attempts.contains_key(uid))
+            .count();
         let mut walk = Walk {
-            uids: &uids,
-            uidvalidity: opened.uidvalidity,
+            uids,
+            uidvalidity,
             total: fresh + attempts.len(),
             pending: attempts,
             passed: HashSet::new(),
@@ -428,7 +489,7 @@ impl Fetch<'_> {
             gone: 0,
             progress: self.say.progress(),
         };
-        self.imap_walk(&place, mailbox, resumed, above, &mut walk, tally)?;
+        self.imap_walk(place, mailbox, resumed, above, &mut walk, tally)?;
         if walk.gone > 0 {
             self.say.line(format_args!(
                 "{name}: {} no longer in the folder, skipped",
@@ -525,7 +586,8 @@ impl Fetch<'_> {
         let attempts = walk.pending.get(&uid).copied();
         match got {
             Got::Message(bytes) => {
-                self.land(name, bytes, None, tally)?;
+                let subject = self.land(name, bytes, None, tally)?;
+                self.note(place, &compare::imap_id(walk.uidvalidity, uid), &subject)?;
                 walk.refused_in_a_row = 0;
                 if attempts.is_some() {
                     self.memo.remove_pending(place.account, place.folder, &id)?;
@@ -632,7 +694,15 @@ impl Fetch<'_> {
     /// The listing is complete: the link and the ids are saved
     /// together, before the first message is fetched. A round from
     /// scratch lists the folder whole and replaces an earlier list.
-    fn graph_listed(&self, place: &Place<'_>, resumed: bool, round: Round) -> Result<()> {
+    /// `listed_any` says whether the round listed any message, which
+    /// under `--compare` need not be one of those to fetch.
+    fn graph_listed(
+        &self,
+        place: &Place<'_>,
+        resumed: bool,
+        listed_any: bool,
+        round: Round,
+    ) -> Result<()> {
         let name = &place.name;
         self.memo.begin()?;
         if !resumed {
@@ -653,7 +723,7 @@ impl Fetch<'_> {
             // not answering properly yet look alike from here, and the
             // link would claim coverage of mail nobody listed. That
             // costs one more round next time, on an empty folder.
-            Some(link) if resumed || !round.offered.is_empty() => {
+            Some(link) if resumed || listed_any => {
                 self.memo.advance_graph(place.account, place.folder, &link)?;
             }
             Some(_) => self.say.line(format_args!(
@@ -676,14 +746,20 @@ impl Fetch<'_> {
     /// has been refused in [`GIVE_UP_AFTER`] runs. The rest of the list
     /// is left for the next run when the server refuses [`STOP_AFTER`]
     /// messages in a row, or gives no usable answer at all. Returns
-    /// how many are left on the list.
+    /// how many are left on the list. With `only`, just those ids of
+    /// the list are fetched.
     fn graph_land(
         &self,
         place: &Place<'_>,
         client: &mut Graph<'_>,
+        only: Option<&HashSet<String>>,
         tally: &mut Tally,
     ) -> Result<usize> {
-        let pending: Vec<Pending<Vec<String>>> = self.memo.pending(place.account, place.folder)?;
+        let mut pending: Vec<Pending<Vec<String>>> =
+            self.memo.pending(place.account, place.folder)?;
+        if let Some(only) = only {
+            pending.retain(|message| only.contains(&message.id));
+        }
         self.memo.begin()?;
         let outcome = self.graph_each(place, &pending, client, tally);
         // What came off the list before the trouble stays off it
@@ -726,7 +802,8 @@ impl Fetch<'_> {
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
                 Ok(bytes) => {
-                    self.land(name, &bytes, Some(&message.detail), tally)?;
+                    let subject = self.land(name, &bytes, Some(&message.detail), tally)?;
+                    self.note(place, &message.id, &subject)?;
                     self.memo
                         .remove_pending(place.account, place.folder, &message.id)?;
                     refused_in_a_row = 0;
@@ -806,6 +883,9 @@ impl Fetch<'_> {
             ));
             return Ok(());
         };
+        if self.options.compare {
+            return self.graph_compare(&place, client, &id, tally);
+        }
         let point = if self.options.full {
             None
         } else {
@@ -892,8 +972,9 @@ impl Fetch<'_> {
             return Ok(());
         }
 
-        self.graph_listed(&place, from.is_some(), round)?;
-        let left = self.graph_land(&place, client, tally)?;
+        let listed_any = !round.offered.is_empty();
+        self.graph_listed(&place, from.is_some(), listed_any, round)?;
+        let left = self.graph_land(&place, client, None, tally)?;
         if left > 0 {
             self.say.line(format_args!(
                 "{name}: {} not fetched; the next run tries them again",
@@ -901,6 +982,292 @@ impl Fetch<'_> {
             ));
         }
         Ok(())
+    }
+}
+
+/// `fetch --compare`: list the folder whole and fetch only what the
+/// archive does not hold under the same Message-ID, and what no earlier
+/// `--compare` fetched and found to be archived.
+///
+/// The messages to fetch replace the folder's pending list, and the
+/// resume point is set to the top of the listing, both before the first
+/// message is fetched: a run that stops early leaves exactly those on
+/// the list for the next one. The list is then fetched as by a resumed
+/// run. If a fetched message turns out to be archived under another
+/// Message-ID, the messages matched to that Message-ID are compared
+/// again (see [`Comparison::landed`]).
+impl Fetch<'_> {
+    /// The archive's side of the folder and what earlier `--compare`
+    /// runs fetched from it, and a word when some archived messages
+    /// have no Message-ID on record.
+    fn comparison(&self, place: &Place<'_>) -> Result<Comparison> {
+        self.landed.borrow_mut().clear();
+        let index = self
+            .record
+            .as_ref()
+            .expect("run() reads the record when --compare is given");
+        let archived = Archived::read(index, &self.place, &place.name)?;
+        let known = self.memo.compared(place.account, place.folder)?;
+        let comparison = Comparison::new(archived, known);
+        let without = comparison.without_message_id();
+        if without > 0 {
+            let has = if without == 1 { "has" } else { "have" };
+            let fetched = if self.options.dry_run {
+                "would be fetched"
+            } else {
+                "are fetched"
+            };
+            self.say.line(format_args!(
+                "{}: {without} of {} archived messages {has} no Message-ID on record, and their copies on the server {fetched} again; run `ossuary extract mail` first if it has not run since the last fetch",
+                place.name,
+                comparison.archived()
+            ));
+        }
+        Ok(comparison)
+    }
+
+    /// Remove these messages from what earlier `--compare` runs fetched
+    /// from the folder.
+    fn forget<'a>(&self, place: &Place<'_>, ids: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        self.memo.begin()?;
+        self.memo
+            .remove_compared(place.account, place.folder, ids)?;
+        self.memo.commit()
+    }
+
+    /// After the last round: what the Message-ID settled needs no row
+    /// in the memo.
+    fn forget_settled<T>(
+        &self,
+        place: &Place<'_>,
+        comparison: &Comparison,
+        kept: &compare::Keyed<T>,
+        id: impl Fn(&T) -> String,
+    ) -> Result<()> {
+        let settled: Vec<String> = kept
+            .iter()
+            .map(|(item, _)| id(item))
+            .filter(|id| comparison.remembers(id))
+            .collect();
+        self.forget(place, settled.iter().map(String::as_str))
+    }
+
+    /// The line that opens a compared folder.
+    fn compared(&self, place: &Place<'_>, wanted: usize, on_server: usize) {
+        self.say.line(format_args!(
+            "{}: compared with the archive, {wanted} of {} to fetch",
+            place.name,
+            counted(on_server, "message", "messages")
+        ));
+    }
+
+    /// The line that opens another round.
+    fn reopened(&self, place: &Place<'_>, more: usize) {
+        self.say.line(format_args!(
+            "{}: {} more to fetch: an archived message is listed on the server under another Message-ID",
+            place.name,
+            counted(more, "message", "messages")
+        ));
+    }
+
+    /// Hand the comparison what the last round stored, by the server's
+    /// Message-ID for each id. Answers whether anything was reopened.
+    fn settle(&self, comparison: &mut Comparison, keys: &HashMap<String, String>) -> bool {
+        let mut reopened = false;
+        for (id, subject) in self.landed.take() {
+            if let Some(key) = keys.get(&id) {
+                reopened |= comparison.landed(key, &subject);
+            }
+        }
+        reopened
+    }
+
+    fn imap_compare(
+        &self,
+        place: &Place<'_>,
+        mailbox: &mut impl Mailbox,
+        uidvalidity: u32,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let name = &place.name;
+        let mut comparison = self.comparison(place)?;
+        let listed = match mailbox
+            .uids_above(0)
+            .and_then(|uids| mailbox.message_ids(&uids))
+        {
+            Ok(listed) => listed,
+            Err(error) => {
+                tally.failed.push(format!("{name}: {error:#}"));
+                return Ok(());
+            }
+        };
+        let top = listed.iter().map(|(uid, _)| *uid).max().unwrap_or(0);
+        let listed: Vec<(u32, String)> = listed
+            .into_iter()
+            .map(|(uid, value)| (uid, compare::key(&value)))
+            .collect();
+        let id = |uid: &u32| compare::imap_id(uidvalidity, *uid);
+        let keys: HashMap<String, String> = listed
+            .iter()
+            .map(|(uid, key)| (id(uid), key.clone()))
+            .collect();
+        let on_server = listed.len();
+        let Split {
+            mut wanted,
+            mut kept,
+            recalled,
+        } = comparison.split(listed, id);
+        tally.recalled += recalled;
+        self.compared(place, wanted.len(), on_server);
+        if self.options.dry_run {
+            tally.would += wanted.len();
+            tally.matched += kept.len();
+            return Ok(());
+        }
+        self.forget(place, comparison.stale(|id| keys.contains_key(id)))?;
+        let mut first = true;
+        loop {
+            let ids: Vec<String> = wanted.iter().map(|(uid, _)| uid.to_string()).collect();
+            self.memo.begin()?;
+            if first {
+                self.memo.clear_pending(place.account, place.folder)?;
+            }
+            self.memo.add_pending(
+                place.account,
+                place.folder,
+                ids.iter().map(|id| (id.as_str(), ())),
+            )?;
+            self.memo.advance_imap(
+                place.account,
+                place.folder,
+                ImapResume {
+                    uidvalidity,
+                    uid: top,
+                },
+            )?;
+            self.memo.commit()?;
+            if wanted.is_empty() {
+                break;
+            }
+            // Only this round's: a UID refused in an earlier round waits
+            // for the next run, as it would after any other fetch.
+            let attempts: HashMap<u32, u32> = wanted.iter().map(|(uid, _)| (*uid, 0)).collect();
+            self.imap_fetch(place, mailbox, &[], uidvalidity, true, top, attempts, tally)?;
+            if !self.settle(&mut comparison, &keys) {
+                break;
+            }
+            let more = comparison.split(kept, id);
+            kept = more.kept;
+            tally.recalled += more.recalled;
+            if more.wanted.is_empty() {
+                break;
+            }
+            self.reopened(place, more.wanted.len());
+            wanted = more.wanted;
+            first = false;
+        }
+        tally.matched += kept.len();
+        self.forget_settled(place, &comparison, &kept, id)
+    }
+
+    fn graph_compare(
+        &self,
+        place: &Place<'_>,
+        client: &mut Graph<'_>,
+        folder_id: &str,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let name = &place.name;
+        let mut comparison = self.comparison(place)?;
+        let Round {
+            offered,
+            gone,
+            link,
+        } = match client.listing(folder_id) {
+            Ok(round) => round,
+            Err(Halt::Failed(error)) => {
+                tally.failed.push(format!("{name}: {error:#}"));
+                return Ok(());
+            }
+            // A round from scratch has no link to expire.
+            Err(Halt::Expired) => {
+                tally.failed.push(format!(
+                    "{name}: the server did not list the folder's messages"
+                ));
+                return Ok(());
+            }
+        };
+        let listed: Vec<(Offered, String)> = offered
+            .into_iter()
+            .map(|message| {
+                let key = compare::key(message.message_id.as_deref().unwrap_or_default());
+                (message, key)
+            })
+            .collect();
+        let keys: HashMap<String, String> = listed
+            .iter()
+            .map(|(message, key)| (message.id.clone(), key.clone()))
+            .collect();
+        let on_server = listed.len();
+        let id = |message: &Offered| message.id.clone();
+        let Split {
+            wanted,
+            mut kept,
+            recalled,
+        } = comparison.split(listed, id);
+        tally.recalled += recalled;
+        self.compared(place, wanted.len(), on_server);
+        if self.options.dry_run {
+            tally.would += wanted.len();
+            tally.matched += kept.len();
+            return Ok(());
+        }
+        self.forget(place, comparison.stale(|id| keys.contains_key(id)))?;
+        let mut only: HashSet<String> = wanted
+            .iter()
+            .map(|(message, _)| message.id.clone())
+            .collect();
+        let round = Round {
+            offered: wanted.into_iter().map(|(message, _)| message).collect(),
+            gone,
+            link,
+        };
+        self.graph_listed(place, false, on_server > 0, round)?;
+        while !only.is_empty() {
+            let left = self.graph_land(place, client, Some(&only), tally)?;
+            if left > 0 {
+                self.say.line(format_args!(
+                    "{name}: {} not fetched; the next run tries them again",
+                    counted(left, "message", "messages")
+                ));
+            }
+            if !self.settle(&mut comparison, &keys) {
+                break;
+            }
+            let more = comparison.split(kept, id);
+            kept = more.kept;
+            tally.recalled += more.recalled;
+            if more.wanted.is_empty() {
+                break;
+            }
+            self.reopened(place, more.wanted.len());
+            self.memo.begin()?;
+            self.memo.add_pending(
+                place.account,
+                place.folder,
+                more.wanted
+                    .iter()
+                    .map(|(message, _)| (message.id.as_str(), &message.tags)),
+            )?;
+            self.memo.commit()?;
+            only = more
+                .wanted
+                .into_iter()
+                .map(|(message, _)| message.id)
+                .collect();
+        }
+        tally.matched += kept.len();
+        self.forget_settled(place, &comparison, &kept, id)
     }
 }
 
@@ -964,6 +1331,9 @@ mod tests {
         give_up_after: Option<usize>,
         /// Messages the folder holds and the server will not hand over.
         refused: BTreeSet<u32>,
+        /// Message-IDs the server lists in place of the one in the
+        /// message.
+        listed_as: BTreeMap<u32, String>,
     }
 
     impl Mailbox for Fake {
@@ -979,6 +1349,21 @@ mod tests {
                 .keys()
                 .copied()
                 .filter(|&uid| uid > above)
+                .collect())
+        }
+
+        fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, String)>> {
+            Ok(uids
+                .iter()
+                .filter_map(|uid| {
+                    let bytes = self.messages.get(uid)?;
+                    let id = self
+                        .listed_as
+                        .get(uid)
+                        .cloned()
+                        .unwrap_or_else(|| crate::remote::message_id(bytes));
+                    Some((*uid, id))
+                })
                 .collect())
         }
 
@@ -1014,6 +1399,7 @@ mod tests {
                 .collect(),
             give_up_after: None,
             refused: BTreeSet::new(),
+            listed_as: BTreeMap::new(),
         }
     }
 
@@ -1050,12 +1436,17 @@ mod tests {
             tag: Attribute::parse(place::TAG).unwrap(),
             record: Some(caught_up(&bench.archive, Say::new(true)).unwrap()),
             said: RefCell::new(HashMap::new()),
+            landed: RefCell::new(Vec::new()),
             say: Say::new(true),
         }
     }
 
     fn options(full: bool, dry_run: bool) -> Options {
-        Options { full, dry_run }
+        Options {
+            full,
+            compare: false,
+            dry_run,
+        }
     }
 
     fn fetch(bench: &Bench, mailbox: &mut Fake, full: bool, dry_run: bool) -> Tally {
@@ -1070,6 +1461,213 @@ mod tests {
 
     fn point(bench: &Bench) -> Option<ImapResume> {
         bench.memo.imap_resume("example.org", "INBOX").unwrap()
+    }
+
+    /// A message with this Message-ID.
+    fn mail(n: u32, message_id: &str) -> Vec<u8> {
+        format!("Message-ID: {message_id}\r\nSubject: {n}\r\n\r\nbody {n}").into_bytes()
+    }
+
+    /// A folder holding these messages, by UID.
+    fn holding(uidvalidity: u32, messages: &[(u32, &[u8])]) -> Fake {
+        let mut fake = mailbox(uidvalidity, &[]);
+        fake.messages = messages
+            .iter()
+            .map(|(uid, bytes)| (*uid, bytes.to_vec()))
+            .collect();
+        fake
+    }
+
+    /// The Message-ID on the record, as `ossuary extract mail` writes it.
+    fn extracted(bench: &Bench, bytes: &[u8], message_id: &str) {
+        let claim = Claim::assert(
+            Subject::parse(Algorithm::Sha256.hash(bytes).as_str()).unwrap(),
+            Attribute::parse(compare::MESSAGE_ID).unwrap(),
+            json!(message_id),
+            Timestamp::now(),
+            Source::parse("extractor:mail/1").unwrap(),
+            ossuary_core::Run::new(),
+        )
+        .unwrap();
+        bench.archive.log().append(&claim).unwrap();
+    }
+
+    fn compare(bench: &Bench, mailbox: &mut Fake, dry_run: bool) -> Tally {
+        let options = Options {
+            full: false,
+            compare: true,
+            dry_run,
+        };
+        let fetch = fetcher(bench, &options);
+        let mut tally = Tally::new("fetch");
+        fetch
+            .folder(&bench.account, mailbox, "INBOX", &mut tally)
+            .unwrap();
+        tally
+    }
+
+    #[test]
+    fn compare_fetches_only_what_the_archive_lacks_under_its_message_id() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        let two = mail(2, "<two@example.org>");
+        let three = mail(3, "<three@example.org>");
+        fetch(
+            &bench,
+            &mut holding(7, &[(1, &one), (2, &two)]),
+            false,
+            false,
+        );
+        extracted(&bench, &one, "<one@example.org>");
+        extracted(&bench, &two, "<Two@Example.org>");
+        // Renumbered, where a plain fetch takes every message again.
+        let mut inbox = holding(8, &[(1, &one), (2, &two), (3, &three)]);
+
+        let tally = compare(&bench, &mut inbox, false);
+
+        assert_eq!((tally.stored, tally.known, tally.matched), (1, 0, 2));
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert_eq!(point(&bench), Some(at(8, 3)));
+        assert!(imap_pending(&bench).is_empty());
+        let again = fetch(&bench, &mut inbox, false, false);
+        assert_eq!(
+            (again.stored, again.known),
+            (0, 0),
+            "the next run carries on from the top"
+        );
+    }
+
+    /// The server ids the memo keeps for `--compare`, sorted.
+    fn compared(bench: &Bench) -> Vec<String> {
+        let mut ids: Vec<String> = bench
+            .memo
+            .compared("example.org", "INBOX")
+            .unwrap()
+            .into_keys()
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn compare_fetches_messages_without_a_message_id_on_record_again() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        let mut inbox = holding(7, &[(1, &one)]);
+        fetch(&bench, &mut inbox, false, false);
+
+        let tally = compare(&bench, &mut inbox, false);
+
+        assert_eq!((tally.stored, tally.known, tally.matched), (0, 1, 0));
+        let again = compare(&bench, &mut inbox, false);
+        assert_eq!(
+            (again.known, again.recalled),
+            (0, 1),
+            "once: the first compare found it archived"
+        );
+    }
+
+    #[test]
+    fn compare_does_not_fetch_again_what_an_earlier_compare_found_archived() {
+        // Two copies of one message on the server, one in the archive.
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        fetch(&bench, &mut holding(7, &[(1, &one)]), false, false);
+        extracted(&bench, &one, "<one@example.org>");
+        let mut inbox = holding(7, &[(1, &one), (2, &one)]);
+
+        let first = compare(&bench, &mut inbox, false);
+        let dry = compare(&bench, &mut inbox, true);
+        let second = compare(&bench, &mut inbox, false);
+
+        assert_eq!(
+            (first.known, first.recalled),
+            (2, 0),
+            "listed twice, held once: both copies fetched"
+        );
+        assert_eq!(compared(&bench), ["7/1", "7/2"]);
+        assert_eq!((dry.would, dry.matched, dry.recalled), (0, 0, 2));
+        assert_eq!(
+            (second.stored, second.known, second.recalled, second.claims),
+            (0, 0, 2, 0)
+        );
+        assert_eq!(compared(&bench), ["7/1", "7/2"], "still needed");
+
+        // Renumbered, the same UIDs mean nothing.
+        let renumbered = compare(&bench, &mut holding(8, &[(1, &one), (2, &one)]), false);
+        assert_eq!((renumbered.known, renumbered.recalled), (2, 0));
+        assert_eq!(compared(&bench), ["8/1", "8/2"]);
+    }
+
+    #[test]
+    fn compare_forgets_what_the_message_id_settles_and_what_is_gone() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        let two = mail(2, "<two@example.org>");
+        let mut inbox = holding(7, &[(1, &one), (2, &two)]);
+        let first = compare(&bench, &mut inbox, false);
+        assert_eq!(first.stored, 2);
+        assert_eq!(compared(&bench), ["7/1", "7/2"]);
+        extracted(&bench, &one, "<one@example.org>");
+        inbox.messages.remove(&2);
+
+        let again = compare(&bench, &mut inbox, false);
+
+        assert_eq!((again.known, again.matched, again.recalled), (0, 1, 0));
+        assert!(
+            compared(&bench).is_empty(),
+            "7/1 is settled by its Message-ID, 7/2 is no longer listed"
+        );
+    }
+
+    #[test]
+    fn compare_fetches_every_copy_of_a_message_id_listed_more_often_than_held() {
+        // Two versions under one Message-ID, one of them archived.
+        let bench = bench();
+        let archived = mail(1, "<same@example.org>");
+        let missing = mail(2, "<same@example.org>");
+        fetch(&bench, &mut holding(7, &[(1, &archived)]), false, false);
+        extracted(&bench, &archived, "<same@example.org>");
+        // The missing version listed first.
+        let mut inbox = holding(8, &[(1, &missing), (2, &archived)]);
+
+        let tally = compare(&bench, &mut inbox, false);
+
+        assert_eq!((tally.stored, tally.known, tally.matched), (1, 1, 0));
+    }
+
+    #[test]
+    fn compare_looks_again_when_an_archived_message_is_listed_under_another_message_id() {
+        // The archived message is listed under another Message-ID, and
+        // a missing one carries the archived one's.
+        let bench = bench();
+        let archived = mail(1, "<a@example.org>");
+        let missing = mail(2, "<a@example.org>");
+        fetch(&bench, &mut holding(7, &[(1, &archived)]), false, false);
+        extracted(&bench, &archived, "<a@example.org>");
+        let mut inbox = holding(8, &[(1, &archived), (2, &missing)]);
+        inbox.listed_as.insert(1, "<other@example.org>".to_string());
+
+        let tally = compare(&bench, &mut inbox, false);
+
+        assert_eq!((tally.stored, tally.known, tally.matched), (1, 1, 0));
+        assert!(imap_pending(&bench).is_empty());
+    }
+
+    #[test]
+    fn a_dry_run_of_compare_counts_and_writes_nothing() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        fetch(&bench, &mut holding(7, &[(1, &one)]), false, false);
+        extracted(&bench, &one, "<one@example.org>");
+        let two = mail(2, "<two@example.org>");
+        let mut inbox = holding(7, &[(1, &one), (2, &two)]);
+
+        let tally = compare(&bench, &mut inbox, true);
+
+        assert_eq!((tally.would, tally.matched, tally.claims), (1, 1, 0));
+        assert_eq!(point(&bench), Some(at(7, 1)), "the point stays");
+        assert!(imap_pending(&bench).is_empty());
     }
 
     #[test]
@@ -1447,6 +2045,102 @@ mod tests {
                 .graph_folder(account, &mut client, "Inbox", &mut tally)
                 .unwrap();
             tally
+        }
+
+        /// `fetch --compare` of the folder.
+        fn compare(bench: &Bench, stub: &Stub, account: &Account, dry_run: bool) -> Tally {
+            let options = Options {
+                full: false,
+                compare: true,
+                dry_run,
+            };
+            let fetch = fetcher(bench, &options);
+            let graph = graph(account);
+            let mut client = Graph::reach(
+                &account.name,
+                &graph,
+                "s3cret".to_string(),
+                stub.url(),
+                &format!("{}/v1.0", stub.url()),
+                Say::new(true),
+            )
+            .unwrap();
+            let mut tally = Tally::new("fetch");
+            fetch
+                .graph_folder(account, &mut client, "Inbox", &mut tally)
+                .unwrap();
+            tally
+        }
+
+        /// The round `--compare` asks for offers these messages, each
+        /// with its Message-ID, and ends on `link`.
+        fn listing(stub: &Stub, items: &[(&str, &str)], link: &str) {
+            let items: Vec<_> = items
+                .iter()
+                .map(|(id, message_id)| json!({ "id": id, "internetMessageId": message_id }))
+                .collect();
+            stub.script(
+                &format!(
+                    "GET /v1.0/users/{USER}/mailFolders/F1/messages/delta?$select=id,categories,internetMessageId"
+                ),
+                vec![Reply::json(
+                    200,
+                    &json!({ "value": items, "@odata.deltaLink": format!("{}/v1.0/delta/{link}", stub.url()) }),
+                )],
+            );
+        }
+
+        #[test]
+        fn compare_lists_the_folder_and_fetches_what_the_archive_lacks() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1", "M2"]);
+            first_round(&stub, &["M1"], "one");
+            fetch(&bench, &stub, &account, false, false);
+            super::extracted(&bench, &message("M1").0, "<m1@example.org>");
+            listing(
+                &stub,
+                &[("M1", "<M1@example.org>"), ("M2", "<m2@example.org>")],
+                "two",
+            );
+
+            let tally = compare(&bench, &stub, &account, false);
+
+            assert_eq!((tally.stored, tally.known, tally.matched), (1, 0, 1));
+            assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+            assert!(link(&bench).unwrap().ends_with("/delta/two"));
+            assert_eq!(
+                stub.seen()
+                    .iter()
+                    .filter(|seen| seen.target.contains("/M1/"))
+                    .count(),
+                1,
+                "M1 was fetched by the first run only"
+            );
+        }
+
+        #[test]
+        fn compare_does_not_fetch_again_a_message_listed_under_another_message_id() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            first_round(&stub, &["M1"], "one");
+            fetch(&bench, &stub, &account, false, false);
+            super::extracted(&bench, &message("M1").0, "<m1@example.org>");
+            listing(&stub, &[("M1", "<other@example.org>")], "two");
+            let fetches = || {
+                stub.seen()
+                    .iter()
+                    .filter(|seen| seen.target.contains("/M1/"))
+                    .count()
+            };
+
+            let first = compare(&bench, &stub, &account, false);
+            let second = compare(&bench, &stub, &account, false);
+
+            assert_eq!((first.known, first.recalled), (1, 0));
+            assert_eq!((second.known, second.recalled), (0, 1));
+            assert_eq!(fetches(), 2, "by the first fetch and the first compare");
         }
 
         fn link(bench: &Bench) -> Option<String> {

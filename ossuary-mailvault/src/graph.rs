@@ -86,6 +86,8 @@ const BODY_AT_MOST: Duration = Duration::from_secs(900);
 pub struct Offered {
     pub id: String,
     pub tags: Vec<String>,
+    /// The Message-ID the server reports, where the round asked for it.
+    pub message_id: Option<String>,
 }
 
 /// A delta round: what the folder offers, and where to carry on.
@@ -166,6 +168,8 @@ struct DeltaItem {
     id: String,
     #[serde(default)]
     categories: Vec<String>,
+    #[serde(rename = "internetMessageId")]
+    message_id: Option<String>,
     #[serde(rename = "@removed")]
     removed: Option<serde_json::Value>,
 }
@@ -442,18 +446,40 @@ impl<'a> Graph<'a> {
     /// [`Halt::Expired`] when the server no longer honours `from`,
     /// [`Halt::Failed`] when it will not go on.
     pub fn round(&mut self, folder_id: &str, from: Option<&str>) -> Result<Round, Halt> {
-        let mut url = match from {
+        let url = match from {
             Some(link) => link.to_string(),
-            None => format!(
-                "{}/users/{}/mailFolders/{folder_id}/messages/delta?$select=id,categories",
-                self.base, self.account.user
-            ),
+            None => self.delta(folder_id, "id,categories"),
         };
+        self.pages(url, from.is_some())
+    }
+
+    /// A round over the whole folder, as [`round`](Self::round) makes
+    /// one from scratch, that also lists each message's Message-ID.
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Failed`] when the server will not go on.
+    pub fn listing(&mut self, folder_id: &str) -> Result<Round, Halt> {
+        let url = self.delta(folder_id, "id,categories,internetMessageId");
+        self.pages(url, false)
+    }
+
+    /// The first request of a round from scratch.
+    fn delta(&self, folder_id: &str, select: &str) -> String {
+        format!(
+            "{}/users/{}/mailFolders/{folder_id}/messages/delta?$select={select}",
+            self.base, self.account.user
+        )
+    }
+
+    /// The pages of a round, from `url` on. `resumed` when `url` is a
+    /// link an earlier round handed out, the only kind that can expire.
+    fn pages(&mut self, mut url: String, resumed: bool) -> Result<Round, Halt> {
         let prefer = format!("odata.maxpagesize={PAGE}");
         let mut round = Round::default();
         loop {
             let answer = self.get(&url, Some(&prefer)).map_err(Halt::Failed)?;
-            if from.is_some() && answer.expired() {
+            if resumed && answer.expired() {
                 return Err(Halt::Expired);
             }
             if answer.status != 200 {
@@ -470,6 +496,7 @@ impl<'a> Graph<'a> {
                     round.offered.push(Offered {
                         id: item.id,
                         tags: item.categories,
+                        message_id: item.message_id,
                     });
                 }
             }
@@ -1200,10 +1227,12 @@ mod tests {
                 Offered {
                     id: "M1".to_string(),
                     tags: vec!["Red".to_string(), "Later".to_string()],
+                    message_id: None,
                 },
                 Offered {
                     id: "M3".to_string(),
                     tags: Vec::new(),
+                    message_id: None,
                 },
             ],
             "the marks come with the id; none listed is none"

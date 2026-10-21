@@ -66,6 +66,15 @@ pub trait Mailbox {
     /// A search the server refuses.
     fn uids_above(&mut self, above: u32) -> Result<Vec<u32>>;
 
+    /// The Message-ID header of each of `uids`, as the message spells
+    /// it, unfolded; `""` for a message without one. A UID the server
+    /// leaves out of its answer is left out here.
+    ///
+    /// # Errors
+    ///
+    /// A fetch the server refuses.
+    fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, String)>>;
+
     /// Whole messages by UID. Every UID asked for is handed to `each`
     /// once, with what became of it, in the order the server answers,
     /// which need not be ascending. `each` says whether to go on, and a
@@ -102,6 +111,10 @@ pub struct Remote {
 /// is bounded in size, a server sees to that — and stay in memory until
 /// stored, so the batch bounds the memory, not the round trips.
 const BATCH: usize = 25;
+
+/// How many Message-IDs one FETCH asks for. A line each, so the batch
+/// bounds the round trips.
+const ID_BATCH: usize = 1000;
 
 impl Remote {
     /// Connect and log in as the account says.
@@ -159,6 +172,27 @@ impl Remote {
         // connection drops either way, and the messages are on disk.
         let _ = self.session.logout();
     }
+}
+
+/// The value of the first Message-ID field in a header section,
+/// unfolded; `""` when there is none.
+pub(crate) fn message_id(header: &[u8]) -> String {
+    let text = String::from_utf8_lossy(header);
+    let mut lines = text.split('\n').map(|line| line.trim_end_matches('\r'));
+    let Some(first) = lines.by_ref().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("message-id")
+            .then_some(value)
+    }) else {
+        return String::new();
+    };
+    let mut value = first.trim().to_string();
+    for line in lines.take_while(|line| line.starts_with([' ', '\t'])) {
+        value.push(' ');
+        value.push_str(line.trim());
+    }
+    value.trim().to_string()
 }
 
 /// TLS to the account's server, the certificate held against the
@@ -222,6 +256,33 @@ impl Mailbox for Remote {
         let mut uids: Vec<u32> = found.into_iter().filter(|&uid| uid > above).collect();
         uids.sort_unstable();
         Ok(uids)
+    }
+
+    // The header field rather than ENVELOPE: the envelope brings every
+    // address along, and the parser fails a whole batch on one it cannot
+    // read.
+    fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, String)>> {
+        let mut found = Vec::with_capacity(uids.len());
+        for batch in uids.chunks(ID_BATCH) {
+            let set = batch
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let fetches = self
+                .session
+                .uid_fetch(&set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+                .context("fetching the Message-IDs failed")?;
+            let mut asked: HashSet<u32> = batch.iter().copied().collect();
+            for fetch in &*fetches {
+                // `remove`: a UID answered twice is counted once.
+                let Some(uid) = fetch.uid.filter(|uid| asked.remove(uid)) else {
+                    continue;
+                };
+                found.push((uid, message_id(fetch.header().unwrap_or_default())));
+            }
+        }
+        Ok(found)
     }
 
     /// A batch the server refuses is asked for again one UID at a time.
@@ -345,5 +406,29 @@ impl Remote {
             }
         }
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_message_id_is_read_from_its_header_field() {
+        assert_eq!(
+            message_id(b"Message-ID: <a@example.org>\r\n\r\n"),
+            "<a@example.org>"
+        );
+        assert_eq!(
+            message_id(b"message-id:\r\n <a@example.org>\r\n\r\n"),
+            "<a@example.org>",
+            "folded"
+        );
+        assert_eq!(
+            message_id(b"Message-Id: <a@example.org>\r\nMessage-Id: <b@example.org>\r\n\r\n"),
+            "<a@example.org>",
+            "the first of two"
+        );
+        assert_eq!(message_id(b"\r\n"), "", "none");
     }
 }

@@ -31,6 +31,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Archive, Error};
 
+mod compare;
 mod config;
 mod fetch;
 mod graph;
@@ -112,7 +113,7 @@ enum Command {
     /// Fetch new mail from the accounts in mailvault.toml
     ///
     /// Only messages that arrived since the last run are fetched, unless
-    /// --full is given.
+    /// --full or --compare is given.
     Fetch {
         /// Fetch only these accounts, by their name in mailvault.toml; all
         /// when none is given
@@ -123,6 +124,11 @@ enum Command {
         /// already in the archive are not stored again
         #[arg(long)]
         full: bool,
+
+        /// List all messages and fetch only those the archive does not
+        /// hold under the same Message-ID. Run ossuary extract mail first
+        #[arg(long, conflicts_with = "full")]
+        compare: bool,
 
         /// Show what would be fetched, write nothing
         #[arg(long)]
@@ -192,6 +198,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Fetch {
             accounts,
             full,
+            compare,
             dry_run,
         } => {
             say.line(format_args!("archive {}", archive.root().display()));
@@ -202,7 +209,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 &archive,
                 &chosen,
                 &memo,
-                &fetch::Options { full, dry_run },
+                &fetch::Options {
+                    full,
+                    compare,
+                    dry_run,
+                },
                 say,
             )?;
             Ok(finish(&tally, dry_run))

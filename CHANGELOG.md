@@ -5,6 +5,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary mailvault fetch --compare` fetches only the messages the archive is missing.** It
+  lists every message of each folder with its Message-ID and downloads those the archive does not
+  hold in that folder under the same Message-ID, and those where the Message-ID cannot tell. Use
+  it to find messages an earlier fetch missed, or after an import, which leaves no resume points.
+  It needs `ossuary extract mail` to have run: a message without a Message-ID on record is
+  downloaded again. A message the Message-ID cannot settle, such as a second copy of a message in
+  the same folder, is downloaded by the first `--compare` only. `--compare --dry-run` shows how
+  many messages each folder is missing
+
 ### Fixed
 
 - **`ossuary mailvault import` reads archives created by the Python tool mailvault 0.18 or

@@ -220,14 +220,81 @@ in three runs is given up and named in the report; `--full` lists it
 again. When the server refuses ten messages in a row, or stops answering
 at all, the rest of the folder is left for the next run.
 
-`--full` fetches every folder in full. `--dry-run` shows what a run would
-fetch and writes nothing. The progress of both goes to stderr, one line
-per folder; the result line goes to stdout.
+`--full` fetches every folder in full, and `--compare` fetches what is
+missing (see the next section). `--dry-run` shows what a run would fetch
+and writes nothing. The progress goes to stderr, one line per folder; the
+result line goes to stdout.
 
 If an account or a folder fails (a wrong password, a rejected login, no
 token from the tenant, a folder that cannot be opened), the error is
 printed and the run continues with the next one; the exit code is then
 `1`.
+
+## Fetching what is missing
+
+A normal fetch asks each folder only for what arrived since the last run.
+A message that an earlier run missed, or one that was given up after three
+refusals, is not fetched again that way. Two options look at every message
+of every folder instead:
+
+- `--full` downloads every message. Messages already in the archive are
+  not stored again, but each one costs its download, and its claims (the
+  folder, the type) are written again. It depends on nothing else.
+- `--compare` lists every message with its Message-ID and downloads only
+  those the archive does not hold in that folder under the same
+  Message-ID.
+
+```console
+$ ossuary extract mail
+$ ossuary mailvault fetch --compare
+archive /home/john/archive
+example.org: 2 folders
+example.org:INBOX: compared with the archive, 2 of 8010 messages to fetch
+example.org:INBOX: 2 of 2 fetched
+example.org:Sent: compared with the archive, 0 of 1312 messages to fetch
+2 messages stored, 9320 found in the archive by Message-ID; 6 claim(s) written, run 8b0c…
+```
+
+**Run `ossuary extract mail` before `--compare`.** The Message-IDs of the
+archived messages are on the record only once the mail extractor has read
+them. A message without a Message-ID on record cannot be matched, so its
+copy on the server is downloaded again. Nothing is stored twice, but the
+download is spent and the message's claims are written again. If the
+extractor has never run, that is every message, and `--compare` costs as
+much as `--full`. Before it fetches anything, `--compare` prints for each
+folder how many archived messages have no Message-ID on record:
+
+```
+example.org:INBOX: 312 of 8008 archived messages have no Message-ID on record, and their copies on the server are fetched again; run `ossuary extract mail` first if it has not run since the last fetch
+```
+
+Where the Message-ID cannot show whether a message is archived,
+`--compare` downloads the message, and the archive decides by its content:
+
+- The server lists a Message-ID more often than the archive holds it in
+  that folder. Two different messages can share a Message-ID, and a folder
+  can hold the same message twice; every message under that Message-ID is
+  downloaded.
+- Microsoft 365 reports a Message-ID that differs from the one in the
+  message for some messages, common in Sent Items, and one for messages
+  that have none.
+
+`--compare` records in `cache/` which archived message each of these
+downloads turned out to be, and a later `--compare` does not download it
+again. The same holds for a message without a Message-ID on record. If
+`cache/` is deleted, or the server renumbers the folder, such messages are
+downloaded once more.
+
+`--compare --dry-run` lists the folders and downloads nothing, so it
+shows how many messages each folder is missing. It ends with exit code `0`
+either way; the result line says how many would be fetched. That number
+includes the messages `--compare` downloads only to compare them, so it
+can be higher than what is really missing.
+
+After `--compare`, a folder's resume point is set to its newest message,
+and the next normal fetch continues from there. The messages to fetch go
+on the folder's list of messages still to fetch first, so a run that is
+interrupted continues with them.
 
 ## Importing a Python mailvault archive
 
@@ -261,7 +328,10 @@ some mailboxes, name them after the directory:
 
 A later fetch of the same folder, under the same account name, finds the
 imported messages already stored and records the same `mailbox:place`
-value.
+value. The import sets no resume points, so the first fetch downloads
+every message of every folder. To download only what the import did not
+bring in, run `ossuary extract mail` and then `ossuary mailvault fetch
+--compare` (see [Fetching what is missing](#fetching-what-is-missing)).
 
 ## Exit codes
 
