@@ -62,6 +62,28 @@ the message.
 
 Body parts without a name are not extracted.
 
+## Malformed mails
+
+Where a mail can be read in more than one way, its parts are found by
+these rules:
+
+- A part ends at the next line that consists of `--` and the boundary of
+  the multipart it belongs to, optionally followed by `--` and spaces.
+  The boundary anywhere else, in the middle of a line or followed by
+  other characters, is content.
+- A damaged part affects only itself. An attached message whose own
+  parts are never closed ends where the next part of the surrounding
+  mail begins, and the parts after it are extracted as usual.
+- Without a closing line, the last part runs to the end of the mail, or
+  of the part it belongs to.
+- If a part's header is not followed by an empty line, the header ends
+  at the first line that is not a header field, and the content starts
+  there.
+- An attached message is extracted as one file. Its own attachments are
+  extracted when that file is examined in turn.
+- An attachment whose base64 or quoted-printable cannot be decoded is
+  written as it appears in the mail.
+
 ## Supported types
 
 `message/rfc822` and `text/plain`. `text/plain` is included because

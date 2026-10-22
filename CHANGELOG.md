@@ -5,6 +5,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ossuary-extract-mail` keeps a damaged part of a mail from affecting the others.** A part now
+  ends only at a line that starts with the boundary of its own multipart. Before, the boundary in
+  the middle of a line cut a part short, and a damaged part, such as an attached message whose own
+  parts were never closed, could run on to the end of the mail: the attachments after it were not
+  extracted, and the attached message came out with the rest of the mail in it. An attached
+  message that consists of a header only is now extracted too. The README of the extractor lists
+  the rules for malformed mails. Run `ossuary extract mail --full` to extract mails again
+
 ## [0.12.4] - 2026-10-22
 
 ### Fixed

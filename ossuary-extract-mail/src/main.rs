@@ -33,15 +33,16 @@
 //! U+FFFD rather than silencing its whole header. Only failing to read
 //! stdin or to write a carried file is a failure.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
 use mail_parser::parsers::MessageStream;
-use mail_parser::{Encoding, HeaderValue, MessageParser, MessagePart, MimeHeaders as _};
+use mail_parser::{HeaderValue, MessageParser};
 use serde_json::json;
+
+mod mime;
 
 /// The generation of what this extractor writes: the number in its
 /// source, and so the memory of which files it has seen. Raised by hand
@@ -116,14 +117,16 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
     if !looks_like_mail(bytes) {
         return Ok(Vec::new());
     }
-    let Some(message) = MessageParser::default().parse(bytes) else {
-        return Ok(Vec::new());
-    };
+    let root = mime::parse(bytes);
     let mut lines = Vec::new();
     // The bytes answered as a message from their first byte — a sharper
     // word than the sniff's text/plain, said onto the same set.
     lines.push(json!({ "attribute": "file:mime", "value": "message/rfc822" }));
-    for header in message.headers() {
+    // mail-parser reads the header section mime.rs found, so the recorded
+    // headers and the split agree on where it ends. The section starts at
+    // byte 0: the offsets mail-parser reports are offsets into `bytes`.
+    let headers = MessageParser::default().parse_headers(&bytes[root.header.clone()]);
+    for header in headers.iter().flat_map(mail_parser::Message::headers) {
         let Some(name) = spoken(header.name.as_str()) else {
             continue;
         };
@@ -135,11 +138,8 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
         }
     }
     let mut taken = HashSet::new();
-    for part in &message.parts {
-        if part.is_multipart() {
-            continue;
-        }
-        let spelled = part.attachment_name();
+    for part in root.leaves() {
+        let spelled = part.fields.name.as_deref();
         if spelled.is_none() && !part.is_message() {
             // A body part without a name is the mail speaking, not the
             // mail carrying: it stays inside.
@@ -163,7 +163,7 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| fallback.to_string());
         let announced = uniquify(wearable, &mut taken);
-        std::fs::write(directory.join(&announced), carried(bytes, part)).map_err(|error| {
+        std::fs::write(directory.join(&announced), part.decoded(bytes)).map_err(|error| {
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
         lines.push(json!({ "file": &announced, "mime": kind(part) }));
@@ -178,7 +178,7 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
                 json!({ "file": &announced, "attribute": "file:path", "value": inner(spelled) }),
             );
         }
-        if let Some(id) = part.content_id() {
+        if let Some(id) = &part.fields.content_id {
             lines.push(json!({
                 "file": &announced,
                 "attribute": "mail:content-id",
@@ -187,40 +187,6 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
         }
     }
     Ok(lines)
-}
-
-/// The bytes of a part as they were attached, with only the transfer
-/// encoding undone.
-///
-/// mail-parser keeps a text part as a `String` converted from the part's
-/// charset, and `contents()` returns that string as UTF-8: a windows-1252
-/// CSV would come out as UTF-8, and a byte outside the charset as U+FFFD.
-/// So every part is cut out of the raw message again and decoded here. A
-/// nested message is the exception: for a 7bit or 8bit part, `contents()`
-/// is already a slice of the raw message.
-fn carried<'x>(bytes: &'x [u8], part: &'x MessagePart) -> Cow<'x, [u8]> {
-    if part.is_message() {
-        return Cow::Borrowed(part.contents());
-    }
-    let raw = bytes
-        .get(part.raw_body_offset() as usize..part.raw_end_offset() as usize)
-        .unwrap_or_default();
-    match part.encoding {
-        Encoding::None => Cow::Borrowed(raw),
-        Encoding::Base64 => MessageStream::new(raw).decode_base64_mime(b"").1,
-        Encoding::QuotedPrintable => {
-            // The line break before a delimiter belongs to the delimiter, so
-            // the last line has none, and the decoder would keep its trailing
-            // whitespace. RFC 2045 (6.7, rule 3) says to drop it.
-            let end = raw
-                .iter()
-                .rposition(|&byte| byte != b' ' && byte != b'\t')
-                .map_or(0, |last| last + 1);
-            MessageStream::new(&raw[..end])
-                .decode_quoted_printable_mime(b"")
-                .1
-        }
-    }
 }
 
 /// The headers this extractor repeats: the message's own voice — who
@@ -339,24 +305,14 @@ fn unfold(raw: &[u8]) -> Option<String> {
     }
 }
 
-/// A carried file's kind, in the mail's own words: the part's declared
-/// content type, lowercased to MIME's canonical case. A part that
-/// declares none gets the honest shrug — except a nested message, whose
-/// nature needs no declaring.
-fn kind(part: &MessagePart) -> String {
-    if let Some(content_type) = part.content_type()
-        && let Some(subtype) = &content_type.c_subtype
-    {
-        return format!(
-            "{}/{}",
-            content_type.c_type.to_ascii_lowercase(),
-            subtype.to_ascii_lowercase()
-        );
-    }
-    if part.is_message() {
-        "message/rfc822".to_string()
-    } else {
-        "application/octet-stream".to_string()
+/// The type of an extracted file: the content type the part declares. A
+/// part that declares none is application/octet-stream, or message/rfc822
+/// in a digest.
+fn kind(part: &mime::Entity) -> String {
+    match &part.fields.content_type {
+        Some(declared) => declared.clone(),
+        None if part.is_message() => "message/rfc822".to_string(),
+        None => "application/octet-stream".to_string(),
     }
 }
 
@@ -966,5 +922,137 @@ mod tests {
                     .any(|line| line["file"] == "attachment" && line["attribute"] == "file:path"),
             "a spelling with no name in it names no place either; got {lines:#?}"
         );
+    }
+
+    /// The files `harvest` writes for `bytes`, by name.
+    fn extracted(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let dir = TempDir::new().unwrap();
+        harvest(bytes, dir.path()).unwrap();
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name().into_string().unwrap();
+                (name, std::fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_boundary_in_the_middle_of_a_line_is_content_on_every_level() {
+        let u = b"first\nsee --b-b here, and --a-b, and --env-b\nlast";
+        let b = [
+            &b"From: b@example.org\n\
+                Subject: B\n\
+                Content-Type: multipart/mixed; boundary=\"b-b\"\n\
+                \n\
+                --b-b\n\
+                Content-Type: text/plain\n\
+                \n\
+                body of B\n\
+                --b-b\n\
+                Content-Type: text/plain; name=\"u.txt\"\n\
+                \n"[..],
+            u,
+            b"\n--b-b--\n",
+        ]
+        .concat();
+        let a = [
+            &b"From: a@example.org\n\
+                Subject: A\n\
+                Content-Type: multipart/mixed; boundary=\"a-b\"\n\
+                \n\
+                --a-b\n\
+                Content-Type: text/plain\n\
+                \n\
+                body of A\n\
+                --a-b\n\
+                Content-Type: message/rfc822; name=\"b.eml\"\n\
+                \n"[..],
+            &b,
+            b"\n--a-b--\n",
+        ]
+        .concat();
+        let envelope = [
+            &b"From: journal@example.org\n\
+                To: archive@example.org\n\
+                Content-Type: multipart/mixed; boundary=\"env-b\"\n\
+                \n\
+                --env-b\n\
+                Content-Type: text/plain\n\
+                \n\
+                report\n\
+                --env-b\n\
+                Content-Type: message/rfc822\n\
+                \n"[..],
+            &a,
+            b"\n--env-b--\n",
+        ]
+        .concat();
+
+        assert_eq!(extracted(&envelope)["message.eml"], a);
+        assert_eq!(extracted(&a)["b.eml"], b);
+        assert_eq!(extracted(&b)["u.txt"], u);
+    }
+
+    #[test]
+    fn a_malformed_attached_message_keeps_to_its_part() {
+        let unclosed = b"From: a@example.org\n\
+            Content-Type: multipart/mixed; boundary=\"inner\"\n\
+            \n\
+            --inner\n\
+            Content-Type: text/plain\n\
+            \n\
+            never closed";
+        let mail = [
+            &b"From: journal@example.org\n\
+                To: archive@example.org\n\
+                Content-Type: multipart/mixed; boundary=\"outer\"\n\
+                \n\
+                --outer\n\
+                Content-Type: message/rfc822\n\
+                \n"[..],
+            unclosed,
+            b"\n--outer\n\
+                Content-Type: application/pdf\n\
+                Content-Disposition: attachment; filename=\"after.pdf\"\n\
+                \n\
+                %PDF-1.4\n\
+                --outer\n\
+                Content-Type: message/rfc822\n\
+                \n\
+                From: c@example.org\n\
+                Subject: headers only\n\
+                --outer\n\
+                Content-Type: message/rfc822; name=\"empty.eml\"\n\
+                \n\
+                \n\
+                --outer--\n",
+        ]
+        .concat();
+
+        let files = extracted(&mail);
+
+        assert_eq!(files["message.eml"], unclosed);
+        assert_eq!(files["after.pdf"], b"%PDF-1.4");
+        assert_eq!(
+            files["message-2.eml"],
+            b"From: c@example.org\nSubject: headers only"
+        );
+        assert_eq!(files["empty.eml"], b"");
+        assert_eq!(files.len(), 4);
+    }
+
+    #[test]
+    fn random_messages_never_fail_the_harvest() {
+        for message in mime::random_messages(2_000) {
+            let bytes = [
+                &b"From: a@example.org\r\nTo: b@example.org\r\n"[..],
+                &message,
+            ]
+            .concat();
+            let dir = TempDir::new().unwrap();
+            harvest(&bytes, dir.path()).unwrap();
+        }
     }
 }
