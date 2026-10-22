@@ -5,7 +5,7 @@
 //! for a delimiter, and a part that confuses it moves the end of every
 //! enclosing part. This module finds the structure itself, from the outside
 //! in, and never copies or rewrites a byte. mail-parser only reads header
-//! sections and undoes transfer encodings.
+//! sections.
 //!
 //! Rules, malformed messages included:
 //!
@@ -24,11 +24,15 @@
 //! - An attached message (message/rfc822, message/global) is not opened.
 //!   Its body is one range; the next round of `ossuary extract` reads it.
 //! - Multiparts nested deeper than `MAX_DEPTH` are not split.
+//!
+//! The transfer encodings are decoded here as well, as far as the bytes
+//! allow; decoding never fails. mail-parser's decoders drop the last bytes of base64 without padding and
+//! an escape cut short at the end of quoted-printable, and give up on a
+//! whole part for one stray `==`.
 
 use std::borrow::Cow;
 use std::ops::Range;
 
-use mail_parser::parsers::MessageStream;
 use mail_parser::{MessageParser, MimeHeaders as _};
 
 /// Real mail nests a few levels deep. The limit keeps a crafted message
@@ -108,31 +112,13 @@ impl Entity {
         Leaves { stack: vec![self] }
     }
 
-    /// The body with its transfer encoding undone. A body that does not
-    /// decode is returned as it stands.
+    /// The body with its transfer encoding undone.
     pub fn decoded<'x>(&self, bytes: &'x [u8]) -> Cow<'x, [u8]> {
         let body = &bytes[self.body.clone()];
-        let (end, decoded) = match self.fields.encoding {
-            Encoding::Identity => return Cow::Borrowed(body),
-            Encoding::Base64 => MessageStream::new(body).decode_base64_mime(b""),
-            Encoding::QuotedPrintable => {
-                // The line break before a delimiter belongs to the
-                // delimiter, so the last line of a part has none, and the
-                // decoder would keep its trailing whitespace. RFC 2045
-                // (6.7, rule 3) says to drop it.
-                let end = body
-                    .iter()
-                    .rposition(|&byte| byte != b' ' && byte != b'\t')
-                    .map_or(0, |last| last + 1);
-                MessageStream::new(&body[..end]).decode_quoted_printable_mime(b"")
-            }
-        };
-        // With an empty boundary, the decoders return `usize::MAX` only for
-        // input they cannot decode.
-        if end == usize::MAX {
-            Cow::Borrowed(body)
-        } else {
-            decoded
+        match self.fields.encoding {
+            Encoding::Identity => Cow::Borrowed(body),
+            Encoding::Base64 => Cow::Owned(base64(body)),
+            Encoding::QuotedPrintable => Cow::Owned(quoted_printable(body)),
         }
     }
 }
@@ -342,6 +328,93 @@ fn lines(bytes: &[u8], range: Range<usize>) -> impl Iterator<Item = Range<usize>
 fn without_break(line: &[u8]) -> &[u8] {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+/// base64, read leniently: characters outside the alphabet are skipped,
+/// `=` ends a group and decoding goes on after it, and a group cut short
+/// yields the bytes it holds. A single leftover character holds none.
+fn base64(encoded: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(encoded.len() / 4 * 3);
+    let mut group = 0u32;
+    let mut count = 0u32;
+    for &byte in encoded {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                flush(&mut decoded, group, count);
+                (group, count) = (0, 0);
+                continue;
+            }
+            _ => continue,
+        };
+        group = group << 6 | u32::from(value);
+        count += 1;
+        if count == 4 {
+            flush(&mut decoded, group, count);
+            (group, count) = (0, 0);
+        }
+    }
+    flush(&mut decoded, group, count);
+    decoded
+}
+
+/// Appends the bytes in a group of `count` base64 characters: three for a
+/// full group, one or two for a group cut short.
+fn flush(decoded: &mut Vec<u8>, group: u32, count: u32) {
+    if count < 2 {
+        return;
+    }
+    let aligned = group << (6 * (4 - count));
+    let held = (count - 1) as usize;
+    decoded.extend_from_slice(&aligned.to_be_bytes()[1..=held]);
+}
+
+/// quoted-printable (RFC 2045, 6.7), with the robust handling the RFC
+/// suggests: an `=` that starts neither an escape of two hex digits nor a
+/// soft line break is kept, with what follows it. Spaces and tabs at the
+/// end of a line are transport padding and dropped (rule 3). Line breaks
+/// stay as they are.
+fn quoted_printable(encoded: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(encoded.len());
+    for line in encoded.split_inclusive(|&byte| byte == b'\n') {
+        let text = without_break(line);
+        let line_break = &line[text.len()..];
+        let end = text
+            .iter()
+            .rposition(|&byte| byte != b' ' && byte != b'\t')
+            .map_or(0, |last| last + 1);
+        let (text, soft) = match text[..end].strip_suffix(b"=") {
+            Some(text) => (text, true),
+            None => (&text[..end], false),
+        };
+        let mut at = 0;
+        while at < text.len() {
+            if text[at] == b'='
+                && let Some(byte) = text.get(at + 1..at + 3).and_then(escaped)
+            {
+                decoded.push(byte);
+                at += 3;
+            } else {
+                decoded.push(text[at]);
+                at += 1;
+            }
+        }
+        if !soft {
+            decoded.extend_from_slice(line_break);
+        }
+    }
+    decoded
+}
+
+/// The byte two hex digits stand for, upper or lower case.
+fn escaped(digits: &[u8]) -> Option<u8> {
+    let digit = |byte: u8| char::from(byte).to_digit(16);
+    let value = digit(digits[0])? << 4 | digit(digits[1])?;
+    u8::try_from(value).ok()
 }
 
 /// Random messages, line by line: delimiter lines of two boundaries,
@@ -781,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn decoding_undoes_the_transfer_encoding_only() {
+    fn decoding_follows_the_declared_encoding() {
         let decoded = |header: &[u8], body: &[u8]| {
             let bytes = [header, b"\r\n", body].concat();
             parse(&bytes).decoded(&bytes).into_owned()
@@ -798,24 +871,102 @@ mod tests {
                 b"Content-Transfer-Encoding: Quoted-Printable \r\n",
                 b"Gr=FC=DFe =\r\naus M=FCnchen   "
             ),
-            b"Gr\xfc\xdfe aus M\xfcnchen",
-            "the trailing whitespace of the last line is dropped"
+            b"Gr\xfc\xdfe aus M\xfcnchen"
         );
         assert_eq!(
             decoded(b"Content-Transfer-Encoding: 8bit\r\n", b"G\xfcnter\r\n"),
             b"G\xfcnter\r\n"
         );
         assert_eq!(
-            decoded(b"Content-Transfer-Encoding: base64\r\n", b"not base64!\r\n"),
-            b"not base64!\r\n",
-            "what does not decode stays as it is"
+            decoded(b"Content-Transfer-Encoding: x-unknown\r\n", b"=E4 QUJD\r\n"),
+            b"=E4 QUJD\r\n"
         );
     }
 
     #[test]
-    fn fields_come_from_the_header_section_alone() {
+    fn base64_is_read_leniently() {
+        assert_eq!(base64(b"QUJDREVG"), b"ABCDEF");
+        assert_eq!(
+            base64(b"QU\r\nJD RE\tVG\r\n"),
+            b"ABCDEF",
+            "whitespace between"
+        );
+        assert_eq!(base64(b"QUJDRA=="), b"ABCD");
+        assert_eq!(base64(b"QUJDREU="), b"ABCDE");
+        assert_eq!(base64(b"QUJDRA"), b"ABCD", "padding missing");
+        assert_eq!(base64(b"QUJDREU"), b"ABCDE", "padding missing");
+        assert_eq!(base64(b"QUJDR"), b"ABC", "one character holds no byte");
+        assert_eq!(
+            base64(b"QUJD!RA==\r\n"),
+            b"ABCD",
+            "characters outside the alphabet"
+        );
+        assert_eq!(
+            base64(b"QUJDRA==QUJD"),
+            b"ABCDABC",
+            "padding ends a group, the next block follows"
+        );
+        assert_eq!(base64(b"QUJD=QUJD"), b"ABCABC");
+        assert_eq!(base64(b"===="), b"");
+        assert_eq!(base64(b""), b"");
+    }
+
+    #[test]
+    fn quoted_printable_is_read_leniently() {
+        assert_eq!(
+            quoted_printable(b"a=3Db =E4 =e4"),
+            b"a=b \xe4 \xe4",
+            "either case"
+        );
+        assert_eq!(
+            quoted_printable(b"soft=\r\nbreak=\nand LF"),
+            b"softbreakand LF"
+        );
+        assert_eq!(
+            quoted_printable(b"soft= \t\r\nbreak"),
+            b"softbreak",
+            "padding after a soft line break"
+        );
+        assert_eq!(
+            quoted_printable(b"x  \r\ny\t\nlast  "),
+            b"x\r\ny\nlast",
+            "padding at the end of every line"
+        );
+        assert_eq!(
+            quoted_printable(b"=E4="),
+            b"\xe4",
+            "a soft break at the end"
+        );
+        assert_eq!(quoted_printable(b"=XY a=4g"), b"=XY a=4g", "no escape");
+        assert_eq!(
+            quoted_printable(b"cut =4"),
+            b"cut =4",
+            "an escape cut short"
+        );
+        assert_eq!(quoted_printable(b"a= b"), b"a= b", "= inside a line");
+        assert_eq!(quoted_printable(b"a==b"), b"a==b");
+        assert_eq!(
+            quoted_printable(b"====\r\nnext"),
+            b"===next",
+            "the last = of a line is a soft break"
+        );
+        assert_eq!(
+            quoted_printable(b"lone\rcr\r\n"),
+            b"lone\rcr\r\n",
+            "line breaks stay as they are"
+        );
+        assert_eq!(quoted_printable(b""), b"");
+    }
+
+    // The tests below pin what this module takes from mail-parser. One that
+    // fails after an update of mail-parser means an assumption no longer
+    // holds, not that the test needs new values.
+
+    #[test]
+    fn mail_parser_reads_the_fields() {
         let bytes = b"Content-Type: Text/CSV; charset=windows-1252;\r\n name=\"list.csv\"\r\n\
             Content-ID: <part@example.org>\r\n\
+            Content-Transfer-Encoding:\r\n BASE64\r\n\
             \r\n\
             Content-Type: image/png\r\n";
         let root = lossless(bytes);
@@ -823,6 +974,47 @@ mod tests {
         assert_eq!(root.fields.content_type.as_deref(), Some("text/csv"));
         assert_eq!(root.fields.name.as_deref(), Some("list.csv"));
         assert_eq!(root.fields.content_id.as_deref(), Some("part@example.org"));
-        assert_eq!(root.fields.encoding, Encoding::Identity);
+        assert_eq!(root.fields.encoding, Encoding::Base64);
+        assert_eq!(
+            parse(b"Content-Type: multipart/mixed;\r\n boundary=\"=_a b\"\r\n\r\n")
+                .fields
+                .boundary
+                .as_deref(),
+            Some("=_a b")
+        );
+    }
+
+    fn name(header: &[u8]) -> Option<String> {
+        let bytes = [header, b"\r\nbody"].concat();
+        parse(&bytes).fields.name
+    }
+
+    #[test]
+    fn mail_parser_reads_file_names() {
+        assert_eq!(
+            name(
+                b"Content-Disposition: attachment;\r\n \
+                  filename*0*=utf-8''Gr%C3%BC%C3%9Fe;\r\n filename*1*=%20aus.txt\r\n"
+            )
+            .as_deref(),
+            Some("Gr\u{fc}\u{df}e aus.txt"),
+            "RFC 2231: continuations, charset, percent encoding"
+        );
+        assert_eq!(
+            name(b"Content-Type: application/pdf; name=\"=?UTF-8?Q?Gr=C3=BC=C3=9Fe.pdf?=\"\r\n")
+                .as_deref(),
+            Some("Gr\u{fc}\u{df}e.pdf"),
+            "an encoded word in quotes, as Outlook writes it"
+        );
+        assert_eq!(
+            name(
+                b"Content-Type: application/pdf; name=\"type.pdf\"\r\n\
+                  Content-Disposition: attachment; filename=\"disposition.pdf\"\r\n"
+            )
+            .as_deref(),
+            Some("disposition.pdf"),
+            "filename before name"
+        );
+        assert_eq!(name(b"Content-Type: text/plain\r\n"), None);
     }
 }

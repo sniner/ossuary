@@ -81,8 +81,10 @@ these rules:
   there.
 - An attached message is extracted as one file. Its own attachments are
   extracted when that file is examined in turn.
-- An attachment whose base64 or quoted-printable cannot be decoded is
-  written as it appears in the mail.
+- Damaged base64 or quoted-printable is decoded as far as it goes. In
+  base64, characters that do not belong to it are skipped, and missing
+  padding at the end loses nothing. In quoted-printable, an `=` that
+  starts neither a code nor a soft line break is kept as it is.
 
 ## Supported types
 

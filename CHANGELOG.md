@@ -14,6 +14,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   extracted, and the attached message came out with the rest of the mail in it. An attached
   message that consists of a header only is now extracted too. The README of the extractor lists
   the rules for malformed mails. Run `ossuary extract mail --full` to extract mails again
+- **`ossuary-extract-mail` decodes damaged base64 and quoted-printable as far as it goes.** Base64
+  without padding lost its last bytes, and an incomplete code at the end of quoted-printable was
+  dropped. A stray `==` in quoted-printable, or text after the base64, left the whole attachment
+  undecoded
 
 ## [0.12.4] - 2026-10-22
 
