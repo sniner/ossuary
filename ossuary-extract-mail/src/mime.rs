@@ -149,7 +149,8 @@ impl<'a> Iterator for Leaves<'a> {
 
 impl Fields {
     fn read(header: &[u8]) -> Fields {
-        let Some(message) = MessageParser::default().parse_headers(header) else {
+        let header = unfolded(header);
+        let Some(message) = MessageParser::default().parse_headers(&header) else {
             return Fields::default();
         };
         let content_type = message.content_type();
@@ -168,6 +169,21 @@ impl Fields {
             content_id: message.content_id().map(str::to_string),
         }
     }
+}
+
+/// The header section with its folds removed (RFC 5322, 2.2.3). mail-parser
+/// cannot read a parameter whose value starts on the next line, as Exchange
+/// writes a long file name: `name=`, line break, tab, `"..."`.
+fn unfolded(header: &[u8]) -> Vec<u8> {
+    let mut unfolded = Vec::with_capacity(header.len());
+    let mut lines = header.split_inclusive(|&byte| byte == b'\n').peekable();
+    while let Some(line) = lines.next() {
+        let folded = lines
+            .peek()
+            .is_some_and(|next| matches!(next.first(), Some(b' ' | b'\t')));
+        unfolded.extend_from_slice(if folded { without_break(line) } else { line });
+    }
+    unfolded
 }
 
 impl Encoding {
@@ -1098,6 +1114,25 @@ mod tests {
                 .as_deref(),
             Some("=_a b")
         );
+    }
+
+    #[test]
+    fn a_parameter_may_start_on_the_next_line() {
+        let bytes = b"Content-Type: multipart/mixed; boundary=\r\n\t\"cut\"\r\n\
+            \r\n\
+            --cut\r\n\
+            Content-Type: image/jpeg; name=\r\n\t\"type.jpg\"\r\n\
+            \r\n\
+            --cut\r\n\
+            Content-Disposition: inline; filename\r\n =\"disposition.jpg\"\r\n\
+            \r\n\
+            --cut--\r\n";
+        let root = lossless(bytes);
+        let parts = parts(&root);
+
+        assert_eq!(root.fields.boundary.as_deref(), Some("cut"));
+        assert_eq!(parts[0].fields.name.as_deref(), Some("type.jpg"));
+        assert_eq!(parts[1].fields.name.as_deref(), Some("disposition.jpg"));
     }
 
     fn name(header: &[u8]) -> Option<String> {

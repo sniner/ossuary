@@ -23,6 +23,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   without padding lost its last bytes, and an incomplete code at the end of quoted-printable was
   dropped. A stray `==` in quoted-printable, or text after the base64, left the whole attachment
   undecoded
+- **`ossuary-extract-mail` extracts attachments whose name starts on a continuation line.** Exchange
+  folds a long file name after `name=` or `filename=`, and such an attachment was not extracted. A
+  boundary folded the same way left its multipart unsplit
 
 ## [0.12.4] - 2026-10-22
 
