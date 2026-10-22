@@ -5,6 +5,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ossuary-extract-mail` reads a file name split into several encoded words without a space.**
+  Exchange splits a long name into encoded words at a line fold. Since 0.12.5, the name got a
+  space where the fold was
+
 ## [0.12.5] - 2026-10-22
 
 ### Added

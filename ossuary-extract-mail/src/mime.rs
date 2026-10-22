@@ -171,9 +171,13 @@ impl Fields {
     }
 }
 
-/// The header section with its folds removed (RFC 5322, 2.2.3). mail-parser
-/// cannot read a parameter whose value starts on the next line, as Exchange
-/// writes a long file name: `name=`, line break, tab, `"..."`.
+/// The header section with its folds removed (RFC 5322, 2.2.3), and with
+/// the whitespace between two encoded words, which RFC 2047 (6.2) says to
+/// ignore. mail-parser cannot read a parameter whose value starts on the
+/// next line, as Exchange writes a long file name: `name=`, line break, tab,
+/// `"..."`. Exchange also splits such a name into encoded words at a fold,
+/// and mail-parser joins them only while the fold is still there; on one
+/// line it keeps the space between them.
 fn unfolded(header: &[u8]) -> Vec<u8> {
     let mut unfolded = Vec::with_capacity(header.len());
     let mut lines = header.split_inclusive(|&byte| byte == b'\n').peekable();
@@ -183,7 +187,23 @@ fn unfolded(header: &[u8]) -> Vec<u8> {
             .is_some_and(|next| matches!(next.first(), Some(b' ' | b'\t')));
         unfolded.extend_from_slice(if folded { without_break(line) } else { line });
     }
-    unfolded
+    let mut joined = Vec::with_capacity(unfolded.len());
+    let mut at = 0;
+    while at < unfolded.len() {
+        joined.push(unfolded[at]);
+        if joined.ends_with(b"?=") {
+            let rest = &unfolded[at + 1..];
+            let gap = rest
+                .iter()
+                .take_while(|&&byte| byte == b' ' || byte == b'\t')
+                .count();
+            if gap > 0 && rest[gap..].starts_with(b"=?") {
+                at += gap;
+            }
+        }
+        at += 1;
+    }
+    joined
 }
 
 impl Encoding {
@@ -1133,6 +1153,23 @@ mod tests {
         assert_eq!(root.fields.boundary.as_deref(), Some("cut"));
         assert_eq!(parts[0].fields.name.as_deref(), Some("type.jpg"));
         assert_eq!(parts[1].fields.name.as_deref(), Some("disposition.jpg"));
+    }
+
+    #[test]
+    fn encoded_words_in_a_name_join_across_a_fold() {
+        let bytes = b"Content-Type: image/png; name=\r\n\t\"=?windows-1252?Q?a=5F3e?=\r\n \
+            =?windows-1252?Q?8e=2Epng?=\"\r\n\r\n";
+        assert_eq!(parse(bytes).fields.name.as_deref(), Some("a_3e8e.png"));
+
+        let bytes = b"Content-Type: image/png; name=\"=?utf-8?Q?a?=  =?utf-8?Q?b.png?=\"\r\n\r\n";
+        assert_eq!(
+            parse(bytes).fields.name.as_deref(),
+            Some("ab.png"),
+            "whitespace between encoded words is ignored"
+        );
+
+        let bytes = b"Content-Type: image/png; name=\"a b.png\"\r\n\r\n";
+        assert_eq!(parse(bytes).fields.name.as_deref(), Some("a b.png"));
     }
 
     fn name(header: &[u8]) -> Option<String> {
