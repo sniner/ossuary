@@ -36,9 +36,10 @@ Every attachment and every nested message becomes a derived file, with
 `prov:origin` pointing to the message. Its type is the content type the
 message declares for it, not one detected from the bytes.
 
-The file holds the bytes that were attached. The transfer encoding
-(base64 or quoted-printable) is decoded; a text attachment keeps its
-charset. A nested message is written exactly as it appears in the mail.
+The file holds the bytes that were attached. The transfer encoding is
+decoded: base64, quoted-printable, and uuencode, which older mail
+programs declared as `x-uuencode`. A text attachment keeps its charset.
+A nested message is written exactly as it appears in the mail.
 
 The file is written under the name given in the message, reduced to a
 bare file name. An unnamed nested message is written as `message.eml`,

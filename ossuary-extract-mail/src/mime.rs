@@ -26,7 +26,9 @@
 //! - Multiparts nested deeper than `MAX_DEPTH` are not split.
 //!
 //! The transfer encodings are decoded here as well, as far as the bytes
-//! allow; decoding never fails. mail-parser's decoders drop the last bytes of base64 without padding and
+//! allow; decoding never fails. Besides base64 and quoted-printable this
+//! includes uuencode, which older mail programs declared as x-uuencode.
+//! mail-parser's decoders drop the last bytes of base64 without padding and
 //! an escape cut short at the end of quoted-printable, and give up on a
 //! whole part for one stray `==`.
 
@@ -78,6 +80,8 @@ pub enum Encoding {
     Identity,
     Base64,
     QuotedPrintable,
+    /// x-uuencode, uuencode, x-uue or uue.
+    Uuencode,
 }
 
 /// How the body of an entity is structured.
@@ -119,6 +123,7 @@ impl Entity {
             Encoding::Identity => Cow::Borrowed(body),
             Encoding::Base64 => Cow::Owned(base64(body)),
             Encoding::QuotedPrintable => Cow::Owned(quoted_printable(body)),
+            Encoding::Uuencode => uudecode(body).map_or(Cow::Borrowed(body), Cow::Owned),
         }
     }
 }
@@ -170,6 +175,7 @@ impl Encoding {
         match name.trim().to_ascii_lowercase().as_str() {
             "base64" => Encoding::Base64,
             "quoted-printable" => Encoding::QuotedPrintable,
+            "x-uuencode" | "uuencode" | "x-uue" | "uue" => Encoding::Uuencode,
             _ => Encoding::Identity,
         }
     }
@@ -415,6 +421,53 @@ fn escaped(digits: &[u8]) -> Option<u8> {
     let digit = |byte: u8| char::from(byte).to_digit(16);
     let value = digit(digits[0])? << 4 | digit(digits[1])?;
     u8::try_from(value).ok()
+}
+
+/// uuencode: the data starts after the `begin` line and ends at the `end`
+/// line or the end of the body. Encoders wrote zeros as spaces, and
+/// transport strips spaces at the end of a line, so a line shorter than its
+/// length character says is filled with zeros. Empty lines are skipped.
+/// `None` when there is no `begin` line.
+fn uudecode(encoded: &[u8]) -> Option<Vec<u8>> {
+    let mut lines = encoded
+        .split_inclusive(|&byte| byte == b'\n')
+        .map(without_break);
+    lines.by_ref().find(|line| is_begin(line))?;
+    let mut decoded = Vec::with_capacity(encoded.len() / 4 * 3);
+    for line in lines {
+        if line.trim_ascii() == b"end" {
+            break;
+        }
+        let Some((&length, data)) = line.split_first() else {
+            continue;
+        };
+        let length = usize::from(sextet(length));
+        let start = decoded.len();
+        for group in 0..length.div_ceil(3) {
+            let value = (0..4).fold(0u32, |value, index| {
+                let byte = data.get(group * 4 + index).copied().unwrap_or(b' ');
+                value << 6 | u32::from(sextet(byte))
+            });
+            decoded.extend_from_slice(&value.to_be_bytes()[1..]);
+        }
+        decoded.truncate(start + length);
+    }
+    Some(decoded)
+}
+
+/// The six bits a uuencode character stands for; space and backtick are
+/// both zero.
+fn sextet(byte: u8) -> u8 {
+    byte.wrapping_sub(b' ') & 0x3f
+}
+
+/// Whether a line is a `begin` line: `begin`, an octal mode, a name.
+fn is_begin(line: &[u8]) -> bool {
+    let Some(rest) = line.strip_prefix(b"begin ") else {
+        return false;
+    };
+    let mode = rest.split(|&byte| byte == b' ').next().unwrap_or_default();
+    !mode.is_empty() && mode.iter().all(|byte| (b'0'..=b'7').contains(byte))
 }
 
 /// Random messages, line by line: delimiter lines of two boundaries,
@@ -956,6 +1009,69 @@ mod tests {
             "line breaks stay as they are"
         );
         assert_eq!(quoted_printable(b""), b"");
+    }
+
+    #[test]
+    fn uuencode_is_read_from_begin_to_end() {
+        let data = [
+            &b"\x00\x00\x00ABC\xff\xfe"[..],
+            &(0u8..40).collect::<Vec<_>>(),
+        ]
+        .concat();
+        let spaces = b"M    04)#__X  0(#! 4&!P@)\"@L,#0X/$!$2$Q05%A<8&1H;'!T>'R A(B,D\n#)28G\n";
+        let backticks = b"M````04)#__X``0(#!`4&!P@)\"@L,#0X/$!$2$Q05%A<8&1H;'!T>'R`A(B,D\n#)28G\n";
+        for (lines, line_break) in [(&spaces[..], &b"\r\n"[..]), (backticks, b"\n")] {
+            let encoded = [
+                &b"begin 644 data.bin"[..],
+                line_break,
+                &lines
+                    .split(|&byte| byte == b'\n')
+                    .collect::<Vec<_>>()
+                    .join(line_break),
+                b"`",
+                line_break,
+                b"end",
+                line_break,
+            ]
+            .concat();
+            assert_eq!(uudecode(&encoded).unwrap(), data);
+        }
+        assert_eq!(
+            uudecode(b"begin 644 x\n$\nend\n").unwrap(),
+            b"\0\0\0\0",
+            "the spaces of a line stripped in transport are zeros"
+        );
+        assert_eq!(
+            uudecode(b"some text\nbegin here we go\nbegin 600 x\n\n#0V%T\n\nend \nmore text\n")
+                .unwrap(),
+            b"Cat",
+            "before begin, empty lines, after end"
+        );
+        assert_eq!(
+            uudecode(b"begin 644 x\r\n#0V%T\r\n").unwrap(),
+            b"Cat",
+            "no end"
+        );
+        assert_eq!(uudecode(b"#0V%T\nend\n"), None, "no begin");
+    }
+
+    #[test]
+    fn uuencode_goes_by_several_names() {
+        for name in ["x-uuencode", "X-UUENCODE", "uuencode", "x-uue", "uue"] {
+            let bytes =
+                format!("Content-Transfer-Encoding: {name}\r\n\r\nbegin 644 x\r\n#0V%T\r\nend\r\n");
+            assert_eq!(
+                parse(bytes.as_bytes()).decoded(bytes.as_bytes()).as_ref(),
+                b"Cat",
+                "{name}"
+            );
+        }
+        let bytes = b"Content-Transfer-Encoding: x-uuencode\r\n\r\nno begin line\r\n";
+        assert_eq!(
+            parse(bytes).decoded(bytes).as_ref(),
+            b"no begin line\r\n",
+            "without data the body stays as it is"
+        );
     }
 
     // The tests below pin what this module takes from mail-parser. One that

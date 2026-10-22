@@ -5,6 +5,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary-extract-mail` decodes uuencoded attachments.** Older mail programs sent attachments
+  with `Content-Transfer-Encoding: x-uuencode`, and they were written out still encoded
+
 ### Fixed
 
 - **`ossuary-extract-mail` keeps a damaged part of a mail from affecting the others.** A part now
