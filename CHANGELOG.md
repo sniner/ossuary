@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-10-22
+
 ### Added
 
 - **`ossuary-extract-mail` decodes uuencoded attachments.** Older mail programs sent attachments
