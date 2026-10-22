@@ -26,6 +26,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary-extract-mail` extracts attachments whose name starts on a continuation line.** Exchange
   folds a long file name after `name=` or `filename=`, and such an attachment was not extracted. A
   boundary folded the same way left its multipart unsplit
+- **`ossuary extract mail` examines attached messages of type message/global.** Such a message,
+  for example the returned message in a bounce from Gmail, was extracted but never examined, so
+  its headers and attachments were missing
 
 ## [0.12.4] - 2026-10-22
 

@@ -89,12 +89,14 @@ these rules:
 
 ## Supported types
 
-`message/rfc822` and `text/plain`. `text/plain` is included because
-ingest cannot distinguish a message from other text, so every text
-file is examined once. A file counts as a message if it starts with a
-header section of well-formed fields that contains at least two
-different header names used only in mail. One is not enough, since any text can
-have a line starting with `Date:`.
+`message/rfc822`, `message/global` and `text/plain`. `message/global`
+is a message whose header may contain UTF-8 (RFC 6532); Gmail, for
+example, returns an undeliverable message this way. `text/plain` is
+included because ingest cannot distinguish a message from other text,
+so every text file is examined once. A file counts as a message if it
+starts with a header section of well-formed fields that contains at
+least two different header names used only in mail. One is not enough,
+since any text can have a line starting with `Date:`.
 
 * **Not a message**: an empty result. The file gets its receipt and is
   not offered again.

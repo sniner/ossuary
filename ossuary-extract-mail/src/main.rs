@@ -2,8 +2,8 @@
 //! what it carries handed over as files of their own.
 //!
 //! Speaks the ossuary extractor protocol (`docs/extractors.md`): called
-//! with `--identify` it says who it is, that it reads `message/rfc822`
-//! and `text/plain`, and that it derives files; called with an output
+//! with `--identify` it says who it is, that it reads `message/rfc822`,
+//! `message/global` and `text/plain`, and that it derives files; called with an output
 //! directory as its argument it reads one file's bytes from stdin and
 //! answers with findings on stdout — the message's own words about
 //! itself, verbatim under `mail:` — while the attachments and nested
@@ -56,15 +56,7 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
         Some("--identify") => {
-            println!(
-                "{}",
-                json!({
-                    "ossuary-extractor": 1,
-                    "source": format!("extractor:mail/{GENERATION}"),
-                    "mimes": ["message/rfc822", "text/plain"],
-                    "derives": true,
-                })
-            );
+            println!("{}", identity());
             ExitCode::SUCCESS
         }
         Some(directory) if arguments.len() == 1 && !directory.starts_with('-') => {
@@ -77,6 +69,17 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The answer to `--identify`. The types include every type a message
+/// extracted here can have, so `ossuary extract` examines it in turn.
+fn identity() -> serde_json::Value {
+    json!({
+        "ossuary-extractor": 1,
+        "source": format!("extractor:mail/{GENERATION}"),
+        "mimes": ["message/rfc822", "message/global", "text/plain"],
+        "derives": true,
+    })
 }
 
 /// One file: stdin to its end, then the harvest — carried files into the
@@ -1054,5 +1057,36 @@ mod tests {
             let dir = TempDir::new().unwrap();
             harvest(&bytes, dir.path()).unwrap();
         }
+    }
+
+    #[test]
+    fn every_message_written_is_a_type_this_extractor_reads() {
+        let mail = b"From: a@example.org\r\n\
+            To: b@example.org\r\n\
+            Content-Type: multipart/mixed; boundary=cut\r\n\
+            \r\n\
+            --cut\r\n\
+            Content-Type: message/rfc822\r\n\
+            \r\n\
+            From: c@example.org\r\nSubject: one\r\n\r\nbody\r\n\
+            --cut\r\n\
+            Content-Type: message/global\r\n\
+            Content-Transfer-Encoding: quoted-printable\r\n\
+            \r\n\
+            From: d@example.org\r\nSubject: =C3=BCber\r\n\r\nbody\r\n\
+            --cut--\r\n";
+        let dir = TempDir::new().unwrap();
+        let lines = harvest(mail, dir.path()).unwrap();
+        let read = identity()["mimes"].as_array().unwrap().clone();
+
+        let written: Vec<_> = lines.iter().filter_map(|line| line.get("mime")).collect();
+        assert_eq!(written, ["message/rfc822", "message/global"]);
+        for mime in written {
+            assert!(read.contains(mime), "{mime} is written but not read");
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("message-2.eml")).unwrap(),
+            "From: d@example.org\r\nSubject: \u{fc}ber\r\n\r\nbody".as_bytes()
+        );
     }
 }
