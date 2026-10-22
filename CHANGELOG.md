@@ -5,6 +5,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ossuary-extract-mail` writes text attachments byte for byte.** A text attachment (plain text,
+  CSV, HTML, XML) was written in UTF-8 instead of its own charset, and bytes the charset did not
+  cover were replaced with U+FFFD, so the extracted file was not the one that was attached. Run
+  `ossuary extract mail --full` to extract them again
+
 ## [0.12.3] - 2026-10-21
 
 ### Added

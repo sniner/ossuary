@@ -33,13 +33,14 @@
 //! U+FFFD rather than silencing its whole header. Only failing to read
 //! stdin or to write a carried file is a failure.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
 use mail_parser::parsers::MessageStream;
-use mail_parser::{HeaderValue, MessageParser, MessagePart, MimeHeaders as _};
+use mail_parser::{Encoding, HeaderValue, MessageParser, MessagePart, MimeHeaders as _};
 use serde_json::json;
 
 /// The generation of what this extractor writes: the number in its
@@ -162,7 +163,7 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| fallback.to_string());
         let announced = uniquify(wearable, &mut taken);
-        std::fs::write(directory.join(&announced), part.contents()).map_err(|error| {
+        std::fs::write(directory.join(&announced), carried(bytes, part)).map_err(|error| {
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
         lines.push(json!({ "file": &announced, "mime": kind(part) }));
@@ -186,6 +187,40 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
         }
     }
     Ok(lines)
+}
+
+/// The bytes of a part as they were attached, with only the transfer
+/// encoding undone.
+///
+/// mail-parser keeps a text part as a `String` converted from the part's
+/// charset, and `contents()` returns that string as UTF-8: a windows-1252
+/// CSV would come out as UTF-8, and a byte outside the charset as U+FFFD.
+/// So every part is cut out of the raw message again and decoded here. A
+/// nested message is the exception: for a 7bit or 8bit part, `contents()`
+/// is already a slice of the raw message.
+fn carried<'x>(bytes: &'x [u8], part: &'x MessagePart) -> Cow<'x, [u8]> {
+    if part.is_message() {
+        return Cow::Borrowed(part.contents());
+    }
+    let raw = bytes
+        .get(part.raw_body_offset() as usize..part.raw_end_offset() as usize)
+        .unwrap_or_default();
+    match part.encoding {
+        Encoding::None => Cow::Borrowed(raw),
+        Encoding::Base64 => MessageStream::new(raw).decode_base64_mime(b"").1,
+        Encoding::QuotedPrintable => {
+            // The line break before a delimiter belongs to the delimiter, so
+            // the last line has none, and the decoder would keep its trailing
+            // whitespace. RFC 2045 (6.7, rule 3) says to drop it.
+            let end = raw
+                .iter()
+                .rposition(|&byte| byte != b' ' && byte != b'\t')
+                .map_or(0, |last| last + 1);
+            MessageStream::new(&raw[..end])
+                .decode_quoted_printable_mime(b"")
+                .1
+        }
+    }
 }
 
 /// The headers this extractor repeats: the message's own voice — who
@@ -685,6 +720,104 @@ mod tests {
             std::fs::read_dir(dir.path()).unwrap().count(),
             1,
             "the unnamed body stays inside the mail"
+        );
+    }
+
+    #[test]
+    fn text_attachments_keep_their_charset_and_bytes() {
+        let dir = TempDir::new().unwrap();
+        let mail = b"From: alice@example.com\r\n\
+            To: bob@example.org\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"cut\"\r\n\
+            \r\n\
+            --cut\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            Body.\r\n\
+            --cut\r\n\
+            Content-Type: text/csv; charset=windows-1252\r\n\
+            Content-Disposition: attachment; filename=\"list.csv\"\r\n\
+            Content-Transfer-Encoding: 8bit\r\n\
+            \r\n\
+            M\xfcller;\x80 12\r\n\
+            --cut\r\n\
+            Content-Type: text/plain\r\n\
+            Content-Disposition: attachment; filename=\"raw.txt\"\r\n\
+            Content-Transfer-Encoding: 8bit\r\n\
+            \r\n\
+            G\xfcnter\r\n\
+            --cut\r\n\
+            Content-Type: text/plain; charset=iso-8859-1\r\n\
+            Content-Disposition: attachment; filename=\"qp.txt\"\r\n\
+            Content-Transfer-Encoding: quoted-printable\r\n\
+            \r\n\
+            Gr=FC=DFe =\r\n\
+            aus M=FCnchen\r\n\
+            last line   \r\n\
+            --cut\r\n\
+            Content-Type: text/html; charset=iso-8859-1\r\n\
+            Content-Disposition: attachment; filename=\"page.html\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            PHA+5DwvcD4NCg==\r\n\
+            --cut--\r\n";
+
+        harvest(mail, dir.path()).unwrap();
+
+        let read = |name: &str| std::fs::read(dir.path().join(name)).unwrap();
+        assert_eq!(
+            read("list.csv"),
+            b"M\xfcller;\x80 12",
+            "windows-1252, not UTF-8"
+        );
+        assert_eq!(read("raw.txt"), b"G\xfcnter", "no charset, no U+FFFD");
+        assert_eq!(
+            read("qp.txt"),
+            b"Gr\xfc\xdfe aus M\xfcnchen\r\nlast line",
+            "quoted-printable decoded, trailing whitespace of the last line dropped"
+        );
+        assert_eq!(read("page.html"), b"<p>\xe4</p>\r\n");
+    }
+
+    #[test]
+    fn a_nested_message_is_written_byte_for_byte() {
+        let dir = TempDir::new().unwrap();
+        // Python's email package rewrites these headers when it writes a
+        // parsed message back: the 8-bit Subject, the Message-ID without its
+        // closing bracket, the folded ARC-Seal.
+        let inner = b"From: carol@example.org\r\n\
+            To: alice@example.com\r\n\
+            Subject: Gr\xfc\xdfe aus M\xfcnchen\r\n\
+            Message-ID: <no closing bracket@example.org\r\n\
+            ARC-Seal: i=1; a=rsa-sha256; d=example.org; cv=none;\r\n b=abc+def/ghi==\r\n\
+            Date: Wed, 3 Sep 2026 09:00:00 +0200\r\n\
+            \r\n\
+            The original.  \r\n";
+        let mail = [
+            &b"From: journal@example.com\r\n\
+                To: archive@example.org\r\n\
+                MIME-Version: 1.0\r\n\
+                Content-Type: multipart/mixed; boundary=\"cut\"\r\n\
+                \r\n\
+                --cut\r\n\
+                Content-Type: text/plain\r\n\
+                \r\n\
+                Report.\r\n\
+                --cut\r\n\
+                Content-Type: message/rfc822\r\n\
+                \r\n"[..],
+            inner,
+            b"\r\n--cut--\r\n",
+        ]
+        .concat();
+
+        harvest(&mail, dir.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.path().join("message.eml")).unwrap(),
+            inner,
+            "everything between the part's header and the line break before the delimiter"
         );
     }
 
