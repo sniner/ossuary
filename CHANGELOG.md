@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-26
+
 ### Added
 
 - **`ossuary seal` prints an id for everything the archive holds.** It checks every sealed segment
