@@ -16,6 +16,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   segment was found only through the segment it stands before; the open segment now names it as
   well, so that the latest segment leads to every segment of the archive, the pieces before a
   break included. When the open segment is missing too, the break in front of it is mended first
+- **`ossuary seal` seals an open segment without claims when it follows several segments.** After
+  a merge, or after a mend, one sealed segment then names every segment before it
+- **`ossuary merge` changes nothing when the other archive has nothing new.** Merged again, an
+  archive whose record already includes the other archive's last segment is left as it is
 
 ## [0.12.6] - 2026-10-22
 

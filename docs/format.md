@@ -263,7 +263,9 @@ segment. When the segments of a second archive are stored in the
 claims store of a first, unchanged, and the head names the last segment
 of each, `"previous": ["a2…", "b3…"]`, the record has two lines that
 meet at that head, and at the segment the head becomes when it is
-sealed. A reader that walks back from the head over every name in
+sealed. A head that names several segments is sealed even when it holds
+no claims, so that one segment names them all; such a segment has a
+header and nothing after it. A reader that walks back from the head over every name in
 every `previous` reaches every segment of both lines. A first segment
 the walk reaches began a line. A first segment the walk does not reach
 is where a lost head was begun anew, as before. A line can be merged in

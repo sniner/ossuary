@@ -184,8 +184,8 @@ impl Segment {
 
     /// When the segment's first claim was recorded — its place in the log.
     ///
-    /// `None` for a segment of no claims at all, which this crate never
-    /// seals but a reader must not choke on.
+    /// `None` for a segment of no claims at all: a mend, or a head sealed
+    /// only to name several segments.
     #[must_use]
     pub fn first_claim_at(&self) -> Option<&Timestamp> {
         self.first.as_ref()
@@ -408,13 +408,16 @@ impl Log {
     /// Seal the open segment: its bytes go into the store verbatim, and a
     /// fresh head takes its place, naming the segment just sealed.
     ///
-    /// `None` when there is nothing to seal — no head, an empty file, or a
-    /// head of no claims. The whole head is validated first, so nothing
+    /// `None` when there is nothing to seal: no head, an empty file, or a
+    /// head of no claims that names one segment or none. A head of no
+    /// claims that names several segments is sealed, so that one segment
+    /// names them all. The whole head is validated first, so nothing
     /// broken is ever immured; and because the store is content-addressed,
     /// a run that was interrupted between storing and starting the fresh
-    /// head simply seals the same bytes again as a no-op. With a manifest drawer, the fresh
-    /// segment's manifest is filed in passing — best effort, and never a
-    /// reason for a seal that succeeded to say otherwise.
+    /// head simply seals the same bytes again as a no-op. With a manifest
+    /// drawer, the fresh segment's manifest is filed in passing, best
+    /// effort, and never a reason for a seal that succeeded to say
+    /// otherwise.
     ///
     /// # Errors
     ///
@@ -432,10 +435,11 @@ impl Log {
                 });
             }
         };
-        let claims = parse_segment(&text)?.into_claims();
-        if claims.is_empty() {
+        let contents = parse_segment(&text)?;
+        if contents.claims.is_empty() && contents.previous.len() < 2 {
             return Ok(None);
         }
+        let claims = contents.into_claims();
         let (_, entry) = self.store.add(text.as_bytes())?;
 
         // The fresh head goes in over the old one by rename, so the head is
@@ -944,6 +948,30 @@ mod tests {
             std::slice::from_ref(sealed.digest()),
             "and the fresh head names the one segment just sealed"
         );
+    }
+
+    #[test]
+    fn a_head_of_no_claims_is_sealed_when_it_names_several_segments() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("own", "2026-09-01T00:00:00Z")).unwrap();
+        let own = log.seal().unwrap().unwrap();
+        assert_eq!(log.seal().unwrap(), None, "naming one, it waits");
+        let merged = Digest::parse(&"cd".repeat(32)).unwrap();
+        log.head_follows(&[own.digest().clone(), merged.clone()])
+            .unwrap();
+
+        let sealed = log.seal().unwrap().expect("sealed without claims");
+
+        let contents = log.contents(sealed.digest()).unwrap();
+        assert_eq!(contents.previous(), [own.digest().clone(), merged]);
+        assert!(contents.claims().is_empty());
+        assert_eq!(sealed.first_claim_at(), None);
+        assert_eq!(
+            log.head_contents().unwrap().previous(),
+            std::slice::from_ref(sealed.digest())
+        );
+        assert_eq!(log.seal().unwrap(), None, "and then waits again");
     }
 
     #[test]

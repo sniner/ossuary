@@ -451,21 +451,23 @@ pub fn join(ours: &Archive, theirs: &Archive) -> Result<Join> {
     if !ours.log().store().contains(&last_theirs)? {
         return Err(Error::SegmentMissing(last_theirs.to_string()));
     }
-    let sealed = ours.log().seal()?.map(|segment| segment.digest().clone());
-    let mut names = ours.log().head_contents()?.previous().to_vec();
-    if names.contains(&last_theirs) {
+    // Merged before and nothing new there: this archive's record already
+    // leads to the other one's last segment, and is left as it is.
+    let named = ours.log().head_contents()?.previous().to_vec();
+    if reached(ours.log(), &named)?.contains(&last_theirs) {
         return Ok(Join {
-            sealed,
+            sealed: None,
             sealed_theirs,
-            names,
+            names: named,
             changed: false,
         });
     }
-    // An open segment without claims is not sealed, so after a merge
-    // without new claims here it still names the other archive's last
-    // segment of that time. The new last segment follows it, and a
-    // name the walk back from the new one reaches is not needed twice.
-    let behind = behind(theirs, &last_theirs)?;
+    let sealed = ours.log().seal()?.map(|segment| segment.digest().clone());
+    let mut names = ours.log().head_contents()?.previous().to_vec();
+    // A name the walk back from the new last segment reaches is not
+    // needed twice.
+    let mut behind = reached(theirs.log(), std::slice::from_ref(&last_theirs))?;
+    behind.remove(&last_theirs);
     names.retain(|name| !behind.contains(name));
     names.push(last_theirs);
     ours.log().head_follows(&names)?;
@@ -477,13 +479,12 @@ pub fn join(ours: &Archive, theirs: &Archive) -> Result<Join> {
     })
 }
 
-/// Every segment the walk back from `from` reaches in the other
-/// archive's log, `from` itself left out. A name that is not held
-/// ends that branch of the walk.
-fn behind(theirs: &Archive, from: &Digest) -> Result<BTreeSet<Digest>> {
-    let log = theirs.log();
-    let mut seen = BTreeSet::new();
-    let mut pending = vec![from.clone()];
+/// Every segment the walk back from `from` over `previous` reaches in
+/// `log`, `from` included. A name that is not held ends that branch of
+/// the walk.
+fn reached(log: &Log, from: &[Digest]) -> Result<BTreeSet<Digest>> {
+    let mut seen: BTreeSet<Digest> = from.iter().cloned().collect();
+    let mut pending = from.to_vec();
     while let Some(digest) = pending.pop() {
         let previous = match log.contents(&digest) {
             Ok(contents) => contents.previous().to_vec(),
@@ -727,9 +728,16 @@ mod tests {
 
         let (_, _, second) = merge(&ours, &theirs);
 
-        assert!(second.sealed.is_none(), "nothing here to seal between");
+        let joined = second
+            .sealed
+            .expect("the first merge's open segment, sealed");
+        assert_eq!(
+            ours.log().contents(&joined).unwrap().previous(),
+            first.names,
+            "it names both lines as they were then"
+        );
         assert_eq!(second.names.len(), 2, "{:?}", second.names);
-        assert_eq!(second.names[0], first.names[0], "our line's last segment");
+        assert_eq!(second.names[0], joined);
         assert_ne!(second.names[1], first.names[1], "their new last segment");
         let report = audit(&ours);
         assert!(report.is_sound(), "{report:?}");
