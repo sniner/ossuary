@@ -23,7 +23,10 @@ its predecessor by that name, so the rewritten segment gets a new name,
 and every segment after it is rewritten to name it. The old files are
 removed from `claims/` after the new ones are written, and the query
 index in `cache/` is removed with them; the next command rebuilds it.
-Make a copy of the archive before running such a fix. An archive
+A seal id is the name of a segment, so every seal id given out for a
+renamed segment no longer checks; the fix says from when on, and
+`ossuary seal` gives the new id. Make a copy of the archive before
+running such a fix. An archive
 written by a version before the change is not read by the current
 version until the fix has run: every command stops at the first segment
 in the old form.

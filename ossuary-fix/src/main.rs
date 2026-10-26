@@ -127,12 +127,27 @@ fn main() -> ExitCode {
 /// say.
 fn run(cli: &Cli) -> Result<ExitCode> {
     let archive = open(&cli.archive)?;
-    let sentence = match cli.command {
-        Command::Origin => claims(cli, &archive, &fixes::origin::plan(archive.log())?)?,
-        Command::Packed => claims(cli, &archive, &fixes::packed::plan(archive.log())?)?,
-        Command::Previous => segments(cli, &archive, &fixes::previous::plan(&archive)?)?,
+    let (sentence, seals) = match cli.command {
+        Command::Origin => (
+            claims(cli, &archive, &fixes::origin::plan(archive.log())?)?,
+            None,
+        ),
+        Command::Packed => (
+            claims(cli, &archive, &fixes::packed::plan(archive.log())?)?,
+            None,
+        ),
+        Command::Previous => {
+            let rewrite = fixes::previous::plan(&archive)?;
+            (
+                segments(cli, &archive, &rewrite)?,
+                rewrite.seals(cli.dry_run),
+            )
+        }
     };
     println!("{sentence}");
+    if let Some(seals) = seals {
+        eprintln!("{seals}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 

@@ -92,6 +92,8 @@ struct Step {
     old: Digest,
     new: Digest,
     text: String,
+    /// The `time` of the segment's first claim, as written.
+    first: Option<String>,
 }
 
 /// The header as it is written: the known members first, in the order
@@ -202,6 +204,7 @@ impl Rewrite {
                     old: old.clone(),
                     new,
                     text,
+                    first: first_time(segment),
                 });
             }
         }
@@ -255,6 +258,36 @@ impl Rewrite {
         Ok(())
     }
 
+    /// What the rewrite does to seals given out for the archive, when
+    /// it renames sealed segments: a seal is a segment's name, and every
+    /// one renamed stops checking. The segments renamed are the first
+    /// one changed and every one after it, so the line names the time
+    /// of the earliest first claim among them.
+    #[must_use]
+    pub fn seals(&self, dry_run: bool) -> Option<String> {
+        if self.steps.is_empty() {
+            return None;
+        }
+        let since = self
+            .steps
+            .iter()
+            .filter_map(|step| step.first.as_deref())
+            .min();
+        let (which, checks) = match since {
+            Some(time) if self.unchanged > 0 => {
+                (format!("seal ids given out since {time}"), "check")
+            }
+            _ => ("every seal id given out so far".to_string(), "checks"),
+        };
+        if dry_run {
+            Some(format!("{which} would no longer check"))
+        } else {
+            Some(format!(
+                "{which} no longer {checks}; run `ossuary seal` and keep the new id in their place"
+            ))
+        }
+    }
+
     /// The one line the fix answers with.
     #[must_use]
     pub fn sentence(&self, dry_run: bool) -> String {
@@ -290,6 +323,14 @@ impl Rewrite {
         }
         sentence
     }
+}
+
+/// The `time` of a segment's first claim, read from the line as it
+/// stands; `None` for a segment without claims, or a line that does not
+/// say.
+fn first_time(segment: &Segment) -> Option<String> {
+    let line: Value = serde_json::from_str(segment.lines.first()?).ok()?;
+    line.get("time")?.as_str().map(str::to_string)
 }
 
 /// The names a segment's header refers to that are renamed with their
@@ -579,6 +620,45 @@ mod tests {
     }
 
     #[test]
+    fn a_rewrite_that_renames_no_segment_leaves_every_seal() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let first = claim(&archive, b"first", "2026-09-01T00:00:00Z");
+        archive.log().append(&first).unwrap();
+        archive.log().seal().unwrap().unwrap();
+
+        let plan = Rewrite::plan(&archive, WORDS, |_| Ok(())).unwrap();
+
+        assert!(!plan.changes());
+        assert_eq!(plan.seals(false), None);
+    }
+
+    #[test]
+    fn a_rewrite_of_every_segment_breaks_every_seal() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let first = old_segment(
+            &archive,
+            None,
+            &[claim(&archive, b"first", "2026-09-01T00:00:00Z")],
+        );
+        old_head(&archive, &first, &[]);
+
+        let plan = Rewrite::plan(&archive, WORDS, |segment| {
+            segment.lines.clear();
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            plan.seals(false).as_deref(),
+            Some(
+                "every seal id given out so far no longer checks; run `ossuary seal` and keep the new id in their place"
+            )
+        );
+    }
+
+    #[test]
     fn a_mend_follows_the_segment_it_stands_before() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
@@ -613,6 +693,11 @@ mod tests {
 
         let plan = Rewrite::plan(&archive, WORDS, |_| Ok(())).unwrap();
         assert_eq!(plan.steps.len(), 2, "the second and the mend");
+        assert_eq!(
+            plan.seals(true).as_deref(),
+            Some("seal ids given out since 2026-09-02T00:00:00Z would no longer check"),
+            "the first and the third keep their names"
+        );
         plan.apply(&archive).unwrap();
 
         let log = audit_log(archive.log()).unwrap();
