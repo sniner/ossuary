@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use ossuary_core::{Break, Cause, Fixity, Twin, Weeded};
+use ossuary_core::{Break, Cause, Error, Fixity, Twin, Weeded};
 
 use crate::{open, output, say};
 
@@ -98,7 +98,14 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
     let mut left_open = 0;
-    for (index, brk) in log.breaks.iter().enumerate() {
+    // The open segment names every mend, so the break in front of it,
+    // where it may be missing, is mended first.
+    let breaks = log
+        .breaks
+        .iter()
+        .filter(|brk| brk.before.is_none())
+        .chain(log.breaks.iter().filter(|brk| brk.before.is_some()));
+    for (index, brk) in breaks.enumerate() {
         println!("break {}: {}", index + 1, describe(brk));
         if !brk.sure {
             println!("  left open; the chain before this one cannot be determined");
@@ -116,19 +123,26 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
             println!("  would be mended; --dry-run, nothing written");
             continue;
         }
-        match ossuary_core::mend(archive.log(), brk)? {
-            Some(segment) if brk.before.is_none() => println!(
+        match ossuary_core::mend(archive.log(), brk) {
+            Ok(Some(segment)) if brk.before.is_none() => println!(
                 "  mended as {}; the open segment now follows the mend",
                 segment.digest()
             ),
-            Some(segment) => println!("  mended as {}", segment.digest()),
-            None => {
+            Ok(Some(segment)) => println!("  mended as {}", segment.digest()),
+            Ok(None) => {
                 // `mendable` said yes a moment ago; the archive did not
                 // change under this run's feet in a way that turns a
                 // break unmendable, but the report is honest either way.
                 println!("  left open; the break could not be mended");
                 left_open += 1;
             }
+            Err(Error::HeadLost(_)) => {
+                println!(
+                    "  left open; the open segment is missing, and the break in front of it is open above"
+                );
+                left_open += 1;
+            }
+            Err(error) => return Err(error.into()),
         }
     }
     if left_open > 0 {

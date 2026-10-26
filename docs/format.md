@@ -286,10 +286,15 @@ is placed in front of; that segment is sealed and cannot be changed to
 name the mend, so a reader finds the mend through this member instead.
 `replaces` names the lost segment, if its name is known: it is the
 segment that the segment after the break names as its `previous`. Both
-members of `mend` are optional. A mend without `before` is placed in
-front of the open head, which names the mend as its `previous` like any
-other segment; when that head is sealed, the resulting segment names
-the mend in the same way.
+members of `mend` are optional.
+
+The open head names every mend in its `previous`, so that the walk back
+from the head reaches the mend and, through it, the segments before the
+break. A mend with `before` is named after the segments the head names
+already. A mend without `before` stands in front of the open head: the
+head names it as the first element of `previous`, where it would
+otherwise name the segment it continues. When the head is sealed, the
+resulting segment names the mend in the same way.
 
 A reader builds the chain with mends applied: a segment whose
 `previous` is absent, or whose first name in `previous` is not in the

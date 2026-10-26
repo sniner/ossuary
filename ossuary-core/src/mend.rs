@@ -3,10 +3,14 @@
 //!
 //! The audit says where the chain is broken ([`Break`]); this closes one
 //! such break the way `docs/format.md` allows — a mend stored in front of
-//! the segment after the break, or named by the open head when the break
-//! stands in front of that. What was lost stays lost, and the record
-//! keeps saying so: the segment after the break still names what it
-//! named, and the mend says what it stands in for when that was known.
+//! the segment after the break, or in front of the open head when the
+//! break stands there. What was lost stays lost, and the record keeps
+//! saying so: the segment after the break still names what it named, and
+//! the mend says what it stands in for when that was known.
+//!
+//! Either way the open head names the mend. Nothing sealed can be made to
+//! name it, and every segment must be reachable from the head, the
+//! segments before the break through the mend.
 
 use immure::Digest;
 
@@ -14,22 +18,26 @@ use crate::audit::{Break, Cause};
 use crate::error::Result;
 use crate::log::{Log, Mend, Segment};
 
-/// Close one break: store the mend, and make the open head name it when
-/// the break stands in front of the head.
+/// Close one break: store the mend, and make the open head name it.
 ///
-/// `None` when the break cannot be mended — see [`Break::mendable`]:
-/// a mend stands in for what is gone, not for what is held and damaged,
-/// and only between ends that are surely the break's.
-/// Done twice, the same break yields the same mend, so a run interrupted
-/// between storing the mend and turning the head to it is finished by
-/// running again.
+/// For a break in front of the head, the mend takes the place of what
+/// the head named; for one in front of a sealed segment, the head names
+/// the mend after the segments it names already. `None` when the break
+/// cannot be mended (see [`Break::mendable`]): a mend stands in for what
+/// is gone, not for what is held and damaged, and only between ends that
+/// are surely the break's. Done twice, the same break yields the same
+/// mend, so a run interrupted between storing the mend and turning the
+/// head to it is finished by running again.
 ///
 /// # Errors
 ///
-/// [`Error::Store`](crate::Error::Store) storing the mend; for a break
-/// in front of the head, everything [`Log::head_follows`] can answer.
-/// A digest the audit reported that will not parse is a bug, not an
-/// archive state, and is reported as [`Error::SegmentHeader`](crate::Error::SegmentHeader).
+/// [`Error::HeadLost`](crate::Error::HeadLost) for a break in front of a
+/// sealed segment while the head is lost: the break in front of the head
+/// is mended first, and nothing is stored before. Otherwise
+/// [`Error::Store`](crate::Error::Store) storing the mend, and
+/// everything [`Log::head_follows`] can answer. A digest the audit
+/// reported that will not parse is a bug, not an archive state, and is
+/// reported as [`Error::SegmentHeader`](crate::Error::SegmentHeader).
 pub fn mend(log: &Log, brk: &Break) -> Result<Option<Segment>> {
     if !brk.mendable() {
         return Ok(None);
@@ -42,10 +50,28 @@ pub fn mend(log: &Log, brk: &Break) -> Result<Option<Segment>> {
         Cause::SegmentLost(name) => Some(digest(name)?),
         Cause::HeadLost | Cause::SegmentUnreadable(_) => None,
     };
-    let segment = log.mend(&previous, &Mend::new(before.clone(), replaces))?;
-    if before.is_none() {
-        log.head_follows(std::slice::from_ref(segment.digest()))?;
+    // A head begun here would name this mend alone, and the break in
+    // front of the head would no longer show.
+    if before.is_some() {
+        log.writable()?;
     }
+    let named = log.head_contents()?.previous().to_vec();
+    let segment = log.mend(&previous, &Mend::new(before.clone(), replaces))?;
+    let names = if before.is_some() {
+        if named.contains(segment.digest()) {
+            return Ok(Some(segment));
+        }
+        let mut names = named;
+        names.push(segment.digest().clone());
+        names
+    } else {
+        // The head's first name is the end the break stands after, lost
+        // or never written; a line merged in after it stays named.
+        std::iter::once(segment.digest().clone())
+            .chain(named.into_iter().skip(1))
+            .collect()
+    };
+    log.head_follows(&names)?;
     Ok(Some(segment))
 }
 
@@ -64,9 +90,9 @@ mod tests {
         Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap()
     }
 
-    fn take(archive: &Archive, bytes: &[u8], at: &str) {
+    fn held(archive: &Archive, bytes: &[u8], at: &str) -> Claim {
         let (_, entry) = archive.content().add(bytes).unwrap();
-        let claim = Claim::assert(
+        Claim::assert(
             Subject::parse(entry.digest().as_str()).unwrap(),
             Attribute::parse("file:size").unwrap(),
             json!(bytes.len()),
@@ -74,8 +100,26 @@ mod tests {
             Source::parse("test").unwrap(),
             crate::claim::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
-        .unwrap();
-        archive.log().append(&claim).unwrap();
+        .unwrap()
+    }
+
+    fn take(archive: &Archive, bytes: &[u8], at: &str) {
+        archive.log().append(&held(archive, bytes, at)).unwrap();
+    }
+
+    /// A first segment of a line of its own, as a merge brings it in.
+    fn line(archive: &Archive, bytes: &[u8], at: &str) -> Digest {
+        let text = format!(
+            "{{\"ossuary-segment\":1}}\n{}\n",
+            held(archive, bytes, at).to_line()
+        );
+        let (_, entry) = archive.log().store().add(text.as_bytes()).unwrap();
+        entry.digest().clone()
+    }
+
+    fn lose(archive: &Archive, segment: &Digest) {
+        let path = archive.log().store().find(segment).unwrap().unwrap();
+        std::fs::remove_file(path).unwrap();
     }
 
     fn run(archive: &Archive) -> Audit {
@@ -123,13 +167,13 @@ mod tests {
         );
         assert_eq!(
             archive.log().head_contents().unwrap().previous(),
-            std::slice::from_ref(anew.digest()),
-            "the head was not touched"
+            [anew.digest().clone(), mended.digest().clone()],
+            "the head names the mend after the segment it follows"
         );
         assert_eq!(
             archive.log().contents(anew.digest()).unwrap().previous(),
             &[] as &[Digest],
-            "nor the segment after the break"
+            "the segment after the break is not touched"
         );
         assert_eq!(
             archive.log().contents(mended.digest()).unwrap().previous(),
@@ -222,6 +266,86 @@ mod tests {
         let after = run(&archive);
         assert!(after.is_sound());
         assert!(after.log.predecessor_missing.is_empty());
+    }
+
+    #[test]
+    fn a_mend_in_front_of_a_sealed_segment_is_named_once() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second", "2026-09-02T00:00:00Z");
+        let second = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"third", "2026-09-03T00:00:00Z");
+        let third = archive.log().seal().unwrap().unwrap();
+        lose(&archive, second.digest());
+        let brk = run(&archive).log.breaks.remove(0);
+
+        let once = mend(archive.log(), &brk).unwrap().unwrap();
+        let twice = mend(archive.log(), &brk).unwrap().unwrap();
+
+        assert_eq!(once, twice);
+        assert_eq!(
+            archive.log().head_contents().unwrap().previous(),
+            [third.digest().clone(), once.digest().clone()]
+        );
+    }
+
+    #[test]
+    fn a_mend_in_front_of_a_sealed_segment_waits_for_a_lost_head() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second", "2026-09-02T00:00:00Z");
+        let second = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"third", "2026-09-03T00:00:00Z");
+        archive.log().seal().unwrap().unwrap();
+        lose(&archive, second.digest());
+        std::fs::remove_file(archive.root().join("head.jsonl")).unwrap();
+        let breaks = run(&archive).log.breaks;
+        assert_eq!(breaks.len(), 2);
+        assert!(breaks[0].before.is_some());
+
+        assert!(matches!(
+            mend(archive.log(), &breaks[0]),
+            Err(crate::Error::HeadLost(_))
+        ));
+        assert_eq!(run(&archive).log.segments, 2, "nothing was stored");
+
+        mend(archive.log(), &breaks[1]).unwrap().unwrap();
+        let named = mend(archive.log(), &breaks[0]).unwrap().unwrap();
+        assert_eq!(
+            archive.log().head_contents().unwrap().previous()[1],
+            *named.digest()
+        );
+        assert!(run(&archive).is_sound());
+    }
+
+    #[test]
+    fn a_line_merged_in_stays_named_when_the_head_is_mended() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        archive.log().seal().unwrap().unwrap();
+        let merged = line(&archive, b"merged", "2026-08-01T00:00:00Z");
+        take(&archive, b"second", "2026-09-02T00:00:00Z");
+        let second = archive.log().seal().unwrap().unwrap();
+        archive
+            .log()
+            .head_follows(&[second.digest().clone(), merged.clone()])
+            .unwrap();
+        lose(&archive, second.digest());
+        let brk = run(&archive).log.breaks.remove(0);
+        assert_eq!(brk.before, None);
+
+        let mended = mend(archive.log(), &brk).unwrap().unwrap();
+
+        assert_eq!(
+            archive.log().head_contents().unwrap().previous(),
+            [mended.digest().clone(), merged]
+        );
+        assert!(run(&archive).is_sound());
     }
 
     #[test]

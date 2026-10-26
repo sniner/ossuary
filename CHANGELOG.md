@@ -12,6 +12,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ossuary mailvault` stop before they read anything. Before, a new open segment was started, and
   the record split into two chains. `ossuary maintain mend` records the loss and starts a new open
   segment; the lost claims can then be recorded again
+- **`ossuary maintain mend` makes the open segment name every mend.** A mend in front of a sealed
+  segment was found only through the segment it stands before; the open segment now names it as
+  well, so that the latest segment leads to every segment of the archive, the pieces before a
+  break included. When the open segment is missing too, the break in front of it is mended first
 
 ## [0.12.6] - 2026-10-22
 
