@@ -277,10 +277,10 @@ by rewriting one. A mend is a segment without claims whose header names
 the two ends it joins:
 
 ```json
-{"ossuary-segment": 1, "previous": "3c1e…", "mend": {"before": "9b07…", "replaces": "5d2a…"}}
+{"ossuary-segment": 1, "previous": ["3c1e…"], "mend": {"before": "9b07…", "replaces": "5d2a…"}}
 ```
 
-`previous` is the last segment before the break, as in any header.
+`previous` names the last segment before the break, as in any header.
 `mend` marks the segment as a mend. `before` names the segment the mend
 is placed in front of; that segment is sealed and cannot be changed to
 name the mend, so a reader finds the mend through this member instead.
