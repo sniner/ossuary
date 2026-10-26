@@ -59,7 +59,10 @@ pub(crate) fn seal(
                     eprintln!("nothing recorded since the last seal; the id is the same as then");
                 }
                 eprintln!("{}", covers(&seal));
-                eprintln!("keep this id outside the archive; `ossuary seal --check ID` checks it");
+                eprintln!(
+                    "the id is the {} hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it",
+                    seal.algorithm.name()
+                );
             }
             if json {
                 let line = serde_json::json!({
@@ -68,7 +71,7 @@ pub(crate) fn seal(
                 });
                 println!("{line}");
             } else {
-                println!("{}:{}", seal.algorithm.name(), seal.segment);
+                println!("{}", seal.segment);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -93,8 +96,7 @@ fn rehearsal(seal: &Seal) -> String {
         )
     } else {
         format!(
-            "nothing recorded since the last seal, {}:{}; {}; --dry-run, nothing written",
-            seal.algorithm.name(),
+            "nothing recorded since the last seal, {}; {}; --dry-run, nothing written",
             seal.segment,
             covers(seal)
         )
@@ -112,7 +114,7 @@ pub(crate) fn check(
 ) -> Result<ExitCode> {
     let archive = open(root)?;
     let segment = ossuary_core::parse_id(&archive, given)?;
-    let id = format!("{}:{segment}", archive.log().store().algorithm().name());
+    let id = segment.as_str();
     if !quiet {
         eprintln!("archive {}", archive.root().display());
         eprintln!("step 1 of 3: the sealed segments, each one checked against its hash");
@@ -151,7 +153,7 @@ pub(crate) fn check(
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     if render(&mut out, &checked, verbose)? {
-        say(&mut out, &verdict(&id, &checked))?;
+        say(&mut out, &verdict(id, &checked))?;
     }
     if checked.holds() {
         Ok(ExitCode::SUCCESS)

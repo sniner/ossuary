@@ -8,12 +8,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`ossuary seal` prints an id for everything the archive holds.** It checks every sealed segment
-  and the chain they form, closes the open segment, and prints the id of the last sealed segment,
-  such as `sha256:1bbb…`, as the only line on stdout (`--json` prints the algorithm and the hash as
-  two members). The id covers every claim recorded up to it and every file they refer to. Kept
-  outside the archive, it shows later whether the archive still holds all of that, unchanged. Run
-  again with nothing recorded in between, `seal` prints the same id. No seal is made while the
-  chain has a finding. `--dry-run` shows what the seal would cover
+  and the chain they form, closes the open segment, and prints the hash of the last sealed segment
+  as the id, the only line on stdout (`--json` prints the algorithm and the hash as two members).
+  The id covers every claim recorded up to it and every file they refer to. Kept outside the
+  archive, it shows later whether the archive still holds all of that, unchanged. Run again with
+  nothing recorded in between, `seal` prints the same id. No seal is made while the chain has a
+  finding. `--dry-run` shows what the seal would cover
 - **`ossuary seal --check ID` checks a seal.** Every sealed segment the id covers must be present
   and match its hash, every file their claims refer to must be present and match its hash, and the
   open segment must still lead to the seal. `--fast` only looks for each file instead of reading

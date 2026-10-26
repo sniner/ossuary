@@ -103,49 +103,31 @@ pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
     }))
 }
 
-/// The segment a seal id names, read the way `ossuary seal` prints it:
-/// the algorithm, a colon and the whole hash; or the hash alone, as
-/// `audit` and every other command show a segment.
+/// The segment a seal id names: the whole hash in hex, as `ossuary
+/// seal` prints it and every other command shows a segment. The
+/// algorithm is the archive's own.
 ///
 /// # Errors
 ///
-/// [`Error::SealId`] for anything but a whole hash in hex of a known
-/// algorithm, and [`Error::SealAlgorithm`] for one in another hash than
-/// the archive's.
+/// [`Error::SealId`] for anything but a whole hash in hex.
 pub fn parse_id(archive: &Archive, given: &str) -> Result<Digest> {
-    let ours = archive.log().store().algorithm();
+    let algorithm = archive.log().store().algorithm();
     let refuse = |trouble: String| Error::SealId {
         given: given.to_string(),
         trouble,
     };
-    let (theirs, hex) = match given.split_once(':') {
-        Some((name, hex)) => {
-            let theirs: Algorithm = name
-                .parse()
-                .map_err(|_| refuse(format!("{name:?} is not a hash algorithm")))?;
-            (theirs, hex)
-        }
-        None => (ours, given),
-    };
-    if theirs != ours {
-        return Err(Error::SealAlgorithm {
-            given: given.to_string(),
-            ours: ours.name().to_string(),
-            theirs: theirs.name().to_string(),
-        });
-    }
-    let whole = ours.hash(b"").as_str().len();
-    if hex.is_empty() || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if given.is_empty() || !given.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(refuse("not a hash in hex".to_string()));
     }
-    if hex.len() != whole {
+    let whole = algorithm.hash(b"").as_str().len();
+    if given.len() != whole {
         return Err(refuse(format!(
             "{} hex characters where a whole {} hash has {whole}; the beginning of an id proves nothing, as a forged seal can be made to start the same way",
-            hex.len(),
-            ours.name()
+            given.len(),
+            algorithm.name()
         )));
     }
-    Digest::parse(hex).map_err(|_| refuse("not a hash in hex".to_string()))
+    Digest::parse(given).map_err(|_| refuse("not a hash in hex".to_string()))
 }
 
 /// The sealed segments a seal covers, read back: every segment the walk
@@ -622,17 +604,11 @@ mod tests {
     }
 
     #[test]
-    fn an_id_is_read_with_its_algorithm_or_without() {
+    fn an_id_is_read_as_the_whole_hash() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         let hex = "ab".repeat(32);
 
-        assert_eq!(
-            parse_id(&archive, &format!("sha256:{hex}"))
-                .unwrap()
-                .as_str(),
-            hex
-        );
         assert_eq!(parse_id(&archive, &hex).unwrap().as_str(), hex);
         assert_eq!(
             parse_id(&archive, &hex.to_uppercase()).unwrap().as_str(),
@@ -646,16 +622,18 @@ mod tests {
         let archive = archive(&dir);
         let hex = "ab".repeat(32);
 
-        for given in [&hex[..12], "sha256:", "not hex", &format!("md5:{hex}")] {
+        for given in [
+            &hex[..12],
+            "",
+            "not hex",
+            &format!("sha256:{hex}"),
+            &format!("{hex}ab"),
+        ] {
             assert!(
                 matches!(parse_id(&archive, given), Err(Error::SealId { .. })),
                 "{given}"
             );
         }
-        assert!(matches!(
-            parse_id(&archive, &format!("blake3:{hex}")),
-            Err(Error::SealAlgorithm { .. })
-        ));
     }
 
     #[test]

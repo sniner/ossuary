@@ -326,16 +326,10 @@ claims of those segments refer to. With every segment reached from the
 head, the digest of the last sealed segment therefore covers everything
 the archive held when that segment was sealed. Such a digest is a seal.
 
-A seal is written as the algorithm, a colon and the digest:
-
-```
-sha256:1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
-```
-
-The algorithm is there because the seal is kept outside the archive,
-where `FORMAT` is not beside it; `sha256` and `blake3` digests have the
-same length. Inside the archive no name carries it. A checker accepts
-the digest alone as well, and takes the algorithm from `FORMAT`.
+A seal is written like every name in the archive, as the digest in
+bare hex, full length; the algorithm is the one `FORMAT` names. A seal
+checked against an archive with another algorithm names no segment
+there, and does not hold.
 
 A seal is checked against an archive by walking back from its segment:
 

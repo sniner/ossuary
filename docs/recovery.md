@@ -297,8 +297,7 @@ seal, checks every segment it reaches and every file their claims refer
 to against its name, and lists what is missing or damaged:
 
 ```bash
-id=sha256:1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
-seal=${id#sha256:}
+seal=1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 out=~/seal-check
 mkdir -p "$out"
 : > "$out/reached"; : > "$out/missing"; : > "$out/replaced"; : > "$out/files"

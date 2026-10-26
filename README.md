@@ -395,8 +395,8 @@ archive /home/john/archive
 checking every sealed segment against its hash, and the chain they form
 open segment sealed
 the seal covers 15 sealed segment(s) with 48210 claim(s) and every file they refer to
-keep this id outside the archive; `ossuary seal --check ID` checks it
-sha256:1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
+the id is the sha256 hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it
+1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 ```
 
 The id is the hash of the last sealed segment. Every segment names the
@@ -414,9 +414,9 @@ Kept outside the archive, the id shows later whether the archive still
 holds all of that, unchanged:
 
 ```console
-$ ossuary seal --check sha256:1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
+$ ossuary seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 recorded since: 1203 claim(s) in 2 sealed segment(s) and the open segment; the seal does not cover them
-the seal sha256:1bbb4b0c… holds: the record up to 2026-10-22T02:15:07Z (15 sealed segment(s), 48210 claim(s)) and the 1204 file(s) it refers to are present and unchanged
+the seal 1bbb4b0c… holds: the record up to 2026-10-22T02:15:07Z (15 sealed segment(s), 48210 claim(s)) and the 1204 file(s) it refers to are present and unchanged
 ```
 
 The check reads every file the seal covers in full. `--fast` only looks
@@ -432,8 +432,11 @@ which receives the hash and nothing from the archive:
 
 ```console
 $ id=$(ossuary seal)
-$ openssl ts -query -digest "${id#*:}" -sha256 -cert -out seal.tsq
+$ openssl ts -query -digest "$id" -sha256 -cert -out seal.tsq
 ```
+
+`seal` names the algorithm on stderr; for an archive in `sha384` or
+`sha512`, write `-sha384` or `-sha512`.
 
 A seal does not show anything about the time before it was made, and
 it does not cover what is recorded after it. [Reading an archive without

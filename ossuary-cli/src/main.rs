@@ -226,14 +226,13 @@ enum Command {
     /// Seal the archive and print an id for everything it holds
     ///
     /// Checks every sealed segment against its hash and the chain they
-    /// form, closes the open segment, and prints the id of the last
-    /// sealed segment: the hash algorithm, a colon, and the segment's
-    /// hash. Every segment names the ones before it, and every claim
-    /// names its file by hash, so the id covers every claim recorded up
-    /// to it and every file they refer to. Kept outside the archive, it
-    /// shows later whether the archive still holds all of that,
-    /// unchanged: `ossuary seal --check ID`. Run again with nothing
-    /// recorded in between, seal prints the same id.
+    /// form, closes the open segment, and prints the id: the hash of the
+    /// last sealed segment. Every segment names the ones before it, and
+    /// every claim names its file by hash, so the id covers every claim
+    /// recorded up to it and every file they refer to. Kept outside the
+    /// archive, it shows later whether the archive still holds all of
+    /// that, unchanged: `ossuary seal --check ID`. Run again with
+    /// nothing recorded in between, seal prints the same id.
     ///
     /// No seal is made while the chain of sealed segments has a
     /// finding: a damaged or missing segment, a lost open segment, or a
@@ -248,8 +247,8 @@ enum Command {
     /// read in full, which takes about as long as `audit`; --fast only
     /// looks for each file, which shows a removed file but not a changed
     /// one. Any copy of the archive can be checked, a restored backup
-    /// included. The id is taken with or without the algorithm, but
-    /// only in full. Exits 1 if the seal does not hold.
+    /// included. The id is taken only in full. Exits 1 if the seal does
+    /// not hold.
     Seal {
         /// Print the id as a JSON object of the algorithm and the hash
         #[arg(short, long, conflicts_with_all = ["dry_run", "check"])]

@@ -182,25 +182,11 @@ pub enum Error {
     #[error("{0}")]
     Extract(String),
 
-    /// A seal id that is not one: not a hash in hex, of an algorithm
-    /// that does not exist, or shorter than a whole hash. A beginning of
-    /// an id proves nothing, as a forged seal can be made to start the
-    /// same way.
-    #[error(
-        "{given:?}: {trouble}; a seal id is the algorithm, a colon and the whole hash, as `ossuary seal` prints it"
-    )]
+    /// A seal id that is not one: not a hash in hex, or not a whole
+    /// hash. A beginning of an id proves nothing, as a forged seal can
+    /// be made to start the same way.
+    #[error("{given:?}: {trouble}; a seal id is the whole hash, as `ossuary seal` prints it")]
     SealId { given: String, trouble: String },
-
-    /// A seal id in another hash than the one this archive names its
-    /// files with, which cannot be a seal of it.
-    #[error(
-        "{given}: not a seal of this archive; its files are named with {ours}, and this id is a {theirs} hash"
-    )]
-    SealAlgorithm {
-        given: String,
-        ours: String,
-        theirs: String,
-    },
 
     /// A merge of an archive with itself.
     #[error("{}: cannot merge an archive with itself; name another archive", .0.display())]
