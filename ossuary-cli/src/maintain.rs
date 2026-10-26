@@ -26,8 +26,10 @@ pub(crate) enum Maintenance {
     /// and where. A missing open segment is started again after the
     /// mend; until then, nothing can be recorded. Lost claims are not
     /// recovered; record them again afterwards if possible. A break
-    /// after a segment that is present but damaged is left open. Reads
-    /// the whole log, like `audit`. Exits 1 if a break was left open.
+    /// after a segment that is present but damaged is left open. A mend
+    /// that an interrupted run stored without the open segment naming
+    /// it is named. Reads the whole log, like `audit`. Exits 1 if a
+    /// break was left open.
     Mend {
         /// Show what would be mended, write nothing
         #[arg(long)]
@@ -68,7 +70,8 @@ pub(crate) fn run(root: &Path, task: &Maintenance, verbose: bool, quiet: bool) -
 }
 
 /// `maintain mend`: every break the audit finds in the chain, closed
-/// with a mend where one can stand.
+/// with a mend where one can stand, and every mend the open segment
+/// does not name, named.
 fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     if !quiet {
@@ -82,7 +85,7 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         .iter()
         .filter(|chain| chain.joined.is_none())
         .count();
-    if pieces <= 1 && log.breaks.is_empty() {
+    if pieces <= 1 && log.breaks.is_empty() && log.unnamed.is_empty() {
         let line = "the chain is complete, nothing to mend";
         if log.mended.is_empty() {
             println!("{line}");
@@ -91,7 +94,7 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         }
         return Ok(ExitCode::SUCCESS);
     }
-    if log.breaks.is_empty() {
+    if pieces > 1 && log.breaks.is_empty() && log.unnamed.is_empty() {
         println!(
             "the chain is in {pieces} pieces with no identifiable break; `ossuary audit` lists the pieces"
         );
@@ -145,10 +148,39 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
             Err(error) => return Err(error.into()),
         }
     }
+    for mend in &log.unnamed {
+        if !name_mend(&archive, mend, dry_run)? {
+            left_open += 1;
+        }
+    }
     if left_open > 0 {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// Name one mend the open segment does not name, and say so; false when
+/// it stays unnamed.
+fn name_mend(archive: &ossuary_core::Archive, mend: &str, dry_run: bool) -> Result<bool> {
+    println!("mend {mend}: stored, but the open segment does not name it");
+    if dry_run {
+        println!("  would be named; --dry-run, nothing written");
+        return Ok(true);
+    }
+    let digest = ossuary_core::Digest::parse(mend)?;
+    match ossuary_core::name_mend(archive.log(), &digest) {
+        Ok(()) => {
+            println!("  named by the open segment");
+            Ok(true)
+        }
+        Err(Error::HeadLost(_)) => {
+            println!(
+                "  left unnamed; the open segment is missing, and the break in front of it is open above"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
     }
 }
 

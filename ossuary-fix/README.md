@@ -67,4 +67,5 @@ do not override any claim written later.
   segments. The fix rewrites the header of every segment in the old form
   and of the open segment, along the whole chain, as described above.
   Claims are not changed. Run it before any other command on an archive
-  written by 0.10.1 or earlier
+  written by 0.10.1 or earlier. If `ossuary audit` then reports a mend
+  that the open segment does not name, `ossuary maintain mend` names it

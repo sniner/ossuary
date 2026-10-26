@@ -75,6 +75,24 @@ pub fn mend(log: &Log, brk: &Break) -> Result<Option<Segment>> {
     Ok(Some(segment))
 }
 
+/// Make the open head name a mend it does not reach yet: one that a
+/// mend run stored and then ended before it turned the head to it. A
+/// mend the head names already is left as it is.
+///
+/// # Errors
+///
+/// [`Error::HeadLost`](crate::Error::HeadLost) while the head is lost,
+/// and everything [`Log::head_follows`] can answer.
+pub fn name_mend(log: &Log, mend: &Digest) -> Result<()> {
+    log.writable()?;
+    let mut names = log.head_contents()?.previous().to_vec();
+    if names.contains(mend) {
+        return Ok(());
+    }
+    names.push(mend.clone());
+    log.head_follows(&names)
+}
+
 #[cfg(test)]
 mod tests {
     use immure::Algorithm;
@@ -346,6 +364,45 @@ mod tests {
             [mended.digest().clone(), merged]
         );
         assert!(run(&archive).is_sound());
+    }
+
+    #[test]
+    fn a_mend_left_unnamed_is_named_by_a_later_run() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        let first = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second", "2026-09-02T00:00:00Z");
+        let second = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"third", "2026-09-03T00:00:00Z");
+        let third = archive.log().seal().unwrap().unwrap();
+        lose(&archive, second.digest());
+        // Stored, and the run ended before the head was turned to it.
+        let unnamed = archive
+            .log()
+            .mend(
+                first.digest(),
+                &Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
+            )
+            .unwrap();
+        let before = run(&archive);
+        assert!(before.log.breaks.is_empty(), "the mend closes the break");
+        assert_eq!(
+            before.log.unnamed,
+            vec![unnamed.digest().as_str().to_string()]
+        );
+        assert!(!before.is_sound());
+
+        name_mend(archive.log(), unnamed.digest()).unwrap();
+        name_mend(archive.log(), unnamed.digest()).unwrap();
+
+        assert_eq!(
+            archive.log().head_contents().unwrap().previous(),
+            [third.digest().clone(), unnamed.digest().clone()]
+        );
+        let after = run(&archive);
+        assert!(after.log.unreached.is_empty());
+        assert!(after.is_sound());
     }
 
     #[test]

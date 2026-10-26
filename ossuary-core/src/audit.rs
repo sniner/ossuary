@@ -224,6 +224,17 @@ pub struct LogAudit {
     /// that were not a break's, and the chain no longer has a first
     /// segment. A finding — the record cannot be read in order.
     pub looped: Vec<String>,
+    /// Readable segments that the walk back from the open head, over
+    /// every name in every `previous`, does not reach. Behind a lost or
+    /// damaged segment that is the part before the break, which the
+    /// break counts already; in a whole record, nothing.
+    pub unreached: Vec<String>,
+    /// Mends among them: stored, and never named by the open head, as
+    /// a mend run that ended between the two leaves one. A finding, as
+    /// the segments before the mend's break are reached through it or
+    /// not at all; `mend` names it. Left empty where the walk ran into
+    /// a segment it could not read, which is a finding of its own.
+    pub unnamed: Vec<String>,
     /// Every subject the readable claims speak of: their subjects, and
     /// the subjects link values name. Read from the whole history,
     /// retractions included — a retraction withdraws a statement, never
@@ -254,6 +265,7 @@ impl LogAudit {
             + usize::from(self.head_predecessor_missing.is_some())
             + self.heads_lost()
             + self.looped.len()
+            + self.unnamed.len()
     }
 }
 
@@ -386,6 +398,8 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         restored: Vec::new(),
         idle_mends: Vec::new(),
         looped: Vec::new(),
+        unreached: Vec::new(),
+        unnamed: Vec::new(),
         referenced: BTreeSet::new(),
     };
     // Every name the store holds, damaged or not — what a predecessor is
@@ -436,6 +450,9 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         }
     };
     chain(&mut report, &held, &links, open.as_ref());
+    if let Some(open) = &open {
+        reach(&mut report, &held, &links, open);
+    }
     Ok(report)
 }
 
@@ -449,6 +466,46 @@ fn link(contents: &Contents) -> Link {
         claims: contents.claims().len(),
         first: contents.claims().first().map(|claim| claim.time().clone()),
         last: contents.claims().last().map(|claim| claim.time().clone()),
+    }
+}
+
+/// Walk back from the open head over every name in every `previous`,
+/// and note the readable segments the walk does not reach. A head that
+/// names nothing, in an archive with something sealed, was lost; that
+/// is a finding of its own, and nothing is walked.
+fn reach(
+    report: &mut LogAudit,
+    held: &BTreeSet<String>,
+    links: &BTreeMap<String, Link>,
+    open: &Link,
+) {
+    if open.previous.is_empty() {
+        return;
+    }
+    let mut reached: BTreeSet<&str> = BTreeSet::new();
+    let mut pending: Vec<&str> = open.previous.iter().map(String::as_str).collect();
+    let mut blocked = false;
+    while let Some(name) = pending.pop() {
+        if !reached.insert(name) {
+            continue;
+        }
+        match links.get(name) {
+            Some(link) => pending.extend(link.previous.iter().map(String::as_str)),
+            None => blocked |= held.contains(name),
+        }
+    }
+    report.unreached = links
+        .keys()
+        .filter(|name| !reached.contains(name.as_str()))
+        .cloned()
+        .collect();
+    if !blocked {
+        report.unnamed = report
+            .unreached
+            .iter()
+            .filter(|name| links[name.as_str()].mend.is_some())
+            .cloned()
+            .collect();
     }
 }
 
@@ -1091,6 +1148,15 @@ mod tests {
         .unwrap();
     }
 
+    /// A mend stored and named by the open head, as `mend` leaves one.
+    fn mend_before(archive: &Archive, previous: &Digest, mend: &Mend) -> crate::Segment {
+        let segment = archive.log().mend(previous, mend).unwrap();
+        let mut names = archive.log().head_contents().unwrap().previous().to_vec();
+        names.push(segment.digest().clone());
+        archive.log().head_follows(&names).unwrap();
+        segment
+    }
+
     fn name(segment: &crate::Segment) -> String {
         segment.digest().as_str().to_string()
     }
@@ -1172,13 +1238,11 @@ mod tests {
         begin_head_anew(&archive);
         take(&archive, b"after the loss");
         let anew = archive.log().seal().unwrap().unwrap();
-        let mend = archive
-            .log()
-            .mend(
-                first.digest(),
-                &Mend::new(Some(anew.digest().clone()), None),
-            )
-            .unwrap();
+        let mend = mend_before(
+            &archive,
+            first.digest(),
+            &Mend::new(Some(anew.digest().clone()), None),
+        );
 
         let audit = run(&archive);
 
@@ -1252,13 +1316,11 @@ mod tests {
         take(&archive, b"third");
         let third = archive.log().seal().unwrap().unwrap();
         lose(&archive, second.digest());
-        let mend = archive
-            .log()
-            .mend(
-                first.digest(),
-                &Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
-            )
-            .unwrap();
+        let mend = mend_before(
+            &archive,
+            first.digest(),
+            &Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
+        );
 
         let audit = run(&archive);
 
@@ -1289,6 +1351,52 @@ mod tests {
     }
 
     #[test]
+    fn a_mend_the_open_head_does_not_name_is_a_finding() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first");
+        let first = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second, lost");
+        let second = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"third");
+        let third = archive.log().seal().unwrap().unwrap();
+        lose(&archive, second.digest());
+        let mend = archive
+            .log()
+            .mend(
+                first.digest(),
+                &Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
+            )
+            .unwrap();
+
+        let audit = run(&archive);
+
+        assert_eq!(audit.log.mended.len(), 1, "the break is closed");
+        assert_eq!(audit.log.unreached, {
+            let mut names = vec![name(&first), name(&mend)];
+            names.sort();
+            names
+        });
+        assert_eq!(audit.log.unnamed, vec![name(&mend)]);
+        assert_eq!(audit.findings(), 1);
+    }
+
+    #[test]
+    fn a_whole_record_leaves_nothing_unreached() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first");
+        archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second");
+        archive.log().seal().unwrap().unwrap();
+
+        let audit = run(&archive);
+
+        assert!(audit.log.unreached.is_empty());
+        assert!(audit.log.unnamed.is_empty());
+    }
+
+    #[test]
     fn a_mend_in_front_of_a_segment_needing_none_stands_idle() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
@@ -1296,13 +1404,11 @@ mod tests {
         let first = archive.log().seal().unwrap().unwrap();
         take(&archive, b"second");
         let second = archive.log().seal().unwrap().unwrap();
-        let idle = archive
-            .log()
-            .mend(
-                first.digest(),
-                &Mend::new(Some(second.digest().clone()), None),
-            )
-            .unwrap();
+        let idle = mend_before(
+            &archive,
+            first.digest(),
+            &Mend::new(Some(second.digest().clone()), None),
+        );
 
         let audit = run(&archive);
 
@@ -1435,13 +1541,11 @@ mod tests {
             .unwrap();
         let backup = dir.path().join("backup");
         std::fs::rename(&path, &backup).unwrap();
-        let mend = archive
-            .log()
-            .mend(
-                first.digest(),
-                &Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
-            )
-            .unwrap();
+        let mend = mend_before(
+            &archive,
+            first.digest(),
+            &Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
+        );
         assert_eq!(run(&archive).log.mended.len(), 1);
         std::fs::rename(&backup, &path).unwrap();
 
@@ -1470,13 +1574,11 @@ mod tests {
         let second = archive.log().seal().unwrap().unwrap();
         // A mend from the last segment back to the first: the first names
         // no predecessor, so the mend closes that "break" — into a ring.
-        let mend = archive
-            .log()
-            .mend(
-                second.digest(),
-                &Mend::new(Some(first.digest().clone()), None),
-            )
-            .unwrap();
+        let mend = mend_before(
+            &archive,
+            second.digest(),
+            &Mend::new(Some(first.digest().clone()), None),
+        );
 
         let audit = run(&archive);
 

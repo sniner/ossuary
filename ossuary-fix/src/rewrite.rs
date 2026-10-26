@@ -621,6 +621,13 @@ mod tests {
         assert_eq!(log.mended[0].replaces.as_deref(), Some(lost.as_str()));
         assert_ne!(log.mended[0].mend, mend.digest().as_str());
         assert!(log.breaks.is_empty());
+        assert_eq!(
+            log.unnamed,
+            vec![log.mended[0].mend.clone()],
+            "a head in the old form names one segment, never the mend as well"
+        );
+        let renamed = Digest::parse(&log.mended[0].mend).unwrap();
+        ossuary_core::name_mend(archive.log(), &renamed).unwrap();
         assert!(sound(&archive));
     }
 

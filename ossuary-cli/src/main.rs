@@ -542,8 +542,10 @@ enum Command {
     /// was lost with its claims. The report lists every piece with its
     /// time span, so the lost period can be narrowed down; `ossuary
     /// maintain mend` joins the pieces, and the lost claims can then be
-    /// recorded again. A mended break is reported,
-    /// not counted as a finding. Also reported and not counted: files
+    /// recorded again. A mend that the open segment does not name, left
+    /// by an interrupted `ossuary maintain mend`, is a finding as well;
+    /// running it again names the mend. A mended break is reported, not
+    /// counted as a finding. Also reported and not counted: files
     /// without claims (adding the same file again records them) and
     /// files in both content/ and derived/ (`ossuary maintain weed`
     /// removes the copy in derived/).

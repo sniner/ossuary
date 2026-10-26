@@ -16,6 +16,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   segment was found only through the segment it stands before; the open segment now names it as
   well, so that the latest segment leads to every segment of the archive, the pieces before a
   break included. When the open segment is missing too, the break in front of it is mended first
+- **`ossuary audit` reports a mend that the open segment does not name.** An interrupted `ossuary
+  maintain mend` can leave one behind; the segments before its break are then not reached from the
+  open segment. Running `ossuary maintain mend` again names it
 - **`ossuary seal` seals an open segment without claims when it follows several segments.** After
   a merge, or after a mend, one sealed segment then names every segment before it
 - **`ossuary merge` changes nothing when the other archive has nothing new.** Merged again, an

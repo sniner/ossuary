@@ -58,7 +58,7 @@ pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{Contents, GENERATION, Log, Mend, Segment};
 pub use manifest::{Manifest, Manifests};
-pub use mend::mend;
+pub use mend::{mend, name_mend};
 pub use merge::{
     Copied, Join, Obstacles, Preview, Replayed, check, copy_store, join, preview_copy,
     rehash_store, replay, take_memo,

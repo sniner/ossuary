@@ -222,6 +222,15 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
             return Ok(false);
         }
     }
+    if !log.unnamed.is_empty() {
+        let heading = format!(
+            "claims: {} mend(s) that the open segment does not name, so the segments before them cannot be reached from it; `ossuary maintain mend` names them",
+            log.unnamed.len()
+        );
+        if !listing(out, &heading, &log.unnamed, verbose)? {
+            return Ok(false);
+        }
+    }
     mend_block(out, log, verbose)
 }
 
@@ -596,6 +605,9 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     }
     for mend in &audit.log.looped {
         lines.push(json!({"finding": "chain-loop", "mend": mend}));
+    }
+    for mend in &audit.log.unnamed {
+        lines.push(json!({"finding": "unnamed-mend", "mend": mend}));
     }
     for mended in &audit.log.restored {
         lines.push(json!({
