@@ -254,6 +254,32 @@ pub struct LogAudit {
 }
 
 impl LogAudit {
+    /// Lost segments that no mend can stand in for, as the segment that
+    /// names each one and the name, [`HEAD`] for the open head. A mend
+    /// joins the end before a loss to the segment after it, and these
+    /// have no such end: the first segment of a record, or a segment
+    /// named as the last of a line merged in. Only a backup brings them
+    /// back.
+    #[must_use]
+    pub fn beyond_mending(&self) -> Vec<(String, String)> {
+        let mendable = |successor: &str, segment: &str| {
+            self.breaks.iter().any(|brk| {
+                brk.cause == Cause::SegmentLost(segment.to_string())
+                    && brk.before.as_deref().unwrap_or(HEAD) == successor
+            })
+        };
+        let head = self
+            .head_predecessor_missing
+            .iter()
+            .map(|segment| (HEAD.to_string(), segment.clone()));
+        self.predecessor_missing
+            .iter()
+            .cloned()
+            .chain(head)
+            .filter(|(successor, segment)| !mendable(successor, segment))
+            .collect()
+    }
+
     /// How many heads were lost and begun anew, by the breaks that say
     /// so — what the chain adds to the findings.
     #[must_use]
@@ -1390,6 +1416,63 @@ mod tests {
         });
         assert_eq!(audit.log.unnamed, vec![name(&mend)]);
         assert_eq!(audit.findings(), 1);
+    }
+
+    #[test]
+    fn a_lost_first_segment_is_beyond_mending() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first");
+        let first = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second");
+        let second = archive.log().seal().unwrap().unwrap();
+        lose(&archive, first.digest());
+
+        let audit = run(&archive);
+
+        assert!(audit.log.breaks.is_empty(), "nothing before it to join");
+        assert_eq!(
+            audit.log.beyond_mending(),
+            vec![(name(&second), name(&first))]
+        );
+    }
+
+    #[test]
+    fn a_lost_segment_between_two_is_mendable() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first");
+        archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second");
+        let second = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"third");
+        archive.log().seal().unwrap().unwrap();
+        lose(&archive, second.digest());
+
+        let audit = run(&archive);
+
+        assert_eq!(audit.log.breaks.len(), 1);
+        assert!(audit.log.beyond_mending().is_empty());
+    }
+
+    #[test]
+    fn a_lost_last_segment_of_a_line_merged_in_is_beyond_mending() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"ours");
+        let ours = archive.log().seal().unwrap().unwrap();
+        let theirs = Digest::parse(&"cd".repeat(32)).unwrap();
+        archive
+            .log()
+            .head_follows(&[ours.digest().clone(), theirs.clone()])
+            .unwrap();
+
+        let audit = run(&archive);
+
+        assert_eq!(
+            audit.log.beyond_mending(),
+            vec![(HEAD.to_string(), theirs.as_str().to_string())]
+        );
     }
 
     #[test]

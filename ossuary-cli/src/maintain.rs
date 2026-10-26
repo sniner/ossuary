@@ -26,7 +26,10 @@ pub(crate) enum Maintenance {
     /// and where. A missing open segment is started again after the
     /// mend; until then, nothing can be recorded. Lost claims are not
     /// recovered; record them again afterwards if possible. A break
-    /// after a segment that is present but damaged is left open. A mend
+    /// after a segment that is present but damaged is left open, and so
+    /// is a missing segment that no mend can stand in for: the first
+    /// segment of the archive, or the last segment of a line merged in.
+    /// Both can only be restored from a backup of the archive. A mend
     /// that an interrupted run stored without the open segment naming
     /// it is named. Reads the whole log, like `audit`. Exits 1 if a
     /// break was left open.
@@ -85,7 +88,8 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         .iter()
         .filter(|chain| chain.joined.is_none())
         .count();
-    if pieces <= 1 && log.breaks.is_empty() && log.unnamed.is_empty() {
+    let beyond = log.beyond_mending();
+    if pieces <= 1 && log.breaks.is_empty() && log.unnamed.is_empty() && beyond.is_empty() {
         let line = "the chain is complete, nothing to mend";
         if log.mended.is_empty() {
             println!("{line}");
@@ -94,13 +98,20 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         }
         return Ok(ExitCode::SUCCESS);
     }
-    if pieces > 1 && log.breaks.is_empty() && log.unnamed.is_empty() {
+    if pieces > 1 && log.breaks.is_empty() && log.unnamed.is_empty() && beyond.is_empty() {
         println!(
             "the chain is in {pieces} pieces with no identifiable break; `ossuary audit` lists the pieces"
         );
         return Ok(ExitCode::FAILURE);
     }
     let mut left_open = 0;
+    for (successor, segment) in &beyond {
+        println!(
+            "segment {segment} is missing, and no mend can stand in for it; {} names it; restore it from a backup of the archive",
+            named_by(successor)
+        );
+        left_open += 1;
+    }
     // The open segment names every mend, so the break in front of it,
     // where it may be missing, is mended first.
     let breaks = log
@@ -181,6 +192,15 @@ fn name_mend(archive: &ossuary_core::Archive, mend: &str, dry_run: bool) -> Resu
             Ok(false)
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// Who names a lost segment, in the words of a line.
+fn named_by(successor: &str) -> String {
+    if successor == ossuary_core::HEAD {
+        "the open segment".to_string()
+    } else {
+        format!("segment {successor}")
     }
 }
 

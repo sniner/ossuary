@@ -410,11 +410,25 @@ fn store_block(
 /// with who names it; then the count of segments, claims, and damage
 /// listed under the handful rule.
 fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
+    // A loss a break pairs with the end before it gets its way out with
+    // the break; one no mend can close gets it here.
+    let beyond = log.beyond_mending();
+    let restore = |successor: &str, digest: &str| {
+        if beyond
+            .iter()
+            .any(|(named_by, lost)| named_by == successor && lost == digest)
+        {
+            "; no mend can stand in for it, restore it from a backup of the archive"
+        } else {
+            ""
+        }
+    };
     for (successor, digest) in &log.predecessor_missing {
         if !say(
             out,
             &format!(
-                "claims: segment {digest} is missing; {successor} names it as its predecessor"
+                "claims: segment {digest} is missing; {successor} names it as its predecessor{}",
+                restore(successor, digest)
             ),
         )? {
             return Ok(false);
@@ -424,7 +438,8 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         if !say(
             out,
             &format!(
-                "claims: segment {digest} is missing; the open segment names it as its predecessor"
+                "claims: segment {digest} is missing; the open segment names it as its predecessor{}",
+                restore(ossuary_core::HEAD, digest)
             ),
         )? {
             return Ok(false);

@@ -45,8 +45,8 @@ pub use accession::{Admitted, Sighting, admit, record};
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
 pub use audit::{
-    Audit, Break, Cause, Chain, Fixity, Joined, LogAudit, Mended, StoreAudit, Twin, audit_log,
-    audit_store,
+    Audit, Break, Cause, Chain, Fixity, HEAD, Joined, LogAudit, Mended, StoreAudit, Twin,
+    audit_log, audit_store,
 };
 pub use claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
 pub use config::{Config, Excludes};

@@ -23,6 +23,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   seal is refused or does not hold, how to have the id timestamped, and how to check a seal without
   ossuary
 
+### Fixed
+
+- **`ossuary maintain mend` no longer calls the chain complete when the archive's first segment is
+  missing.** It names the segment, says that no mend can stand in for it and that a backup of the
+  archive brings it back, and exits 1. `ossuary audit` says the same next to the missing segment.
+  The same goes for the last segment of a line merged in
+
 ### Changed
 
 - **`ossuary seal` prints the id of the seal instead of a sentence.** The open segment it closes is
