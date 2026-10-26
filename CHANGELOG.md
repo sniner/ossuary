@@ -26,7 +26,6 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary-fix` says which seal ids a rewrite breaks.** A fix that rewrites sealed segments
   renames them, and a seal id is a segment's name: the fix names the time from which seal ids no
   longer check, also with `--dry-run`
-
 - **A lost open segment stops every command that records claims.** When `head.jsonl` is missing or
   empty in an archive with sealed segments, `ingest`, `extract`, `annotate`, `retract`, `merge` and
   `ossuary mailvault` stop before they read anything. Before, a new open segment was started, and

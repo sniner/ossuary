@@ -285,3 +285,71 @@ done
 No output means that every file is intact. Whether a sealed segment of
 the claim log is missing can be seen from the segment headers, as
 described in [the archive format](format.md#segments).
+
+## Checking a seal
+
+A seal id, as `ossuary seal` prints it, names the last sealed segment at
+the time it was made. Every segment names the ones sealed before it,
+and every claim names its file by hash, so walking back from that
+segment reaches everything the seal covers ([the archive
+format](format.md#the-seal) describes it). This walks back from the
+seal, checks every segment it reaches and every file their claims refer
+to against its name, and lists what is missing or damaged:
+
+```bash
+id=sha256:1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
+seal=${id#sha256:}
+out=~/seal-check
+mkdir -p "$out"
+: > "$out/reached"; : > "$out/missing"; : > "$out/replaced"; : > "$out/files"
+pending=$seal
+while set -- $pending; [ $# -gt 0 ]; do
+    segment=$1
+    shift
+    pending="$*"
+    grep -qx "$segment" "$out/reached" && continue
+    echo "$segment" >> "$out/reached"
+    entry=claims/${segment:0:2}/$segment.seg.zst
+    if [ ! -e "$entry" ]; then
+        echo "$segment" >> "$out/missing"
+        continue
+    fi
+    read_entry "$entry" > "$out/segment"
+    if [ "$(sha256sum < "$out/segment" | cut -d' ' -f1)" != "$segment" ]; then
+        echo "damaged segment: $entry"
+        continue
+    fi
+    header=$(head -n 1 "$out/segment")
+    pending="$pending $(jq -r '.previous // [] | .[]' <<< "$header")"
+    jq -r '.mend.replaces // empty' <<< "$header" >> "$out/replaced"
+    tail -n +2 "$out/segment" | jq -r '.subject,
+        (select(.attribute == "prov:origin" and (.value | type) == "string") | .value)' \
+        >> "$out/files"
+done
+grep -vxF -f "$out/replaced" "$out/missing" | sed 's/^/missing segment: /'
+sort -u "$out/files" | while read -r file; do
+    state=missing
+    for entry in {content,derived}/${file:0:2}/${file:2:2}/$file{,.zst}; do
+        [ -e "$entry" ] || continue
+        state=damaged
+        if [ "$(read_entry "$entry" | sha256sum | cut -d' ' -f1)" = "$file" ]; then
+            state=sound
+            break
+        fi
+    done
+    [ "$state" = sound ] || echo "$state file: $file"
+done
+```
+
+No output means that the seal holds. A segment that is missing but
+named in the `replaces` of a mend the walk reaches was already missing
+when the seal was made, and is not listed. The claims store has depth 1
+and the content stores depth 2 here, as in every archive created with
+the defaults. For another algorithm, change the prefix and the checksum
+tool, as above.
+
+One thing is left to check by hand: the walk back from `head.jsonl`,
+started with the names in its first line, must reach the seal's
+segment. If it does not, the archive's record was cut back or begun
+anew after the seal was made.
+

@@ -31,7 +31,7 @@ early, the output stops and the command still exits with success.
 | `extract` | run extractors on files they have not examined yet, see below. `--dry-run` shows what would be recorded for the named files, and writes nothing |
 | `annotate` | add `user:tag` and `user:comment` to recorded files |
 | `retract` | retract values: they are no longer standing, and the record keeps them. Files and `attribute=value` pairs can be mixed; `attribute=..` retracts all standing values of the attribute; `--dry-run` shows what would be retracted |
-| `seal` | close the open segment; its claims become part of the sealed log |
+| `seal` | seal the archive and print an id for everything it holds: the algorithm, a colon and the hash of the last sealed segment, as the only line on stdout. Closes the open segment after checking every sealed segment and the chain they form; no seal is made while the chain has a finding. Nothing recorded in between, the same id again. `--dry-run` shows what the seal would cover. `--check ID` checks a seal: every segment and file it covers present and unchanged, and the open segment still leading to it; `--fast` only looks for each file instead of reading it. Exits 1 if no seal was made or the seal does not hold |
 | `about` | all claims about one file, oldest first; attributes or a `namespace:` restrict the output |
 | `standing` | the standing values of one file, with retractions applied, where `about` shows every claim. Attributes or a `namespace:` restrict the output; with exactly one attribute, only its values are printed, one per line. Exits 1 if there is no standing value, so a script can test for it |
 | `find` | files that match all terms, shown with the attributes the query selects. A name without a colon is a field of the claim, such as `run`, `source`, `time` or `retract`. Only files that are still present are listed; `--all` searches every claim ever written, retractions included; `--as-of TIME` searches what was recorded up to TIME |
@@ -42,11 +42,11 @@ early, the output stops and the command still exits with success.
 | `get` | one file's content to stdout, or to `--output FILE` |
 | `export` | copy files out of the archive under their recorded paths: runs by id, single files by name, in any mix. `--dry-run` shows where each file would be written |
 | `audit` | check the archive: every file against its hash, every claim readable, no segment or referenced file missing. Exits 1 if there are findings |
-| `maintain mend` | join a broken chain of sealed segments and record each break. Sealed segments are not rewritten; `--dry-run` shows what would be mended. Exits 1 if a break was left open |
+| `maintain mend` | join a broken chain of sealed segments and record each break, start a lost open segment again, and make the open segment name a mend it does not name. Sealed segments are not rewritten; `--dry-run` shows what would be mended. Exits 1 if a break was left open |
 | `maintain weed` | remove files from `derived/` that `content/` also contains, after checking both copies against their hash. `--repair` replaces a damaged file in `content/` with its sound copy from `derived/` and keeps the damaged one aside; `--dry-run` shows what would be removed. Exits 1 if a file was left in both |
 
-`--json` on `about`, `standing`, `find`, `attributes`, `history`, `ls`
-and `audit` prints JSON, one object per line, for `jq`.
+`--json` on `about`, `standing`, `find`, `attributes`, `history`, `ls`,
+`audit` and `seal` prints JSON, one object per line, for `jq`.
 `--as-of TIME` on `find`, `attributes`, `history`, `ls`, `tree`,
 `standing`, `about` and `export` uses only what was recorded up to TIME.
 TIME is the time a claim was written, not a time of the file itself; a
@@ -170,8 +170,8 @@ pass through unchanged. It receives the archive as an absolute path in
 
 `0` means success, `1` everything else: an archive that cannot be
 opened, a name that matches no file or more than one, a file an
-extractor could not examine, an audit with findings, `standing` with no
-standing value. Errors are printed on stderr, also with `-q`.
+extractor could not examine, an audit with findings, a seal not made or
+not holding, `standing` with no standing value. Errors are printed on stderr, also with `-q`.
 
 ## License
 
