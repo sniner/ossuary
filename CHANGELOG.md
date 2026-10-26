@@ -18,6 +18,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and match its hash, every file their claims refer to must be present and match its hash, and the
   open segment must still lead to the seal. `--fast` only looks for each file instead of reading
   it, which shows a removed file but not a changed one
+- **[Sealing an archive](docs/sealing.md)** explains, for whoever has to show that the archive was
+  not changed, what a seal proves and what it does not, where to keep the id, what to do when a
+  seal is refused or does not hold, how to have the id timestamped, and how to check a seal without
+  ossuary
 
 ### Changed
 

@@ -291,10 +291,11 @@ described in [the archive format](format.md#segments).
 A seal id, as `ossuary seal` prints it, names the last sealed segment at
 the time it was made. Every segment names the ones sealed before it,
 and every claim names its file by hash, so walking back from that
-segment reaches everything the seal covers ([the archive
-format](format.md#the-seal) describes it). This walks back from the
-seal, checks every segment it reaches and every file their claims refer
-to against its name, and lists what is missing or damaged:
+segment reaches everything the seal covers. [The archive
+format](format.md#the-seal) describes it exactly, and [Sealing an
+archive](sealing.md) explains what a seal is for. This walks back from
+the seal, checks every segment it reaches and every file their claims
+refer to against its name, and lists what is missing or damaged:
 
 ```bash
 seal=1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776

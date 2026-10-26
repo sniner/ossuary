@@ -385,63 +385,36 @@ archive as it was when the first ingest finished, even if two runs
 finished in the same second. `export` and `extract` also take a run id
 for all files of a run, and `find run=ID` shows what a run wrote.
 
-## Sealing the archive
+## Proving that nothing was changed
 
-`seal` prints an id for everything the archive holds:
+Where records have to be kept unchanged for years, as invoices,
+contracts and business mail often must, it helps to be able to show
+later that the archive still holds what it held: no file removed, none
+altered, no claim about one changed. `seal` records the state of the
+archive and prints an id for it:
 
 ```console
 $ ossuary seal
-archive /home/john/archive
-checking every sealed segment against its hash, and the chain they form
-open segment sealed
-the seal covers 15 sealed segment(s) with 48210 claim(s) and every file they refer to
-the id is the sha256 hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it
 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 ```
 
-The id is the hash of the last sealed segment. Every segment names the
-segments sealed before it, and every claim names its file by hash, so
-the id covers every claim recorded up to it and every file those claims
-refer to. It is the only line on stdout, so a script can take it with
-`id=$(ossuary seal)`. Run again with nothing recorded in between, `seal`
-prints the same id. No seal is made while `audit` would report a problem
-with the sealed segments; `seal` lists it and makes no seal. The files
-themselves are not read when sealing, so run `audit` before the first
-seal: a file that was already damaged would later look as if it had
-been changed after the seal was made.
-
-Kept outside the archive, the id shows later whether the archive still
-holds all of that, unchanged:
+Keep the id outside the archive: printed and filed, or in a mail to your
+accountant. At any time later, check the archive against it:
 
 ```console
 $ ossuary seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
-recorded since: 1203 claim(s) in 2 sealed segment(s) and the open segment; the seal does not cover them
-the seal 1bbb4b0c… holds: the record up to 2026-10-22T02:15:07Z (15 sealed segment(s), 48210 claim(s)) and the 1204 file(s) it refers to are present and unchanged
+the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 holds: the record up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) and the 131204 file(s) it refers to are present and unchanged
 ```
 
-The check reads every file the seal covers in full. `--fast` only looks
-for each file: a removed file shows, a changed one does not. A seal
-that does not hold names each segment and file that is missing or
-damaged; restored from a backup of the archive, the seal holds again.
-Any copy of the archive can be checked, a restored backup included.
+Unlike `audit`, this also finds a change that leaves the archive in
+order, such as the newest part of the record removed. Sealing after
+every run is fine: when nothing new was recorded, it prints the same id
+again. `--fast` checks only that every file is there, not that it is
+unchanged.
 
-The id is worth as much as the place it is kept: whoever can change the
-archive can change anything kept inside it. Print it, send it to
-someone, or have its time confirmed by an RFC 3161 timestamp service,
-which receives the hash and nothing from the archive:
-
-```console
-$ id=$(ossuary seal)
-$ openssl ts -query -digest "$id" -sha256 -cert -out seal.tsq
-```
-
-`seal` names the algorithm on stderr; for an archive in `sha384` or
-`sha512`, write `-sha384` or `-sha512`.
-
-A seal does not show anything about the time before it was made, and
-it does not cover what is recorded after it. [Reading an archive without
-ossuary](docs/recovery.md#checking-a-seal) shows how to check a seal
-with a shell, `zstd` and `jq`.
+What a seal proves and what it does not, where to keep the id, what to
+do when a seal does not hold, and how to have the id timestamped:
+[Sealing an archive](docs/sealing.md).
 
 ## Merging two archives
 
@@ -617,6 +590,8 @@ software:
   how to recover an archive with nothing but a shell
 * [Reading an archive without ossuary](docs/recovery.md): getting files
   back from an uncompressed or compressed archive, with examples
+* [Sealing an archive](docs/sealing.md): what a seal proves, keeping and
+  checking the id, and checking a seal without ossuary
 * [The attribute vocabulary](docs/vocabulary.md): what each attribute
   means, and how current claims become an answer
 * [The extractor protocol](docs/extractors.md): how an extractor, in
