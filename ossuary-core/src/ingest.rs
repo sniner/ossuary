@@ -123,16 +123,18 @@ pub struct Sweep<'a> {
 ///
 /// # Errors
 ///
-/// Whatever building the first claims can answer, the memory or the
-/// record refusing to read or write, and [`Error::IngestsArchive`] when
-/// a named root is an archive or lies inside one. Per-file trouble is
-/// not an error here, and neither is a root that will not resolve: both
-/// are collected in [`Ingested::failed`] while the walk goes on.
+/// [`Error::HeadLost`] before anything is read when the log's head was
+/// lost, whatever building the first claims can answer, the memory or
+/// the record refusing to read or write, and [`Error::IngestsArchive`]
+/// when a named root is an archive or lies inside one. Per-file trouble
+/// is not an error here, and neither is a root that will not resolve:
+/// both are collected in [`Ingested::failed`] while the walk goes on.
 pub fn ingest<I>(content: &Store, log: &Log, roots: I, sweep: &Sweep<'_>) -> Result<Ingested>
 where
     I: IntoIterator,
     I::Item: AsRef<Path>,
 {
+    log.writable()?;
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
         run: Run::new(),

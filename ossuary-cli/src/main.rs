@@ -537,11 +537,12 @@ enum Command {
     /// content/ or derived/.
     ///
     /// A chain of sealed segments in more than one piece is also a
-    /// finding: a segment without a predecessor, other than the first,
-    /// shows that the open segment was lost with its claims and started
-    /// again. The report lists every piece with its time span, so the
-    /// lost period can be narrowed down and recorded again; `ossuary
-    /// maintain mend` then joins the pieces. A mended break is reported,
+    /// finding: a missing open segment, or a segment without a
+    /// predecessor other than the first, shows that the open segment
+    /// was lost with its claims. The report lists every piece with its
+    /// time span, so the lost period can be narrowed down; `ossuary
+    /// maintain mend` joins the pieces, and the lost claims can then be
+    /// recorded again. A mended break is reported,
     /// not counted as a finding. Also reported and not counted: files
     /// without claims (adding the same file again records them) and
     /// files in both content/ and derived/ (`ossuary maintain weed`

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use anyhow::{Result, anyhow};
 use ossuary_core::{Audit, Break, Cause, Chain, Fixity, Joined, LogAudit, StoreAudit, Timestamp};
 
-use crate::{open, say};
+use crate::{open, output, say};
 
 /// How many names still fit in a plain answer. Up to a handful stands
 /// right there; more turns into a count, and --verbose names them all.
@@ -174,9 +174,8 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
             let after = chain_after(log, brk);
             let line = match &brk.cause {
                 Cause::HeadLost => format!(
-                    "  chain {after} starts after a lost open segment: the claims recorded between {} and {} are lost; repeat the runs of that period, then run `ossuary maintain mend` to join the chains",
-                    when(brk.from.as_ref()),
-                    when(brk.to.as_ref()),
+                    "  chain {after} starts after a lost open segment: {}; run `ossuary maintain mend` to join the chains, then repeat the runs of that period",
+                    output::lost_claims(brk.from.as_ref(), brk.to.as_ref()),
                 ),
                 Cause::SegmentLost(segment) => format!(
                     "  chain {after} starts after segment {segment}, which is missing; restore it from a backup of the archive, or run `ossuary maintain mend` to join the chains (the mend records the missing segment's name)",

@@ -188,11 +188,13 @@ struct Line {
 ///
 /// # Errors
 ///
-/// Naming trouble — [`Error::Unknown`], [`Error::Ambiguous`] — and
-/// [`Error::Extract`] for a named extractor that will not identify, a
-/// loop that never runs dry, or `temp_dir` handed to a run that derives
-/// nothing. A file the extractor fails is not an error here: it stands
-/// in [`Event::Verdict`] and costs the settlement its `clean`.
+/// [`Error::HeadLost`] before any extractor runs when the log's head was
+/// lost and the run would record, naming trouble — [`Error::Unknown`],
+/// [`Error::Ambiguous`] — and [`Error::Extract`] for a named extractor
+/// that will not identify, a loop that never runs dry, or `temp_dir`
+/// handed to a run that derives nothing. A file the extractor fails is
+/// not an error here: it stands in [`Event::Verdict`] and costs the
+/// settlement its `clean`.
 pub fn examine(
     archive: &Archive,
     name: Option<&str>,
@@ -206,6 +208,9 @@ pub fn examine(
         return Err(Error::Extract(
             "a dry run needs named files; name subjects or a run id".to_string(),
         ));
+    }
+    if !dry_run {
+        archive.log().writable()?;
     }
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_string()],

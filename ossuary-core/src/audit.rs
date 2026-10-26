@@ -1081,8 +1081,14 @@ mod tests {
 
     /// The open head gone, as a restore from elsewhere or a stray `rm`
     /// leaves it: the next append begins one anew.
-    fn lose_head(archive: &Archive) {
-        std::fs::remove_file(archive.root().join("head.jsonl")).unwrap();
+    /// The head lost and begun anew naming nothing, which `append` refuses
+    /// to do: the audit still has to read an archive in that state.
+    fn begin_head_anew(archive: &Archive) {
+        std::fs::write(
+            archive.root().join("head.jsonl"),
+            "{\"ossuary-segment\":1}\n",
+        )
+        .unwrap();
     }
 
     fn name(segment: &crate::Segment) -> String {
@@ -1096,7 +1102,7 @@ mod tests {
         take_at(&archive, b"before the loss", "2026-09-01T00:00:00Z");
         let first = archive.log().seal().unwrap().unwrap();
         take_at(&archive, b"lost with the head", "2026-09-02T00:00:00Z");
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take_at(&archive, b"after the loss", "2026-09-03T00:00:00Z");
         let anew = archive.log().seal().unwrap().unwrap();
         take_at(&archive, b"and on", "2026-09-04T00:00:00Z");
@@ -1139,7 +1145,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"before the loss");
         let first = archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"after the loss");
 
         let audit = run(&archive);
@@ -1163,7 +1169,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"before the loss");
         let first = archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"after the loss");
         let anew = archive.log().seal().unwrap().unwrap();
         let mend = archive
@@ -1203,7 +1209,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"before the loss");
         let first = archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"after the loss");
         let mend = archive
             .log()
@@ -1385,10 +1391,10 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"first");
         archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"second beginning, same second");
         archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take_at(&archive, b"third beginning, later", "2026-09-07T00:00:00Z");
 
         let audit = run(&archive);

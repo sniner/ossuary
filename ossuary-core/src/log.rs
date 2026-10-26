@@ -266,13 +266,12 @@ impl Log {
 
     /// Append one claim to the open segment.
     ///
-    /// A head that is not there yet is begun, header first, and names no
-    /// predecessor: the head a seal leaves behind is already there, so a
-    /// head begun here is an archive's first — or one begun anew where
-    /// the head had been lost, which the audit notes as a chain of its
-    /// own. Header and claim go out in one write, and nothing is fsynced
-    /// — see the module notes on what a crash may cost and what it may
-    /// not.
+    /// A head that is not there yet is begun, header first, naming no
+    /// predecessor, but only in an archive with nothing sealed: every
+    /// seal leaves a head behind, so a head missing over sealed segments
+    /// was lost (see [`head_lost`](Log::head_lost)). Header and claim go
+    /// out in one write, and nothing is fsynced — see the module notes on
+    /// what a crash may cost and what it may not.
     ///
     /// An append that grows the head to [`SEAL_AT`] seals it in the same
     /// breath, so no writer needs a sealing policy of its own. The claim
@@ -282,20 +281,24 @@ impl Log {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the file cannot be opened or written, and
-    /// everything [`seal`](Log::seal) can answer when this append crossed
-    /// the threshold.
+    /// [`Error::HeadLost`] when the head was lost, [`Error::Io`] when the
+    /// file cannot be opened or written, and everything
+    /// [`seal`](Log::seal) can answer when this append crossed the
+    /// threshold.
     pub fn append(&self, claim: &Claim) -> Result<()> {
         let io = |source| Error::Io {
             context: format!("{}: appending", self.head.display()),
             source,
         };
+        let fresh = !self.head_begun()?;
+        if fresh && self.holds_segments()? {
+            return Err(Error::HeadLost(self.head.clone()));
+        }
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(&self.head)
             .map_err(io)?;
-        let fresh = file.metadata().map_err(io)?.len() == 0;
         let mut lines = String::new();
         if fresh {
             lines.push_str(&header_line(&[], None));
@@ -324,20 +327,23 @@ impl Log {
     /// The open segment whole: the last sealed segment as the head names
     /// it, and the claims appended since.
     ///
-    /// A head that does not exist yet names nothing and holds nothing.
+    /// A head that does not exist yet, or an empty file in its place,
+    /// names nothing and holds nothing.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] when the file cannot be read, and everything
     /// [`contents`](Log::contents) can answer for a segment that is broken.
     pub fn head_contents(&self) -> Result<Contents> {
+        let nothing = Contents {
+            previous: Vec::new(),
+            mend: None,
+            claims: Vec::new(),
+        };
         match fs::read_to_string(&self.head) {
+            Ok(text) if text.is_empty() => Ok(nothing),
             Ok(text) => parse_segment(&text),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Contents {
-                previous: Vec::new(),
-                mend: None,
-                claims: Vec::new(),
-            }),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(nothing),
             Err(source) => Err(Error::Io {
                 context: format!("{}: reading", self.head.display()),
                 source,
@@ -345,14 +351,68 @@ impl Log {
         }
     }
 
+    /// Whether the head was lost: it is missing or empty while the
+    /// claims store holds sealed segments.
+    ///
+    /// Every seal leaves a head behind that names the segment just
+    /// sealed, so an archive in order is never in this state. A head
+    /// begun anew here would name no predecessor and start a second
+    /// record that the end of the first does not reach. A mend records
+    /// the loss instead, and the head is begun naming the mend.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the head cannot be looked at, and
+    /// [`Error::Store`] when the claims store cannot be walked.
+    pub fn head_lost(&self) -> Result<bool> {
+        Ok(!self.head_begun()? && self.holds_segments()?)
+    }
+
+    /// Refuse a run that would write claims while the head is lost.
+    ///
+    /// [`append`](Log::append) refuses each claim on its own; a run that
+    /// stores bytes or asks an extractor or a server before recording
+    /// what it got asks this first, so that it stops before any of that
+    /// work.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeadLost`] when the head was lost, and everything
+    /// [`head_lost`](Log::head_lost) can answer.
+    pub fn writable(&self) -> Result<()> {
+        if self.head_lost()? {
+            return Err(Error::HeadLost(self.head.clone()));
+        }
+        Ok(())
+    }
+
+    /// Whether the head file exists and is not empty. An empty file
+    /// counts as no head: a head is written header first, in one write,
+    /// so an empty one holds nothing.
+    fn head_begun(&self) -> Result<bool> {
+        match fs::metadata(&self.head) {
+            Ok(metadata) => Ok(metadata.len() > 0),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(Error::Io {
+                context: format!("{}: reading", self.head.display()),
+                source,
+            }),
+        }
+    }
+
+    /// Whether the claims store holds any sealed segment.
+    fn holds_segments(&self) -> Result<bool> {
+        Ok(self.store.entries().next().transpose()?.is_some())
+    }
+
     /// Seal the open segment: its bytes go into the store verbatim, and a
     /// fresh head takes its place, naming the segment just sealed.
     ///
-    /// `None` when there is nothing to seal — no head, or a head of no
-    /// claims. The whole head is validated first, so nothing broken is ever
-    /// immured; and because the store is content-addressed, a run that was
-    /// interrupted between storing and starting the fresh head simply seals
-    /// the same bytes again as a no-op. With a manifest drawer, the fresh
+    /// `None` when there is nothing to seal — no head, an empty file, or a
+    /// head of no claims. The whole head is validated first, so nothing
+    /// broken is ever immured; and because the store is content-addressed,
+    /// a run that was interrupted between storing and starting the fresh
+    /// head simply seals the same bytes again as a no-op. With a manifest drawer, the fresh
     /// segment's manifest is filed in passing — best effort, and never a
     /// reason for a seal that succeeded to say otherwise.
     ///
@@ -362,6 +422,7 @@ impl Log {
     /// store, and [`Error::Io`] replacing the head file.
     pub fn seal(&self) -> Result<Option<Segment>> {
         let text = match fs::read_to_string(&self.head) {
+            Ok(text) if text.is_empty() => return Ok(None),
             Ok(text) => text,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => {
@@ -672,6 +733,44 @@ mod tests {
 
         assert_eq!(log.head().unwrap(), Vec::new());
         assert_eq!(log.seal().unwrap(), None, "and there is nothing to seal");
+        assert!(!log.head_lost().unwrap(), "an archive with nothing sealed");
+    }
+
+    #[test]
+    fn a_head_lost_over_sealed_segments_is_not_begun_anew() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        assert!(!log.head_lost().unwrap(), "a seal leaves a head behind");
+        let head = dir.path().join("head.jsonl");
+        fs::remove_file(&head).unwrap();
+
+        assert!(log.head_lost().unwrap());
+        assert!(matches!(
+            log.append(&claim("anew", "2026-09-02T00:00:00Z")),
+            Err(Error::HeadLost(path)) if path == head
+        ));
+        assert!(!head.exists(), "nothing was begun");
+    }
+
+    #[test]
+    fn an_empty_head_over_sealed_segments_was_lost_as_well() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        fs::write(dir.path().join("head.jsonl"), "").unwrap();
+
+        assert!(log.head_lost().unwrap());
+        assert!(log.head_contents().unwrap().previous().is_empty());
+        assert_eq!(log.seal().unwrap(), None);
+        assert!(matches!(
+            log.append(&claim("anew", "2026-09-02T00:00:00Z")),
+            Err(Error::HeadLost(_))
+        ));
     }
 
     #[test]
@@ -909,7 +1008,8 @@ mod tests {
         log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
             .unwrap();
         let sealed = log.seal().unwrap().unwrap();
-        fs::remove_file(dir.path().join("head.jsonl")).unwrap();
+        // Begun anew naming nothing, as `append` itself refuses to.
+        fs::write(dir.path().join("head.jsonl"), "{\"ossuary-segment\":1}\n").unwrap();
         log.append(&claim("anew", "2026-09-02T00:00:00Z")).unwrap();
         assert!(log.head_contents().unwrap().previous().is_empty());
         let mend = log.mend(sealed.digest(), &Mend::default()).unwrap();

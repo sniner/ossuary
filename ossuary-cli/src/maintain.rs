@@ -6,9 +6,9 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use ossuary_core::{Break, Cause, Fixity, Timestamp, Twin, Weeded};
+use ossuary_core::{Break, Cause, Fixity, Twin, Weeded};
 
-use crate::{open, say};
+use crate::{open, output, say};
 
 /// The maintenance commands. `mend` only adds to the archive and
 /// rewrites nothing; `weed` removes copies in `derived/` of files that
@@ -18,15 +18,16 @@ pub(crate) enum Maintenance {
     /// Join a broken chain of sealed segments and record each break
     ///
     /// Where `audit` finds the chain of sealed segments in more than one
-    /// piece, because an open segment was lost and started again or a
-    /// sealed segment is missing, mend closes each break with a mend: a
-    /// segment without claims that names the two segments it joins.
-    /// Sealed segments are not changed, and the segment after the break
-    /// still names its original predecessor, so the record still shows
-    /// what was lost and where. Lost claims are not recovered; record
-    /// them again first if possible. A break after a segment that is
-    /// present but damaged is left open. Reads the whole log, like
-    /// `audit`. Exits 1 if a break was left open.
+    /// piece, because the open segment was lost or a sealed segment is
+    /// missing, mend closes each break with a mend: a segment without
+    /// claims that names the two segments it joins. Sealed segments are
+    /// not changed, and the segment after the break still names its
+    /// original predecessor, so the record still shows what was lost
+    /// and where. A missing open segment is started again after the
+    /// mend; until then, nothing can be recorded. Lost claims are not
+    /// recovered; record them again afterwards if possible. A break
+    /// after a segment that is present but damaged is left open. Reads
+    /// the whole log, like `audit`. Exits 1 if a break was left open.
     Mend {
         /// Show what would be mended, write nothing
         #[arg(long)]
@@ -143,10 +144,9 @@ fn describe(brk: &Break) -> String {
     let before = brk.before.as_deref().unwrap_or("the open segment");
     match &brk.cause {
         Cause::HeadLost => format!(
-            "after {} and before {before}, an open segment was lost with its claims; the claims recorded between {} and {} are lost",
+            "after {} and before {before}, an open segment was lost; {}",
             brk.after,
-            when(brk.from.as_ref()),
-            when(brk.to.as_ref()),
+            output::lost_claims(brk.from.as_ref(), brk.to.as_ref()),
         ),
         Cause::SegmentLost(segment) => format!(
             "after {} and before {before}, segment {segment} is missing; the mend records its name",
@@ -157,11 +157,6 @@ fn describe(brk: &Break) -> String {
             brk.after,
         ),
     }
-}
-
-/// A claim time for a line, or the word for none.
-fn when(time: Option<&Timestamp>) -> &str {
-    time.map_or("no claim", Timestamp::as_str)
 }
 
 /// `maintain weed`: every file held by both stores, proved on both sides

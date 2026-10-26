@@ -86,8 +86,14 @@ mod tests {
         )
     }
 
-    fn lose_head(archive: &Archive) {
-        std::fs::remove_file(archive.root().join("head.jsonl")).unwrap();
+    /// The head lost and begun anew naming nothing, which `append` refuses
+    /// to do: the audit still has to read an archive in that state.
+    fn begin_head_anew(archive: &Archive) {
+        std::fs::write(
+            archive.root().join("head.jsonl"),
+            "{\"ossuary-segment\":1}\n",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -96,7 +102,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let first = archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"anew", "2026-09-02T00:00:00Z");
         let anew = archive.log().seal().unwrap().unwrap();
         let before = run(&archive);
@@ -137,7 +143,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let first = archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"anew", "2026-09-02T00:00:00Z");
         let before = run(&archive);
         assert_eq!(before.log.breaks[0].before, None);
@@ -152,6 +158,34 @@ mod tests {
         let contents = archive.log().contents(mended.digest()).unwrap();
         assert_eq!(contents.previous(), std::slice::from_ref(first.digest()));
         assert_eq!(contents.mend().unwrap().before(), None);
+        assert!(run(&archive).is_sound());
+    }
+
+    #[test]
+    fn a_lost_head_is_begun_anew_by_its_mend() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        let first = archive.log().seal().unwrap().unwrap();
+        std::fs::remove_file(archive.root().join("head.jsonl")).unwrap();
+        let before = run(&archive);
+        assert_eq!(before.log.breaks.len(), 1);
+        assert_eq!(before.log.breaks[0].before, None);
+
+        let mended = mend(archive.log(), &before.log.breaks[0])
+            .unwrap()
+            .expect("mendable");
+
+        assert!(!archive.log().head_lost().unwrap());
+        assert_eq!(
+            archive.log().head_contents().unwrap().previous(),
+            std::slice::from_ref(mended.digest())
+        );
+        assert_eq!(
+            archive.log().contents(mended.digest()).unwrap().previous(),
+            std::slice::from_ref(first.digest())
+        );
+        take(&archive, b"after the mend", "2026-09-02T00:00:00Z");
         assert!(run(&archive).is_sound());
     }
 
@@ -196,7 +230,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         archive.log().seal().unwrap().unwrap();
-        lose_head(&archive);
+        begin_head_anew(&archive);
         take(&archive, b"anew", "2026-09-02T00:00:00Z");
         let brk = run(&archive).log.breaks.remove(0);
 

@@ -95,6 +95,17 @@ pub enum Error {
     #[error("segment {0} not found in claims/")]
     SegmentMissing(String),
 
+    /// The open segment is missing or empty while sealed segments are
+    /// there. Every seal leaves an open segment behind, so this one was
+    /// lost, together with any claims recorded since the last seal. One
+    /// begun anew would name no predecessor and start a second record
+    /// beside the first.
+    #[error(
+        "{}: the open segment is missing, and any claims recorded since the last seal are lost with it; `ossuary maintain mend` records the loss and begins a new open segment",
+        .0.display()
+    )]
+    HeadLost(std::path::PathBuf),
+
     /// A segment is UTF-8 text by definition, and these bytes are not.
     #[error("segment is not UTF-8 text")]
     NotText,

@@ -202,6 +202,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
         } => {
             say.line(format_args!("archive {}", archive.root().display()));
+            if !dry_run {
+                archive.log().writable()?;
+            }
             let config = source.load()?;
             let chosen = chosen(&config, &accounts)?;
             let memo = opened(&memo_path, say, "every folder is fetched in full")?;
@@ -231,6 +234,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 );
             }
             say.line(format_args!("archive {}", archive.root().display()));
+            if !dry_run {
+                archive.log().writable()?;
+            }
             import::verify(&vault)?;
             let memo = opened(&memo_path, say, "the import reads every message again")?;
             say.line(format_args!(

@@ -5,6 +5,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A lost open segment stops every command that records claims.** When `head.jsonl` is missing or
+  empty in an archive with sealed segments, `ingest`, `extract`, `annotate`, `retract`, `merge` and
+  `ossuary mailvault` stop before they read anything. Before, a new open segment was started, and
+  the record split into two chains. `ossuary maintain mend` records the loss and starts a new open
+  segment; the lost claims can then be recorded again
+
 ## [0.12.6] - 2026-10-22
 
 ### Fixed

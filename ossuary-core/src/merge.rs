@@ -118,6 +118,7 @@ pub struct Join {
 /// # Errors
 ///
 /// [`Error::MergeSelf`] for the same archive twice,
+/// [`Error::HeadLost`] when this archive's open segment was lost,
 /// [`Error::MergeAlgorithm`] and [`Error::MergeSameHash`] for the
 /// wrong way for the hashes, and whatever auditing the other archive's
 /// log can answer.
@@ -125,6 +126,9 @@ pub fn check(ours: &Archive, theirs: &Archive, rehash: bool) -> Result<Obstacles
     if same_archive(ours.root(), theirs.root()) {
         return Err(Error::MergeSelf(ours.root().to_path_buf()));
     }
+    // The joined head would name the other archive's segments alone,
+    // and nothing would reach this archive's own.
+    ours.log().writable()?;
     let (here, there) = (ours.content().algorithm(), theirs.content().algorithm());
     if here != there && !rehash {
         return Err(Error::MergeAlgorithm {
@@ -758,6 +762,22 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_open_segment_here_stops_the_merge() {
+        let dir = TempDir::new().unwrap();
+        let ours = archive(&dir, "a");
+        let theirs = archive(&dir, "b");
+        take(&ours, b"ours", "2026-09-01T00:00:00Z");
+        ours.log().seal().unwrap();
+        fs::remove_file(ours.root().join("head.jsonl")).unwrap();
+        take(&theirs, b"theirs", "2026-09-01T00:00:00Z");
+
+        assert!(matches!(
+            check(&ours, &theirs, false),
+            Err(Error::HeadLost(_))
+        ));
+    }
+
+    #[test]
     fn an_archive_with_nothing_sealed_cannot_be_joined() {
         let dir = TempDir::new().unwrap();
         let ours = archive(&dir, "a");
@@ -774,7 +794,6 @@ mod tests {
         take(&theirs, b"before the loss", "2026-09-01T00:00:00Z");
         theirs.log().seal().unwrap();
         fs::remove_file(theirs.root().join("head.jsonl")).unwrap();
-        take(&theirs, b"after the loss", "2026-09-02T00:00:00Z");
         fs::write(
             ours.root().join(MAILVAULT_CONFIG),
             "[[account]]\nname = \"work\"\nhost = \"imap.example.org\"\nuser = \"a\"\npassword = \"x\"\n\
