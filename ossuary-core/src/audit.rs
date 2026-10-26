@@ -115,6 +115,17 @@ pub enum Fixity {
     Unreadable(String),
 }
 
+impl Fixity {
+    /// One entry read whole and re-hashed.
+    pub(crate) fn of(store: &Store, entry: &immure::Entry) -> Fixity {
+        match store.verify(entry) {
+            Ok(true) => Fixity::Sound,
+            Ok(false) => Fixity::Damaged,
+            Err(error) => Fixity::Unreadable(error.to_string()),
+        }
+    }
+}
+
 /// One content held by both stores: won as a derived file, and taken in
 /// as an original as well, in whichever order. The log speaks of the
 /// subject, never of a store, so the two copies are one file to it, and
@@ -855,7 +866,7 @@ fn walk<'a>(
 
 /// What one claim points at: its subject always, and — for an attribute
 /// whose values are references — the subject its value names.
-fn reference(claim: &Claim, referenced: &mut BTreeSet<String>) {
+pub(crate) fn reference(claim: &Claim, referenced: &mut BTreeSet<String>) {
     referenced.insert(claim.subject().as_str().to_string());
     if LINKS.contains(&claim.attribute().as_str()) {
         if let Some(Value::String(text)) = claim.value() {

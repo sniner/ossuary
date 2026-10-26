@@ -55,20 +55,20 @@ pub fn mend(log: &Log, brk: &Break) -> Result<Option<Segment>> {
     if before.is_some() {
         log.writable()?;
     }
-    let named = log.head_contents()?.previous().to_vec();
+    let current = log.head_contents()?.previous().to_vec();
     let segment = log.mend(&previous, &Mend::new(before.clone(), replaces))?;
     let names = if before.is_some() {
-        if named.contains(segment.digest()) {
+        if current.contains(segment.digest()) {
             return Ok(Some(segment));
         }
-        let mut names = named;
+        let mut names = current;
         names.push(segment.digest().clone());
         names
     } else {
         // The head's first name is the end the break stands after, lost
         // or never written; a line merged in after it stays named.
         std::iter::once(segment.digest().clone())
-            .chain(named.into_iter().skip(1))
+            .chain(current.into_iter().skip(1))
             .collect()
     };
     log.head_follows(&names)?;

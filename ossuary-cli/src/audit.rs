@@ -151,6 +151,15 @@ fn fixity_word(fixity: &Fixity) -> &'static str {
     }
 }
 
+/// The claims part of the report alone: the log read back, and the
+/// chain it forms. `seal` shows it when it refuses.
+pub(crate) fn claims_report(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
+    if !log_block(out, log, verbose)? {
+        return Ok(false);
+    }
+    chain_block(out, log, verbose)
+}
+
 /// The chain, when it is not one: every piece named with its ends and
 /// its span, then each break with what the record says of it and what
 /// to do; and the mends that stand, whole chain or not.
@@ -493,7 +502,12 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
 /// A heading and the names beneath it: all of them under --verbose or
 /// when a handful fits, the way to them otherwise. `Ok(false)` means the
 /// reader left.
-fn listing(out: &mut impl Write, heading: &str, ids: &[String], verbose: bool) -> Result<bool> {
+pub(crate) fn listing(
+    out: &mut impl Write,
+    heading: &str,
+    ids: &[String],
+    verbose: bool,
+) -> Result<bool> {
     if ids.is_empty() {
         return say(out, heading);
     }

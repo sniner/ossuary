@@ -21,6 +21,7 @@ mod extract;
 mod maintain;
 mod merge;
 mod output;
+mod seal;
 
 #[derive(Parser)]
 #[command(
@@ -222,8 +223,51 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Close the open segment; its claims become part of the sealed log
-    Seal,
+    /// Seal the archive and print an id for everything it holds
+    ///
+    /// Checks every sealed segment against its hash and the chain they
+    /// form, closes the open segment, and prints the id of the last
+    /// sealed segment: the hash algorithm, a colon, and the segment's
+    /// hash. Every segment names the ones before it, and every claim
+    /// names its file by hash, so the id covers every claim recorded up
+    /// to it and every file they refer to. Kept outside the archive, it
+    /// shows later whether the archive still holds all of that,
+    /// unchanged: `ossuary seal --check ID`. Run again with nothing
+    /// recorded in between, seal prints the same id.
+    ///
+    /// No seal is made while the chain of sealed segments has a
+    /// finding: a damaged or missing segment, a lost open segment, or a
+    /// mend the open segment does not name. `ossuary audit` and
+    /// `ossuary maintain mend` deal with those. The id is the only line
+    /// on stdout. Exits 1 if no seal was made.
+    ///
+    /// --check ID checks a seal instead: every sealed segment it covers
+    /// must be present and match its hash, every file their claims refer
+    /// to must be present in content/ or derived/ and match its hash,
+    /// and the open segment must still lead to the seal. Every file is
+    /// read in full, which takes about as long as `audit`; --fast only
+    /// looks for each file, which shows a removed file but not a changed
+    /// one. Any copy of the archive can be checked, a restored backup
+    /// included. The id is taken with or without the algorithm, but
+    /// only in full. Exits 1 if the seal does not hold.
+    Seal {
+        /// Print the id as a JSON object of the algorithm and the hash
+        #[arg(short, long, conflicts_with_all = ["dry_run", "check"])]
+        json: bool,
+
+        /// Check the chain and show what the seal would cover, write
+        /// nothing
+        #[arg(long, conflicts_with = "check")]
+        dry_run: bool,
+
+        /// Check the seal ID against the archive, write nothing
+        #[arg(long, value_name = "ID")]
+        check: Option<String>,
+
+        /// With --check, look for each file without reading it
+        #[arg(long, requires = "check")]
+        fast: bool,
+    },
     /// Show all claims about a file, oldest first
     About {
         /// The file's hex name, or a unique prefix of it
@@ -688,7 +732,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             tags,
         } => annotate(&cli.archive, &subjects, &comments, &tags, quiet),
         Command::Retract { targets, dry_run } => retract(&cli.archive, &targets, dry_run, quiet),
-        Command::Seal => seal(&cli.archive),
+        Command::Seal {
+            json,
+            dry_run,
+            check,
+            fast,
+        } => match check {
+            Some(id) => seal::check(&cli.archive, &id, fast, cli.verbose, quiet),
+            None => seal::seal(&cli.archive, json, dry_run, cli.verbose, quiet),
+        },
         Command::About {
             subject,
             attributes,
@@ -1340,18 +1392,6 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
         written.claims,
         written.run
     );
-    Ok(ExitCode::SUCCESS)
-}
-
-fn seal(root: &Path) -> Result<ExitCode> {
-    let archive = open(root)?;
-    match archive.log().seal()? {
-        Some(segment) => println!(
-            "sealed as {}; the open segment is now empty",
-            segment.digest()
-        ),
-        None => println!("nothing to seal; the open segment contains no claims"),
-    }
     Ok(ExitCode::SUCCESS)
 }
 

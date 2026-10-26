@@ -453,12 +453,12 @@ pub fn join(ours: &Archive, theirs: &Archive) -> Result<Join> {
     }
     // Merged before and nothing new there: this archive's record already
     // leads to the other one's last segment, and is left as it is.
-    let named = ours.log().head_contents()?.previous().to_vec();
-    if reached(ours.log(), &named)?.contains(&last_theirs) {
+    let current = ours.log().head_contents()?.previous().to_vec();
+    if reached(ours.log(), &current)?.contains(&last_theirs) {
         return Ok(Join {
             sealed: None,
             sealed_theirs,
-            names: named,
+            names: current,
             changed: false,
         });
     }

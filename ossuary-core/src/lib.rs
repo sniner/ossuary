@@ -38,6 +38,7 @@ mod manifest;
 mod mend;
 mod merge;
 mod retract;
+mod seal;
 mod weed;
 
 pub use accession::{Admitted, Sighting, admit, record};
@@ -64,4 +65,7 @@ pub use merge::{
     rehash_store, replay, take_memo,
 };
 pub use retract::{Taking, retract};
+pub use seal::{
+    Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,
+};
 pub use weed::{Weeded, twins, weed};

@@ -22,8 +22,6 @@
 
 use std::path::PathBuf;
 
-use immure::{Entry, Store};
-
 use crate::archive::Archive;
 use crate::audit::{Fixity, Twin};
 use crate::error::{Error, Result};
@@ -80,12 +78,12 @@ pub fn twins(archive: &Archive) -> Result<Vec<Twin>> {
         };
         let original = content.entry_at(&path).map_or_else(
             || Fixity::Unreadable(format!("{}: not an entry's name", path.display())),
-            |original| fixity(content, &original),
+            |original| Fixity::of(content, &original),
         );
         twins.push(Twin {
             digest: entry.digest().clone(),
             content: original,
-            derived: fixity(derived, &entry),
+            derived: Fixity::of(derived, &entry),
         });
     }
     Ok(twins)
@@ -135,18 +133,9 @@ pub fn weed(archive: &Archive, twin: &Twin, repair: bool) -> Result<Weeded> {
     })
 }
 
-/// One entry read whole and re-hashed, the way the audit does it.
-fn fixity(store: &Store, entry: &Entry) -> Fixity {
-    match store.verify(entry) {
-        Ok(true) => Fixity::Sound,
-        Ok(false) => Fixity::Damaged,
-        Err(error) => Fixity::Unreadable(error.to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use immure::{Algorithm, Digest};
+    use immure::{Algorithm, Digest, Store};
     use serde_json::json;
     use tempfile::TempDir;
 

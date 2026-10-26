@@ -20,8 +20,7 @@
 //! to, in the header of its successor or of the head: that is what an
 //! audit follows. What the chain cannot show is a loss at its very end
 //! that the head was rewritten to hide (the head is the one mutable
-//! file), which is a job for a copy of the latest digest kept outside the
-//! archive.
+//! file); a seal kept outside the archive shows it (see `seal`).
 //!
 //! A break in the chain is closed by a mend, never by rewriting: a segment
 //! of no claims whose header names the two ends it joins — `previous`, the
@@ -225,6 +224,14 @@ impl Contents {
     #[must_use]
     pub fn into_claims(self) -> Vec<Claim> {
         self.claims
+    }
+
+    /// Whether an open head with these contents is sealed: it holds
+    /// claims, or it names several segments, which one sealed segment
+    /// then names. A head of no claims that names one segment or none
+    /// waits.
+    pub(crate) fn sealable(&self) -> bool {
+        !self.claims.is_empty() || self.previous.len() > 1
     }
 }
 
@@ -436,7 +443,7 @@ impl Log {
             }
         };
         let contents = parse_segment(&text)?;
-        if contents.claims.is_empty() && contents.previous.len() < 2 {
+        if !contents.sealable() {
             return Ok(None);
         }
         let claims = contents.into_claims();
