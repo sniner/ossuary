@@ -5,6 +5,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary ls` and `ossuary tree` take a path without the leading /.** It starts at the top level,
+  so the names `ls` shows can be given as they are: `ls home` lists /home. Before, such a path was
+  refused
+
 ## [0.13.0] - 2026-10-26
 
 ### Added

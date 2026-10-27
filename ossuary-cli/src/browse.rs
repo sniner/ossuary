@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use ossuary_core::{Index, Subject, Value};
 
 use crate::{index_at, open, say, shorten};
@@ -22,7 +22,7 @@ pub(crate) fn ls(
     as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
-    let place = named(place)?;
+    let place = named(place);
     let archive = open(root)?;
     let index = index_at(&archive, as_of, quiet)?;
     let pairs = index.under(&place)?;
@@ -68,7 +68,7 @@ pub(crate) fn tree(
     as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
-    let place = named(place)?;
+    let place = named(place);
     let archive = open(root)?;
     let index = index_at(&archive, as_of, quiet)?;
     let pairs = shortened(&index, index.under(&place)?)?;
@@ -98,21 +98,17 @@ pub(crate) fn tree(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The place as the record spells one: absolute, no trailing slash,
-/// the root as `/`. Left out, the root — where every place begins.
-fn named(given: Option<&str>) -> Result<String> {
-    let given = given.unwrap_or("/");
-    if !given.starts_with('/') {
-        return Err(anyhow!(
-            "{given:?} is not an absolute path; give the path as ingest recorded it, starting with /"
-        ));
-    }
-    let bare = given.trim_end_matches('/');
-    Ok(if bare.is_empty() {
+/// The place in the form the record stores paths: absolute, without a
+/// trailing slash, the root as `/`. The archive has no current folder,
+/// so a relative place starts at the root, where `ls` without a place
+/// lists the names it shows.
+fn named(given: Option<&str>) -> String {
+    let bare = given.unwrap_or("/").trim_matches('/');
+    if bare.is_empty() {
         "/".to_string()
     } else {
-        bare.to_string()
-    })
+        format!("/{bare}")
+    }
 }
 
 /// The calm word for an empty answer: nothing stands at the place —
@@ -345,13 +341,14 @@ mod tests {
     }
 
     #[test]
-    fn a_place_is_absolute_and_carries_no_trailing_slash() {
-        assert_eq!(named(None).unwrap(), "/");
-        assert_eq!(named(Some("/")).unwrap(), "/");
-        assert_eq!(named(Some("/home/john/")).unwrap(), "/home/john");
-        assert!(
-            named(Some("photos")).is_err(),
-            "a relative place is refused"
+    fn a_place_starts_at_the_root_and_has_no_trailing_slash() {
+        assert_eq!(named(None), "/");
+        assert_eq!(named(Some("/")), "/");
+        assert_eq!(named(Some("/home/john/")), "/home/john");
+        assert_eq!(
+            named(Some("home/john")),
+            "/home/john",
+            "a relative place starts at the root, not in the current directory"
         );
     }
 

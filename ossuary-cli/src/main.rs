@@ -466,16 +466,18 @@ enum Command {
     },
     /// List the recorded files and folders at a path
     ///
-    /// PLACE is an absolute path as ingest recorded it, from whichever
-    /// machine the file was on; without PLACE, the top level is listed.
-    /// Folders end with a slash. Each file is on a line of its own, its
-    /// short name first (the name `about`, `get` and `export` take), as
-    /// in `export --dry-run`. The listing comes from the record, not
-    /// from a disk: a path is listed until it is retracted, even if the
-    /// disk is gone. If different files were recorded at the same path
-    /// over time, each gets its own line.
+    /// PLACE is a path as ingest recorded it, from whichever machine the
+    /// file was on; without PLACE, the top level is listed. A path
+    /// without a leading / also starts at the top level: `ls home` lists
+    /// /home, not a folder in the current directory. Folders end with a
+    /// slash. Each file is on a line of its own, its short name first
+    /// (the name `about`, `get` and `export` take), as in `export
+    /// --dry-run`. The listing comes from the record, not from a disk: a
+    /// path is listed until it is retracted, even if the disk is gone. If
+    /// different files were recorded at the same path over time, each
+    /// gets its own line.
     Ls {
-        /// An absolute path (default: /)
+        /// A recorded path (default: /)
         #[arg(value_name = "PLACE")]
         place: Option<String>,
 
@@ -497,7 +499,7 @@ enum Command {
     /// it lists paths from every machine files were ingested from, until
     /// they are retracted.
     Tree {
-        /// An absolute path (default: /)
+        /// A recorded path (default: /)
         #[arg(value_name = "PLACE")]
         place: Option<String>,
 
