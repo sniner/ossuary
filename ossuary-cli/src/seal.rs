@@ -24,7 +24,7 @@ pub(crate) fn seal(
     let archive = open(root)?;
     if !quiet {
         eprintln!("archive {}", archive.root().display());
-        eprintln!("checking every sealed segment against its hash, and the chain they form");
+        eprintln!("checking every sealed segment against its hash");
     }
     match ossuary_core::seal(&archive, dry_run)? {
         Sealing::Empty => {

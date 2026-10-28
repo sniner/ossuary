@@ -94,7 +94,7 @@ restored the seal holds again. **Seal and backup belong together.**
 ```console
 $ ossuary --archive /srv/archive seal
 archive /srv/archive
-checking every sealed segment against its hash, and the chain they form
+checking every sealed segment against its hash
 open segment sealed
 the seal covers 312 sealed segment(s) with 1308712 claim(s) and every file they refer to
 the id is the sha256 hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it
@@ -154,7 +154,7 @@ out:
 ```console
 $ ossuary seal
 archive /srv/archive
-checking every sealed segment against its hash, and the chain they form
+checking every sealed segment against its hash
 claims: segment 880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe is missing; 7922c85f074e31c04b15931157af38610b09d45cc346e1e686d964649b231ce0 names it as its predecessor
 claims: 311 sealed segment(s) and the open segment, 1304544 claim(s), 1 missing
 the chain of sealed segments is broken: 2 separate chains, expected one
