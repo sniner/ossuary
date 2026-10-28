@@ -61,7 +61,7 @@ equivalent.
 
 ```console
 $ cargo install --locked \
-    ossuary-cli ossuary-mount ossuary-mailvault \
+    ossuary-cli ossuary-mount ossuary-mailvault ossuary-sync \
     ossuary-extract-image ossuary-extract-mail \
     ossuary-extract-packed ossuary-extract-pdf
 ```
@@ -93,6 +93,7 @@ crate's README describes what it does and what it needs:
 | [`ossuary-core`](ossuary-core/README.md) | the archive library all other programs are built on |
 | [`ossuary-mount`](ossuary-mount/README.md) | the archive as a read-only filesystem |
 | [`ossuary-mailvault`](ossuary-mailvault/README.md) | fetches whole mailboxes into the archive over IMAP or MS Graph |
+| [`ossuary-sync`](ossuary-sync/README.md) | copies the archive to a second place and keeps the copy up to date |
 | [`ossuary-extract-image`](ossuary-extract-image/README.md) | image metadata (EXIF, XMP, IPTC) and the pixel format (size, bit depth, color) |
 | [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a mail's headers, and its attachments and nested messages as files of their own |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip file's list of contents, or its unpacked files |
@@ -415,6 +416,26 @@ unchanged.
 What a seal proves and what it does not, where to keep the id, what to
 do when a seal does not hold, and how to have the id timestamped:
 [Sealing an archive](docs/sealing.md).
+
+## Copying the archive to a second place
+
+`sync TARGET` copies the archive to another directory, such as a backup
+disk or a share mounted from a NAS, to a folder on a filebridge server
+or a WebDAV server, and keeps the copy up to date. Each run seals the
+archive and copies only what the copy lacks; the last line is the seal
+id the copy now holds:
+
+```console
+$ mkdir /mnt/backup/archive
+$ ossuary sync -q /mnt/backup/archive
+1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
+$ ossuary --archive /mnt/backup/archive seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 --fast
+```
+
+Nothing in the copy is deleted. A run that is interrupted leaves the
+copy at the seal it had, and the next run completes it. `cache/`,
+`config.toml` and `mailvault.toml` are not copied. What a run does and
+what it refuses: [ossuary-sync](ossuary-sync/README.md).
 
 ## Merging two archives
 

@@ -136,6 +136,14 @@ fn header_line(previous: &[Digest], mend: Option<&Mend>) -> String {
     line
 }
 
+/// The open segment that sealing leaves behind: a header that names
+/// `segment` alone, and no claims. These are the bytes of `head.jsonl`
+/// right after a seal.
+#[must_use]
+pub fn head_after(segment: &Digest) -> String {
+    header_line(std::slice::from_ref(segment), None)
+}
+
 /// What a mend says beyond its `previous`: where it stands, and what
 /// stood there before.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -200,6 +208,19 @@ pub struct Contents {
 }
 
 impl Contents {
+    /// Read a segment from its text as a file holds it, header first:
+    /// for an open segment that is not this log's own, such as the head
+    /// of a copy of the archive.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::SegmentHeader`] and [`Error::SegmentGeneration`] for a
+    /// header that does not read or is newer, and [`Error::BadLine`]
+    /// naming the first claim that does not read.
+    pub fn parse(text: &str) -> Result<Contents> {
+        parse_segment(text)
+    }
+
     /// The segments sealed before this one, as its header names them:
     /// one in an archive written as one line, several where lines were
     /// merged, none for a first segment.
@@ -459,11 +480,7 @@ impl Log {
         let mut name = self.head.file_name().unwrap_or_default().to_os_string();
         name.push(".tmp");
         let tmp = self.head.with_file_name(name);
-        fs::write(
-            &tmp,
-            header_line(std::slice::from_ref(entry.digest()), None),
-        )
-        .map_err(io("writing the new head"))?;
+        fs::write(&tmp, head_after(entry.digest())).map_err(io("writing the new head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
 
         if let Some(manifests) = &self.manifests {

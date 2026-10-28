@@ -163,8 +163,9 @@ from the PATH: `ossuary mount ~/view` runs `ossuary-mount ~/view`. The
 program replaces the `ossuary` process, so signals and the exit code
 pass through unchanged. It receives the archive as an absolute path in
 `OSSUARY_ARCHIVE`, however the archive was given.
-[`ossuary-mount`](../ossuary-mount/README.md) and
-[`ossuary-mailvault`](../ossuary-mailvault/README.md) are such programs.
+[`ossuary-mount`](../ossuary-mount/README.md),
+[`ossuary-mailvault`](../ossuary-mailvault/README.md) and
+[`ossuary-sync`](../ossuary-sync/README.md) are such programs.
 
 ## Exit codes
 

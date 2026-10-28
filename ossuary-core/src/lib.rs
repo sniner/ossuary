@@ -27,6 +27,7 @@ mod archive;
 mod audit;
 mod claim;
 mod config;
+mod delta;
 mod error;
 mod examine;
 mod export;
@@ -50,6 +51,7 @@ pub use audit::{
 };
 pub use claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
 pub use config::{Config, Excludes};
+pub use delta::{Delta, delta};
 pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
 pub use export::{Placed, Placement, lay_out};
@@ -57,7 +59,7 @@ pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::{Algorithm, Digest, Store};
 pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
-pub use log::{Contents, GENERATION, Log, Mend, Segment};
+pub use log::{Contents, GENERATION, Log, Mend, Segment, head_after};
 pub use manifest::{Manifest, Manifests};
 pub use mend::{mend, name_mend};
 pub use merge::{

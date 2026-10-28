@@ -5,6 +5,23 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary sync TARGET` copies the archive to another directory, a filebridge location or a
+  WebDAV folder, and keeps the copy up to date.**
+  Each run seals the archive, copies the files and sealed segments the copy lacks, and prints the
+  seal id the copy now holds; `ossuary seal --check ID` on the copy checks it. A later run
+  copies only what was recorded since. The copy is brought up to the new seal only when everything
+  arrived: an interrupted run, or a file that is missing or damaged in the archive, leaves it at the
+  seal it had. Nothing in the copy is deleted; `cache/`, `config.toml` and `mailvault.toml` are not
+  copied. The target is an existing directory, a folder in a filebridge location named as
+  `filebridge+http://HOST:PORT/LOCATION/FOLDER`, or the URL of an existing WebDAV folder, empty for
+  the first sync. The token for a filebridge location is read from `OSSUARY_SYNC_TOKEN`, the login
+  for a WebDAV server from `OSSUARY_SYNC_USERNAME` and `OSSUARY_SYNC_PASSWORD`, and
+  `--accept-any-certificate` accepts a self-signed certificate. On Nextcloud, large files are
+  uploaded in parts, so a limit on the upload size does not stop them.
+  `--dry-run` shows what would be copied
+
 ### Changed
 
 - **`ossuary ls` and `ossuary tree` take a path without the leading /.** It starts at the top level,

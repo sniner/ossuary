@@ -1,0 +1,26 @@
+[package]
+name = "ossuary-sync"
+description = "Copies an ossuary archive to a second place, sending only what the copy lacks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ossuary-sync"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+base64 = "0.23.1"
+clap = { version = "4.5.51", features = ["derive", "env"] }
+filebridge = { version = "0.4.2", default-features = false, features = ["rustls"] }
+ossuary-core = { path = "../ossuary-core", version = "0.13.0" }
+serde_json = "1.0.151"
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
