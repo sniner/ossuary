@@ -5,6 +5,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ossuary extract` shows the extractor's own reason when the extractor exits before it has read
+  the whole file**, instead of "Broken pipe", and no longer leaves the ended extractor process
+  behind until the run is over. If the extractor exits 0 in that case, the file counts as failed
+  and is examined again in the next run. A file that cannot be read from the archive is reported as
+  such, and an extractor that writes a lot before it has read its input no longer makes the run
+  hang
+
 ### Changed
 
 - **Building ossuary needs Rust 1.88 or newer**, as the code already did. With Rust 1.85 to 1.87 the

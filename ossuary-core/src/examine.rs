@@ -24,7 +24,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -920,7 +920,8 @@ fn try_one(
 /// stripped from the front of each line, since the caller will say
 /// which file was meant and the program's name would only stand in
 /// the way. A non-zero exit is a refusal, and what stderr said is the
-/// reason.
+/// reason. Exit 0 before the whole file was read is an error as well:
+/// the protocol has the extractor read to the end before it answers.
 fn converse(
     command: &mut Command,
     program: &str,
@@ -935,35 +936,116 @@ fn converse(
             context: format!("running `{program}`"),
             source: error,
         })?;
-    // Streamed straight from the store into the pipe: the examinee never
-    // stands whole in memory. The drop closes the pipe — the extractor's
-    // end-of-file.
     let mut stdin = child.stdin.take().expect("stdin was piped");
-    std::io::copy(reader, &mut stdin).map_err(|error| Error::Io {
-        context: "writing the file to the extractor".to_string(),
+    let mut stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    // stdout and stderr are read while the file is still being written:
+    // an extractor that writes before it has read to the end, against
+    // the protocol, would otherwise block on a full pipe while this side
+    // blocks on its stdin.
+    let (handed, answer, remarks) = std::thread::scope(|scope| {
+        let answer = scope.spawn(move || drain(&mut stdout));
+        let remarks = scope.spawn(move || drain(&mut stderr));
+        let handed = hand_over(reader, &mut stdin);
+        if matches!(handed, Err(Shortfall::Read(_) | Shortfall::Write(_))) {
+            // The extractor must not take the bytes so far for the whole
+            // file. A failed kill changes nothing: the examination fails
+            // either way, and the wait below reaps the process.
+            let _ = child.kill();
+        }
+        // Closing stdin is the extractor's end-of-file.
+        drop(stdin);
+        (
+            handed,
+            answer.join().expect("reading a pipe does not panic"),
+            remarks.join().expect("reading a pipe does not panic"),
+        )
+    });
+    let status = child.wait().map_err(|error| Error::Io {
+        context: format!("waiting for `{program}` to exit"),
         source: error,
     })?;
-    drop(stdin);
-    // Both pipes drained together: an extractor that complains at length
-    // while its findings wait must not block on either.
-    let output = child.wait_with_output().map_err(|error| Error::Io {
+    let closed = match handed {
+        Ok(()) => false,
+        Err(Shortfall::Closed) => true,
+        Err(Shortfall::Read(error)) => {
+            return Err(Error::Io {
+                context: "reading the file from the archive".to_string(),
+                source: error,
+            });
+        }
+        Err(Shortfall::Write(error)) => {
+            return Err(Error::Io {
+                context: "writing the file to the extractor".to_string(),
+                source: error,
+            });
+        }
+    };
+    let read_error = |error| Error::Io {
         context: "reading the extractor's output".to_string(),
         source: error,
-    })?;
-    let remarks = unprefixed(program, &String::from_utf8_lossy(&output.stderr));
-    if !output.status.success() {
+    };
+    let answer = answer.map_err(read_error)?;
+    let remarks = unprefixed(
+        program,
+        &String::from_utf8_lossy(&remarks.map_err(read_error)?),
+    );
+    if !status.success() {
         // The reason on one line, as a failure list wants it.
         let complaint = remarks.lines().collect::<Vec<_>>().join("; ");
         return Err(Error::Extract(if complaint.is_empty() {
-            format!("`{program}` failed ({})", output.status)
+            format!("`{program}` failed ({status})")
         } else {
-            format!("`{program}` failed ({}): {complaint}", output.status)
+            format!("`{program}` failed ({status}): {complaint}")
         }));
     }
-    Ok((
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        remarks,
-    ))
+    if closed {
+        // Exit 0 says the file was examined, but part of it was never
+        // read.
+        return Err(Error::Extract(format!(
+            "`{program}` exited before it had read the whole file"
+        )));
+    }
+    Ok((String::from_utf8_lossy(&answer).into_owned(), remarks))
+}
+
+/// Why the file did not reach the extractor whole.
+enum Shortfall {
+    /// The extractor closed its stdin before the end.
+    Closed,
+    /// The file could not be read from the archive.
+    Read(std::io::Error),
+    /// Writing into the pipe failed for another reason.
+    Write(std::io::Error),
+}
+
+/// Stream the file into the extractor's stdin, so that it is never
+/// held whole in memory. Unlike `io::copy`, this keeps a failed read
+/// from the store apart from a failed write into the pipe.
+fn hand_over(reader: &mut impl Read, stdin: &mut impl Write) -> std::result::Result<(), Shortfall> {
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => read,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(Shortfall::Read(error)),
+        };
+        match stdin.write_all(&buffer[..read]) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => {
+                return Err(Shortfall::Closed);
+            }
+            Err(error) => return Err(Shortfall::Write(error)),
+        }
+    }
+}
+
+/// Everything a pipe gives until the other end closes it.
+fn drain(pipe: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The lines of an extractor's stderr without `program: ` in front,
@@ -1117,6 +1199,75 @@ mod tests {
         assert!(
             spelled.contains("`sh` failed") && spelled.contains("cannot read this"),
             "{spelled}"
+        );
+    }
+
+    /// Larger than a pipe's buffer, so that an extractor which stops
+    /// reading leaves the rest unwritten.
+    fn a_large_file() -> Vec<u8> {
+        vec![b'x'; 1024 * 1024]
+    }
+
+    #[test]
+    fn an_extractor_that_stops_reading_gives_its_own_reason() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo 'sh: no such contract' >&2; exit 2"]);
+        let error = converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap_err();
+        let spelled = error.spelled();
+        assert!(
+            spelled.contains("`sh` failed") && spelled.contains("no such contract"),
+            "{spelled}"
+        );
+    }
+
+    #[test]
+    fn exit_0_before_the_end_of_the_file_is_an_error() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 0"]);
+        let error = converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap_err();
+        assert_eq!(
+            error.spelled(),
+            "`sh` exited before it had read the whole file"
+        );
+    }
+
+    #[test]
+    fn an_extractor_that_writes_before_it_reads_does_not_block() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "head -c 300000 /dev/zero | tr '\\0' x >&2; cat > /dev/null",
+        ]);
+        let (answer, remarks) =
+            converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap();
+        assert_eq!(answer, "");
+        assert_eq!(remarks.len(), 300_000);
+    }
+
+    #[test]
+    fn a_file_the_archive_cannot_read_fails_as_a_read() {
+        /// Gives 100 000 bytes, then fails.
+        struct Damaged(usize);
+        impl Read for Damaged {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 >= 100_000 {
+                    return Err(std::io::Error::other("frame damaged"));
+                }
+                let given = buffer.len().min(100_000 - self.0);
+                buffer[..given].fill(b'x');
+                self.0 += given;
+                Ok(given)
+            }
+        }
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "cat > /dev/null; echo '{\"attribute\":\"a:b\",\"value\":1}'",
+        ]);
+        let error = converse(&mut command, "sh", &mut Damaged(0)).unwrap_err();
+        assert_eq!(
+            error.spelled(),
+            "reading the file from the archive: frame damaged"
         );
     }
 
