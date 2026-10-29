@@ -123,13 +123,13 @@ added when it is first needed.
   there is something to report; an examination that found nothing
   writes no note. Notes accumulate, and the extractor that wrote a note
   is the claim's source: `prov:note` with the source
-  `extractor:pdf-text/…` means "this PDF gave no text", so no narrower
-  attribute is needed
+  `extractor:pdf-text/…` says why this PDF gave no text or no document
+  information, so no narrower attribute is needed
 - value: string, one sentence written by the extractor
 - written by: extractors, as an ordinary finding. Currently
   ossuary-extract-pdf; also ossuary-extract-packed and the
   `attachments` contract of ossuary-extract-pdf, about entries they
-  could not extract
+  could not extract or a document they could not read
 
 ### file:path
 

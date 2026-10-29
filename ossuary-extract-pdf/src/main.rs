@@ -42,14 +42,87 @@
 //! line on stderr: a document that gave up its attachments incompletely
 //! must not read like one that gave them whole. A document lopdf cannot
 //! open has no attachments to give.
+//!
+//! lopdf inflates every compressed stream it needs while it opens a
+//! document, without a limit, and a few kilobytes of deflate can inflate
+//! to gigabytes. So the part of each contract that uses lopdf runs in a
+//! second process of this program, the worker (`--worker`), with the
+//! allocator limited to [`memory_limit`]. The limit is fixed in the code,
+//! so the same document always ends the same way. When the worker reached
+//! the limit, overflowed its stack or panicked, the cause is the document
+//! and a later run would end the same way: the reason goes on the record
+//! as a `prov:note`, and the examination counts. Any other end of the
+//! worker is a failure.
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashSet;
-use std::io::{Read, Write as _};
+use std::fs::File;
+use std::io::{ErrorKind, Read, Write};
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use lopdf::{Dictionary, Document, Object, ObjectId};
+use cap::Cap;
+use flate2::read::ZlibDecoder;
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use serde_json::json;
+
+/// The allocator: [`Cap`], which counts every allocation and refuses
+/// those past its limit, and a flag that records a refusal. Outside the
+/// worker there is no limit.
+///
+/// The flag is needed because a refusal does not always end the process.
+/// lopdf inflates streams with `read_to_end`, which reports a refused
+/// allocation as an error, and lopdf keeps the bytes read so far as if
+/// the stream ended there.
+struct Limited {
+    cap: Cap<System>,
+    refused: AtomicBool,
+}
+
+#[global_allocator]
+static ALLOCATOR: Limited = Limited {
+    cap: Cap::new(System, usize::MAX),
+    refused: AtomicBool::new(false),
+};
+
+impl Limited {
+    fn noted(&self, pointer: *mut u8) -> *mut u8 {
+        if pointer.is_null() {
+            self.refused.store(true, Ordering::SeqCst);
+        }
+        pointer
+    }
+}
+
+// SAFETY: every method passes its arguments unchanged to `Cap`, which
+// implements `GlobalAlloc` on top of the system allocator, and returns
+// its result unchanged. Recording a refusal neither allocates nor
+// unwinds.
+unsafe impl GlobalAlloc for Limited {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's guarantees about `layout` hold for `Cap`.
+        self.noted(unsafe { self.cap.alloc(layout) })
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: as for `alloc`.
+        self.noted(unsafe { self.cap.alloc_zeroed(layout) })
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: `pointer` came from this allocator, and so from `Cap`,
+        // with this `layout`.
+        unsafe { self.cap.dealloc(pointer, layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        // SAFETY: as for `dealloc`; the caller's guarantees about `size`
+        // hold for `Cap`.
+        self.noted(unsafe { self.cap.realloc(pointer, layout, size) })
+    }
+}
 
 /// The generation of what each contract writes: the number in its
 /// source, and so the memory of which files it has seen. Raised by hand
@@ -66,6 +139,21 @@ const ATTACHMENTS_GENERATION: u32 = 1;
 /// inside with the reason on the record.
 const UNPACKED_AT_MOST: usize = 1 << 30;
 
+/// The worker's memory: a base, and a share per byte of the document.
+/// On real PDFs lopdf needed 2.5 to 13 times the file size; a deflate
+/// bomb inflates to about 1000 times its size.
+const MEMORY_BASE: usize = 64 << 20;
+const MEMORY_PER_BYTE: usize = 64;
+
+/// What the worker may allocate beyond the document's bytes, for a
+/// document of `size` bytes. Whole MiB, so that a note can state it.
+fn memory_limit(size: usize) -> usize {
+    MEMORY_PER_BYTE
+        .saturating_mul(size)
+        .saturating_add(MEMORY_BASE)
+        .next_multiple_of(1 << 20)
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments
@@ -81,6 +169,10 @@ fn main() -> ExitCode {
         ["attachments", directory] if !directory.starts_with('-') => {
             examine(Contract::Attachments, Path::new(directory))
         }
+        ["--worker", "info", limit] => worker(Task::Info, limit),
+        ["--worker", "attachments", directory, limit] => {
+            worker(Task::Attachments(Path::new(directory)), limit)
+        }
         _ => {
             eprintln!(
                 "ossuary-extract-pdf: expected --identify, or `text DIR` or `attachments DIR` with the file on stdin"
@@ -95,6 +187,26 @@ fn main() -> ExitCode {
 enum Contract {
     Text,
     Attachments,
+}
+
+/// The part of a contract that reads the document with lopdf, and so
+/// runs in the worker.
+#[derive(Clone, Copy)]
+enum Task<'a> {
+    /// The document information dictionary, for `text`.
+    Info,
+    /// The embedded files, written into the directory, for `attachments`.
+    Attachments(&'a Path),
+}
+
+impl Task<'_> {
+    /// The start of the note when the worker stops on the document.
+    fn not_read(self) -> &'static str {
+        match self {
+            Task::Info => "document information not read",
+            Task::Attachments(_) => "attachments not extracted",
+        }
+    }
 }
 
 /// Who this extractor is — answered only when its text engine is
@@ -139,13 +251,8 @@ fn examine(contract: Contract, directory: &Path) -> ExitCode {
     }
     match contract {
         Contract::Text => text(&bytes, directory),
-        Contract::Attachments => match attachments(&bytes, directory, UNPACKED_AT_MOST) {
-            Ok(lines) => {
-                for line in lines {
-                    println!("{line}");
-                }
-                ExitCode::SUCCESS
-            }
+        Contract::Attachments => match guarded(Task::Attachments(directory), &bytes) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("ossuary-extract-pdf: {error}");
                 ExitCode::FAILURE
@@ -154,11 +261,238 @@ fn examine(contract: Contract, directory: &Path) -> ExitCode {
     }
 }
 
+/// Runs `task` in the worker and passes on what it wrote. When the
+/// worker stopped on the document (see [`verdict`]), a note with the
+/// reason is written instead. Fails when the worker cannot be run, or
+/// ended for another reason.
+fn guarded(task: Task<'_>, bytes: &[u8]) -> std::io::Result<()> {
+    let limit = memory_limit(bytes.len());
+    let ended = in_worker(task, bytes, limit)?;
+    match verdict(ended.status, &String::from_utf8_lossy(&ended.stderr), limit) {
+        Verdict::Read => {
+            std::io::stdout().write_all(&ended.stdout)?;
+            std::io::stderr().write_all(&ended.stderr)?;
+            Ok(())
+        }
+        Verdict::Refused(reason) => {
+            note(&format!("{}: {reason}", task.not_read()));
+            Ok(())
+        }
+        Verdict::Failed => {
+            std::io::stderr().write_all(&ended.stderr)?;
+            Err(std::io::Error::other(format!(
+                "reading the document failed ({})",
+                ended.status
+            )))
+        }
+    }
+}
+
+/// How the worker ended, and everything it wrote.
+struct Ended {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Starts this program as the worker for `task`, hands it the document
+/// on stdin and collects stdout and stderr.
+fn in_worker(task: Task<'_>, bytes: &[u8], limit: usize) -> std::io::Result<Ended> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command.arg("--worker");
+    match task {
+        Task::Info => command.arg("info"),
+        Task::Attachments(directory) => command.arg("attachments").arg(directory),
+    };
+    let mut child = command
+        .arg(limit.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            std::io::Error::new(error.kind(), format!("starting the worker: {error}"))
+        })?;
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let mut stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    // Both pipes are read while the document is written, so that neither
+    // side waits for the other.
+    let (handed, stdout, stderr) = std::thread::scope(|scope| {
+        let stdout = scope.spawn(move || drain(&mut stdout));
+        let stderr = scope.spawn(move || drain(&mut stderr));
+        let handed = stdin.write_all(bytes);
+        drop(stdin);
+        (
+            handed,
+            stdout.join().expect("reading a pipe does not panic"),
+            stderr.join().expect("reading a pipe does not panic"),
+        )
+    });
+    let status = child.wait()?;
+    // The worker reads all of stdin before it does anything else, so a
+    // closed pipe means it has ended, and its status says how. Exit 0
+    // without the whole document, or any other write error, would leave
+    // an answer about a part of it.
+    if let Err(error) = handed
+        && (error.kind() != ErrorKind::BrokenPipe || status.success())
+    {
+        return Err(std::io::Error::new(
+            error.kind(),
+            format!("handing the document to the worker: {error}"),
+        ));
+    }
+    Ok(Ended {
+        status,
+        stdout: stdout?,
+        stderr: stderr?,
+    })
+}
+
+fn drain(pipe: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// What the end of the worker means for the examination.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    /// It did its task: what it wrote is the answer.
+    Read,
+    /// It stopped on the document and would again: the reason, for a note.
+    Refused(String),
+    /// Any other end, worth a retry in a later run.
+    Failed,
+}
+
+/// The worker's exit code when an allocation was refused and the task
+/// still returned.
+const LIMIT_REACHED: u8 = 3;
+
+/// The exit code of a Rust program that panicked.
+const PANICKED: u8 = 101;
+
+/// Sorts the end of the worker by its cause. The memory limit, a panic
+/// and a stack overflow happen again with the same document, so they are
+/// refusals. A refused allocation that the standard library cannot
+/// report as an error ends the process with `abort`, after the line
+/// "memory allocation of N bytes failed"; a stack overflow ends it with
+/// `abort` too. A kill from outside, such as the system's OOM killer, or
+/// an error the worker reported itself is a failure.
+fn verdict(status: ExitStatus, stderr: &str, limit: usize) -> Verdict {
+    if status.success() {
+        return Verdict::Read;
+    }
+    let last = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.strip_prefix("ossuary-extract-pdf: ").unwrap_or(line));
+    let code = status.code();
+    if code == Some(LIMIT_REACHED.into())
+        || (aborted(status) && stderr.contains("memory allocation of"))
+    {
+        return Verdict::Refused(format!(
+            "the document needs more than {} of memory",
+            human_bytes(limit)
+        ));
+    }
+    if code == Some(PANICKED.into()) {
+        return Verdict::Refused(match last {
+            Some(message) => format!("the PDF library failed: {message}"),
+            None => "the PDF library failed".to_string(),
+        });
+    }
+    if aborted(status) {
+        return Verdict::Refused(match last {
+            Some(message) => format!("the PDF library stopped: {message}"),
+            None => "the PDF library stopped".to_string(),
+        });
+    }
+    Verdict::Failed
+}
+
+/// Whether the process ended with `abort`, which raises SIGABRT (6 on
+/// Linux and macOS).
+#[cfg(unix)]
+fn aborted(status: ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt as _;
+    status.signal() == Some(6)
+}
+
+#[cfg(not(unix))]
+fn aborted(_: ExitStatus) -> bool {
+    false
+}
+
+/// The worker: reads the document from stdin and does `task` with
+/// lopdf, with at most `limit` bytes allocated beyond the document. It
+/// writes its lines only when the task returned without a refused
+/// allocation; the exit code tells [`verdict`] what happened otherwise.
+fn worker(task: Task<'_>, limit: &str) -> ExitCode {
+    let Ok(limit) = limit.parse::<usize>() else {
+        eprintln!("ossuary-extract-pdf: --worker needs a memory limit in bytes");
+        return ExitCode::FAILURE;
+    };
+    let mut bytes = Vec::new();
+    if let Err(error) = std::io::stdin().lock().read_to_end(&mut bytes) {
+        eprintln!("ossuary-extract-pdf: reading stdin: {error}");
+        return ExitCode::FAILURE;
+    }
+    ALLOCATOR
+        .cap
+        .set_limit(ALLOCATOR.cap.allocated().saturating_add(limit))
+        .expect("a limit above what is allocated is always accepted");
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("ossuary-extract-pdf: {}", panic_message(info.payload()));
+    }));
+    // A panic is caught so that a refused allocation before it counts
+    // first: lopdf may well panic on a stream it has only read in part.
+    let read = std::panic::catch_unwind(AssertUnwindSafe(|| match task {
+        Task::Info => Ok(document_info(&bytes)
+            .into_iter()
+            .map(|(attribute, value)| json!({ "attribute": attribute, "value": value }))
+            .collect()),
+        Task::Attachments(directory) => attachments(&bytes, directory, UNPACKED_AT_MOST),
+    }));
+    if ALLOCATOR.refused.load(Ordering::SeqCst) {
+        eprintln!("ossuary-extract-pdf: memory limit reached");
+        return ExitCode::from(LIMIT_REACHED);
+    }
+    match read {
+        Ok(Ok(lines)) => {
+            for line in lines {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(Err(error)) => {
+            eprintln!("ossuary-extract-pdf: {error}");
+            ExitCode::FAILURE
+        }
+        // The panic hook has printed the message.
+        Err(_) => ExitCode::from(PANICKED),
+    }
+}
+
+/// A panic's message: `panic!` with a literal gives a `&str`, with
+/// arguments a `String`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message")
+}
+
 /// The `text` contract: info dictionary onto stdout, text into the
 /// directory.
 fn text(bytes: &[u8], directory: &Path) -> ExitCode {
-    for (attribute, value) in document_info(bytes) {
-        println!("{}", json!({ "attribute": attribute, "value": value }));
+    if let Err(error) = guarded(Task::Info, bytes) {
+        eprintln!("ossuary-extract-pdf: {error}");
+        return ExitCode::FAILURE;
     }
     let text = match pdftotext(bytes.to_vec()) {
         Ok(Harvest::Text(text)) => text,
@@ -364,30 +698,16 @@ fn attachments(
             ));
             continue;
         }
-        // A stream without a filter is its bytes as they stand; lopdf
-        // asks for a filter before it inflates anything.
-        let content = if stream.dict.has(b"Filter") {
-            match stream.decompressed_content() {
-                Ok(content) => content,
-                Err(error) => {
-                    lines.push(stays_inside(&spelled, &error.to_string()));
-                    continue;
-                }
-            }
-        } else {
-            stream.content.clone()
-        };
-        if content.len() > at_most {
-            lines.push(stays_inside(
-                &spelled,
-                &format!("larger than {}", human_bytes(at_most)),
-            ));
-            continue;
-        }
         let announced = uniquify(wearable, &mut taken);
-        std::fs::write(directory.join(&announced), &content).map_err(|error| {
+        let unpacked = unpack(stream, &directory.join(&announced), at_most).map_err(|error| {
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
+        if let Unpacked::StaysInside(reason) = unpacked {
+            // The name goes back, as if it had never been taken.
+            taken.remove(&announced.to_lowercase());
+            lines.push(stays_inside(&spelled, &reason));
+            continue;
+        }
         lines.push(json!({ "file": &announced, "mime": declared_kind(&stream.dict) }));
         // The name the document spelled goes on the record, whether or
         // not the announcement could wear it: the announced name is a
@@ -401,6 +721,68 @@ fn attachments(
         }
     }
     Ok(lines)
+}
+
+/// What became of an embedded stream.
+enum Unpacked {
+    Written,
+    /// Not written, for the reason given.
+    StaysInside(String),
+}
+
+/// Writes the stream's decoded bytes to `path`, unless they are more
+/// than `at_most` or lopdf cannot decode them. Fails only when the file
+/// cannot be written.
+fn unpack(stream: &Stream, path: &Path, at_most: usize) -> std::io::Result<Unpacked> {
+    let too_large = || Unpacked::StaysInside(format!("larger than {}", human_bytes(at_most)));
+    // A stream without a filter is its bytes as they stand.
+    if !stream.dict.has(b"Filter") {
+        std::fs::write(path, &stream.content)?;
+        return Ok(Unpacked::Written);
+    }
+    // lopdf inflates without a bound. A plain FlateDecode stream, which
+    // is how writers embed files, is inflated here instead: into the
+    // file, and one byte past the bound at most. Other filters are rare
+    // for embedded files and stay with lopdf, under the worker's limit.
+    let plain_flate = !stream.dict.has(b"DecodeParms")
+        && stream
+            .filters()
+            .is_ok_and(|filters| filters == [b"FlateDecode".as_slice()]);
+    if !plain_flate {
+        return match stream.decompressed_content() {
+            Ok(content) if content.len() > at_most => Ok(too_large()),
+            Ok(content) => {
+                std::fs::write(path, content)?;
+                Ok(Unpacked::Written)
+            }
+            Err(error) => Ok(Unpacked::StaysInside(error.to_string())),
+        };
+    }
+    let bound = u64::try_from(at_most).unwrap_or(u64::MAX);
+    let mut inflated = ZlibDecoder::new(stream.content.as_slice()).take(bound.saturating_add(1));
+    let mut file = File::create(path)?;
+    if inflate_into(&mut inflated, &mut file)? > bound {
+        drop(file);
+        std::fs::remove_file(path)?;
+        return Ok(too_large());
+    }
+    Ok(Unpacked::Written)
+}
+
+/// Copies the inflated bytes into `file` and returns how many there
+/// were. A damaged stream ends the copy and keeps what came before it,
+/// as lopdf does.
+fn inflate_into(inflated: &mut impl Read, file: &mut impl Write) -> std::io::Result<u64> {
+    let mut buffer = vec![0; 64 * 1024];
+    let mut count = 0u64;
+    loop {
+        let read = match inflated.read(&mut buffer) {
+            Ok(0) | Err(_) => return Ok(count),
+            Ok(read) => read,
+        };
+        file.write_all(&buffer[..read])?;
+        count += read as u64;
+    }
 }
 
 /// One embedded file as the document points at it: the file
@@ -1020,6 +1402,95 @@ mod tests {
         assert!(!documents_own_fault(None), "death by signal is no verdict");
     }
 
+    #[test]
+    fn the_memory_limit_grows_with_the_document_in_whole_mib() {
+        assert_eq!(memory_limit(0), 64 << 20);
+        assert_eq!(memory_limit(1), 65 << 20, "rounded up to a whole MiB");
+        assert_eq!(memory_limit(1 << 20), 128 << 20);
+    }
+
+    #[cfg(unix)]
+    fn exited(code: i32) -> ExitStatus {
+        std::os::unix::process::ExitStatusExt::from_raw(code << 8)
+    }
+
+    #[cfg(unix)]
+    fn signalled(signal: i32) -> ExitStatus {
+        std::os::unix::process::ExitStatusExt::from_raw(signal)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_the_document_causes_is_a_refusal() {
+        let limit = 80 << 20;
+        let memory = Verdict::Refused("the document needs more than 80 MiB of memory".to_string());
+        assert_eq!(verdict(exited(0), "", limit), Verdict::Read);
+        assert_eq!(
+            verdict(
+                exited(3),
+                "ossuary-extract-pdf: memory limit reached\n",
+                limit
+            ),
+            memory
+        );
+        assert_eq!(
+            verdict(
+                signalled(6),
+                "memory allocation of 1043688 bytes failed\n",
+                limit
+            ),
+            memory
+        );
+        assert_eq!(
+            verdict(
+                exited(101),
+                "ossuary-extract-pdf: attachment a.xml not extracted: larger than 1 GiB\n\
+                 ossuary-extract-pdf: index out of bounds: the len is 0 but the index is 0\n",
+                limit
+            ),
+            Verdict::Refused(
+                "the PDF library failed: index out of bounds: the len is 0 but the index is 0"
+                    .to_string()
+            ),
+            "the panic message is the last line"
+        );
+        assert_eq!(
+            verdict(
+                signalled(6),
+                "\nthread 'main' has overflowed its stack\nfatal runtime error: stack overflow\n",
+                limit
+            ),
+            Verdict::Refused(
+                "the PDF library stopped: fatal runtime error: stack overflow".to_string()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_the_environment_causes_is_a_failure() {
+        let limit = 80 << 20;
+        assert_eq!(verdict(signalled(9), "", limit), Verdict::Failed);
+        assert_eq!(
+            verdict(
+                exited(1),
+                "ossuary-extract-pdf: writing a.xml: No space left on device\n",
+                limit
+            ),
+            Verdict::Failed
+        );
+    }
+
+    #[test]
+    fn a_panic_message_is_read_from_either_payload() {
+        let literal: Box<dyn std::any::Any + Send> = Box::new("index out of bounds");
+        let formatted: Box<dyn std::any::Any + Send> = Box::new(format!("object {} missing", 7));
+        let other: Box<dyn std::any::Any + Send> = Box::new(7);
+        assert_eq!(panic_message(literal.as_ref()), "index out of bounds");
+        assert_eq!(panic_message(formatted.as_ref()), "object 7 missing");
+        assert_eq!(panic_message(other.as_ref()), "no message");
+    }
+
     /// A document with an info dictionary, the way a producer writes one.
     fn sample() -> Vec<u8> {
         let mut document = Document::with_version("1.5");
@@ -1340,6 +1811,24 @@ mod tests {
                 "value": "attachment zeros.bin not extracted: larger than 1 KiB"
             })]
         );
+    }
+
+    #[test]
+    fn an_attachment_that_stays_inside_leaves_its_name_to_the_next() {
+        let mut builder = Builder::new();
+        let large = builder.stream(&[0u8; 4096], Some("application/octet-stream"));
+        let small = builder.stream(b"b", Some("text/plain"));
+        let one = builder.specification(Some("data.bin"), None, Some(large));
+        let two = builder.specification(Some("data.bin"), None, Some(small));
+        builder.in_tree("one", one);
+        builder.in_tree("two", two);
+        let (lines, directory) = harvest(&builder.finish(false), 1024);
+        assert_eq!(
+            std::fs::read(directory.path().join("data.bin")).unwrap(),
+            b"b"
+        );
+        assert!(!directory.path().join("data-2.bin").exists());
+        assert!(lines.contains(&json!({ "file": "data.bin", "mime": "text/plain" })));
     }
 
     #[test]

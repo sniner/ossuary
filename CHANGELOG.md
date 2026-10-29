@@ -20,6 +20,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and is examined again in the next run. A file that cannot be read from the archive is reported as
   such, and an extractor that writes a lot before it has read its input no longer makes the run
   hang
+- **`ossuary-extract-pdf` reads a PDF with a memory limit.** A small PDF can be built to
+  decompress to gigabytes, and reading it could use up the memory. A PDF that needs more than the
+  limit, or on which the PDF library fails, now gets its receipt with a `prov:note` that gives the
+  reason, and later runs do not examine it again. `ossuary extract pdf --full FILE` examines it
+  again. An embedded file that decompresses to more than 1 GiB is skipped as before, but no longer
+  takes that much memory first
 
 ### Changed
 

@@ -13,6 +13,8 @@ name = "ossuary-extract-pdf"
 path = "src/main.rs"
 
 [dependencies]
+cap = "0.1.2"
+flate2 = "1.1.10"
 lopdf = "0.38"
 serde_json = "1.0.151"
 

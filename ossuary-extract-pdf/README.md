@@ -53,6 +53,8 @@ are skipped. Text strings are decoded from UTF-16BE or UTF-8 when they
 start with a byte order mark, and from `PDFDocEncoding` otherwise;
 nothing is trimmed or normalized. If the document information cannot be
 read, nothing is recorded for it, and the text is extracted regardless.
+If reading it needs more memory than the [limit](#memory-limit), a
+`prov:note` records that.
 
 ## When no text is extracted
 
@@ -113,7 +115,29 @@ reason is recorded as a `prov:note` claim on the PDF and printed on
 stderr, and the other files are extracted as usual. A file
 specification that refers to an external file instead of embedding it
 is ignored. A document that cannot be opened gives an empty result,
-with exit code 0.
+with exit code 0. A document that needs more memory than the
+[limit](#memory-limit) gets a `prov:note` instead.
+
+## Memory limit
+
+The PDF library this extractor uses, lopdf, decompresses the parts of a
+document it needs while it opens the document, without a limit. A PDF
+can be built so that a few kilobytes decompress to gigabytes. The
+extractor therefore reads the document information and the embedded
+files in a second process, which may use 64 MiB plus 64 times the size
+of the PDF. Ordinary PDFs need a fraction of that.
+
+If reading a PDF needs more memory than that, or the PDF library fails
+on it, the PDF still gets its receipt, with the reason as a `prov:note`
+claim, and later runs do not examine it again:
+
+```
+prov:note = "attachments not extracted: the document needs more than 80 MiB of memory"
+```
+
+The `text` contract extracts the text with `pdftotext` regardless. To
+examine such a PDF again, for example after an update of the extractor,
+run `ossuary extract pdf --full FILE`.
 
 ## Supported types
 
