@@ -1,8 +1,47 @@
-//! How answers read on a terminal.
+//! How answers read on a terminal, and writing answers and messages to
+//! stdout and stderr.
 
-use std::fmt::Write as _;
+use std::fmt::{Display, Write as _};
+use std::io::ErrorKind;
 
+use anyhow::Result;
 use ossuary_core::{Attribute, Claim, Episode, Source, Timestamp, Value};
+
+/// `println!` for answers: writes the line with [`say`] and returns
+/// what `say` returns.
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        $crate::output::say(&mut ::std::io::stdout(), &format!($($arg)*))
+    };
+}
+pub(crate) use outln;
+
+/// `eprintln!` for messages: writes the line with [`note`].
+macro_rules! errln {
+    ($($arg:tt)*) => {
+        $crate::output::note(format_args!($($arg)*))
+    };
+}
+pub(crate) use errln;
+
+/// Write one answer line. `Ok(false)` means the reader closed the
+/// pipe: it has what it wanted, so the caller may stop writing, and the
+/// command still succeeds. Any other write error is returned.
+pub fn say(out: &mut impl std::io::Write, line: &str) -> Result<bool> {
+    match writeln!(out, "{line}") {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(false),
+        Err(error) => Err(anyhow::Error::new(error).context("writing to stdout")),
+    }
+}
+
+/// Write one message line to stderr. A failed write is dropped instead
+/// of panicking like `eprintln!`: stderr is where errors are reported,
+/// so there is no other place to report this one.
+pub fn note(line: impl Display) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
 
 /// One claim as one line: when it was recorded, what it says, who says
 /// so in brackets, and in which run, bracketed beside it as `[run:…]` —
@@ -423,5 +462,27 @@ mod tests {
             "{\"subject\":\"9f2a\",\"file:name\":[\"a.pdf\",\"b.pdf\"]}"
         );
         assert_eq!(json_line("9f2a", &[]), "{\"subject\":\"9f2a\"}");
+    }
+
+    /// A reader that left: every write fails with a closed pipe.
+    struct Gone;
+    impl std::io::Write for Gone {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_the_answer_instead_of_the_run() {
+        let mut held = Vec::new();
+        assert!(say(&mut held, "an answer").unwrap(), "written and told so");
+        assert_eq!(held, b"an answer\n");
+        assert!(
+            !say(&mut Gone, "unwanted").unwrap(),
+            "a closed pipe is false, not an error"
+        );
     }
 }

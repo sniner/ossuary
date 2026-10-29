@@ -13,7 +13,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use ossuary_core::{Index, Subject, Value};
 
-use crate::{index_at, open, say, shorten};
+use crate::output::{errln, say};
+use crate::{index_at, open, shorten};
 
 pub(crate) fn ls(
     root: &Path,
@@ -28,7 +29,7 @@ pub(crate) fn ls(
     let pairs = index.under(&place)?;
     if pairs.is_empty() {
         if !quiet {
-            eprintln!("{}", nothing(&place, "at"));
+            errln!("{}", nothing(&place, "at"));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -57,7 +58,7 @@ pub(crate) fn ls(
     }
     if !quiet {
         let (folders, files) = level_counts(&node);
-        eprintln!("{} at {place}", counted(folders, files));
+        errln!("{} at {place}", counted(folders, files));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -74,7 +75,7 @@ pub(crate) fn tree(
     let pairs = shortened(&index, index.under(&place)?)?;
     if pairs.is_empty() {
         if !quiet {
-            eprintln!("{}", nothing(&place, "under"));
+            errln!("{}", nothing(&place, "under"));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -93,7 +94,7 @@ pub(crate) fn tree(
         }
     }
     if !quiet {
-        eprintln!("{} under {place}", counted(folders_in(&node), pairs.len()));
+        errln!("{} under {place}", counted(folders_in(&node), pairs.len()));
     }
     Ok(ExitCode::SUCCESS)
 }

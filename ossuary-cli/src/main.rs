@@ -14,6 +14,8 @@ use ossuary_core::{
     Algorithm, Archive, Attribute, Error, Field, Index, Scope, Subject, Sweep, Term, Value,
 };
 
+use crate::output::{errln, outln, say};
+
 mod audit;
 mod browse;
 mod export;
@@ -679,7 +681,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("ossuary: {error:#}");
+            errln!("ossuary: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -878,18 +880,6 @@ fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
     Err(anyhow::Error::new(error).context(format!("running {program}")))
 }
 
-/// One answer line onto stdout. `Ok(true)` means written; `Ok(false)`
-/// means the reader closed the pipe — it has all it wanted, so the
-/// answer ends there and the run counts as a success, the way `get`
-/// has always read it. Any other write trouble is real.
-pub(crate) fn say(out: &mut impl std::io::Write, line: &str) -> Result<bool> {
-    match writeln!(out, "{line}") {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
-        Err(error) => Err(anyhow::Error::new(error).context("writing to stdout")),
-    }
-}
-
 /// The archive, or the way to one.
 pub(crate) fn open(root: &Path) -> Result<Archive> {
     Archive::open(root).map_err(|error| match error {
@@ -905,10 +895,10 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     let requested = algorithm.map(str::parse::<Algorithm>).transpose()?;
     match Archive::create(root, requested.unwrap_or(Algorithm::Sha256)) {
         Ok(archive) => {
-            println!(
+            outln!(
                 "{}: empty archive created, settings in config.toml; add files with `ossuary ingest DIR`",
                 archive.root().display()
-            );
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         // Standing in an archive, init completes instead: what is there is
@@ -927,15 +917,15 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
                 ));
             }
             if archive.complete()? {
-                println!(
+                outln!(
                     "{}: already an archive; config.toml was missing and has been created with the defaults",
                     archive.root().display()
-                );
+                )?;
             } else {
-                println!(
+                outln!(
                     "{}: already an archive, nothing missing",
                     archive.root().display()
-                );
+                )?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -978,12 +968,12 @@ fn ingest(
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
+        errln!("archive {}", archive.root().display());
         // One path is named; many — a glob's expansion — are counted,
         // the verdict tells how they fared.
         match paths {
-            [one] => eprintln!("ingesting {}", one.display()),
-            many => eprintln!("ingesting {} paths", many.len()),
+            [one] => errln!("ingesting {}", one.display()),
+            many => errln!("ingesting {} paths", many.len()),
         }
     }
     let memory = if full {
@@ -1018,22 +1008,22 @@ fn ingest(
     // the count. So is each root met empty.
     if !quiet {
         for path in &run.archives {
-            eprintln!("{}: ossuary archive, skipped", path.display());
+            errln!("{}: ossuary archive, skipped", path.display());
         }
         for path in &run.empty {
-            eprintln!(
+            errln!(
                 "{}: no files found, recorded paths under it kept; if it was emptied on purpose, `ossuary ingest --emptied` retracts them",
                 path.display()
             );
         }
     }
-    println!("{}", ingest_verdict(&run, tags));
+    outln!("{}", ingest_verdict(&run, tags))?;
     if run.failed.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!("{} file(s) failed:", run.failed.len());
+        errln!("{} file(s) failed:", run.failed.len());
         for (path, error) in &run.failed {
-            eprintln!("  {}: {}", path.display(), error.spelled());
+            errln!("  {}: {}", path.display(), error.spelled());
         }
         Ok(ExitCode::FAILURE)
     }
@@ -1088,10 +1078,10 @@ fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCo
     let run = ossuary_core::preview(paths, sweep)?;
     if !quiet {
         for path in &run.archives {
-            eprintln!("{}: ossuary archive, skipped", path.display());
+            errln!("{}: ossuary archive, skipped", path.display());
         }
         for path in &run.empty {
-            eprintln!(
+            errln!(
                 "{}: no files found, recorded paths under it would be kept; if it was emptied on purpose, `ossuary ingest --emptied` retracts them",
                 path.display()
             );
@@ -1124,13 +1114,13 @@ fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCo
     if !run.archives.is_empty() {
         verdict.push(format!("{} archive(s) skipped", run.archives.len()));
     }
-    println!("{}; nothing written", verdict.join(", "));
+    outln!("{}; nothing written", verdict.join(", "))?;
     if run.failed.is_empty() {
         return Ok(ExitCode::SUCCESS);
     }
-    eprintln!("{} could not be read:", run.failed.len());
+    errln!("{} could not be read:", run.failed.len());
     for (path, error) in &run.failed {
-        eprintln!("  {}: {}", path.display(), error.spelled());
+        errln!("  {}: {}", path.display(), error.spelled());
     }
     Ok(ExitCode::FAILURE)
 }
@@ -1171,12 +1161,12 @@ fn annotate(
         }
     }
     let written = ossuary_core::annotate(archive.log(), &subjects, comments, tags)?;
-    println!(
+    outln!(
         "{} file(s) annotated, {} claim(s) written, run {}",
         subjects.len(),
         written.claims,
         written.run
-    );
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1379,7 +1369,7 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
             }
         }
         if !quiet {
-            eprintln!(
+            errln!(
                 "would retract {values} value(s) from {} file(s); nothing written",
                 subjects.len()
             );
@@ -1387,12 +1377,12 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
         return Ok(ExitCode::SUCCESS);
     }
     let written = ossuary_core::retract(archive.log(), &takings)?;
-    println!(
+    outln!(
         "{values} value(s) retracted from {} file(s); {} retraction(s) written, run {}",
         subjects.len(),
         written.claims,
         written.run
-    );
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1400,7 +1390,7 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
 pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Result<()> {
     let folded = index.fold(archive.log())?;
     if folded.segments > 0 && !quiet {
-        eprintln!("index updated: {} new log segment(s)", folded.segments);
+        errln!("index updated: {} new log segment(s)", folded.segments);
     }
     Ok(())
 }
@@ -1447,24 +1437,24 @@ fn about(
 
     // Under --json, stdout is claims and nothing else; the calm zero
     // answers move over to where the run talks.
-    let calm = |sentence: String| {
+    let calm = |sentence: String| -> Result<()> {
         if json {
             if !quiet {
-                eprintln!("{sentence}");
+                errln!("{sentence}");
             }
         } else {
-            println!("{sentence}");
+            outln!("{sentence}")?;
         }
+        Ok(())
     };
 
     let Some(subject) = resolve(&index, subject)? else {
-        calm(format!("no subject begins with {subject:?}"));
-        return Ok(ExitCode::SUCCESS);
+        return Err(anyhow!("no subject begins with {subject:?}"));
     };
 
     let mut claims = index.about(&subject)?;
     if claims.is_empty() {
-        calm(format!("no claims recorded about {subject}"));
+        calm(format!("no claims recorded about {subject}"))?;
         return Ok(ExitCode::SUCCESS);
     }
     if !attributes.is_empty() {
@@ -1480,7 +1470,7 @@ fn about(
         if claims.is_empty() {
             calm(format!(
                 "no claims about {subject} for these attributes; leave out the attributes to see all claims"
-            ));
+            ))?;
             return Ok(ExitCode::SUCCESS);
         }
     }
@@ -1537,7 +1527,7 @@ fn standing(
     // nothing came.
     let Some(subject) = resolve(&index, subject)? else {
         if !quiet {
-            eprintln!("no subject begins with {subject:?}");
+            errln!("no subject begins with {subject:?}");
         }
         return Ok(ExitCode::FAILURE);
     };
@@ -1548,7 +1538,7 @@ fn standing(
     };
     if shown.is_empty() {
         if !quiet {
-            eprintln!(
+            errln!(
                 "no standing values{} on {subject}; `ossuary about` shows every claim, retractions included",
                 if attributes.is_empty() {
                     ""
@@ -1756,8 +1746,8 @@ fn find(
     // run's word on how it went.
     if !quiet {
         match (subjects.len(), scope) {
-            (0, Scope::Record) => eprintln!("no matching files, retracted claims included"),
-            (0, _) => eprintln!("no matching files"),
+            (0, Scope::Record) => errln!("no matching files, retracted claims included"),
+            (0, _) => errln!("no matching files"),
             (n, _) => {
                 let mut count = format!("{n} file(s)");
                 if along.origin {
@@ -1766,7 +1756,7 @@ fn find(
                 if along.derived {
                     write!(count, ", {derived} derived").expect("writing to a String");
                 }
-                eprintln!("{count}");
+                errln!("{count}");
             }
         }
     }
@@ -1942,10 +1932,10 @@ fn history(root: &Path, json: bool, as_of: Option<&str>, quiet: bool) -> Result<
         };
         if json {
             if !quiet {
-                eprintln!("{sentence}");
+                errln!("{sentence}");
             }
         } else {
-            println!("{sentence}");
+            outln!("{sentence}")?;
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -1962,7 +1952,7 @@ fn history(root: &Path, json: bool, as_of: Option<&str>, quiet: bool) -> Result<
         }
     }
     if !quiet {
-        eprintln!("{} run(s)", episodes.len());
+        errln!("{} run(s)", episodes.len());
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -2008,12 +1998,12 @@ fn attributes(
                 .collect::<Vec<_>>()
                 .join(" or ");
             match (as_of, wanted.is_empty()) {
-                (Some(time), true) => eprintln!("no standing attributes as of {time}"),
-                (Some(time), false) => eprintln!("no standing attributes in {named} as of {time}"),
+                (Some(time), true) => errln!("no standing attributes as of {time}"),
+                (Some(time), false) => errln!("no standing attributes in {named} as of {time}"),
                 (None, true) => {
-                    eprintln!("no standing attributes; add files with `ossuary ingest DIR`");
+                    errln!("no standing attributes; add files with `ossuary ingest DIR`");
                 }
-                (None, false) => eprintln!(
+                (None, false) => errln!(
                     "no standing attributes in {named}; `ossuary attributes` without a namespace lists all"
                 ),
             }
@@ -2048,7 +2038,7 @@ fn attributes(
             .iter()
             .map(|(attribute, _)| attribute.namespace())
             .collect();
-        eprintln!(
+        errln!(
             "{} attribute(s) in {} namespace(s)",
             words.len(),
             namespaces.len()
@@ -2136,7 +2126,7 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
     std::io::copy(&mut file, &mut hasher)
         .with_context(|| format!("{}: reading", path.display()))?;
     let digest = hasher.finish();
-    println!("{digest}");
+    outln!("{digest}")?;
     // The name is the answer and stays alone on stdout; whether the
     // archive holds the bytes is the run talking. Held means held —
     // taken in or derived, either store counts.
@@ -2144,9 +2134,9 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
         let held = !archive.content().matching(digest.as_str())?.is_empty()
             || !archive.derived().matching(digest.as_str())?.is_empty();
         if held {
-            eprintln!("already in the archive; `ossuary about` shows its claims");
+            errln!("already in the archive; `ossuary about` shows its claims");
         } else {
-            eprintln!("not in the archive; `ossuary ingest` adds it");
+            errln!("not in the archive; `ossuary ingest` adds it");
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -2202,12 +2192,12 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
             std::fs::File::create(path).with_context(|| format!("{}: writing", path.display()))?;
         let bytes = std::io::copy(&mut reader, &mut file)
             .with_context(|| format!("{}: writing", path.display()))?;
-        println!("{}: {} byte(s) of {digest}", path.display(), bytes);
+        outln!("{}: {} byte(s) of {digest}", path.display(), bytes)?;
     } else {
         // A beginning was given; say what it named, where the bytes
         // will not drown it out.
         if bare.len() < digest.as_str().len() && !quiet {
-            eprintln!("{digest}");
+            errln!("{digest}");
         }
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();
@@ -2317,28 +2307,6 @@ mod tests {
             [Projection::Attribute(
                 Attribute::parse("file:name").unwrap()
             )]
-        );
-    }
-
-    /// A reader that left: every write answers with a closed pipe.
-    struct Gone;
-    impl std::io::Write for Gone {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_closed_pipe_ends_the_answer_instead_of_the_run() {
-        let mut held = Vec::new();
-        assert!(say(&mut held, "an answer").unwrap(), "written and told so");
-        assert_eq!(held, b"an answer\n");
-        assert!(
-            !say(&mut Gone, "unwanted").unwrap(),
-            "the reader gone is a calm false, not an error"
         );
     }
 }

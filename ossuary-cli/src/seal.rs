@@ -8,7 +8,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use ossuary_core::{Continued, Seal, SealCheck, Sealing};
 
-use crate::{audit, open, say};
+use crate::output::{errln, outln, say};
+use crate::{audit, open};
 
 #[allow(
     clippy::fn_params_excessive_bools,
@@ -23,12 +24,12 @@ pub(crate) fn seal(
 ) -> Result<ExitCode> {
     let archive = open(root)?;
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
-        eprintln!("checking every sealed segment against its hash");
+        errln!("archive {}", archive.root().display());
+        errln!("checking every sealed segment against its hash");
     }
     match ossuary_core::seal(&archive, dry_run)? {
         Sealing::Empty => {
-            eprintln!("the archive holds no claims yet; there is nothing to seal");
+            errln!("the archive holds no claims yet; there is nothing to seal");
             Ok(ExitCode::FAILURE)
         }
         Sealing::Refused(log) => {
@@ -42,24 +43,24 @@ pub(crate) fn seal(
                 );
                 audit::listing(&mut err, &heading, &log.unreached, verbose)?;
             }
-            eprintln!(
+            errln!(
                 "no seal made: a seal now would not cover what is listed above; seal again once that is resolved"
             );
             Ok(ExitCode::FAILURE)
         }
         Sealing::Sealed(seal) if dry_run => {
-            println!("{}", rehearsal(&seal));
+            outln!("{}", rehearsal(&seal))?;
             Ok(ExitCode::SUCCESS)
         }
         Sealing::Sealed(seal) => {
             if !quiet {
                 if seal.sealed_now {
-                    eprintln!("open segment sealed");
+                    errln!("open segment sealed");
                 } else {
-                    eprintln!("nothing recorded since the last seal; the id is the same as then");
+                    errln!("nothing recorded since the last seal; the id is the same as then");
                 }
-                eprintln!("{}", covers(&seal));
-                eprintln!(
+                errln!("{}", covers(&seal));
+                errln!(
                     "the id is the {} hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it",
                     seal.algorithm.name()
                 );
@@ -69,9 +70,9 @@ pub(crate) fn seal(
                     "algorithm": seal.algorithm.name(),
                     "segment": seal.segment.as_str(),
                 });
-                println!("{line}");
+                outln!("{line}")?;
             } else {
-                println!("{}", seal.segment);
+                outln!("{}", seal.segment)?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -116,24 +117,24 @@ pub(crate) fn check(
     let segment = ossuary_core::parse_id(&archive, given)?;
     let id = segment.as_str();
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
-        eprintln!("step 1 of 3: the sealed segments, each one checked against its hash");
+        errln!("archive {}", archive.root().display());
+        errln!("step 1 of 3: the sealed segments, each one checked against its hash");
     }
     let cover = ossuary_core::cover(&archive, &segment)?;
     if !cover.held {
-        println!(
+        outln!(
             "this archive holds no segment {id}, so the seal cannot be checked; it was removed, or the id belongs to another archive"
-        );
+        )?;
         return Ok(ExitCode::FAILURE);
     }
     if !quiet {
         if fast {
-            eprintln!(
+            errln!(
                 "step 2 of 3: the {} file(s) the sealed claims refer to, each one looked for; --fast, their contents are not read",
                 cover.files()
             );
         } else {
-            eprintln!(
+            errln!(
                 "step 2 of 3: the {} file(s) the sealed claims refer to, each one read in full",
                 cover.files()
             );
@@ -141,7 +142,7 @@ pub(crate) fn check(
     }
     let files = ossuary_core::files(&archive, &cover, !fast)?;
     if !quiet {
-        eprintln!("step 3 of 3: the record since the seal");
+        errln!("step 3 of 3: the record since the seal");
     }
     let since = ossuary_core::since(&archive, &cover)?;
     let checked = SealCheck {

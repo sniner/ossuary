@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use anyhow::{Result, anyhow};
 use ossuary_core::{Audit, Break, Cause, Chain, Fixity, Joined, LogAudit, StoreAudit, Timestamp};
 
-use crate::{open, output, say};
+use crate::open;
+use crate::output::{self, errln, say};
 
 /// How many names still fit in a plain answer. Up to a handful stands
 /// right there; more turns into a count, and --verbose names them all.
@@ -21,16 +22,16 @@ pub(crate) fn audit(root: &Path, json: bool, verbose: bool, quiet: bool) -> Resu
     }
     let archive = open(root)?;
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
-        eprintln!("step 1 of 3: content/, checking every file against its hash");
+        errln!("archive {}", archive.root().display());
+        errln!("step 1 of 3: content/, checking every file against its hash");
     }
     let content = ossuary_core::audit_store(archive.content())?;
     if !quiet {
-        eprintln!("step 2 of 3: derived/, checking every file against its hash");
+        errln!("step 2 of 3: derived/, checking every file against its hash");
     }
     let derived = ossuary_core::audit_store(archive.derived())?;
     if !quiet {
-        eprintln!("step 3 of 3: claims/, reading every sealed segment and the open segment");
+        errln!("step 3 of 3: claims/, reading every sealed segment and the open segment");
     }
     let log = ossuary_core::audit_log(archive.log())?;
     let audit = Audit::assemble(content, derived, log);
@@ -42,7 +43,7 @@ pub(crate) fn audit(root: &Path, json: bool, verbose: bool, quiet: bool) -> Resu
         // Under --json stdout is findings and nothing else; the verdict
         // is the run's word on how it went.
         if !quiet {
-            eprintln!("{}", verdict(&audit));
+            errln!("{}", verdict(&audit));
         }
     } else {
         render(&mut out, &audit, verbose)?;

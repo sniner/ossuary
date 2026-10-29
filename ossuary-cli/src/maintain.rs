@@ -8,7 +8,8 @@ use anyhow::Result;
 use clap::Subcommand;
 use ossuary_core::{Break, Cause, Error, Fixity, Twin, Weeded};
 
-use crate::{open, output, say};
+use crate::open;
+use crate::output::{self, errln, outln, say};
 
 /// The maintenance commands. `mend` only adds to the archive and
 /// rewrites nothing; `weed` removes copies in `derived/` of files that
@@ -78,8 +79,8 @@ pub(crate) fn run(root: &Path, task: &Maintenance, verbose: bool, quiet: bool) -
 fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
-        eprintln!("reading every sealed segment and the open segment");
+        errln!("archive {}", archive.root().display());
+        errln!("reading every sealed segment and the open segment");
     }
     let log = ossuary_core::audit_log(archive.log())?;
     // A line merged into the chain is not a piece of a broken one.
@@ -92,24 +93,24 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
     if pieces <= 1 && log.breaks.is_empty() && log.unnamed.is_empty() && beyond.is_empty() {
         let line = "the chain is complete, nothing to mend";
         if log.mended.is_empty() {
-            println!("{line}");
+            outln!("{line}")?;
         } else {
-            println!("{line}; {} break(s) mended earlier", log.mended.len());
+            outln!("{line}; {} break(s) mended earlier", log.mended.len())?;
         }
         return Ok(ExitCode::SUCCESS);
     }
     if pieces > 1 && log.breaks.is_empty() && log.unnamed.is_empty() && beyond.is_empty() {
-        println!(
+        outln!(
             "the chain is in {pieces} pieces with no identifiable break; `ossuary audit` lists the pieces"
-        );
+        )?;
         return Ok(ExitCode::FAILURE);
     }
     let mut left_open = 0;
     for (successor, segment) in &beyond {
-        println!(
+        outln!(
             "segment {segment} is missing, and no mend can stand in for it; {} names it; restore it from a backup of the archive",
             named_by(successor)
-        );
+        )?;
         left_open += 1;
     }
     // The open segment names every mend, so the break in front of it,
@@ -120,40 +121,44 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
         .filter(|brk| brk.before.is_none())
         .chain(log.breaks.iter().filter(|brk| brk.before.is_some()));
     for (index, brk) in breaks.enumerate() {
-        println!("break {}: {}", index + 1, describe(brk));
+        outln!("break {}: {}", index + 1, describe(brk))?;
         if !brk.sure {
-            println!("  left open; the chain before this one cannot be determined");
+            outln!("  left open; the chain before this one cannot be determined")?;
             left_open += 1;
             continue;
         }
         if !brk.mendable() {
-            println!(
+            outln!(
                 "  left open; the segment is present but damaged; restore it from a backup of the archive"
-            );
+            )?;
             left_open += 1;
             continue;
         }
         if dry_run {
-            println!("  would be mended; --dry-run, nothing written");
+            outln!("  would be mended; --dry-run, nothing written")?;
             continue;
         }
         match ossuary_core::mend(archive.log(), brk) {
-            Ok(Some(segment)) if brk.before.is_none() => println!(
-                "  mended as {}; the open segment now follows the mend",
-                segment.digest()
-            ),
-            Ok(Some(segment)) => println!("  mended as {}", segment.digest()),
+            Ok(Some(segment)) if brk.before.is_none() => {
+                outln!(
+                    "  mended as {}; the open segment now follows the mend",
+                    segment.digest()
+                )?;
+            }
+            Ok(Some(segment)) => {
+                outln!("  mended as {}", segment.digest())?;
+            }
             Ok(None) => {
                 // `mendable` said yes a moment ago; the archive did not
                 // change under this run's feet in a way that turns a
                 // break unmendable, but the report is honest either way.
-                println!("  left open; the break could not be mended");
+                outln!("  left open; the break could not be mended")?;
                 left_open += 1;
             }
             Err(Error::HeadLost(_)) => {
-                println!(
+                outln!(
                     "  left open; the open segment is missing, and the break in front of it is open above"
-                );
+                )?;
                 left_open += 1;
             }
             Err(error) => return Err(error.into()),
@@ -174,21 +179,21 @@ fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
 /// Name one mend the open segment does not name, and say so; false when
 /// it stays unnamed.
 fn name_mend(archive: &ossuary_core::Archive, mend: &str, dry_run: bool) -> Result<bool> {
-    println!("mend {mend}: stored, but the open segment does not name it");
+    outln!("mend {mend}: stored, but the open segment does not name it")?;
     if dry_run {
-        println!("  would be named; --dry-run, nothing written");
+        outln!("  would be named; --dry-run, nothing written")?;
         return Ok(true);
     }
     let digest = ossuary_core::Digest::parse(mend)?;
     match ossuary_core::name_mend(archive.log(), &digest) {
         Ok(()) => {
-            println!("  named by the open segment");
+            outln!("  named by the open segment")?;
             Ok(true)
         }
         Err(Error::HeadLost(_)) => {
-            println!(
+            outln!(
                 "  left unnamed; the open segment is missing, and the break in front of it is open above"
-            );
+            )?;
             Ok(false)
         }
         Err(error) => Err(error.into()),
@@ -236,8 +241,8 @@ fn describe(brk: &Break) -> String {
 fn weed(root: &Path, dry_run: bool, repair: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
     let archive = open(root)?;
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
-        eprintln!(
+        errln!("archive {}", archive.root().display());
+        errln!(
             "looking for files in both content/ and derived/, checking both copies against their hash"
         );
     }

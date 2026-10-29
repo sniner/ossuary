@@ -11,6 +11,7 @@ use anyhow::{Result, anyhow};
 use ossuary_core::{Archive, Copied, Digest, Error, Join, Store};
 
 use crate::open;
+use crate::output::{errln, outln};
 
 /// How the merge is to run.
 #[derive(Debug, Clone, Copy)]
@@ -35,25 +36,25 @@ pub(crate) fn merge(root: &Path, other: &Path, options: Options, quiet: bool) ->
         other => other.into(),
     })?;
     if !quiet {
-        eprintln!("archive {}", ours.root().display());
-        eprintln!("merging {}", theirs.root().display());
-        eprintln!("step 1 of 5: reading the other archive's chain of segments");
+        errln!("archive {}", ours.root().display());
+        errln!("merging {}", theirs.root().display());
+        errln!("step 1 of 5: reading the other archive's chain of segments");
     }
     let obstacles = ossuary_core::check(&ours, &theirs, rehash)?;
     for name in &obstacles.accounts {
-        println!(
+        outln!(
             "account {name} is configured for different mailboxes in the two mailvault.toml files; the mailbox:place values of both would read as one mailbox; rename the account in one archive"
-        );
+        )?;
     }
     if obstacles.log_findings > 0 {
-        println!(
+        outln!(
             "{} finding(s) in the other archive's chain of segments; `ossuary --archive {} audit` lists them, and a merge carries them over",
             obstacles.log_findings,
             theirs.root().display()
-        );
+        )?;
     }
     if !obstacles.is_empty() && !force {
-        println!("not merged; nothing was written. Pass --force to merge anyway");
+        outln!("not merged; nothing was written. Pass --force to merge anyway")?;
         return Ok(ExitCode::FAILURE);
     }
     match (dry_run, rehash) {
@@ -68,32 +69,32 @@ pub(crate) fn merge(root: &Path, other: &Path, options: Options, quiet: bool) ->
 /// segments copied as they are, the chains joined.
 fn by_copy(ours: &Archive, theirs: &Archive, force: bool, quiet: bool) -> Result<ExitCode> {
     if !quiet {
-        eprintln!("step 2 of 5: sealing the other archive's open segment");
+        errln!("step 2 of 5: sealing the other archive's open segment");
     }
     let sealed_theirs = theirs.log().seal()?;
     if !quiet {
-        eprintln!("step 3 of 5: copying content/ and derived/");
+        errln!("step 3 of 5: copying content/ and derived/");
     }
     let content = ossuary_core::copy_store(theirs.content(), ours.content())?;
     let derived = ossuary_core::copy_store(theirs.derived(), ours.derived())?;
     if !quiet {
-        eprintln!("step 4 of 5: copying the sealed segments");
+        errln!("step 4 of 5: copying the sealed segments");
     }
     let segments = ossuary_core::copy_store(theirs.log().store(), ours.log().store())?;
     let damaged = damaged(&[
         ("content/", &content),
         ("derived/", &derived),
         ("claims/", &segments),
-    ]);
+    ])?;
     if damaged > 0 && !force {
-        println!(
+        outln!(
             "not merged: {damaged} damaged file(s) in the other archive; {} copied so far stay here. Restore the damaged files from a backup of the other archive and run the merge again, or pass --force to merge without them",
             content.copied + derived.copied + segments.copied
-        );
+        )?;
         return Ok(ExitCode::FAILURE);
     }
     if !quiet {
-        eprintln!("step 5 of 5: joining the chains of segments");
+        errln!("step 5 of 5: joining the chains of segments");
     }
     let joined = ossuary_core::join(ours, theirs)?;
     let memo = ossuary_core::take_memo(ours, theirs)?;
@@ -119,7 +120,7 @@ fn by_copy(ours: &Archive, theirs: &Archive, force: bool, quiet: bool) -> Result
             "{damaged} damaged file(s) left out; the claims about them stand without the file"
         ));
     }
-    println!("{}", clauses.join("; "));
+    outln!("{}", clauses.join("; "))?;
     Ok(exit(damaged == 0))
 }
 
@@ -127,28 +128,28 @@ fn by_copy(ours: &Archive, theirs: &Archive, force: bool, quiet: bool) -> Result
 /// hashed anew on the way in, their claims replayed with the new names.
 fn by_rehash(ours: &Archive, theirs: &Archive, force: bool, quiet: bool) -> Result<ExitCode> {
     if !quiet {
-        eprintln!("step 2 of 5: hashing the files in content/ anew and storing them");
+        errln!("step 2 of 5: hashing the files in content/ anew and storing them");
     }
     let mut names = BTreeMap::new();
     let content = ossuary_core::rehash_store(theirs.content(), ours.content(), &mut names)?;
     if !quiet {
-        eprintln!("step 3 of 5: the same for derived/");
+        errln!("step 3 of 5: the same for derived/");
     }
     let derived = ossuary_core::rehash_store(theirs.derived(), ours.derived(), &mut names)?;
-    let damaged = damaged(&[("content/", &content), ("derived/", &derived)]);
+    let damaged = damaged(&[("content/", &content), ("derived/", &derived)])?;
     if damaged > 0 && !force {
-        println!(
+        outln!(
             "not merged: {damaged} damaged file(s) in the other archive; {} stored so far stay here. Restore the damaged files from a backup of the other archive and run the merge again, or pass --force to merge without them",
             content.copied + derived.copied
-        );
+        )?;
         return Ok(ExitCode::FAILURE);
     }
     if !quiet {
-        eprintln!("step 4 of 5: replaying the other archive's claims with the new names");
+        errln!("step 4 of 5: replaying the other archive's claims with the new names");
     }
     let replayed = ossuary_core::replay(ours, theirs, &names, force)?;
     if !quiet {
-        eprintln!("step 5 of 5: taking over the mail fetcher's resume points");
+        errln!("step 5 of 5: taking over the mail fetcher's resume points");
     }
     let memo = ossuary_core::take_memo(ours, theirs)?;
     let mut clauses = vec![
@@ -176,20 +177,20 @@ fn by_rehash(ours: &Archive, theirs: &Archive, force: bool, quiet: bool) -> Resu
             "{damaged} damaged file(s) left out, and the claims about them with them"
         ));
     }
-    println!("{}", clauses.join("; "));
+    outln!("{}", clauses.join("; "))?;
     Ok(exit(damaged == 0 && replayed.dropped == 0))
 }
 
 /// Name every damaged entry, and count them.
-fn damaged(stores: &[(&str, &Copied)]) -> usize {
+fn damaged(stores: &[(&str, &Copied)]) -> Result<usize> {
     let mut count = 0;
     for (store, copied) in stores {
         for name in &copied.damaged {
-            println!("{store}{name} in the other archive is damaged and was not copied");
+            outln!("{store}{name} in the other archive is damaged and was not copied")?;
             count += 1;
         }
     }
-    count
+    Ok(count)
 }
 
 /// What the chain step did, for the verdict.
@@ -245,10 +246,15 @@ fn preview(ours: &Archive, theirs: &Archive) -> Result<ExitCode> {
     } else {
         String::new()
     };
-    println!(
+    outln!(
         "would copy {} file(s) to content/ ({} already here), {} file(s) to derived/ ({} already here) and {} sealed segment(s) ({} already here){sealing}; nothing written",
-        content.new, content.known, derived.new, derived.known, segments.new, segments.known
-    );
+        content.new,
+        content.known,
+        derived.new,
+        derived.known,
+        segments.new,
+        segments.known
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -273,10 +279,10 @@ fn preview_rehash(ours: &Archive, theirs: &Archive) -> Result<ExitCode> {
         segments += 1;
         claims += open;
     }
-    println!(
+    outln!(
         "would hash {content} file(s) in content/ and {derived} file(s) in derived/ anew with {}, store them here, and replay {segments} segment(s) with {claims} claim(s) under the new names; nothing written",
         ours.content().algorithm()
-    );
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -7,6 +7,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A command whose output goes to a program that stops reading early no longer fails.**
+  `ossuary extract mail | head -1` and similar commands stopped with the message "failed printing
+  to stdout" and exit code 101. Now the output stops, the command finishes its work and exits with
+  the code it would have had otherwise. The same applies to messages on stderr, as in
+  `ossuary ingest DIR 2>&1 | head -1`
+- **`ossuary about` exits 1 for a name that matches no file**, as `ossuary get` does, and prints the
+  message on stderr. Before, it printed the message on stdout and exited 0
 - **`ossuary extract` shows the extractor's own reason when the extractor exits before it has read
   the whole file**, instead of "Broken pipe", and no longer leaves the ended extractor process
   behind until the run is over. If the extractor exits 0 in that case, the file counts as failed

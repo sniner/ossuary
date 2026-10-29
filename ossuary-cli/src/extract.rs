@@ -13,6 +13,8 @@ use std::process::ExitCode;
 use anyhow::{Result, anyhow};
 use ossuary_core::{Archive, Event, Run, Source, Tally};
 
+use crate::output::{errln, outln};
+
 pub fn extract(
     root: &Path,
     name: Option<&str>,
@@ -31,10 +33,17 @@ pub fn extract(
     }
     let archive = crate::open(root)?;
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
+        errln!("archive {}", archive.root().display());
     }
     let subjects = expand(&archive, subjects, quiet)?;
-    let mut narrate = |event: Event<'_>| render(&event, quiet, dry_run);
+    // An observer cannot return an error, so a failed write to stdout is
+    // kept and reported once the run is over.
+    let mut unwritten: Option<anyhow::Error> = None;
+    let mut narrate = |event: Event<'_>| {
+        if let Err(error) = render(&event, quiet, dry_run) {
+            unwritten.get_or_insert(error);
+        }
+    };
     let settlement = ossuary_core::examine(
         &archive,
         name,
@@ -44,28 +53,34 @@ pub fn extract(
         temp_dir,
         &mut narrate,
     )?;
+    if let Some(error) = unwritten {
+        return Err(error);
+    }
     if settlement.ran == 0 {
-        println!(
+        outln!(
             "no extractor ran; none in the [extract] run list of config.toml responded to --identify"
-        );
+        )?;
     }
     // A single working round closes silently — that is every ordinary
     // run, and the verdicts have already told it. Only a real cascade
     // is news.
     if settlement.rounds > 1 && !quiet {
-        eprintln!(
+        errln!(
             "done after {} rounds, {} examinations in total",
-            settlement.rounds, settlement.examinations
+            settlement.rounds,
+            settlement.examinations
         );
     }
     // The call's own run id, said once for the whole call: every claim
     // it wrote carries it, so a call that examined nothing has none to
     // name.
     if settlement.examinations > 0 {
-        println!(
+        outln!(
             "{} file(s) examined in total, {} derived file(s) added; run {}",
-            settlement.examinations, settlement.derived, settlement.run
-        );
+            settlement.examinations,
+            settlement.derived,
+            settlement.run
+        )?;
     }
     Ok(if settlement.clean {
         ExitCode::SUCCESS
@@ -113,8 +128,9 @@ fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>>
 
 /// One event onto the terminal. Idle notes and verdicts are answers and
 /// go to stdout; skipped entries and failure lists survive `-q` the way
-/// every failure does; the rest is narration.
-fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
+/// every failure does; the rest is narration. Fails only when stdout
+/// cannot be written for another reason than a closed pipe.
+fn render(event: &Event<'_>, quiet: bool, dry_run: bool) -> Result<()> {
     match event {
         Event::Rehearsed {
             subject,
@@ -137,21 +153,21 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
                 )
                 .expect("a String takes what is written to it");
             }
-            println!("{block}");
+            outln!("{block}")?;
         }
         Event::CaughtUp { segments } => {
             if !quiet {
-                eprintln!("index updated: {segments} new log segment(s)");
+                errln!("index updated: {segments} new log segment(s)");
             }
         }
-        Event::Skipped { trouble, .. } => eprintln!("skipped: {}", trouble.spelled()),
+        Event::Skipped { trouble, .. } => errln!("skipped: {}", trouble.spelled()),
         Event::Idle { source, full } => {
             if *full {
-                println!("no recorded file of a type {source} reads");
+                outln!("no recorded file of a type {source} reads")?;
             } else {
-                println!(
+                outln!(
                     "nothing waiting for {source}; every file of a type it reads has been examined"
-                );
+                )?;
             }
         }
         Event::Waiting {
@@ -161,15 +177,15 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
         } => {
             if !quiet {
                 if *round > 1 {
-                    eprintln!("round {round}: {count} file(s) waiting for {source}");
+                    errln!("round {round}: {count} file(s) waiting for {source}");
                 } else {
-                    eprintln!("{count} file(s) waiting for {source}");
+                    errln!("{count} file(s) waiting for {source}");
                 }
             }
         }
         Event::Named { source, count } => {
             if !quiet {
-                eprintln!("{count} file(s) given for {source}");
+                errln!("{count} file(s) given for {source}");
             }
         }
         Event::Remarked {
@@ -186,7 +202,7 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
                     None => subject.to_string(),
                 };
                 for line in remark.lines() {
-                    eprintln!("  {file}: {line}");
+                    errln!("  {file}: {line}");
                 }
             }
         }
@@ -197,21 +213,22 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) {
             failures,
         } => {
             if dry_run {
-                println!("{}", rehearsal_verdict(source, tally, *already));
+                outln!("{}", rehearsal_verdict(source, tally, *already))?;
             } else {
-                println!("{}", verdict(source, tally, *already));
+                outln!("{}", verdict(source, tally, *already))?;
             }
             if !failures.is_empty() {
-                eprintln!(
+                errln!(
                     "{} could not be examined, will be retried on the next run:",
                     failures.len()
                 );
                 for (subject, error) in *failures {
-                    eprintln!("  {subject}: {}", error.spelled());
+                    errln!("  {subject}: {}", error.spelled());
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// The rehearsal's verdict: what was tried, and that nothing stands

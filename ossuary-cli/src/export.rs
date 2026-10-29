@@ -15,7 +15,8 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, anyhow};
 use ossuary_core::{Algorithm, Archive, Attribute, Index, Placed, Placement, Run, Scope, Subject};
 
-use crate::{index_at, open, resolve, say, shorten};
+use crate::output::{errln, outln, say};
+use crate::{index_at, open, resolve, shorten};
 
 pub(crate) fn export(
     root: &Path,
@@ -63,7 +64,7 @@ pub(crate) fn export(
             }
         }
         if !quiet {
-            eprintln!(
+            errln!(
                 "would export {} file(s) into {}; nothing written",
                 plan.len(),
                 destination.display()
@@ -75,8 +76,8 @@ pub(crate) fn export(
     fs::create_dir_all(destination)
         .with_context(|| format!("{}: creating the destination", destination.display()))?;
     if !quiet {
-        eprintln!("archive {}", archive.root().display());
-        eprintln!(
+        errln!("archive {}", archive.root().display());
+        errln!(
             "exporting {} file(s) into {}",
             plan.len(),
             destination.display()
@@ -95,13 +96,13 @@ pub(crate) fn export(
             delivery.standing
         ));
     }
-    println!("{}", verdict.join(", "));
+    outln!("{}", verdict.join(", "))?;
     if delivery.failed.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!("{} could not be exported:", delivery.failed.len());
+        errln!("{} could not be exported:", delivery.failed.len());
         for (target, why) in &delivery.failed {
-            eprintln!("  {}: {why}", target.display());
+            errln!("  {}: {why}", target.display());
         }
         Ok(ExitCode::FAILURE)
     }
@@ -270,7 +271,7 @@ fn disambiguate(mut plan: Vec<Placed>, quiet: bool) -> Vec<Placed> {
             let bumped = bump(&placed.target, count);
             if taken.insert(bumped.clone()) {
                 if !quiet {
-                    eprintln!(
+                    errln!(
                         "{}: name already used in this export, exporting as {}",
                         placed.target.display(),
                         bumped.display()
