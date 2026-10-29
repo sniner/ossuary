@@ -894,12 +894,11 @@ fn walk<'a>(
 /// whose values are references — the subject its value names.
 pub(crate) fn reference(claim: &Claim, referenced: &mut BTreeSet<String>) {
     referenced.insert(claim.subject().as_str().to_string());
-    if LINKS.contains(&claim.attribute().as_str()) {
-        if let Some(Value::String(text)) = claim.value() {
-            if let Ok(subject) = Subject::parse(text) {
-                referenced.insert(subject.as_str().to_string());
-            }
-        }
+    if LINKS.contains(&claim.attribute().as_str())
+        && let Some(Value::String(text)) = claim.value()
+        && let Ok(subject) = Subject::parse(text)
+    {
+        referenced.insert(subject.as_str().to_string());
     }
 }
 

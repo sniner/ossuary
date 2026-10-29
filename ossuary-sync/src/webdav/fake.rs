@@ -174,14 +174,14 @@ impl State {
         if request.method == "PUT" && above {
             return status(413);
         }
-        if let Some(login) = &self.login {
-            if request.header("authorization") != Some(login) {
-                let mut answer = status(401);
-                answer
-                    .headers
-                    .push(("www-authenticate", "Basic realm=\"dav\"".to_string()));
-                return answer;
-            }
+        if let Some(login) = &self.login
+            && request.header("authorization") != Some(login)
+        {
+            let mut answer = status(401);
+            answer
+                .headers
+                .push(("www-authenticate", "Basic realm=\"dav\"".to_string()));
+            return answer;
         }
         if let Some(answer) = self.upload(request) {
             return answer;

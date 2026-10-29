@@ -243,10 +243,10 @@ fn grown_view(index: &Index) -> Result<Forest> {
     }
     let mut modified = BTreeMap::new();
     for (subject, value) in newest(index.standing_as_of("file:modified", None)?) {
-        if let Value::String(moment) = value {
-            if let Some(seconds) = forest::clamped(forest::epoch(&moment)) {
-                modified.insert(subject, seconds);
-            }
+        if let Value::String(moment) = value
+            && let Some(seconds) = forest::clamped(forest::epoch(&moment))
+        {
+            modified.insert(subject, seconds);
         }
     }
 

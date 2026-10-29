@@ -917,14 +917,14 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
         Err(Error::AlreadyArchive(_)) => {
             let archive = open(root)?;
             let standing = archive.content().algorithm();
-            if let Some(asked) = requested {
-                if asked != standing {
-                    return Err(anyhow!(
-                        "{}: already an archive using {}; the algorithm cannot be changed after creation",
-                        archive.root().display(),
-                        standing.name()
-                    ));
-                }
+            if let Some(asked) = requested
+                && asked != standing
+            {
+                return Err(anyhow!(
+                    "{}: already an archive using {}; the algorithm cannot be changed after creation",
+                    archive.root().display(),
+                    standing.name()
+                ));
             }
             if archive.complete()? {
                 println!(

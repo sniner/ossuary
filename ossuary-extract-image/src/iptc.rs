@@ -168,12 +168,7 @@ fn resource(block: &[u8], wanted: u16) -> Option<&[u8]> {
     while rest.len() >= 12 && rest.starts_with(b"8BIM") {
         let id = u16::from_be_bytes([rest[4], rest[5]]);
         let name_length = rest[6] as usize;
-        let name_end = 7 + name_length;
-        let name_end = if name_end % 2 == 0 {
-            name_end
-        } else {
-            name_end + 1
-        };
+        let name_end = (7 + name_length).next_multiple_of(2);
         let size_end = name_end + 4;
         let size_bytes = rest.get(name_end..size_end)?;
         let size = u32::from_be_bytes([size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3]])
@@ -183,7 +178,7 @@ fn resource(block: &[u8], wanted: u16) -> Option<&[u8]> {
             return Some(data);
         }
         let next = size_end + size;
-        rest = &rest[if next % 2 == 0 { next } else { next + 1 }.min(rest.len())..];
+        rest = &rest[next.next_multiple_of(2).min(rest.len())..];
     }
     None
 }

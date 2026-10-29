@@ -52,7 +52,7 @@ impl Progress {
             eprint!("\r\x1b[2K{text}");
             std::io::stderr().flush().ok();
             self.dirty = true;
-        } else if done % SPARSE == 0 {
+        } else if done.is_multiple_of(SPARSE) {
             eprintln!("{text}");
         }
     }

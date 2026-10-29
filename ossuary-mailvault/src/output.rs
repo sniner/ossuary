@@ -76,7 +76,7 @@ impl Progress {
             draw(text);
             *shown = Some(text.to_owned());
             self.dirty = true;
-        } else if done % SPARSE == 0 {
+        } else if done.is_multiple_of(SPARSE) {
             eprintln!("{text}");
         }
     }

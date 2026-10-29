@@ -450,7 +450,7 @@ fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["bytes", "KiB", "MiB", "GiB", "TiB"];
     let mut unit = 0;
     let mut count = bytes;
-    while count >= 1024 && count % 1024 == 0 && unit < UNITS.len() - 1 {
+    while count >= 1024 && count.is_multiple_of(1024) && unit < UNITS.len() - 1 {
         count /= 1024;
         unit += 1;
     }

@@ -5,6 +5,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Building ossuary needs Rust 1.88 or newer**, as the code already did. With Rust 1.85 to 1.87 the
+  build failed with a compiler error instead of a message naming the required version
+
 ## [0.14.0] - 2026-10-28
 
 ### Added

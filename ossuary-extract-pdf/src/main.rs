@@ -555,8 +555,8 @@ fn name_tree<'a>(
         .and_then(|names| dereference(document, names))
         .and_then(|names| names.as_array().ok())
     {
-        for pair in pairs.chunks_exact(2) {
-            leaf(&pair[1]);
+        for [_, value] in pairs.as_chunks::<2>().0 {
+            leaf(value);
         }
     }
 }
@@ -654,7 +654,7 @@ fn human_bytes(bytes: usize) -> String {
     const UNITS: [&str; 5] = ["bytes", "KiB", "MiB", "GiB", "TiB"];
     let mut unit = 0;
     let mut count = bytes;
-    while count >= 1024 && count % 1024 == 0 && unit < UNITS.len() - 1 {
+    while count >= 1024 && count.is_multiple_of(1024) && unit < UNITS.len() - 1 {
         count /= 1024;
         unit += 1;
     }

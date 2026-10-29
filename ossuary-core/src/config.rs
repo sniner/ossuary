@@ -240,10 +240,10 @@ impl Excludes {
         if self.empty {
             return false;
         }
-        if let Some(name) = relative.file_name() {
-            if self.names.is_match(name) {
-                return true;
-            }
+        if let Some(name) = relative.file_name()
+            && self.names.is_match(name)
+        {
+            return true;
         }
         self.paths.is_match(relative)
     }

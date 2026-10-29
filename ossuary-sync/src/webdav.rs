@@ -630,12 +630,13 @@ impl Remote for WebDav {
 /// does not accept surfaces as invalid data on the connection, which is
 /// all ureq passes on; nothing else in a TLS handshake fails that way.
 fn failed(url: &str, error: &ureq::Error) -> anyhow::Error {
-    if let ureq::Error::Io(io) = error {
-        if url.starts_with("https://") && io.kind() == io::ErrorKind::InvalidData {
-            return anyhow!(
-                "{url}: the server's certificate is not trusted ({io}); for a server with a self-signed certificate, pass {ACCEPT_ANY}"
-            );
-        }
+    if let ureq::Error::Io(io) = error
+        && url.starts_with("https://")
+        && io.kind() == io::ErrorKind::InvalidData
+    {
+        return anyhow!(
+            "{url}: the server's certificate is not trusted ({io}); for a server with a self-signed certificate, pass {ACCEPT_ANY}"
+        );
     }
     anyhow!("{url}: {error}")
 }

@@ -413,11 +413,11 @@ fn rename(claim: &Claim, names: &BTreeMap<String, String>) -> Option<String> {
     let object = line.as_object_mut()?;
     let subject = names.get(claim.subject().as_str())?;
     object.insert("subject".to_string(), Value::String(subject.clone()));
-    if LINKS.contains(&claim.attribute().as_str()) {
-        if let Some(Value::String(linked)) = claim.value() {
-            let linked = names.get(linked)?;
-            object.insert("value".to_string(), Value::String(linked.clone()));
-        }
+    if LINKS.contains(&claim.attribute().as_str())
+        && let Some(Value::String(linked)) = claim.value()
+    {
+        let linked = names.get(linked)?;
+        object.insert("value".to_string(), Value::String(linked.clone()));
     }
     Some(line.to_string())
 }

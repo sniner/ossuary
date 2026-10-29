@@ -445,10 +445,10 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
             // The same place in two files: the earlier time is when it
             // was first seen there.
             Some(seen) => {
-                if let Some(time) = &time {
-                    if seen.as_ref().is_none_or(|earlier| time < earlier) {
-                        *seen = Some(time.clone());
-                    }
+                if let Some(time) = &time
+                    && seen.as_ref().is_none_or(|earlier| time < earlier)
+                {
+                    *seen = Some(time.clone());
                 }
             }
         }

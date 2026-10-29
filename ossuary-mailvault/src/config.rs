@@ -422,14 +422,15 @@ impl Account {
     /// anything but this machine.
     pub fn reach(&self) -> Result<Reach> {
         let reach = self.build(|key| self.run(key))?;
-        if let Reach::Imap(imap) = &reach {
-            if !imap.tls && !loopback(&imap.host) {
-                bail!(
-                    "{}: tls = false is allowed only for localhost, not for {}; remove tls = false",
-                    self.name,
-                    imap.host
-                );
-            }
+        if let Reach::Imap(imap) = &reach
+            && !imap.tls
+            && !loopback(&imap.host)
+        {
+            bail!(
+                "{}: tls = false is allowed only for localhost, not for {}; remove tls = false",
+                self.name,
+                imap.host
+            );
         }
         Ok(reach)
     }

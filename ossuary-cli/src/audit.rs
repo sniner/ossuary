@@ -434,16 +434,16 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
             return Ok(false);
         }
     }
-    if let Some(digest) = &log.head_predecessor_missing {
-        if !say(
+    if let Some(digest) = &log.head_predecessor_missing
+        && !say(
             out,
             &format!(
                 "claims: segment {digest} is missing; the open segment names it as its predecessor{}",
                 restore(ossuary_core::HEAD, digest)
             ),
-        )? {
-            return Ok(false);
-        }
+        )?
+    {
+        return Ok(false);
     }
     for (digest, error) in &log.unreadable {
         if !say(
@@ -461,13 +461,13 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
             return Ok(false);
         }
     }
-    if let Some(error) = &log.head_broken {
-        if !say(
+    if let Some(error) = &log.head_broken
+        && !say(
             out,
             &format!("claims: the open segment cannot be parsed: {error}"),
-        )? {
-            return Ok(false);
-        }
+        )?
+    {
+        return Ok(false);
     }
     let mut clauses = vec![
         if log.head_broken.is_none() {

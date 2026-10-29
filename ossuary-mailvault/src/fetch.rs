@@ -190,13 +190,13 @@ pub fn run(
     // The pending lists of this run are mostly deleted again by now;
     // without this the file keeps their size. A file that stays large
     // costs nothing but space, so this does not fail the run.
-    if !options.dry_run {
-        if let Err(error) = memo.compact() {
-            say.line(format_args!(
+    if !options.dry_run
+        && let Err(error) = memo.compact()
+    {
+        say.line(format_args!(
                 "cache/{}: not compacted ({error:#}); the file keeps its size until a later run compacts it",
                 crate::memo::FILE_NAME
             ));
-        }
     }
     Ok(tally)
 }
@@ -611,7 +611,7 @@ impl Fetch<'_> {
         walk.done += 1;
         // Committed in batches: a run that dies repeats at most a
         // batch, and the bytes dedup.
-        if walk.done % COMMIT_EVERY == 0 {
+        if walk.done.is_multiple_of(COMMIT_EVERY) {
             self.memo.commit()?;
             self.memo.begin()?;
         }

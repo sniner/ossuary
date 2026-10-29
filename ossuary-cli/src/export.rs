@@ -35,13 +35,13 @@ pub(crate) fn export(
     // Said no to before anything is read: an export tree strewn between
     // the stores serves nobody, and a later ingest of it is refused
     // anyway.
-    if let Ok(inside) = fs::canonicalize(archive.root()) {
-        if resolved(destination).starts_with(&inside) {
-            return Err(anyhow!(
-                "{}: inside the archive; name a destination outside it",
-                destination.display()
-            ));
-        }
+    if let Ok(inside) = fs::canonicalize(archive.root())
+        && resolved(destination).starts_with(&inside)
+    {
+        return Err(anyhow!(
+            "{}: inside the archive; name a destination outside it",
+            destination.display()
+        ));
     }
     let index = index_at(&archive, as_of, quiet)?;
     let pairs = gather(&index, ids)?;
@@ -174,11 +174,11 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
     for placed in plan {
         let mut fail = |why: String| delivery.failed.push((placed.target.clone(), why));
         let dest = destination.join(&placed.target);
-        if let Some(parent) = dest.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                fail(format!("creating {}: {error}", parent.display()));
-                continue;
-            }
+        if let Some(parent) = dest.parent()
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            fail(format!("creating {}: {error}", parent.display()));
+            continue;
         }
         match fs::symlink_metadata(&dest) {
             Ok(_) => {
