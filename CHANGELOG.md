@@ -7,12 +7,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking changes
 
+- **Bring an archive of 0.14 or earlier into the new form with `ossuary-fix`.** Make a copy of the
+  archive, then run `ossuary-fix --archive DIR --dry-run list` to see what it does, and
+  `ossuary-fix --archive DIR list` to do it. If a sealed segment or the open segment is missing
+  and no mend recorded the loss, `list` stops; copy the file back from a copy of the archive, or
+  pass `--accept-loss`. The rewrite renames the segments, so seal ids given out before no longer
+  check: seal again afterwards and keep the new id. A copy kept with `ossuary sync` is refused
+  afterwards; sync into a new, empty target. Delete `cache/manifests/`
 - **A segment header names the segment sealed before it by one name, `"previous":"3c1e…"`, and the
-  sealed segments form one chain.** Archives written by 0.14 or earlier name it in a list; every
-  command refuses them with a message until `ossuary-fix list` has rewritten them. The rewrite
-  renames the segments, so seal ids given out before no longer check: seal again afterwards and
-  keep the new id. A copy kept with `ossuary sync` is refused after that as well; sync into a new,
-  empty target
+  sealed segments form one chain.** Archives written by 0.14 or earlier name it in a list, and
+  every command refuses them with a message until `ossuary-fix list` has rewritten them
 - **`ossuary merge` is removed**, `--rehash` included. `ossuary mailvault` writes into the archive
   it is given, so a mail archive kept apart is no longer needed. To move an archive to another
   hash algorithm, use `ossuary-fix rehash`
@@ -45,7 +49,6 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read**, instead of saying the record was cut back to an earlier point
 - **An interrupted `ossuary-fix` rewrite no longer leaves a query index behind that counts claims
   twice**
-
 - **A command whose output goes to a program that stops reading early no longer fails.**
   `ossuary extract mail | head -1` and similar commands stopped with the message "failed printing
   to stdout" and exit code 101. Now the output stops, the command finishes its work and exits with
