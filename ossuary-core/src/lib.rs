@@ -35,7 +35,6 @@ mod extract;
 mod index;
 mod ingest;
 mod log;
-mod manifest;
 mod retract;
 mod seal;
 mod weed;
@@ -57,7 +56,6 @@ pub use immure::{Algorithm, Digest, Store};
 pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{Contents, GENERATION, Log, Segment, WalkBack, head_after};
-pub use manifest::{Manifest, Manifests};
 pub use retract::{Taking, retract};
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,

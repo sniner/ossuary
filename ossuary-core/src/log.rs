@@ -40,7 +40,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::claim::Claim;
 use crate::error::{Error, Result};
-use crate::manifest::{Manifest, Manifests};
 
 /// The format generation this build writes, and the only one it reads.
 ///
@@ -208,7 +207,6 @@ impl Iterator for WalkBack<'_> {
 pub struct Log {
     store: Store,
     head: PathBuf,
-    manifests: Option<Manifests>,
 }
 
 impl Log {
@@ -218,18 +216,7 @@ impl Log {
         Log {
             store,
             head: head.into(),
-            manifests: None,
         }
-    }
-
-    /// The same log, keeping a manifest drawer at `dir`.
-    ///
-    /// With a drawer, sealing files each fresh segment's manifest in
-    /// passing.
-    #[must_use]
-    pub fn with_manifests(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.manifests = Some(Manifests::new(dir));
-        self
     }
 
     /// Append one claim to the open segment.
@@ -379,10 +366,7 @@ impl Log {
     /// head of no claims. The whole head is validated first, so nothing
     /// broken is ever immured; and because the store is content-addressed,
     /// a run that was interrupted between storing and starting the fresh
-    /// head simply seals the same bytes again as a no-op. With a manifest
-    /// drawer, the fresh segment's manifest is filed in passing, best
-    /// effort, and never a reason for a seal that succeeded to say
-    /// otherwise.
+    /// head simply seals the same bytes again as a no-op.
     ///
     /// # Errors
     ///
@@ -400,8 +384,7 @@ impl Log {
                 });
             }
         };
-        let claims = parse_segment(&text)?.into_claims();
-        if claims.is_empty() {
+        if parse_segment(&text)?.claims.is_empty() {
             return Ok(None);
         }
         let (_, entry) = self.store.add(text.as_bytes())?;
@@ -418,14 +401,6 @@ impl Log {
         let tmp = self.head.with_file_name(name);
         fs::write(&tmp, head_after(entry.digest())).map_err(io("writing the new head"))?;
         fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
-
-        if let Some(manifests) = &self.manifests {
-            // Filed in passing, best effort: the seal has already
-            // succeeded, and cache trouble never outranks the truth
-            // operation it decorates — a manifest that could not be
-            // written is merely absent, and segments() rebuilds it.
-            let _ = manifests.store(&Manifest::of(entry.digest(), &claims));
-        }
 
         Ok(Some(Segment {
             digest: entry.digest().clone(),
@@ -498,8 +473,7 @@ impl Log {
     }
 
     /// The claims store itself: for the audit and for repair tools that
-    /// read every sealed segment as the store holds it, manifests left
-    /// out of it.
+    /// read every sealed segment as the store holds it.
     #[must_use]
     pub fn store(&self) -> &Store {
         &self.store
@@ -885,17 +859,6 @@ mod tests {
         assert!(matches!(log.walk_back(), Err(Error::HeadLost(_))));
     }
 
-    fn manifested_log_in(dir: &TempDir) -> Log {
-        Log::new(store_in(dir), dir.path().join("head.jsonl"))
-            .with_manifests(dir.path().join("manifests"))
-    }
-
-    fn manifest_path(dir: &TempDir, segment: &Segment) -> std::path::PathBuf {
-        dir.path()
-            .join("manifests")
-            .join(format!("{}.json", segment.digest()))
-    }
-
     #[test]
     fn an_append_that_fills_the_head_seals_it_by_itself() {
         let dir = TempDir::new().unwrap();
@@ -926,22 +889,6 @@ mod tests {
             log.head().unwrap(),
             Vec::new(),
             "and a fresh head stands ready"
-        );
-    }
-
-    #[test]
-    fn sealing_files_a_manifest_in_passing() {
-        let dir = TempDir::new().unwrap();
-        let log = manifested_log_in(&dir);
-        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
-            .unwrap();
-
-        let segment = log.seal().unwrap().unwrap();
-
-        let filed = fs::read_to_string(manifest_path(&dir, &segment)).unwrap();
-        assert!(
-            filed.starts_with("{\"ossuary-manifest\":1,"),
-            "the drawer holds the fresh segment's manifest"
         );
     }
 

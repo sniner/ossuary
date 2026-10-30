@@ -68,6 +68,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`cache/manifests/` is no longer written or read.** Delete it; nothing in it is used
 - **Building ossuary needs Rust 1.88 or newer**, as the code already did. With Rust 1.85 to 1.87 the
   build failed with a compiler error instead of a message naming the required version
 

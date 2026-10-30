@@ -296,9 +296,9 @@ seal was made, unchanged. What was recorded after it is not covered.
 ## Caches
 
 Everything under `cache/` is derived from the stores and `head.jsonl`,
-and deleting it loses nothing. What is kept there (a list of sealed
-segments, per-segment manifests, query indexes in SQLite, full-text or
-whatever the queries need) is internal to the software and deliberately
+and deleting it loses nothing. What is kept there (query indexes in
+SQLite, full-text or whatever the queries need) is internal to the
+software and deliberately
 not specified: no cache is ever authoritative, and none is part of the
 format.
 

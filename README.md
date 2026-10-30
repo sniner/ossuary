@@ -569,7 +569,7 @@ under their content hash (via [immure](https://github.com/sniner/immure)),
 and an append-only claim log sealed into the same kind of store. What
 tools derived (extracted text, unpacked attachments) is kept in a
 separate store, apart from the originals. Everything else (the query
-index, manifests, what `ingest` remembers of earlier runs) is a cache in `cache/` that is
+index, what `ingest` remembers of earlier runs) is a cache in `cache/` that is
 rebuilt from the log whenever needed; deleting it makes the next query
 slow, but loses no data.
 

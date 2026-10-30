@@ -62,10 +62,9 @@ claim.
 
 **The log.** `Log::append` appends a claim to the open head, and
 `Log::seal` turns the head into a sealed segment named by its digest.
-`Log::segments` lists the sealed segments and `Log::read` reads one.
-`Manifests` are per-segment summaries in `cache/` (claim count, time
-range, namespaces, subjects); with them, `Log::segments` does not need
-to read every segment.
+`Log::segments` lists the sealed segments in the order of the chain,
+reading only their headers, and `Log::read` reads one. `Log::walk_back`
+walks the chain from the open head, one segment at a time.
 
 **The index.** `Index` folds the log into SQLite. It is a cache:
 everything in it can be rebuilt from the log. `about` returns every

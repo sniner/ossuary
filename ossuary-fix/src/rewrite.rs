@@ -24,8 +24,7 @@
 //!
 //! The query index in `cache/` is removed before anything else: it
 //! records which segments it has folded by name, and would fold the
-//! renamed ones a second time. Manifests of removed segments are
-//! removed as well; the rest of the cache is not touched.
+//! renamed ones a second time. The rest of the cache is not touched.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -256,7 +255,7 @@ impl Rewrite {
         }
         // First: deleting a cache is always allowed, and an index left
         // standing over renamed segments would fold them a second time.
-        forget(archive, self.removed())?;
+        forget(archive)?;
         let log = archive.log();
         let store = log.store();
         for step in &self.steps {
@@ -279,12 +278,6 @@ impl Rewrite {
             store.remove(digest)?;
         }
         Ok(())
-    }
-
-    /// The segments the rewrite removes from the store: renamed or
-    /// dropped.
-    fn removed(&self) -> impl Iterator<Item = &Digest> {
-        self.steps.iter().map(|step| &step.old).chain(&self.dropped)
     }
 
     /// What the rewrite does to seals given out for the archive, when
@@ -453,9 +446,8 @@ fn replace_head(head: &Path, text: &str) -> Result<()> {
     fs::rename(&tmp, head).with_context(|| format!("{}: replacing", head.display()))
 }
 
-/// Drop what the cache knows of segments by name: the query index
-/// whole, and the manifests of the segments to be removed.
-fn forget<'a>(archive: &Archive, removed: impl Iterator<Item = &'a Digest>) -> Result<()> {
+/// Drop what the cache knows of segments by name: the query index.
+fn forget(archive: &Archive) -> Result<()> {
     let cache = archive.root().join("cache");
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let path = cache.join(format!("index.sqlite{suffix}"));
@@ -466,11 +458,6 @@ fn forget<'a>(archive: &Archive, removed: impl Iterator<Item = &'a Digest>) -> R
                 return Err(source).with_context(|| format!("{}: removing", path.display()));
             }
         }
-    }
-    // A manifest of a removed segment is never read again; one that
-    // will not go is left.
-    for digest in removed {
-        let _ = fs::remove_file(cache.join("manifests").join(format!("{digest}.json")));
     }
     Ok(())
 }

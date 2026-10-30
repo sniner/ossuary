@@ -316,11 +316,9 @@ impl Archive {
     }
 }
 
-/// The archive's log: the claims store, the open head, and the manifest
-/// drawer in `cache/` — which, like every cache, may vanish between any
-/// two commands and is refilled in passing.
+/// The archive's log: the claims store and the open head.
 fn log_in(claims: Store, root: &Path) -> Log {
-    Log::new(claims, root.join("head.jsonl")).with_manifests(root.join("cache").join("manifests"))
+    Log::new(claims, root.join("head.jsonl"))
 }
 
 /// How generation 1 lays out the content and derived stores: entries named
@@ -477,35 +475,6 @@ mod tests {
             fs::read_to_string(root.join("config.toml")).unwrap(),
             own,
             "the archive's own settings outrank the starter"
-        );
-    }
-
-    #[test]
-    fn sealing_through_the_archive_files_a_manifest() {
-        use crate::claim::{Attribute, Claim, Source, Subject, Timestamp};
-
-        let dir = TempDir::new().unwrap();
-        let root = dir.path().join("archive");
-        let archive = Archive::create(&root, Algorithm::Sha256).unwrap();
-        let claim = Claim::assert(
-            Subject::parse(&"9f".repeat(32)).unwrap(),
-            Attribute::parse("user:tag").unwrap(),
-            serde_json::json!("holiday"),
-            Timestamp::parse("2026-09-04T12:00:00Z").unwrap(),
-            Source::parse("user").unwrap(),
-            crate::claim::Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-        )
-        .unwrap();
-        archive.log().append(&claim).unwrap();
-
-        let segment = archive.log().seal().unwrap().unwrap();
-
-        assert!(
-            root.join("cache")
-                .join("manifests")
-                .join(format!("{}.json", segment.digest()))
-                .is_file(),
-            "the archive's log keeps its manifest drawer in cache/"
         );
     }
 
