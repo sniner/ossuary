@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-30
+
 ### Breaking changes
 
 - **Bring an archive of 0.14 or earlier into the new form with `ossuary-fix`.** Make a copy of the
