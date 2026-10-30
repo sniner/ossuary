@@ -1,9 +1,8 @@
 //! The seal: the archive's whole record named by one digest.
 //!
-//! Every segment names the segments sealed before it, and every claim
+//! Every segment names the segment sealed before it, and every claim
 //! names its subject by digest, so the digest of the last sealed segment
-//! fixes every segment reachable from it and every file their claims
-//! refer to. A seal is that digest, made sure to cover everything: the
+//! fixes every segment before it and every file their claims refer to. A seal is that digest, made sure to cover everything: the
 //! chain is read whole first, and every segment must be reachable from
 //! the open head; then the open head is sealed, so that its claims are
 //! covered as well. Kept outside the archive, the digest later shows
@@ -22,7 +21,6 @@ use crate::archive::Archive;
 use crate::audit::{Fixity, LogAudit, audit_log, reference};
 use crate::claim::Timestamp;
 use crate::error::{Error, Result};
-use crate::log::Mend;
 
 /// A seal of the archive: the segment whose digest names its record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,8 +54,8 @@ pub enum Sealing {
 }
 
 /// Seal the archive: read the log whole, refuse if it is not whole, seal
-/// the open head when it holds claims or names several segments, and
-/// name the segment that covers the record.
+/// the open head when it holds claims, and name the segment that covers
+/// the record.
 ///
 /// With `dry_run` nothing is written, and the seal is the one the call
 /// would make: the open head's bytes go into the store verbatim when it
@@ -70,13 +68,13 @@ pub enum Sealing {
 pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
     let log = archive.log();
     let report = audit_log(log)?;
-    if report.findings() > 0 || !report.unreached.is_empty() {
+    if report.findings() > 0 {
         return Ok(Sealing::Refused(Box::new(report)));
     }
     let head = log.head_contents()?;
-    let sealed_now = head.sealable();
+    let sealed_now = !head.claims().is_empty();
     let segment = if !sealed_now {
-        match head.previous().first() {
+        match head.previous() {
             Some(last) => last.clone(),
             None => return Ok(Sealing::Empty),
         }
@@ -130,9 +128,11 @@ pub fn parse_id(archive: &Archive, given: &str) -> Result<Digest> {
     Digest::parse(given).map_err(|_| refuse("not a hash in hex".to_string()))
 }
 
-/// The sealed segments a seal covers, read back: every segment the walk
-/// from the seal over `previous` reaches, each one checked against its
-/// hash, and every file their claims refer to.
+/// The sealed segments a seal covers, read back: every segment from the
+/// seal back to the first, each one checked against its hash, and every
+/// file their claims refer to. The walk stops at the first segment that
+/// is gone, damaged or unreadable, so each of those lists holds one name
+/// at most.
 #[derive(Debug)]
 pub struct Cover {
     /// The seal's segment.
@@ -154,10 +154,6 @@ pub struct Cover {
     /// Segments that could not be read, or not read back as segments,
     /// with what stood in the way.
     pub unreadable: Vec<(String, String)>,
-    /// Segments that were missing when the seal was made: a mend the
-    /// seal covers stands in for each one. Not a finding; the seal
-    /// covers the loss as it was recorded.
-    pub lost_before: Vec<String>,
     /// Every segment the walk reached, held or not.
     reached: BTreeSet<Digest>,
     /// Every file the claims refer to, by name.
@@ -172,8 +168,7 @@ impl Cover {
     }
 }
 
-/// Walk the segments a seal covers, from its segment back over every
-/// name in every `previous`.
+/// Walk the segments a seal covers, from its segment back to the first.
 ///
 /// # Errors
 ///
@@ -191,42 +186,37 @@ pub fn cover(archive: &Archive, segment: &Digest) -> Result<Cover> {
         gone: Vec::new(),
         damaged: Vec::new(),
         unreadable: Vec::new(),
-        lost_before: Vec::new(),
         reached: BTreeSet::new(),
         referenced: BTreeSet::new(),
     };
     if !cover.held {
         return Ok(cover);
     }
-    let mut missing = BTreeSet::new();
-    let mut replaced = BTreeSet::new();
-    let mut pending = vec![segment.clone()];
-    while let Some(digest) = pending.pop() {
-        if !cover.reached.insert(digest.clone()) {
-            continue;
-        }
+    let mut next = Some(segment.clone());
+    while let Some(digest) = next.take() {
+        cover.reached.insert(digest.clone());
         let name = digest.as_str().to_string();
         let entry = store.find(&digest)?.and_then(|path| store.entry_at(&path));
         let Some(entry) = entry else {
-            missing.insert(name);
-            continue;
+            cover.gone.push(name);
+            break;
         };
         match store.verify(&entry) {
             Ok(true) => {}
             Ok(false) => {
                 cover.damaged.push(name);
-                continue;
+                break;
             }
             Err(error) => {
                 cover.unreadable.push((name, error.to_string()));
-                continue;
+                break;
             }
         }
         let contents = match log.contents(&digest) {
             Ok(contents) => contents,
             Err(error) => {
                 cover.unreadable.push((name, error.spelled()));
-                continue;
+                break;
             }
         };
         cover.segments += 1;
@@ -237,17 +227,7 @@ pub fn cover(archive: &Archive, segment: &Digest) -> Result<Cover> {
                 cover.last = Some(claim.time().clone());
             }
         }
-        if let Some(replaces) = contents.mend().and_then(Mend::replaces) {
-            replaced.insert(replaces.as_str().to_string());
-        }
-        pending.extend(contents.previous().iter().cloned());
-    }
-    for name in missing {
-        if replaced.contains(&name) {
-            cover.lost_before.push(name);
-        } else {
-            cover.gone.push(name);
-        }
+        next = contents.previous().cloned();
     }
     cover.damaged.sort();
     cover.unreadable.sort();
@@ -340,6 +320,10 @@ pub enum Continued {
     HeadLost,
     /// The open head cannot be read, with what stood in the way.
     HeadBroken(String),
+    /// A segment recorded since the seal is missing or will not read:
+    /// its name. The walk back from the open head ends there, and
+    /// whether it would reach the seal is not known.
+    Blocked(String),
     /// The walk back from the open head does not reach the seal: the
     /// record was cut back to an earlier point, or begun anew. Only a
     /// head rewritten by hand leaves this.
@@ -347,8 +331,8 @@ pub enum Continued {
 }
 
 /// Walk back from the open head to the seal, through the segments
-/// recorded since. A segment the seal covers is not walked further: it
-/// lies behind the seal, and what is behind cannot lead to it.
+/// recorded since. A segment the seal covers other than the seal's own
+/// lies behind it, and a walk that meets one has passed the seal by.
 ///
 /// # Errors
 ///
@@ -372,24 +356,22 @@ pub fn since(archive: &Archive, cover: &Cover) -> Result<Since> {
         }
     };
     since.claims = head.claims().len();
-    let mut seen = BTreeSet::new();
-    let mut pending = head.previous().to_vec();
-    while let Some(digest) = pending.pop() {
+    let mut next = head.previous().cloned();
+    while let Some(digest) = next.take() {
         if digest == cover.segment {
             since.continued = Continued::Yes;
-            continue;
+            break;
         }
-        if cover.reached.contains(&digest) || !seen.insert(digest.clone()) {
-            continue;
+        if cover.reached.contains(&digest) {
+            break;
         }
-        // A segment since the seal that will not read is the audit's
-        // finding; the walk only loses its way there.
         let Ok(contents) = log.contents(&digest) else {
-            continue;
+            since.continued = Continued::Blocked(digest.as_str().to_string());
+            break;
         };
         since.segments += 1;
         since.claims += contents.claims().len();
-        pending.extend(contents.previous().iter().cloned());
+        next = contents.previous().cloned();
     }
     Ok(since)
 }
@@ -502,7 +484,7 @@ mod tests {
         assert_eq!(seal.claims, 2);
         assert_eq!(
             archive.log().head_contents().unwrap().previous(),
-            std::slice::from_ref(&seal.segment),
+            Some(&seal.segment),
             "the head now follows the seal"
         );
     }
@@ -546,61 +528,25 @@ mod tests {
         let Sealing::Refused(report) = seal(&archive, false).unwrap() else {
             panic!("sealed over a lost head");
         };
-        assert_eq!(report.heads_lost(), 1);
+        assert!(report.head_lost);
         assert!(!archive.log().head_path().exists(), "nothing was written");
     }
 
     #[test]
-    fn a_mend_the_head_does_not_name_refuses_the_seal() {
+    fn a_lost_segment_refuses_the_seal() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let first = archive.log().seal().unwrap().unwrap();
         take(&archive, b"second", "2026-09-02T00:00:00Z");
-        let second = archive.log().seal().unwrap().unwrap();
-        take(&archive, b"third", "2026-09-03T00:00:00Z");
-        let third = archive.log().seal().unwrap().unwrap();
-        let path = archive
-            .log()
-            .store()
-            .find(second.digest())
-            .unwrap()
-            .unwrap();
+        archive.log().seal().unwrap().unwrap();
+        let path = archive.log().store().find(first.digest()).unwrap().unwrap();
         fs::remove_file(path).unwrap();
-        archive
-            .log()
-            .mend(
-                first.digest(),
-                &crate::Mend::new(Some(third.digest().clone()), Some(second.digest().clone())),
-            )
-            .unwrap();
 
         assert!(matches!(
             seal(&archive, false).unwrap(),
             Sealing::Refused(_)
         ));
-    }
-
-    #[test]
-    fn a_merged_head_without_claims_is_sealed_into_one_segment() {
-        let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
-        take(&archive, b"first", "2026-09-01T00:00:00Z");
-        let first = archive.log().seal().unwrap().unwrap();
-        let text = "{\"ossuary-segment\":1}\n";
-        let (_, other) = archive.log().store().add(text.as_bytes()).unwrap();
-        archive
-            .log()
-            .head_follows(&[first.digest().clone(), other.digest().clone()])
-            .unwrap();
-
-        let seal = sealed(seal(&archive, false).unwrap());
-
-        assert!(seal.sealed_now);
-        assert_eq!(
-            archive.log().contents(&seal.segment).unwrap().previous(),
-            [first.digest().clone(), other.digest().clone()]
-        );
     }
 
     #[test]
@@ -750,35 +696,6 @@ mod tests {
     }
 
     #[test]
-    fn a_loss_mended_before_the_seal_is_covered_as_recorded() {
-        let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
-        take(&archive, b"first", "2026-09-01T00:00:00Z");
-        archive.log().seal().unwrap().unwrap();
-        take(&archive, b"second", "2026-09-02T00:00:00Z");
-        let second = archive.log().seal().unwrap().unwrap();
-        take(&archive, b"third", "2026-09-03T00:00:00Z");
-        archive.log().seal().unwrap().unwrap();
-        let store = archive.log().store();
-        fs::remove_file(store.find(second.digest()).unwrap().unwrap()).unwrap();
-        let brk = audit_log(archive.log()).unwrap().breaks.remove(0);
-        crate::mend(archive.log(), &brk).unwrap().unwrap();
-        let seal = sealed(seal(&archive, false).unwrap());
-
-        let checked = check(&archive, &seal.segment, true);
-
-        assert!(checked.holds(), "{checked:?}");
-        assert_eq!(
-            checked.cover.lost_before,
-            vec![second.digest().as_str().to_string()]
-        );
-        assert_eq!(
-            checked.cover.segments, 4,
-            "first, third, the mend, the seal"
-        );
-    }
-
-    #[test]
     fn a_record_cut_back_behind_the_seal_is_a_finding() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
@@ -786,15 +703,40 @@ mod tests {
         let first = archive.log().seal().unwrap().unwrap();
         take(&archive, b"second", "2026-09-02T00:00:00Z");
         let seal = sealed(seal(&archive, false).unwrap());
-        archive
-            .log()
-            .head_follows(std::slice::from_ref(first.digest()))
-            .unwrap();
+        // The head rewritten by hand to name an earlier segment.
+        fs::write(
+            archive.log().head_path(),
+            crate::log::head_after(first.digest()),
+        )
+        .unwrap();
 
         let checked = check(&archive, &seal.segment, true);
 
         assert_eq!(checked.since.continued, Continued::No);
         assert_eq!(checked.findings(), 1, "the seal itself is intact");
+    }
+
+    #[test]
+    fn a_segment_lost_since_the_seal_is_named_as_such() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        let seal = sealed(seal(&archive, false).unwrap());
+        take(&archive, b"second", "2026-09-02T00:00:00Z");
+        let since = archive.log().seal().unwrap().unwrap();
+        take(&archive, b"third", "2026-09-03T00:00:00Z");
+        archive.log().seal().unwrap().unwrap();
+        let path = archive.log().store().find(since.digest()).unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+
+        let checked = check(&archive, &seal.segment, true);
+
+        assert_eq!(
+            checked.since.continued,
+            Continued::Blocked(since.digest().as_str().to_string()),
+            "a lost segment, not a record cut back"
+        );
+        assert!(!checked.holds());
     }
 
     #[test]

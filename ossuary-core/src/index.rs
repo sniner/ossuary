@@ -6,10 +6,13 @@
 //! promises, in `cache/`, with whatever schema today's questions want.
 //! Nothing here is authoritative; the segments are.
 //!
-//! The fold is incremental, and the log's own immutability is what makes
-//! that cheap: a sealed segment never changes, so a segment folded once is
-//! folded forever, and "what is new" is the set difference of digests. Only
-//! the open head is folded afresh each time, because only the head moves.
+//! The fold is incremental, and the log's own shape is what makes that
+//! cheap: a sealed segment never changes, so a segment folded once is
+//! folded forever, and a new one only ever joins the chain at its end. The
+//! fold walks back from the open head to the first segment it knows and
+//! folds the ones it passed, oldest first. Only the open head is folded
+//! afresh each time, because only the head moves. The order of the fold
+//! is the order of the log, and claim times play no part in it.
 //!
 //! The fold keeps two tables of substance and four of names. `claims` is
 //! the history, verbatim: every claim a row, retractions included, in
@@ -73,7 +76,6 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
      CREATE TABLE IF NOT EXISTS segments (
          id     INTEGER PRIMARY KEY,
          digest TEXT NOT NULL UNIQUE,
-         first  TEXT,
          seq    INTEGER NOT NULL
      );
      CREATE TABLE IF NOT EXISTS claims (
@@ -163,8 +165,8 @@ pub struct Standing {
     pub order: u64,
 }
 
-/// One row of `segments`: id, digest, first claim's time, rank.
-type SegmentRow = (i64, String, Option<String>, i64);
+/// One row of `segments`: id, digest, place in the chain.
+type SegmentRow = (i64, String, i64);
 
 /// What a question reads: the present, the standing set whole, or the
 /// record.
@@ -416,7 +418,7 @@ impl Index {
         // points them at the new.
         connection.execute_batch(DDL)?;
         connection.execute(
-            "INSERT OR IGNORE INTO segments (id, digest, first, seq) VALUES (?1, 'head', NULL, ?2)",
+            "INSERT OR IGNORE INTO segments (id, digest, seq) VALUES (?1, 'head', ?2)",
             params![HEAD, HEAD_SEQ],
         )?;
         Ok(Index {
@@ -448,46 +450,57 @@ impl Index {
     fn fold_in(&mut self, log: &Log) -> Result<Folded> {
         let mut folded = Folded::default();
 
-        let segments = log.segments()?;
-        for (rank, segment) in segments.iter().enumerate() {
-            let digest = segment.digest().to_string();
-            let known: bool = self.connection.query_row(
-                "SELECT EXISTS (SELECT 1 FROM segments WHERE digest = ?1)",
-                params![digest],
+        // Back from the head to the first segment this index knows: every
+        // segment passed on the way is new, and newer than everything
+        // folded before it.
+        let mut fresh = Vec::new();
+        let mut known = None;
+        for segment in log.walk_back()? {
+            let segment = segment?;
+            let seq: Option<i64> = self
+                .connection
+                .query_row(
+                    "SELECT seq FROM segments WHERE digest = ?1",
+                    params![segment.digest().to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if seq.is_some() {
+                known = seq;
+                break;
+            }
+            fresh.push(segment);
+        }
+        if known.is_none() {
+            // The walk reached the first segment without meeting one this
+            // index knows. An index that holds segments all the same was
+            // folded from another chain, as when segments were rewritten
+            // and the cache kept: it is emptied and folded anew.
+            let foreign: bool = self.connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM segments WHERE id != ?1)",
+                params![HEAD],
                 |row| row.get(0),
             )?;
-            if known {
-                continue;
+            if foreign {
+                self.connection
+                    .execute_batch("DELETE FROM claims; DELETE FROM standing;")?;
+                self.connection
+                    .execute("DELETE FROM segments WHERE id != ?1", params![HEAD])?;
             }
+        }
+        let places = known.map_or(0, |seq| seq + 1)..;
+        for (seq, segment) in places.zip(fresh.iter().rev()) {
             let claims = log.read(segment.digest())?;
             let transaction = self.connection.transaction()?;
             transaction.execute(
-                "INSERT INTO segments (digest, first, seq) VALUES (?1, ?2, ?3)",
-                params![
-                    digest,
-                    segment.first_claim_at().map(Timestamp::as_str),
-                    rank_of(rank)
-                ],
+                "INSERT INTO segments (digest, seq) VALUES (?1, ?2)",
+                params![segment.digest().to_string(), seq],
             )?;
             let id = transaction.last_insert_rowid();
             insert(&transaction, &mut self.ids, id, &claims)?;
             transaction.commit()?;
             folded.segments += 1;
             folded.claims += claims.len();
-        }
-        if folded.segments > 0 {
-            // A new segment may sort before ones already folded, so every
-            // sealed segment takes its rank from the log's own order
-            // again — a few hundred rows at most. Whatever order the log
-            // answers in, the index inherits without knowing why.
-            let transaction = self.connection.transaction()?;
-            for (rank, segment) in segments.iter().enumerate() {
-                transaction.execute(
-                    "UPDATE segments SET seq = ?1 WHERE digest = ?2",
-                    params![rank_of(rank), segment.digest().to_string()],
-                )?;
-            }
-            transaction.commit()?;
         }
 
         let head = log.head()?;
@@ -532,27 +545,21 @@ impl Index {
         let last = self
             .connection
             .query_row(
-                "SELECT c.time, s.seq, c.position
+                "SELECT s.seq, c.position
                  FROM claims c JOIN segments s ON s.id = c.segment
                  WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
-                 ORDER BY c.time DESC, s.seq DESC, c.position DESC
+                 ORDER BY s.seq DESC, c.position DESC
                  LIMIT 1",
                 params![run.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()?;
-        let Some((time, seq, position)) = last else {
+        let Some((seq, position)) = last else {
             return Ok(None);
         };
         let replayed = self.replay_until(
-            "c.time < ?1 OR (c.time = ?1 AND (s.seq < ?2 OR (s.seq = ?2 AND c.position <= ?3)))",
-            &[Sql::Text(time), Sql::Integer(seq), Sql::Integer(position)],
+            "s.seq < ?1 OR (s.seq = ?1 AND c.position <= ?2)",
+            &[Sql::Integer(seq), Sql::Integer(position)],
         )?;
         Ok(Some(replayed))
     }
@@ -591,13 +598,13 @@ impl Index {
     /// in-memory index.
     fn replay_until(&self, until: &str, params: &[rusqlite::types::Value]) -> Result<Index> {
         let mut replayed = Index::open(":memory:")?;
-        // The segments' own order rides along: `about` breaks time ties
-        // by it, and the replayed record must read like the original.
+        // The segments' places in the chain ride along: they are the log
+        // order, and the replayed record must read like the original.
         let segments: std::result::Result<Vec<SegmentRow>, _> = self
             .connection
-            .prepare("SELECT id, digest, first, seq FROM segments WHERE id != ?1")?
+            .prepare("SELECT id, digest, seq FROM segments WHERE id != ?1")?
             .query_map(params![HEAD], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
             .collect();
         let mut statement = self.connection.prepare(&format!(
@@ -610,7 +617,7 @@ impl Index {
              LEFT JOIN runs r ON r.id = c.run
              JOIN segments s ON s.id = c.segment
              WHERE {until}
-             ORDER BY c.time, s.seq, c.position"
+             ORDER BY s.seq, c.position"
         ))?;
         let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
@@ -629,10 +636,10 @@ impl Index {
         })?;
         let Index { connection, ids } = &mut replayed;
         let transaction = connection.transaction()?;
-        for (id, digest, first, seq) in segments? {
+        for (id, digest, seq) in segments? {
             transaction.execute(
-                "INSERT INTO segments (id, digest, first, seq) VALUES (?1, ?2, ?3, ?4)",
-                params![id, digest, first, seq],
+                "INSERT INTO segments (id, digest, seq) VALUES (?1, ?2, ?3)",
+                params![id, digest, seq],
             )?;
         }
         for row in rows {
@@ -643,8 +650,8 @@ impl Index {
         Ok(replayed)
     }
 
-    /// Everything the log says about one subject, in log order: by time,
-    /// ties broken by the segments' own order, the head last.
+    /// Everything the log says about one subject, in log order: along
+    /// the chain, the head last.
     ///
     /// Retractions come back as the claims they are — interpreting them is
     /// the caller's policy, not the index's.
@@ -663,7 +670,7 @@ impl Index {
              LEFT JOIN runs r ON r.id = c.run
              JOIN segments s ON s.id = c.segment
              WHERE su.digest = ?1
-             ORDER BY c.time, s.seq, c.position",
+             ORDER BY s.seq, c.position",
         )?;
         let rows = statement.query_map(params![subject.as_str()], |row| {
             Ok((
@@ -1026,7 +1033,7 @@ impl Index {
              JOIN segments s ON s.id = c.segment
              WHERE c.attribute = (SELECT id FROM attributes WHERE name = ?1)
                AND c.time <= ?2
-             ORDER BY c.time, s.seq, c.position",
+             ORDER BY s.seq, c.position",
         )?;
         let rows = statement.query_map(params![attribute, cutoff], |row| {
             Ok((
@@ -1271,14 +1278,14 @@ impl Index {
     /// sworn away.
     pub fn history(&self) -> Result<Vec<Episode>> {
         let mut statement = self.connection.prepare(
-            // Runs in order of their first claim: the lowest segment
+            // Runs in log order of their first claim: the lowest segment
             // and the lowest position taken apart would put a run that
             // went on past a seal before one that began earlier.
             "WITH first AS (
                  SELECT run, seq, position FROM (
                      SELECT c.run, s.seq, c.position,
                             ROW_NUMBER() OVER (
-                                PARTITION BY c.run ORDER BY c.time, s.seq, c.position
+                                PARTITION BY c.run ORDER BY s.seq, c.position
                             ) AS rank
                      FROM claims c JOIN segments s ON s.id = c.segment
                      WHERE c.run IS NOT NULL)
@@ -1289,7 +1296,7 @@ impl Index {
              JOIN runs r ON r.id = c.run
              JOIN first f ON f.run = c.run
              GROUP BY c.run
-             ORDER BY MIN(c.time), f.seq, f.position",
+             ORDER BY f.seq, f.position",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -1581,11 +1588,6 @@ impl Index {
             }),
         }
     }
-}
-
-/// A segment's rank in log order, as the row stores it.
-fn rank_of(rank: usize) -> i64 {
-    i64::try_from(rank).expect("fewer segments than i64 can count")
 }
 
 /// A claim's row id as a [`Standing`] order: ids count up from one.
@@ -2027,6 +2029,108 @@ mod tests {
             },
             "the sealed segment is folded forever; only the head moves"
         );
+    }
+
+    fn untag(tag: &str, time: &str) -> Claim {
+        Claim::retract_value(
+            subject(),
+            Attribute::parse("user:tag").unwrap(),
+            json!(tag),
+            Timestamp::parse(time).unwrap(),
+            Source::parse("user").unwrap(),
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn tagged(index: &Index, tag: &str) -> Vec<Subject> {
+        index
+            .find(&[term("user:tag", tag)], &[], Scope::Held)
+            .unwrap()
+    }
+
+    /// Review 0.14.0, B1: the fold went by the time of each segment's
+    /// first claim, so a segment of older timestamps sealed later, as a
+    /// mail import writes one, sorted in front of segments already folded,
+    /// and its retraction was undone. The order is the log's.
+    #[test]
+    fn a_segment_of_older_timestamps_counts_after_what_came_before_it() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-05T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(tagged(&index, "holiday"), [subject()]);
+
+        log.append(&untag("holiday", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            tagged(&index, "holiday"),
+            [],
+            "the retraction stands later in the log, whatever its timestamp"
+        );
+        let fresh_dir = TempDir::new().unwrap();
+        let mut fresh = index_in(&fresh_dir);
+        fresh.fold(&log).unwrap();
+        assert_eq!(tagged(&fresh, "holiday"), [], "a fresh fold agrees");
+        assert_eq!(
+            fresh
+                .about(&subject())
+                .unwrap()
+                .iter()
+                .map(Claim::is_retraction)
+                .collect::<Vec<_>>(),
+            [false, true],
+            "about answers in log order too"
+        );
+    }
+
+    #[test]
+    fn a_fold_reads_only_the_segments_sealed_since() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("one", "2026-09-01T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&tag("two", "2026-09-02T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        assert_eq!(index.fold(&log).unwrap().segments, 2);
+
+        log.append(&tag("three", "2026-09-03T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+
+        assert_eq!(index.fold(&log).unwrap().segments, 1);
+        assert_eq!(tagged(&index, "one"), [subject()]);
+        assert_eq!(tagged(&index, "three"), [subject()]);
+    }
+
+    #[test]
+    fn an_index_folded_from_another_chain_is_folded_anew() {
+        let one_dir = TempDir::new().unwrap();
+        let one = log_in(&one_dir);
+        one.append(&tag("ours", "2026-09-01T00:00:00Z")).unwrap();
+        one.seal().unwrap().unwrap();
+        let other_dir = TempDir::new().unwrap();
+        let other = log_in(&other_dir);
+        other
+            .append(&tag("theirs", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        other.seal().unwrap().unwrap();
+        let mut index = index_in(&one_dir);
+        index.fold(&one).unwrap();
+
+        index.fold(&other).unwrap();
+
+        assert_eq!(
+            tagged(&index, "ours"),
+            [],
+            "nothing of the other chain stays"
+        );
+        assert_eq!(tagged(&index, "theirs"), [subject()]);
     }
 
     #[test]

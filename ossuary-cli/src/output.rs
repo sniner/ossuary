@@ -5,7 +5,7 @@ use std::fmt::{Display, Write as _};
 use std::io::ErrorKind;
 
 use anyhow::Result;
-use ossuary_core::{Attribute, Claim, Episode, Source, Timestamp, Value};
+use ossuary_core::{Attribute, Claim, Episode, Source, Value};
 
 /// `println!` for answers: writes the line with [`say`] and returns
 /// what `say` returns.
@@ -63,22 +63,6 @@ pub fn line(claim: &Claim) -> String {
             format!("{time}  retracted: {attribute} = {value}  [{source}]{run}")
         }
         (None, _) => format!("{time}  retracted: {attribute}, all values  [{source}]{run}"),
-    }
-}
-
-/// Which claims a lost open segment took with it, told by the last
-/// claim before the loss and the first one after it. Either may be
-/// absent, and a head lost right after a seal may have held none.
-pub fn lost_claims(from: Option<&Timestamp>, to: Option<&Timestamp>) -> String {
-    match (from, to) {
-        (Some(from), Some(to)) => format!(
-            "the claims recorded between {} and {} are lost",
-            from.as_str(),
-            to.as_str()
-        ),
-        (Some(from), None) => format!("any claims recorded after {} are lost", from.as_str()),
-        (None, Some(to)) => format!("any claims recorded before {} are lost", to.as_str()),
-        (None, None) => "any claims it held are lost".to_string(),
     }
 }
 

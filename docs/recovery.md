@@ -168,20 +168,25 @@ read_entry() {
 }
 ```
 
-The complete log is every sealed segment in `claims/`, in order, followed
-by `head.jsonl`. Segments are ordered by the `time` of their first claim,
-which is on their second line. This writes the log to
-`~/recovery/log.jsonl`:
+The complete log is the claims of every sealed segment in the order of
+the chain, followed by those in `head.jsonl`. The chain is read
+backwards: the first line of `head.jsonl` names the last sealed segment,
+the first line of every segment names the one before it, and the first
+segment names none. This writes the log to `~/recovery/log.jsonl`:
 
 ```bash
 out=~/recovery
-mkdir -p "$out/segments"
-for segment in claims/*/*.seg.zst; do
-    read_entry "$segment" > "$out/segments/next"
-    time=$(sed -n 2p "$out/segments/next" | jq -r .time)
-    mv "$out/segments/next" "$out/segments/$time ${segment##*/}"
+mkdir -p "$out"
+order=
+segment=$(head -n 1 head.jsonl | jq -r '.previous // empty')
+while [ -n "$segment" ]; do
+    order="$segment $order"
+    segment=$(read_entry "claims/${segment:0:2}/$segment.seg.zst" | head -n 1 | jq -r '.previous // empty')
 done
-cat "$out/segments/"* head.jsonl > "$out/log.jsonl"
+for segment in $order; do
+    read_entry "claims/${segment:0:2}/$segment.seg.zst" | tail -n +2
+done > "$out/log.jsonl"
+tail -n +2 head.jsonl >> "$out/log.jsonl"
 ```
 
 The order matters when a claim was retracted later. For simple searches,
@@ -289,7 +294,7 @@ described in [the archive format](format.md#segments).
 ## Checking a seal
 
 A seal id, as `ossuary seal` prints it, names the last sealed segment at
-the time it was made. Every segment names the ones sealed before it,
+the time it was made. Every segment names the one sealed before it,
 and every claim names its file by hash, so walking back from that
 segment reaches everything the seal covers. [The archive
 format](format.md#the-seal) describes it exactly, and [Sealing an
@@ -301,32 +306,24 @@ refer to against its name, and lists what is missing or damaged:
 seal=1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 out=~/seal-check
 mkdir -p "$out"
-: > "$out/reached"; : > "$out/missing"; : > "$out/replaced"; : > "$out/files"
-pending=$seal
-while set -- $pending; [ $# -gt 0 ]; do
-    segment=$1
-    shift
-    pending="$*"
-    grep -qx "$segment" "$out/reached" && continue
-    echo "$segment" >> "$out/reached"
+: > "$out/files"
+segment=$seal
+while [ -n "$segment" ]; do
     entry=claims/${segment:0:2}/$segment.seg.zst
     if [ ! -e "$entry" ]; then
-        echo "$segment" >> "$out/missing"
-        continue
+        echo "missing segment: $segment"
+        break
     fi
     read_entry "$entry" > "$out/segment"
     if [ "$(sha256sum < "$out/segment" | cut -d' ' -f1)" != "$segment" ]; then
         echo "damaged segment: $entry"
-        continue
+        break
     fi
-    header=$(head -n 1 "$out/segment")
-    pending="$pending $(jq -r '.previous // [] | .[]' <<< "$header")"
-    jq -r '.mend.replaces // empty' <<< "$header" >> "$out/replaced"
     tail -n +2 "$out/segment" | jq -r '.subject,
         (select(.attribute == "prov:origin" and (.value | type) == "string") | .value)' \
         >> "$out/files"
+    segment=$(head -n 1 "$out/segment" | jq -r '.previous // empty')
 done
-grep -vxF -f "$out/replaced" "$out/missing" | sed 's/^/missing segment: /'
 sort -u "$out/files" | while read -r file; do
     state=missing
     for entry in {content,derived}/${file:0:2}/${file:2:2}/$file{,.zst}; do
@@ -341,15 +338,15 @@ sort -u "$out/files" | while read -r file; do
 done
 ```
 
-No output means that the seal holds. A segment that is missing but
-named in the `replaces` of a mend the walk reaches was already missing
-when the seal was made, and is not listed. The claims store has depth 1
+No output means that the seal holds. The walk stops at a segment that
+is missing or damaged, because what lies before it cannot be followed.
+The claims store has depth 1
 and the content stores depth 2 here, as in every archive created with
 the defaults. For another algorithm, change the prefix and the checksum
 tool, as above.
 
 One thing is left to check by hand: the walk back from `head.jsonl`,
-started with the names in its first line, must reach the seal's
+started with the name in its first line, must reach the seal's
 segment. If it does not, the archive's record was cut back or begun
 anew after the seal was made.
 

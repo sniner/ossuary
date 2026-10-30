@@ -11,25 +11,18 @@
 //! on demand.
 //!
 //! Segments hang together. The fresh head that a seal begins names, in
-//! its header, the segment just sealed — so every segment but the first
-//! knows the one before it, and the open head knows the last. The header
-//! member is a list: a segment can name several segments sealed before
-//! it, which is how two archives are merged into one record with two
-//! first segments. An archive written as one line has one name in every
-//! list. A sealed segment that goes missing leaves a name nothing answers
-//! to, in the header of its successor or of the head: that is what an
-//! audit follows. What the chain cannot show is a loss at its very end
-//! that the head was rewritten to hide (the head is the one mutable
-//! file); a seal kept outside the archive shows it (see `seal`).
-//!
-//! A break in the chain is closed by a mend, never by rewriting: a segment
-//! of no claims whose header names the two ends it joins — `previous`, the
-//! last segment before the break, and `before`, the segment the break
-//! stands in front of, which is sealed and cannot be made to name anything
-//! new. What was between them stays gone and stays on the record: the
-//! segment after the break still names what it named. When the break
-//! stands in front of the open head, the head is the one file that can
-//! be made to name the mend, and the mend names no `before`.
+//! its header, the segment just sealed, so every segment but the first
+//! names the one before it, and the open head names the last. The
+//! segments form one chain, and the chain is the order of the record:
+//! the claims of the first segment come first, those of the open head
+//! last, whatever their timestamps say. A sealed segment that goes
+//! missing leaves a name nothing answers to, in the header of its
+//! successor or of the head. The walk back from the head stops there,
+//! and the readers here refuse rather than read around it; repairing
+//! the chain rewrites segments, which only `ossuary-fix` does. What the
+//! chain cannot show is a loss at its very end that the head was
+//! rewritten to hide (the head is the one mutable file); a seal kept
+//! outside the archive shows it (see `seal`).
 //!
 //! The head belongs to one writer at a time; concurrency lives in the store,
 //! not here. An append does not fsync — the open segment's tail is the one
@@ -39,13 +32,13 @@
 //! quietly dropped, because a truth layer does not shrug.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use immure::{Digest, Store};
 use serde::{Deserialize, Serialize};
 
-use crate::claim::{Claim, Timestamp};
+use crate::claim::Claim;
 use crate::error::{Error, Result};
 use crate::manifest::{Manifest, Manifests};
 
@@ -81,34 +74,15 @@ const SEAL_AT: u64 = 1024 * 1024;
 struct Header {
     #[serde(rename = "ossuary-segment")]
     generation: u32,
-    /// The digests of the segments sealed before this one, as the claims
-    /// store files them: bare hex. One name in an archive written as one
-    /// line, several where lines were merged. Absent from a first
-    /// segment. A string in place of the list is refused: the member has
-    /// one form.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    previous: Vec<String>,
-    /// Present on a mend and nothing else: the segment carries no claims
-    /// and stands in for a break in the chain.
+    /// The digest of the segment sealed before this one, as the claims
+    /// store files it: bare hex. Absent from a first segment. Read as
+    /// any JSON value, so that the list ossuary 0.14 and earlier wrote
+    /// is refused as what it is, not as a broken header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    mend: Option<MendHeader>,
+    previous: Option<serde_json::Value>,
 }
 
-/// A mend's own members, as the header carries them: bare hex, as
-/// `previous` is.
-#[derive(Debug, Serialize, Deserialize)]
-struct MendHeader {
-    /// The segment the mend stands in front of. Absent when the mend
-    /// stands in front of the open head, which names the mend itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    before: Option<String>,
-    /// The segment that was lost, when its name was known — the one the
-    /// segment after the break names as sealed before it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    replaces: Option<String>,
-}
-
-/// The generation alone, read leniently — see [`parse_segment`] for why the
+/// The generation alone, read leniently; see [`parse_header`] for why the
 /// strict read comes second.
 #[derive(Debug, Deserialize)]
 struct Generation {
@@ -117,17 +91,11 @@ struct Generation {
 }
 
 /// The header as it stands in a file, newline included: the generation,
-/// the segments sealed before this one when there are any, and the
-/// mend's members when the segment is one.
-fn header_line(previous: &[Digest], mend: Option<&Mend>) -> String {
-    let hex = |digest: &Digest| digest.as_str().to_string();
+/// and the segment sealed before this one when there is one.
+fn header_line(previous: Option<&Digest>) -> String {
     let header = serde_json::to_string(&Header {
         generation: GENERATION,
-        previous: previous.iter().map(hex).collect(),
-        mend: mend.map(|mend| MendHeader {
-            before: mend.before.as_ref().map(hex),
-            replaces: mend.replaces.as_ref().map(hex),
-        }),
+        previous: previous.map(|digest| serde_json::Value::from(digest.as_str())),
     });
     // A struct of one number serialises; see `Claim::to_line` for the
     // reasoning behind not pretending otherwise.
@@ -137,49 +105,17 @@ fn header_line(previous: &[Digest], mend: Option<&Mend>) -> String {
 }
 
 /// The open segment that sealing leaves behind: a header that names
-/// `segment` alone, and no claims. These are the bytes of `head.jsonl`
-/// right after a seal.
+/// `segment`, and no claims. These are the bytes of `head.jsonl` right
+/// after a seal.
 #[must_use]
 pub fn head_after(segment: &Digest) -> String {
-    header_line(std::slice::from_ref(segment), None)
+    header_line(Some(segment))
 }
 
-/// What a mend says beyond its `previous`: where it stands, and what
-/// stood there before.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Mend {
-    before: Option<Digest>,
-    replaces: Option<Digest>,
-}
-
-impl Mend {
-    /// A mend standing in front of `before` — or in front of the open
-    /// head when `None` — in place of `replaces`, when the lost segment's
-    /// name is known.
-    #[must_use]
-    pub fn new(before: Option<Digest>, replaces: Option<Digest>) -> Mend {
-        Mend { before, replaces }
-    }
-
-    /// The sealed segment the mend stands in front of; `None` for one
-    /// that the open head names.
-    #[must_use]
-    pub fn before(&self) -> Option<&Digest> {
-        self.before.as_ref()
-    }
-
-    /// The segment the mend stands in for, when its name was known.
-    #[must_use]
-    pub fn replaces(&self) -> Option<&Digest> {
-        self.replaces.as_ref()
-    }
-}
-
-/// A sealed segment: its name in the store, and where it stands in the log.
+/// A sealed segment, by its name in the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     digest: Digest,
-    first: Option<Timestamp>,
 }
 
 impl Segment {
@@ -188,22 +124,12 @@ impl Segment {
     pub fn digest(&self) -> &Digest {
         &self.digest
     }
-
-    /// When the segment's first claim was recorded — its place in the log.
-    ///
-    /// `None` for a segment of no claims at all: a mend, or a head sealed
-    /// only to name several segments.
-    #[must_use]
-    pub fn first_claim_at(&self) -> Option<&Timestamp> {
-        self.first.as_ref()
-    }
 }
 
-/// A segment read back whole: the segments it follows, and its claims.
+/// A segment read back whole: the segment it follows, and its claims.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Contents {
-    previous: Vec<Digest>,
-    mend: Option<Mend>,
+    previous: Option<Digest>,
     claims: Vec<Claim>,
 }
 
@@ -214,25 +140,19 @@ impl Contents {
     ///
     /// # Errors
     ///
-    /// [`Error::SegmentHeader`] and [`Error::SegmentGeneration`] for a
-    /// header that does not read or is newer, and [`Error::BadLine`]
-    /// naming the first claim that does not read.
+    /// [`Error::SegmentHeader`], [`Error::PreviousList`] and
+    /// [`Error::SegmentGeneration`] for a header that does not read or
+    /// is in another form, and [`Error::BadLine`] naming the first claim
+    /// that does not read.
     pub fn parse(text: &str) -> Result<Contents> {
         parse_segment(text)
     }
 
-    /// The segments sealed before this one, as its header names them:
-    /// one in an archive written as one line, several where lines were
-    /// merged, none for a first segment.
+    /// The segment sealed before this one, as its header names it;
+    /// `None` for a first segment.
     #[must_use]
-    pub fn previous(&self) -> &[Digest] {
-        &self.previous
-    }
-
-    /// What the segment says as a mend, when it is one.
-    #[must_use]
-    pub fn mend(&self) -> Option<&Mend> {
-        self.mend.as_ref()
+    pub fn previous(&self) -> Option<&Digest> {
+        self.previous.as_ref()
     }
 
     /// The claims, in the order recorded.
@@ -246,13 +166,35 @@ impl Contents {
     pub fn into_claims(self) -> Vec<Claim> {
         self.claims
     }
+}
 
-    /// Whether an open head with these contents is sealed: it holds
-    /// claims, or it names several segments, which one sealed segment
-    /// then names. A head of no claims that names one segment or none
-    /// waits.
-    pub(crate) fn sealable(&self) -> bool {
-        !self.claims.is_empty() || self.previous.len() > 1
+/// The walk back along the chain, from the segment the open head names
+/// to the first segment: one header read per step. See
+/// [`Log::walk_back`].
+#[derive(Debug)]
+pub struct WalkBack<'a> {
+    log: &'a Log,
+    /// The next segment to read, and who named it, for the error when
+    /// the store does not hold it.
+    next: Option<(String, Digest)>,
+}
+
+impl Iterator for WalkBack<'_> {
+    type Item = Result<Segment>;
+
+    fn next(&mut self) -> Option<Result<Segment>> {
+        let (named_by, digest) = self.next.take()?;
+        match self.log.previous(&digest) {
+            Ok(previous) => {
+                self.next = previous.map(|previous| (format!("segment {digest}"), previous));
+                Some(Ok(Segment { digest }))
+            }
+            Err(Error::SegmentMissing(_)) => Some(Err(Error::ChainBroken {
+                segment: named_by,
+                missing: digest.to_string(),
+            })),
+            Err(error) => Some(Err(error)),
+        }
     }
 }
 
@@ -283,9 +225,7 @@ impl Log {
     /// The same log, keeping a manifest drawer at `dir`.
     ///
     /// With a drawer, sealing files each fresh segment's manifest in
-    /// passing and [`segments`](Log::segments) answers from manifests
-    /// instead of opening every segment. Without one — a bare `Log` — the
-    /// walk reads segments whole, as a cacheless reader must.
+    /// passing.
     #[must_use]
     pub fn with_manifests(mut self, dir: impl Into<PathBuf>) -> Self {
         self.manifests = Some(Manifests::new(dir));
@@ -329,7 +269,7 @@ impl Log {
             .map_err(io)?;
         let mut lines = String::new();
         if fresh {
-            lines.push_str(&header_line(&[], None));
+            lines.push_str(&header_line(None));
         }
         lines.push_str(&claim.to_line());
         lines.push('\n');
@@ -364,8 +304,7 @@ impl Log {
     /// [`contents`](Log::contents) can answer for a segment that is broken.
     pub fn head_contents(&self) -> Result<Contents> {
         let nothing = Contents {
-            previous: Vec::new(),
-            mend: None,
+            previous: None,
             claims: Vec::new(),
         };
         match fs::read_to_string(&self.head) {
@@ -385,8 +324,8 @@ impl Log {
     /// Every seal leaves a head behind that names the segment just
     /// sealed, so an archive in order is never in this state. A head
     /// begun anew here would name no predecessor and start a second
-    /// record that the end of the first does not reach. A mend records
-    /// the loss instead, and the head is begun naming the mend.
+    /// record that the end of the first does not reach. `ossuary-fix
+    /// chain` begins it after the last sealed segment instead.
     ///
     /// # Errors
     ///
@@ -437,9 +376,7 @@ impl Log {
     /// fresh head takes its place, naming the segment just sealed.
     ///
     /// `None` when there is nothing to seal: no head, an empty file, or a
-    /// head of no claims that names one segment or none. A head of no
-    /// claims that names several segments is sealed, so that one segment
-    /// names them all. The whole head is validated first, so nothing
+    /// head of no claims. The whole head is validated first, so nothing
     /// broken is ever immured; and because the store is content-addressed,
     /// a run that was interrupted between storing and starting the fresh
     /// head simply seals the same bytes again as a no-op. With a manifest
@@ -463,11 +400,10 @@ impl Log {
                 });
             }
         };
-        let contents = parse_segment(&text)?;
-        if !contents.sealable() {
+        let claims = parse_segment(&text)?.into_claims();
+        if claims.is_empty() {
             return Ok(None);
         }
-        let claims = contents.into_claims();
         let (_, entry) = self.store.add(text.as_bytes())?;
 
         // The fresh head goes in over the old one by rename, so the head is
@@ -493,119 +429,72 @@ impl Log {
 
         Ok(Some(Segment {
             digest: entry.digest().clone(),
-            first: claims.first().map(|claim| claim.time().clone()),
         }))
     }
 
-    /// Close a break in the chain: store a mend that follows `previous`
-    /// and stands where `mend` says.
+    /// Every sealed segment in log order: along the chain, from the
+    /// first segment to the one the open head names.
     ///
-    /// A mend is a segment of no claims, so the same break mended twice
-    /// is the same bytes and the same entry — the store holds it once.
-    /// Nothing already sealed is touched: a mend that stands in front of
-    /// a sealed segment is found by that segment's name in its header,
-    /// and one that stands in front of the open head is named by the head
-    /// — see [`head_follows`](Log::head_follows), which this does not do
-    /// by itself.
+    /// The walk reads each segment's header and nothing more. See
+    /// [`walk_back`](Log::walk_back) for what ends it with an error.
     ///
     /// # Errors
     ///
-    /// [`Error::Store`] from the store.
-    pub fn mend(&self, previous: &Digest, mend: &Mend) -> Result<Segment> {
-        let line = header_line(std::slice::from_ref(previous), Some(mend));
-        let (_, entry) = self.store.add(line.as_bytes())?;
-        if let Some(manifests) = &self.manifests {
-            // Best effort, as at sealing time.
-            let _ = manifests.store(&Manifest::of(entry.digest(), &[]));
+    /// Everything [`walk_back`](Log::walk_back) and its steps can answer.
+    pub fn segments(&self) -> Result<Vec<Segment>> {
+        let mut segments = self.walk_back()?.collect::<Result<Vec<_>>>()?;
+        segments.reverse();
+        Ok(segments)
+    }
+
+    /// Walk back along the chain from the open head, one segment at a
+    /// time: for a reader that can stop at a segment it already knows,
+    /// as the index does.
+    ///
+    /// A lost head refuses the walk before it begins, and a step to a
+    /// predecessor the store does not hold is an error: the order of
+    /// whatever lies beyond a break is not known, so nothing reads
+    /// around one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeadLost`] when the head was lost, and everything
+    /// [`head_contents`](Log::head_contents) can answer. A step answers
+    /// [`Error::ChainBroken`] for a predecessor the store does not hold,
+    /// and everything [`previous`](Log::previous) can answer otherwise.
+    pub fn walk_back(&self) -> Result<WalkBack<'_>> {
+        if self.head_lost()? {
+            return Err(Error::HeadLost(self.head.clone()));
         }
-        Ok(Segment {
-            digest: entry.digest().clone(),
-            first: None,
+        let head = self.head_contents()?;
+        Ok(WalkBack {
+            log: self,
+            next: head
+                .previous
+                .map(|digest| ("the open segment".to_string(), digest)),
         })
     }
 
-    /// Make the open head name `segments` as the ones sealed before it:
-    /// one after a mend, two after a merge.
-    ///
-    /// The one rewrite the log allows, because the head is the one file
-    /// nothing has sealed yet: its header changes, its claims stay as
-    /// they were appended. A head that is not there yet is begun with
-    /// the header alone. The head is read whole first, so a torn head is
-    /// refused rather than rewritten.
+    /// The segment a sealed segment names as the one sealed before it,
+    /// read from its header alone.
     ///
     /// # Errors
     ///
-    /// Everything [`head_contents`](Log::head_contents) can answer, and
-    /// [`Error::Io`] replacing the head file.
-    pub fn head_follows(&self, segments: &[Digest]) -> Result<()> {
-        let text = match fs::read_to_string(&self.head) {
-            Ok(text) => text,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(source) => {
-                return Err(Error::Io {
-                    context: format!("{}: reading", self.head.display()),
-                    source,
-                });
-            }
-        };
-        let claims = if text.is_empty() {
-            ""
-        } else {
-            parse_segment(&text)?;
-            text.split_once('\n').map_or("", |(_, rest)| rest)
-        };
-        let io = |context: &str| {
-            let context = format!("{}: {context}", self.head.display());
-            move |source| Error::Io { context, source }
-        };
-        let mut name = self.head.file_name().unwrap_or_default().to_os_string();
-        name.push(".tmp");
-        let tmp = self.head.with_file_name(name);
-        let mut lines = header_line(segments, None);
-        lines.push_str(claims);
-        fs::write(&tmp, lines).map_err(io("rewriting the head"))?;
-        fs::rename(&tmp, &self.head).map_err(io("replacing the head"))
-    }
-
-    /// Every sealed segment, in log order: by the time of their first
-    /// claims, ties broken by digest.
-    ///
-    /// The order is needed only to break same-second ties *across* segments
-    /// — within one, the order of lines rules. With a manifest drawer the
-    /// manifests answer, and a segment whose manifest is missing or will
-    /// not read is read whole once and its manifest filed in passing —
-    /// self-healing, so deleting the drawer costs one such walk. A bare
-    /// `Log` reads every segment whole, which at least validates the
-    /// entire log on the way.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Store`] from the walk, and everything [`read`](Log::read)
-    /// can answer for a segment that is broken.
-    pub fn segments(&self) -> Result<Vec<Segment>> {
-        let mut segments = Vec::new();
-        for entry in self.store.entries() {
-            let entry = entry?;
-            let drawer = self.manifests.as_ref();
-            let manifest = if let Some(manifest) = drawer.and_then(|m| m.load(entry.digest())) {
-                manifest
-            } else {
-                let claims = self.read(entry.digest())?;
-                let manifest = Manifest::of(entry.digest(), &claims);
-                if let Some(manifests) = drawer {
-                    // Best effort, as at sealing time: an unwritable
-                    // drawer merely keeps the walk expensive.
-                    let _ = manifests.store(&manifest);
-                }
-                manifest
-            };
-            segments.push(Segment {
-                digest: entry.digest().clone(),
-                first: manifest.first_claim_at().cloned(),
-            });
-        }
-        segments.sort_by(|a, b| a.first.cmp(&b.first).then_with(|| a.digest.cmp(&b.digest)));
-        Ok(segments)
+    /// [`Error::SegmentMissing`] when the digest names nothing,
+    /// [`Error::NotText`], [`Error::SegmentHeader`],
+    /// [`Error::PreviousList`] and [`Error::SegmentGeneration`] for a
+    /// header that does not read, and [`Error::Store`] from the store.
+    pub fn previous(&self, digest: &Digest) -> Result<Option<Digest>> {
+        let mut reader = self
+            .store
+            .reader(digest)?
+            .ok_or_else(|| Error::SegmentMissing(digest.to_string()))?;
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line).map_err(|source| {
+            immure::Error::from_io(source, format!("segment {digest}: reading the header"))
+        })?;
+        let text = String::from_utf8(line).map_err(|_| Error::NotText)?;
+        parse_header(text.lines().next().unwrap_or_default())
     }
 
     /// The claims store itself: for the audit and for repair tools that
@@ -651,41 +540,34 @@ impl Log {
     }
 }
 
-/// Header first, claims after, strict throughout — strict about what the
-/// header is known to say, that is; a member this build does not know is
-/// passed over.
-fn parse_segment(text: &str) -> Result<Contents> {
-    let mut lines = text.lines().enumerate();
-    let first = lines.next().map(|(_, line)| line).unwrap_or_default();
-    // The generation is read on its own before the header is read whole:
-    // a future generation may spell its members differently, and it must
-    // be refused as what it is — newer — not reported as broken.
-    let generation: Generation =
-        serde_json::from_str(first).map_err(|_| Error::SegmentHeader(first.to_string()))?;
+/// The header line read back: the segment it names as sealed before it.
+///
+/// The generation is read on its own before the header is read whole: a
+/// future generation may spell its members differently, and it must be
+/// refused as what it is, newer, not reported as broken. A member this
+/// build does not know is passed over.
+fn parse_header(first: &str) -> Result<Option<Digest>> {
+    let broken = || Error::SegmentHeader(first.to_string());
+    let generation: Generation = serde_json::from_str(first).map_err(|_| broken())?;
     if generation.generation != GENERATION {
         return Err(Error::SegmentGeneration(generation.generation));
     }
-    let header: Header =
-        serde_json::from_str(first).map_err(|_| Error::SegmentHeader(first.to_string()))?;
+    let header: Header = serde_json::from_str(first).map_err(|_| broken())?;
     // A predecessor is named by digest, and a header that names one in
     // any other spelling is a broken header, not a segment without one.
-    let digest = |hex: Option<&str>| {
-        hex.map(Digest::parse)
-            .transpose()
-            .map_err(|_| Error::SegmentHeader(first.to_string()))
-    };
-    let previous = header
-        .previous
-        .iter()
-        .map(|hex| Digest::parse(hex).map_err(|_| Error::SegmentHeader(first.to_string())))
-        .collect::<Result<Vec<_>>>()?;
-    let mend = match header.mend {
-        Some(mend) => Some(Mend {
-            before: digest(mend.before.as_deref())?,
-            replaces: digest(mend.replaces.as_deref())?,
-        }),
-        None => None,
-    };
+    match header.previous {
+        None => Ok(None),
+        Some(serde_json::Value::String(hex)) => Digest::parse(&hex).map(Some).map_err(|_| broken()),
+        Some(serde_json::Value::Array(_)) => Err(Error::PreviousList),
+        Some(_) => Err(broken()),
+    }
+}
+
+/// Header first, claims after, strict throughout.
+fn parse_segment(text: &str) -> Result<Contents> {
+    let mut lines = text.lines().enumerate();
+    let first = lines.next().map(|(_, line)| line).unwrap_or_default();
+    let previous = parse_header(first)?;
     let mut claims = Vec::new();
     for (index, line) in lines {
         let claim = Claim::parse_line(line).map_err(|source| Error::BadLine {
@@ -694,11 +576,7 @@ fn parse_segment(text: &str) -> Result<Contents> {
         })?;
         claims.push(claim);
     }
-    Ok(Contents {
-        previous,
-        mend,
-        claims,
-    })
+    Ok(Contents { previous, claims })
 }
 
 #[cfg(test)]
@@ -708,7 +586,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::claim::{Attribute, Source, Subject};
+    use crate::claim::{Attribute, Source, Subject, Timestamp};
 
     fn store_in(dir: &TempDir) -> Store {
         Store::builder(dir.path().join("claims"))
@@ -793,7 +671,7 @@ mod tests {
         fs::write(dir.path().join("head.jsonl"), "").unwrap();
 
         assert!(log.head_lost().unwrap());
-        assert!(log.head_contents().unwrap().previous().is_empty());
+        assert!(log.head_contents().unwrap().previous().is_none());
         assert_eq!(log.seal().unwrap(), None);
         assert!(matches!(
             log.append(&claim("anew", "2026-09-02T00:00:00Z")),
@@ -811,10 +689,6 @@ mod tests {
 
         let segment = log.seal().unwrap().expect("one claim seals");
 
-        assert_eq!(
-            segment.first_claim_at().unwrap().as_str(),
-            "2026-09-01T21:14:03Z"
-        );
         let claims = log.read(segment.digest()).unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!(
@@ -830,7 +704,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("head.jsonl")).unwrap(),
             format!(
-                "{{\"ossuary-segment\":1,\"previous\":[\"{}\"]}}\n",
+                "{{\"ossuary-segment\":1,\"previous\":\"{}\"}}\n",
                 segment.digest()
             ),
             "and the header names the segment just sealed"
@@ -873,15 +747,20 @@ mod tests {
 
         assert_eq!(
             log.contents(first.digest()).unwrap().previous(),
-            &[] as &[Digest],
+            None,
             "the first segment of an archive follows nothing"
         );
         assert_eq!(
             log.contents(second.digest()).unwrap().previous(),
-            std::slice::from_ref(first.digest())
+            Some(first.digest())
+        );
+        assert_eq!(
+            log.previous(second.digest()).unwrap().as_ref(),
+            Some(first.digest()),
+            "the header alone says the same"
         );
         let head = log.head_contents().unwrap();
-        assert_eq!(head.previous(), std::slice::from_ref(second.digest()));
+        assert_eq!(head.previous(), Some(second.digest()));
         assert_eq!(head.claims().len(), 1);
         assert_ne!(
             first.digest(),
@@ -903,7 +782,7 @@ mod tests {
         let contents = log.contents(entry.digest()).unwrap();
 
         assert_eq!(contents.claims().len(), 1);
-        assert!(contents.previous().is_empty());
+        assert!(contents.previous().is_none());
     }
 
     #[test]
@@ -911,7 +790,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
         let (_, entry) = store
-            .add(b"{\"ossuary-segment\":1,\"previous\":[\"the one before\"]}\n")
+            .add(b"{\"ossuary-segment\":1,\"previous\":\"the one before\"}\n")
             .unwrap();
         let log = Log::new(store, dir.path().join("head.jsonl"));
 
@@ -922,14 +801,12 @@ mod tests {
     }
 
     #[test]
-    fn a_predecessor_spelled_as_a_string_is_a_broken_header() {
-        // The member has one form, the list. A header written by a
-        // build from before the list is not read as a list of one;
-        // ossuary-fix rewrites it.
+    fn a_predecessor_list_is_refused_for_what_it_is() {
+        // The form ossuary 0.14 and earlier wrote; ossuary-fix rewrites it.
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
         let line = format!(
-            "{{\"ossuary-segment\":1,\"previous\":\"{}\"}}\n",
+            "{{\"ossuary-segment\":1,\"previous\":[\"{}\"]}}\n",
             "ab".repeat(32)
         );
         let (_, entry) = store.add(line.as_bytes()).unwrap();
@@ -937,191 +814,20 @@ mod tests {
 
         assert!(matches!(
             log.contents(entry.digest()),
-            Err(Error::SegmentHeader(_))
+            Err(Error::PreviousList)
         ));
-    }
-
-    #[test]
-    fn a_head_can_name_several_segments_and_seals_naming_them() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        log.append(&claim("own", "2026-09-01T00:00:00Z")).unwrap();
-        let own = log.seal().unwrap().unwrap();
-        let merged = Digest::parse(&"cd".repeat(32)).unwrap();
-
-        log.head_follows(&[own.digest().clone(), merged.clone()])
-            .unwrap();
-
-        assert_eq!(
-            fs::read_to_string(dir.path().join("head.jsonl")).unwrap(),
-            format!(
-                "{{\"ossuary-segment\":1,\"previous\":[\"{}\",\"{}\"]}}\n",
-                own.digest(),
-                merged
-            )
-        );
-        log.append(&claim("after", "2026-09-02T00:00:00Z")).unwrap();
-        let sealed = log.seal().unwrap().unwrap();
-        assert_eq!(
-            log.contents(sealed.digest()).unwrap().previous(),
-            &[own.digest().clone(), merged][..],
-            "sealed, the segment names both"
-        );
-        assert_eq!(
-            log.head_contents().unwrap().previous(),
-            std::slice::from_ref(sealed.digest()),
-            "and the fresh head names the one segment just sealed"
-        );
-    }
-
-    #[test]
-    fn a_head_of_no_claims_is_sealed_when_it_names_several_segments() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        log.append(&claim("own", "2026-09-01T00:00:00Z")).unwrap();
-        let own = log.seal().unwrap().unwrap();
-        assert_eq!(log.seal().unwrap(), None, "naming one, it waits");
-        let merged = Digest::parse(&"cd".repeat(32)).unwrap();
-        log.head_follows(&[own.digest().clone(), merged.clone()])
-            .unwrap();
-
-        let sealed = log.seal().unwrap().expect("sealed without claims");
-
-        let contents = log.contents(sealed.digest()).unwrap();
-        assert_eq!(contents.previous(), [own.digest().clone(), merged]);
-        assert!(contents.claims().is_empty());
-        assert_eq!(sealed.first_claim_at(), None);
-        assert_eq!(
-            log.head_contents().unwrap().previous(),
-            std::slice::from_ref(sealed.digest())
-        );
-        assert_eq!(log.seal().unwrap(), None, "and then waits again");
-    }
-
-    #[test]
-    fn a_mend_names_its_two_ends_and_reads_back_without_claims() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        log.append(&claim("first", "2026-09-01T00:00:00Z")).unwrap();
-        let first = log.seal().unwrap().unwrap();
-        log.append(&claim("second", "2026-09-02T00:00:00Z"))
-            .unwrap();
-        let second = log.seal().unwrap().unwrap();
-        let lost = Digest::parse(&"cd".repeat(32)).unwrap();
-
-        let mend = log
-            .mend(
-                first.digest(),
-                &Mend::new(Some(second.digest().clone()), Some(lost.clone())),
-            )
-            .unwrap();
-
-        let contents = log.contents(mend.digest()).unwrap();
-        assert_eq!(contents.previous(), std::slice::from_ref(first.digest()));
-        assert_eq!(contents.claims(), &[]);
-        let read = contents.mend().expect("a mend says so");
-        assert_eq!(read.before(), Some(second.digest()));
-        assert_eq!(read.replaces(), Some(&lost));
-        assert_eq!(
-            log.mend(
-                first.digest(),
-                &Mend::new(Some(second.digest().clone()), Some(lost.clone()))
-            )
-            .unwrap(),
-            mend,
-            "the same mend twice is the same entry"
-        );
-        assert_eq!(
-            log.contents(second.digest()).unwrap().mend(),
-            None,
-            "an ordinary segment is no mend"
-        );
-    }
-
-    #[test]
-    fn a_mend_member_that_is_not_a_digest_is_a_broken_header() {
-        let dir = TempDir::new().unwrap();
-        let store = store_in(&dir);
-        let (_, entry) = store
-            .add(b"{\"ossuary-segment\":1,\"previous\":[\"abababababababababababababababababababababababababababababababab\"],\"mend\":{\"before\":\"the one after\"}}\n")
-            .unwrap();
-        let log = Log::new(store, dir.path().join("head.jsonl"));
-
         assert!(matches!(
-            log.contents(entry.digest()),
-            Err(Error::SegmentHeader(_))
+            log.previous(entry.digest()),
+            Err(Error::PreviousList)
         ));
     }
 
     #[test]
-    fn the_head_can_be_made_to_follow_a_mend_and_keeps_its_claims() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
-            .unwrap();
-        let sealed = log.seal().unwrap().unwrap();
-        // Begun anew naming nothing, as `append` itself refuses to.
-        fs::write(dir.path().join("head.jsonl"), "{\"ossuary-segment\":1}\n").unwrap();
-        log.append(&claim("anew", "2026-09-02T00:00:00Z")).unwrap();
-        assert!(log.head_contents().unwrap().previous().is_empty());
-        let mend = log.mend(sealed.digest(), &Mend::default()).unwrap();
-
-        log.head_follows(std::slice::from_ref(mend.digest()))
-            .unwrap();
-
-        let head = log.head_contents().unwrap();
-        assert_eq!(head.previous(), std::slice::from_ref(mend.digest()));
-        assert_eq!(head.claims().len(), 1, "the claim appended anew stays");
-        assert_eq!(head.claims()[0].value(), Some(&json!("anew")));
-    }
-
-    #[test]
-    fn a_head_that_is_not_there_is_begun_by_what_it_follows() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        let segment = Digest::parse(&"ab".repeat(32)).unwrap();
-
-        log.head_follows(std::slice::from_ref(&segment)).unwrap();
-
-        let head = log.head_contents().unwrap();
-        assert_eq!(head.previous(), std::slice::from_ref(&segment));
-        assert!(head.claims().is_empty());
-        log.append(&claim("after", "2026-09-02T00:00:00Z")).unwrap();
-        assert_eq!(
-            log.head_contents().unwrap().previous(),
-            std::slice::from_ref(&segment),
-            "an append finds the header standing and adds nothing of its own"
-        );
-    }
-
-    #[test]
-    fn a_torn_head_is_not_rewritten() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        fs::write(
-            dir.path().join("head.jsonl"),
-            "{\"ossuary-segment\":1}\n{\"subject\":\"torn",
-        )
-        .unwrap();
-        let segment = Digest::parse(&"ab".repeat(32)).unwrap();
-
-        assert!(matches!(
-            log.head_follows(std::slice::from_ref(&segment)),
-            Err(Error::BadLine { line: 2, .. })
-        ));
-        assert_eq!(
-            fs::read_to_string(dir.path().join("head.jsonl")).unwrap(),
-            "{\"ossuary-segment\":1}\n{\"subject\":\"torn",
-            "left exactly as found"
-        );
-    }
-
-    #[test]
-    fn segments_stand_in_the_order_of_their_first_claims() {
+    fn segments_stand_in_chain_order_whatever_their_claims_say() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
 
-        // Sealed out of order: the later claims first.
+        // The later timestamp sealed first, as a clock set back leaves it.
         log.append(&claim("later", "2026-09-02T00:00:00Z")).unwrap();
         let later = log.seal().unwrap().unwrap();
         log.append(&claim("earlier", "2026-09-01T00:00:00Z"))
@@ -1131,9 +837,52 @@ mod tests {
         let segments = log.segments().unwrap();
         assert_eq!(
             segments.iter().map(Segment::digest).collect::<Vec<_>>(),
-            [earlier.digest(), later.digest()],
-            "log order is the claims' order, not the sealing order"
+            [later.digest(), earlier.digest()],
+            "log order is the order of the chain"
         );
+    }
+
+    fn lose(log: &Log, segment: &Segment) {
+        let path = log.store().find(segment.digest()).unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_walk_back_stops_at_a_lost_segment_and_names_who_named_it() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("first", "2026-09-01T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&claim("second", "2026-09-02T00:00:00Z"))
+            .unwrap();
+        let second = log.seal().unwrap().unwrap();
+        log.append(&claim("third", "2026-09-03T00:00:00Z")).unwrap();
+        let third = log.seal().unwrap().unwrap();
+        lose(&log, &second);
+
+        let mut walk = log.walk_back().unwrap();
+        assert_eq!(walk.next().unwrap().unwrap(), third);
+        match walk.next() {
+            Some(Err(Error::ChainBroken { segment, missing })) => {
+                assert_eq!(segment, format!("segment {}", third.digest()));
+                assert_eq!(missing, second.digest().as_str());
+            }
+            other => panic!("expected the break, got {other:?}"),
+        }
+        assert!(walk.next().is_none(), "and nothing beyond it");
+        assert!(matches!(log.segments(), Err(Error::ChainBroken { .. })));
+    }
+
+    #[test]
+    fn a_lost_head_refuses_the_walk() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        fs::remove_file(dir.path().join("head.jsonl")).unwrap();
+
+        assert!(matches!(log.walk_back(), Err(Error::HeadLost(_))));
     }
 
     fn manifested_log_in(dir: &TempDir) -> Log {
@@ -1193,54 +942,6 @@ mod tests {
         assert!(
             filed.starts_with("{\"ossuary-manifest\":1,"),
             "the drawer holds the fresh segment's manifest"
-        );
-    }
-
-    #[test]
-    fn segments_answer_from_the_drawer_without_opening_segments() {
-        let dir = TempDir::new().unwrap();
-        let log = manifested_log_in(&dir);
-        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
-            .unwrap();
-        let segment = log.seal().unwrap().unwrap();
-
-        // A manifest planted over the filed one, answering with a different
-        // first claim: segments() repeating it proves the segment stayed
-        // shut — cheekily, but a cache that is asked is a cache that works.
-        let planted = Manifest::of(
-            segment.digest(),
-            &[claim("planted", "2001-01-01T00:00:00Z")],
-        );
-        Manifests::new(dir.path().join("manifests"))
-            .store(&planted)
-            .unwrap();
-
-        let segments = log.segments().unwrap();
-        assert_eq!(
-            segments[0].first_claim_at().unwrap().as_str(),
-            "2001-01-01T00:00:00Z"
-        );
-    }
-
-    #[test]
-    fn a_missing_manifest_is_rebuilt_in_passing() {
-        let dir = TempDir::new().unwrap();
-        let log = manifested_log_in(&dir);
-        log.append(&claim("holiday", "2026-09-01T21:14:03Z"))
-            .unwrap();
-        let segment = log.seal().unwrap().unwrap();
-        fs::remove_file(manifest_path(&dir, &segment)).unwrap();
-
-        let segments = log.segments().unwrap();
-
-        assert_eq!(
-            segments[0].first_claim_at().unwrap().as_str(),
-            "2026-09-01T21:14:03Z",
-            "the walk fell back to the segment itself"
-        );
-        assert!(
-            manifest_path(&dir, &segment).exists(),
-            "and refilled the drawer on the way — deleting it costs one walk"
         );
     }
 

@@ -95,13 +95,30 @@ pub enum Error {
     #[error("segment {0} not found in claims/")]
     SegmentMissing(String),
 
+    /// A segment header names its predecessor as a list, the form
+    /// ossuary 0.14 and earlier wrote, when a segment could follow
+    /// several.
+    #[error(
+        "a segment header names the segments sealed before it as a list, as ossuary 0.14 and earlier wrote; `ossuary-fix list` rewrites the archive in the current form"
+    )]
+    PreviousList,
+
+    /// The chain is broken: a segment, or the open segment, names a
+    /// predecessor that the claims store does not hold. The walk back
+    /// from the open segment ends there, and the segments before it are
+    /// not reached.
+    #[error(
+        "{segment} names {missing} as the segment sealed before it, and claims/ does not hold it; copy the file back from a copy of the archive, or close the gap with `ossuary-fix chain` if there is none"
+    )]
+    ChainBroken { segment: String, missing: String },
+
     /// The open segment is missing or empty while sealed segments are
     /// there. Every seal leaves an open segment behind, so this one was
     /// lost, together with any claims recorded since the last seal. One
     /// begun anew would name no predecessor and start a second record
     /// beside the first.
     #[error(
-        "{}: the open segment is missing, and any claims recorded since the last seal are lost with it; `ossuary maintain mend` records the loss and begins a new open segment",
+        "{}: the open segment is missing, and any claims recorded since the last seal are lost with it; `ossuary-fix chain` begins a new open segment after the last sealed one",
         .0.display()
     )]
     HeadLost(std::path::PathBuf),
@@ -187,38 +204,6 @@ pub enum Error {
     /// be made to start the same way.
     #[error("{given:?}: {trouble}; a seal id is the whole hash, as `ossuary seal` prints it")]
     SealId { given: String, trouble: String },
-
-    /// A merge of an archive with itself.
-    #[error("{}: cannot merge an archive with itself; name another archive", .0.display())]
-    MergeSelf(std::path::PathBuf),
-
-    /// The two archives name their files by different hashes, so the
-    /// other archive's names mean nothing here. Its files have to be
-    /// hashed anew and its claims rewritten to the new names, which is
-    /// what `--rehash` does.
-    #[error(
-        "the archives use different hash algorithms ({ours} here, {theirs} there); pass --rehash to add the other archive's files under this archive's hash and replay its claims with the new names"
-    )]
-    MergeAlgorithm { ours: String, theirs: String },
-
-    /// A rehash asked for between archives with the same hash, where a
-    /// merge keeps the other archive's segments as they are.
-    #[error(
-        "both archives use {0}; drop --rehash, a merge keeps the other archive's segments as they are"
-    )]
-    MergeSameHash(String),
-
-    /// Claims about files the other archive does not hold cannot be
-    /// given the new name: there are no bytes to hash.
-    #[error(
-        "{0} claim(s) are about files the other archive does not hold and cannot be rewritten; restore the files from a backup of that archive, or pass --force to leave those claims out"
-    )]
-    MergeMissing(usize),
-
-    /// The other archive has no sealed segment and nothing to seal, so
-    /// there is no segment for this archive's open segment to name.
-    #[error("{}: the archive holds no claims; nothing to merge", .0.display())]
-    MergeNothing(std::path::PathBuf),
 }
 
 impl Error {

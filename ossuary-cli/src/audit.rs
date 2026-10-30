@@ -5,10 +5,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use ossuary_core::{Audit, Break, Cause, Chain, Fixity, Joined, LogAudit, StoreAudit, Timestamp};
+use ossuary_core::{Audit, Ends, Fixity, LogAudit, StoreAudit};
 
 use crate::open;
-use crate::output::{self, errln, say};
+use crate::output::{errln, say};
 
 /// How many names still fit in a plain answer. Up to a handful stands
 /// right there; more turns into a count, and --verbose names them all.
@@ -161,206 +161,49 @@ pub(crate) fn claims_report(out: &mut impl Write, log: &LogAudit, verbose: bool)
     chain_block(out, log, verbose)
 }
 
-/// The chain, when it is not one: every piece named with its ends and
-/// its span, then each break with what the record says of it and what
-/// to do; and the mends that stand, whole chain or not.
+/// Where the chain stops short of a first segment, and the segments it
+/// does not reach, each with the way out.
 fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
-    if pieces(log) > 1 {
-        if !say(
-            out,
-            &format!(
-                "the chain of sealed segments is broken: {} separate chains, expected one",
-                pieces(log)
-            ),
-        )? {
-            return Ok(false);
-        }
-        for (index, chain) in log.chains.iter().enumerate() {
-            if !say(out, &format!("  chain {}: {}", index + 1, describe(chain)))? {
-                return Ok(false);
-            }
-        }
-        for brk in &log.breaks {
-            let after = chain_after(log, brk);
-            let line = match &brk.cause {
-                Cause::HeadLost => format!(
-                    "  chain {after} starts after a lost open segment: {}; run `ossuary maintain mend` to join the chains, then repeat the runs of that period",
-                    output::lost_claims(brk.from.as_ref(), brk.to.as_ref()),
-                ),
-                Cause::SegmentLost(segment) => format!(
-                    "  chain {after} starts after segment {segment}, which is missing; restore it from a backup of the archive, or run `ossuary maintain mend` to join the chains (the mend records the missing segment's name)",
-                ),
-                Cause::SegmentUnreadable(segment) => format!(
-                    "  chain {after} starts after segment {segment}, which is present but unreadable; restore it from a backup of the archive",
-                ),
-            };
-            if !say(out, &line)? {
-                return Ok(false);
-            }
-            if !brk.sure
-                && !say(
-                    out,
-                    &format!(
-                        "  the chain before chain {after} cannot be determined; `ossuary maintain mend` leaves this break open"
-                    ),
-                )?
-            {
-                return Ok(false);
-            }
-        }
-    } else {
-        let merged: Vec<String> = log
-            .chains
-            .iter()
-            .filter(|chain| chain.joined.is_some())
-            .map(describe)
-            .collect();
-        if !merged.is_empty() {
-            let heading = format!("{} line(s) merged into the chain", merged.len());
-            if !listing(out, &heading, &merged, verbose)? {
-                return Ok(false);
-            }
-        }
-    }
-    for mend in &log.looped {
-        if !say(
-            out,
-            &format!(
-                "claims: the chain forms a loop; mend {mend} joins two ends that were not a break; remove its file from claims/, then run `ossuary maintain mend` again"
-            ),
-        )? {
-            return Ok(false);
-        }
-    }
-    if !log.unnamed.is_empty() {
-        let heading = format!(
-            "claims: {} mend(s) that the open segment does not name, so the segments before them cannot be reached from it; `ossuary maintain mend` names them",
-            log.unnamed.len()
-        );
-        if !listing(out, &heading, &log.unnamed, verbose)? {
-            return Ok(false);
-        }
-    }
-    mend_block(out, log, verbose)
-}
-
-/// The mends: those that hold a break closed, those whose loss was made
-/// good since, and those that close nothing.
-fn mend_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
-    if !log.mended.is_empty() {
-        let mends: Vec<String> = log
-            .mended
-            .iter()
-            .map(|mended| {
-                let mut line = format!(
-                    "mend {} joins {} to {}",
-                    mended.mend,
-                    mended.previous,
-                    mended.before.as_deref().unwrap_or("the open segment")
-                );
-                if let Some(replaces) = &mended.replaces {
-                    line = format!("{line}, replacing the missing {replaces}");
-                }
-                line
-            })
-            .collect();
-        let heading = format!("{} mended break(s) in the chain", mends.len());
-        if !listing(out, &heading, &mends, verbose)? {
-            return Ok(false);
-        }
-    }
-    if !log.restored.is_empty() {
-        let mends: Vec<String> = log
-            .restored
-            .iter()
-            .map(|mended| {
-                format!(
-                    "mend {} replaced {}",
-                    mended.mend,
-                    mended.replaces.as_deref().unwrap_or("an unnamed segment")
-                )
-            })
-            .collect();
-        let heading = format!(
-            "{} mend(s) no longer needed; the segment each one replaced is present again",
-            mends.len()
-        );
-        if !listing(out, &heading, &mends, verbose)? {
-            return Ok(false);
-        }
-    }
-    if !log.idle_mends.is_empty() {
-        let heading = format!(
-            "{} mend(s) that close no break; the segment after each one needs no mend or is missing",
-            log.idle_mends.len()
-        );
-        if !listing(out, &heading, &log.idle_mends, verbose)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// One chain in a line: how much it holds, when, and its two ends.
-fn describe(chain: &Chain) -> String {
-    let mut clauses = Vec::new();
-    let span = |clauses: &mut Vec<String>| {
-        if chain.from.is_some() {
-            clauses.push(format!(
-                "{} to {}",
-                when(chain.from.as_ref()),
-                when(chain.to.as_ref())
-            ));
-        }
+    let line = match &log.ends {
+        Ends::First | Ends::NoHead => None,
+        Ends::Missing { segment, missing } => Some(format!(
+            "claims: segment {missing} is missing; {} names it as its predecessor. Copy it back into claims/ from a copy of the archive; if no copy has it, `ossuary-fix chain` closes the gap",
+            named_by(segment)
+        )),
+        Ends::Blocked(segment) => Some(format!(
+            "claims: the chain cannot be followed past segment {segment}, which does not read; copy it back into claims/ from a copy of the archive"
+        )),
     };
-    if let (Some(first), Some(last)) = (chain.segments.first(), chain.segments.last()) {
-        clauses.push(format!("{} segment(s)", chain.segments.len()));
-        clauses.push(format!("{} claim(s)", chain.claims));
-        span(&mut clauses);
-        if chain.open_head {
-            clauses.push(format!("{first} to the open segment"));
-        } else if first == last {
-            clauses.push(format!("{first} only"));
-        } else {
-            clauses.push(format!("{first} to {last}"));
-        }
+    if let Some(line) = line
+        && !say(out, &line)?
+    {
+        return Ok(false);
+    }
+    if log.head_lost
+        && !say(
+            out,
+            "claims: the open segment is missing, and the claims recorded since the last seal are lost with it; `ossuary-fix chain` begins a new open segment after the last sealed one, then repeat the runs since the last seal",
+        )?
+    {
+        return Ok(false);
+    }
+    if log.unreached.is_empty() {
+        return Ok(true);
+    }
+    let heading = format!(
+        "claims: {} segment(s) that the chain from the open segment does not reach; `ossuary-fix chain` takes them into the chain",
+        log.unreached.len()
+    );
+    listing(out, &heading, &log.unreached, verbose)
+}
+
+/// Who names a missing segment, in the words of a line.
+fn named_by(segment: &str) -> String {
+    if segment == ossuary_core::HEAD {
+        "the open segment".to_string()
     } else {
-        clauses.push("the open segment only".to_string());
-        clauses.push(format!("{} claim(s)", chain.claims));
-        span(&mut clauses);
+        format!("segment {segment}")
     }
-    match &chain.joined {
-        Some(Joined::Segment(segment)) => clauses.push(format!("merged into {segment}")),
-        Some(Joined::Head) => clauses.push("merged into the open segment".to_string()),
-        None => {}
-    }
-    clauses.join(", ")
-}
-
-/// The chains that are not lines merged into another: one in a whole
-/// record, more where the chain is broken.
-fn pieces(log: &LogAudit) -> usize {
-    log.chains
-        .iter()
-        .filter(|chain| chain.joined.is_none())
-        .count()
-}
-
-/// The number, as the listing counts them, of the chain that begins
-/// after a break; 0 when no chain does, which the audit never reports.
-fn chain_after(log: &LogAudit, brk: &Break) -> usize {
-    log.chains
-        .iter()
-        .position(|chain| match &brk.before {
-            Some(first) => chain.segments.first() == Some(first),
-            None => chain.open_head && chain.segments.is_empty(),
-        })
-        .map_or(0, |index| index + 1)
-}
-
-/// A claim time for a line, or the word for none.
-fn when(time: Option<&Timestamp>) -> &str {
-    time.map_or("no claim", Timestamp::as_str)
 }
 
 /// The last line: which clean outcome it is, or how much is wrong.
@@ -407,45 +250,9 @@ fn store_block(
 }
 
 /// The log's lines: whatever will not read back is named whole — those
-/// errors are the findings — and so is every sealed segment that is gone,
-/// with who names it; then the count of segments, claims, and damage
-/// listed under the handful rule.
+/// errors are the findings; then the count of segments, claims, and
+/// damage listed under the handful rule.
 fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
-    // A loss a break pairs with the end before it gets its way out with
-    // the break; one no mend can close gets it here.
-    let beyond = log.beyond_mending();
-    let restore = |successor: &str, digest: &str| {
-        if beyond
-            .iter()
-            .any(|(named_by, lost)| named_by == successor && lost == digest)
-        {
-            "; no mend can stand in for it, restore it from a backup of the archive"
-        } else {
-            ""
-        }
-    };
-    for (successor, digest) in &log.predecessor_missing {
-        if !say(
-            out,
-            &format!(
-                "claims: segment {digest} is missing; {successor} names it as its predecessor{}",
-                restore(successor, digest)
-            ),
-        )? {
-            return Ok(false);
-        }
-    }
-    if let Some(digest) = &log.head_predecessor_missing
-        && !say(
-            out,
-            &format!(
-                "claims: segment {digest} is missing; the open segment names it as its predecessor{}",
-                restore(ossuary_core::HEAD, digest)
-            ),
-        )?
-    {
-        return Ok(false);
-    }
     for (digest, error) in &log.unreadable {
         if !say(
             out,
@@ -471,7 +278,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
         return Ok(false);
     }
     let mut clauses = vec![
-        if log.head_broken.is_none() {
+        if log.head_broken.is_none() && !log.head_lost {
             format!("{} sealed segment(s) and the open segment", log.segments)
         } else {
             format!("{} sealed segment(s)", log.segments)
@@ -484,27 +291,15 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     if !log.broken.is_empty() {
         clauses.push(format!("{} broken", log.broken.len()));
     }
-    let lost = log.predecessor_missing.len() + usize::from(log.head_predecessor_missing.is_some());
-    if lost > 0 {
-        clauses.push(format!("{lost} missing"));
+    if matches!(log.ends, Ends::Missing { .. }) {
+        clauses.push("1 missing".to_string());
     }
     if !log.damaged.is_empty() {
         clauses.push(format!("{} damaged", log.damaged.len()));
-    } else if log.unreadable.is_empty()
-        && log.broken.is_empty()
-        && log.head_broken.is_none()
-        && lost == 0
-    {
+    } else if log.findings() == 0 {
         clauses.push("all readable".to_string());
-        if log.segments > 0 && pieces(log) <= 1 && log.breaks.is_empty() {
-            let merged = log.chains.len() - pieces(log);
-            if merged == 0 {
-                clauses.push("one chain from the first segment to the open segment".to_string());
-            } else {
-                clauses.push(format!(
-                    "one chain to the open segment, {merged} line(s) merged into it"
-                ));
-            }
+        if log.segments > 0 {
+            clauses.push("one chain from the first segment to the open segment".to_string());
         }
     }
     listing(
@@ -574,13 +369,14 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     if let Some(error) = &audit.log.head_broken {
         lines.push(json!({"finding": "broken-head", "error": error}));
     }
-    for (successor, segment) in &audit.log.predecessor_missing {
-        lines.push(
-            json!({"finding": "missing-segment", "segment": segment, "successor": successor}),
-        );
+    if let Ends::Missing { segment, missing } = &audit.log.ends {
+        lines.push(json!({"finding": "missing-segment", "segment": missing, "successor": segment}));
     }
-    if let Some(segment) = &audit.log.head_predecessor_missing {
-        lines.push(json!({"finding": "missing-segment", "segment": segment, "successor": "head"}));
+    if audit.log.head_lost {
+        lines.push(json!({"finding": "head-lost"}));
+    }
+    for segment in &audit.log.unreached {
+        lines.push(json!({"finding": "unreached-segment", "segment": segment}));
     }
     for subject in &audit.missing {
         lines.push(json!({"finding": "missing", "subject": subject}));
@@ -600,63 +396,6 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
             "content": fixity_word(&twin.content),
             "derived": fixity_word(&twin.derived),
         }));
-    }
-    if audit.log.chains.len() > 1 {
-        for (index, chain) in audit.log.chains.iter().enumerate() {
-            lines.push(json!({
-                "observation": "chain",
-                "index": index + 1,
-                "first": chain.segments.first(),
-                "last": chain.segments.last(),
-                "segments": chain.segments.len(),
-                "claims": chain.claims,
-                "open_head": chain.open_head,
-                "merged_into": match &chain.joined {
-                    Some(Joined::Segment(segment)) => Some(segment.as_str()),
-                    Some(Joined::Head) => Some("head"),
-                    None => None,
-                },
-                "from": chain.from,
-                "to": chain.to,
-            }));
-        }
-    }
-    for brk in &audit.log.breaks {
-        if brk.cause == Cause::HeadLost {
-            lines.push(json!({
-                "finding": "head-lost",
-                "after": brk.after,
-                "before": brk.before.as_deref().unwrap_or("head"),
-                "from": brk.from,
-                "to": brk.to,
-                "sure": brk.sure,
-            }));
-        }
-    }
-    for mend in &audit.log.looped {
-        lines.push(json!({"finding": "chain-loop", "mend": mend}));
-    }
-    for mend in &audit.log.unnamed {
-        lines.push(json!({"finding": "unnamed-mend", "mend": mend}));
-    }
-    for mended in &audit.log.restored {
-        lines.push(json!({
-            "observation": "restored",
-            "mend": mended.mend,
-            "replaces": mended.replaces,
-        }));
-    }
-    for mended in &audit.log.mended {
-        lines.push(json!({
-            "observation": "mended",
-            "mend": mended.mend,
-            "previous": mended.previous,
-            "before": mended.before.as_deref().unwrap_or("head"),
-            "replaces": mended.replaces,
-        }));
-    }
-    for mend in &audit.log.idle_mends {
-        lines.push(json!({"observation": "idle-mend", "mend": mend}));
     }
     for line in &lines {
         if !say(out, &line.to_string())? {

@@ -66,12 +66,12 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
         )
     })?;
     match head.previous() {
-        [seal] if head.claims().is_empty() => Ok(Held {
+        Some(seal) if head.claims().is_empty() => Ok(Held {
             marked,
             seal: Some(seal.clone()),
         }),
         _ => bail!(
-            "the target's open segment holds claims or names more than one segment, so something other than ossuary sync wrote to the target; name another target"
+            "the target's open segment holds claims or names no segment, so something other than ossuary sync wrote to the target; name another target"
         ),
     }
 }
@@ -161,7 +161,7 @@ impl Plan {
 pub fn plan(
     archive: &Archive,
     held: Option<&Digest>,
-    ahead: &[Digest],
+    ahead: Option<&Digest>,
     open: &[Claim],
 ) -> Result<Plan> {
     let Delta {
@@ -409,12 +409,7 @@ mod tests {
         let seal = seal_or_last(archive);
         let held = held(archive, remote)?;
         prepare(archive, remote, held.marked)?;
-        let plan = plan(
-            archive,
-            held.seal.as_ref(),
-            std::slice::from_ref(&seal),
-            &[],
-        )?;
+        let plan = plan(archive, held.seal.as_ref(), Some(&seal), &[])?;
         let copied = copy_files(archive, remote, &plan.files, |_| {})?;
         if plan.gone.is_empty() && copied.damaged.is_empty() && copied.unreadable.is_empty() {
             copy_segments(archive, remote, &plan.segments)?;
@@ -426,7 +421,13 @@ mod tests {
     fn seal_or_last(archive: &Archive) -> Digest {
         match archive.log().seal().unwrap() {
             Some(segment) => segment.digest().clone(),
-            None => archive.log().head_contents().unwrap().previous()[0].clone(),
+            None => archive
+                .log()
+                .head_contents()
+                .unwrap()
+                .previous()
+                .unwrap()
+                .clone(),
         }
     }
 
@@ -443,7 +444,13 @@ mod tests {
         assert_eq!(plan.files.len(), 2);
         assert_eq!(copied.new, 2);
         let copy = Archive::open(&path).unwrap();
-        let seal = archive.log().head_contents().unwrap().previous()[0].clone();
+        let seal = archive
+            .log()
+            .head_contents()
+            .unwrap()
+            .previous()
+            .unwrap()
+            .clone();
         let cover = ossuary_core::cover(&copy, &seal).unwrap();
         let files = ossuary_core::files(&copy, &cover, true).unwrap();
         let since = ossuary_core::since(&copy, &cover).unwrap();
@@ -648,7 +655,13 @@ mod tests {
 
         assert_eq!((plan.files.len(), copied.new), (1, 1));
         let copy = Archive::open(&path).unwrap();
-        let seal = archive.log().head_contents().unwrap().previous()[0].clone();
+        let seal = archive
+            .log()
+            .head_contents()
+            .unwrap()
+            .previous()
+            .unwrap()
+            .clone();
         let cover = ossuary_core::cover(&copy, &seal).unwrap();
         let files = ossuary_core::files(&copy, &cover, true).unwrap();
         assert!(cover.held && cover.gone.is_empty() && cover.damaged.is_empty());

@@ -11,10 +11,8 @@
 //!
 //! The claims carry the time from the log, not the time of the import. A
 //! claim's time is when the sighting was recorded, and the Python
-//! mailvault recorded it then. Claims with old times must not share a
-//! segment with today's, because segments are ordered by the time of
-//! their first claim (see `docs/format.md`). So the claims of a batch of
-//! messages are written sorted by time, into a segment of their own.
+//! mailvault recorded it then. The claims of a batch of messages are
+//! written sorted by time, into a segment of their own.
 //!
 //! An import can take hours and may be interrupted. The memo in `cache/`
 //! remembers which places of which message are recorded, so the next run
@@ -274,7 +272,6 @@ impl Takeover<'_> {
             return Ok(());
         }
         let log = self.archive.log();
-        // Whatever the head holds from today goes into a segment first.
         log.seal()?;
         let now = Timestamp::now();
         let mut sightings: Vec<(Timestamp, usize, Vec<&String>)> = Vec::new();

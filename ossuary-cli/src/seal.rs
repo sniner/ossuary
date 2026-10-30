@@ -184,10 +184,6 @@ fn render(out: &mut impl Write, checked: &SealCheck, verbose: bool) -> Result<bo
         return Ok(false);
     }
     let lists = [
-        (
-            &cover.lost_before,
-            "sealed segment(s) already missing when the seal was made; a mend in the record stands in for each",
-        ),
         (&cover.gone, "sealed segment(s) gone"),
         (&cover.damaged, "sealed segment(s) damaged"),
         (&files.gone, "file(s) gone"),
@@ -213,7 +209,8 @@ fn render(out: &mut impl Write, checked: &SealCheck, verbose: bool) -> Result<bo
     let line = match &since.continued {
         Continued::Yes => return Ok(true),
         Continued::No => "the open segment no longer leads to the seal: the record was cut back to an earlier point, or begun anew, after the seal was made".to_string(),
-        Continued::HeadLost => "the open segment is missing, so the record no longer leads to the seal; `ossuary maintain mend` begins a new one".to_string(),
+        Continued::HeadLost => "the open segment is missing, so the record no longer leads to the seal; `ossuary-fix chain` begins a new one".to_string(),
+        Continued::Blocked(segment) => format!("segment {segment}, recorded since the seal, is missing or does not read, so the record cannot be followed back to the seal; `ossuary audit` names what is wrong with it"),
         Continued::HeadBroken(error) => format!("the open segment cannot be read: {error}; the record no longer leads to the seal"),
     };
     say(out, &line)

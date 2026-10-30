@@ -145,30 +145,21 @@ out:
 
 | What it found | Way out |
 |---|---|
-| A sealed segment is damaged or cannot be read | Restore it from a backup of the archive and seal again |
-| A sealed segment is missing | Restore it from a backup and seal again. Without a backup, `ossuary maintain mend` records the loss; seal again after that |
-| The first segment of the archive, or the last segment of a line merged in, is missing | Restore it from a backup and seal again. No mend can stand in for it |
-| The open segment, `head.jsonl`, is missing | `ossuary maintain mend` records the loss and starts a new one; record the lost claims again if possible, then seal again |
-| A mend that the open segment does not name, left by an interrupted `ossuary maintain mend` | Run `ossuary maintain mend` again, then seal again |
+| A sealed segment is damaged or cannot be read | Copy it back from a copy of the archive and seal again |
+| A sealed segment is missing | Copy it back from a copy of the archive and seal again. If no copy has it, `ossuary-fix chain --accept-loss` closes the chain over it; its claims are lost. Seal again after that |
+| The open segment, `head.jsonl`, is missing | `ossuary-fix chain --accept-loss` begins a new one after the last sealed segment; record the lost claims again if possible, then seal again |
+| A sealed segment that the chain does not reach | `ossuary-fix chain` takes it into the chain; seal again after that |
 
 ```console
 $ ossuary seal
 archive /srv/archive
 checking every sealed segment against its hash
-claims: segment 880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe is missing; 7922c85f074e31c04b15931157af38610b09d45cc346e1e686d964649b231ce0 names it as its predecessor
 claims: 311 sealed segment(s) and the open segment, 1304544 claim(s), 1 missing
-the chain of sealed segments is broken: 2 separate chains, expected one
-  chain 1: 117 segment(s), 489310 claim(s), 2024-01-08T09:12:44Z to 2025-02-17T16:40:02Z, 9a71459e9cfc2c6570ada7147da5693a73631c13c5c4a20bb822b8be5d0bef88 to 52e6c7bbed43568c33a419f13edc574e36cb6f95c06b9024d04b9c13896216de
-  chain 2: 194 segment(s), 815234 claim(s), 2025-02-18T08:01:15Z to 2026-10-22T02:15:07Z, 7922c85f074e31c04b15931157af38610b09d45cc346e1e686d964649b231ce0 to the open segment
-  chain 2 starts after segment 880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe, which is missing; restore it from a backup of the archive, or run `ossuary maintain mend` to join the chains (the mend records the missing segment's name)
+claims: segment 880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe is missing; segment 7922c85f074e31c04b15931157af38610b09d45cc346e1e686d964649b231ce0 names it as its predecessor. Copy it back into claims/ from a copy of the archive; if no copy has it, `ossuary-fix chain` closes the gap
 no seal made: a seal now would not cover what is listed above; seal again once that is resolved
 ```
 
 The command exits non-zero and prints no id.
-
-A seal made after a mend covers the loss as the mend records it: a check
-later reports the missing segment as already missing when the seal was
-made, and does not count it against the seal.
 
 
 ## Keeping the id
@@ -343,10 +334,10 @@ compressed. In an archive whose `FORMAT` names `sha256`, that is
    1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776  -
    ```
 
-2. **Its first line** names the segments recorded before it,
-   `{"ossuary-segment": 1, "previous": ["52e6c7bb…"]}`, each of which
-   lies in `claims/` the same way. Following every name in every
-   `previous` reaches every segment the seal covers.
+2. **Its first line** names the segment recorded before it,
+   `{"ossuary-segment": 1, "previous": "52e6c7bb…"}`, which lies in
+   `claims/` the same way. Following `previous` from segment to segment
+   reaches every segment the seal covers.
 
 3. **Every line after the first** of a segment is a claim. Its
    `subject` names a file, and so does the value of a `prov:origin`
@@ -363,8 +354,8 @@ and [the archive format](format.md#the-seal) is the exact description.
 ## What changes for the archive
 
 * **Nothing in ossuary removes or rewrites what a seal covers.**
-  `ingest`, `extract`, `annotate`, `retract`, `merge` and `maintain mend`
-  only add to the archive; `maintain weed` removes a copy in `derived/`
+  `ingest`, `extract`, `annotate` and `retract` only add to the
+  archive; `maintain weed` removes a copy in `derived/`
   only when `content/` holds the same file. Every command keeps running
   on a sealed archive, and none of them breaks a seal.
 * **A seal is not stored apart.** It is the name of a sealed segment,
@@ -374,13 +365,10 @@ and [the archive format](format.md#the-seal) is the exact description.
   you kept outside it.
 * **A lost open segment stops the archive.** While `head.jsonl` is
   missing, every command that records claims refuses to run until
-  `ossuary maintain mend` has recorded the loss. The record cannot start
-  over unnoticed.
-* **`ossuary-fix` breaks seals.** It is the repair tool for archives
-  written by older 0.x versions, and a fix that rewrites sealed segments
-  renames them. It says from which time on seal ids no longer check.
-  Seal again afterwards, and keep the new id.
-* **`ossuary merge --rehash` gives the other archive's record new
-  names.** Its seals still check against the other archive, not against
-  the one it was merged into. A merge without `--rehash` keeps the other
-  archive's segments as they are, and their seals check in both.
+  `ossuary-fix chain --accept-loss` has begun a new one. The record
+  cannot start over unnoticed.
+* **`ossuary-fix` breaks seals.** It is the one program that rewrites
+  sealed segments, and a fix that does renames them. It says from which
+  time on seal ids no longer check. Seal again afterwards, and keep the
+  new id. `ossuary-fix rehash` makes a new archive under another hash,
+  whose seals are new as well.

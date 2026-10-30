@@ -5,7 +5,46 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **A segment header names the segment sealed before it by one name, `"previous":"3c1e…"`, and the
+  sealed segments form one chain.** Archives written by 0.14 or earlier name it in a list; every
+  command refuses them with a message until `ossuary-fix list` has rewritten them. The rewrite
+  renames the segments, so seal ids given out before no longer check: seal again afterwards and
+  keep the new id. A copy kept with `ossuary sync` is refused after that as well; sync into a new,
+  empty target
+- **`ossuary merge` is removed**, `--rehash` included. `ossuary mailvault` writes into the archive
+  it is given, so a mail archive kept apart is no longer needed. To move an archive to another
+  hash algorithm, use `ossuary-fix rehash`
+- **`ossuary maintain mend` is removed.** A sealed segment that is missing is best copied back from
+  a copy of the archive. If there is none, `ossuary-fix chain --accept-loss` closes the chain over
+  it, and begins a new open segment when `head.jsonl` is missing; the claims they held are lost.
+  `ossuary maintain weed` stays
+
+### Added
+
+- **`ossuary-fix list`** rewrites an archive of 0.14 or earlier into one chain, in the order 0.14
+  read it: by the time of each segment's first claim. Segments without claims, the mends and the
+  segments that joined merged archives, are removed. It takes the place of `ossuary-fix previous`
+- **`ossuary-fix chain`** closes a broken chain: the segment after a missing one is made to name
+  the one before the gap, and a missing open segment is begun anew. Nothing that is still linked
+  changes its place. It goes on only with `--accept-loss`, since the claims of what is missing are
+  lost
+- **`ossuary-fix rehash --algorithm NAME TARGET`** copies the archive into a new one at TARGET that
+  uses another hash algorithm: every file is hashed anew, and every claim is written there with
+  the new names, with its time, source and run unchanged. `config.toml` and `mailvault.toml` come
+  along. The archive itself is only read
+
 ### Fixed
+
+- **A value retracted later could still be found.** After `ossuary merge` or `ossuary mailvault
+  import` had added segments with older timestamps, `find`, `ls`, `ossuary mount` and the other
+  queries could count a retraction before the claim it retracted. The order of the record is now
+  the order of the log, so a claim written later counts later, whatever its timestamp says
+- **`ossuary seal --check` names a segment recorded since the seal that is missing or does not
+  read**, instead of saying the record was cut back to an earlier point
+- **An interrupted `ossuary-fix` rewrite no longer leaves a query index behind that counts claims
+  twice**
 
 - **A command whose output goes to a program that stops reading early no longer fails.**
   `ossuary extract mail | head -1` and similar commands stopped with the message "failed printing

@@ -36,8 +36,6 @@ mod index;
 mod ingest;
 mod log;
 mod manifest;
-mod mend;
-mod merge;
 mod retract;
 mod seal;
 mod weed;
@@ -46,8 +44,7 @@ pub use accession::{Admitted, Sighting, admit, record};
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
 pub use audit::{
-    Audit, Break, Cause, Chain, Fixity, HEAD, Joined, LogAudit, Mended, StoreAudit, Twin,
-    audit_log, audit_store,
+    Audit, Ends, Fixity, HEAD, LINKS, LogAudit, StoreAudit, Twin, audit_log, audit_store,
 };
 pub use claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
 pub use config::{Config, Excludes};
@@ -59,13 +56,8 @@ pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::{Algorithm, Digest, Store};
 pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
-pub use log::{Contents, GENERATION, Log, Mend, Segment, head_after};
+pub use log::{Contents, GENERATION, Log, Segment, WalkBack, head_after};
 pub use manifest::{Manifest, Manifests};
-pub use mend::{mend, name_mend};
-pub use merge::{
-    Copied, Join, Obstacles, Preview, Replayed, check, copy_store, join, preview_copy,
-    rehash_store, replay, take_memo,
-};
 pub use retract::{Taking, retract};
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,

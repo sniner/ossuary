@@ -146,12 +146,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         let open = archive.log().head_contents()?;
         sync::plan(&archive, held.seal.as_ref(), open.previous(), open.claims())?
     } else {
-        sync::plan(
-            &archive,
-            held.seal.as_ref(),
-            std::slice::from_ref(&seal.segment),
-            &[],
-        )?
+        sync::plan(&archive, held.seal.as_ref(), Some(&seal.segment), &[])?
     };
     let segments = plan.segments.len() + usize::from(unsealed);
 
@@ -260,7 +255,7 @@ fn sealed(archive: &Archive, dry_run: bool) -> Result<Seal> {
         Sealing::Empty => bail!("the archive holds no claims yet; there is nothing to sync"),
         Sealing::Refused(log) => bail!(
             "the archive cannot be sealed, {} finding(s) in its record; nothing was copied; `ossuary seal` lists them and the way out, sync again once they are resolved",
-            log.findings() + log.unreached.len()
+            log.findings()
         ),
     }
 }

@@ -30,7 +30,6 @@ pub fn plan(log: &Log) -> Result<Plan> {
     let olds = record::standing(&claims, &old);
     let news = record::standing_keys(&claims, &new);
     let mut plan = Plan {
-        apart: true,
         unit: "origin(s)",
         done: "copied to prov:origin",
         nothing: "every origin is already recorded as prov:origin",
@@ -155,11 +154,10 @@ mod tests {
             planned.claims[0].run().unwrap().as_str(),
             "315e360b-020e-48be-8f2d-f2002a2ea9b4"
         );
-        assert!(planned.apart);
         assert_eq!(planned.notes, vec!["1 already recorded".to_string()]);
         assert_eq!(
             planned.sentence(false),
-            "2 origin(s) copied to prov:origin, in a separate segment; 1 already recorded"
+            "2 origin(s) copied to prov:origin; 1 already recorded"
         );
 
         planned.apply(log).unwrap();

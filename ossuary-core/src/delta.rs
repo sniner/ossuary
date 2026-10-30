@@ -1,18 +1,13 @@
 //! What a copy of the archive lacks, worked out from the log alone.
 //!
 //! A copy whose open segment names segment `behind` holds every segment
-//! the walk from `behind` reaches and every file their claims refer to:
+//! from `behind` back to the first and every file their claims refer to:
 //! that is what a seal covers. What it lacks to hold a later point
 //! `ahead` as well follows from this archive's log without looking at
-//! the copy: the segments the walk from `ahead` reaches before it meets
-//! one the walk from `behind` reaches, and the files their claims refer
-//! to that no claim behind `behind` refers to. The second subtraction is
-//! needed because `extract` and `annotate` write new claims about old
-//! files.
-//!
-//! The walk from `ahead` stops at every segment behind `behind`, not at
-//! `behind` alone: a line merged in can hold segments older than
-//! `behind` that the walk from `behind` does not reach.
+//! the copy: the segments from `ahead` back to `behind`, and the files
+//! their claims refer to that no claim behind `behind` refers to. The
+//! second subtraction is needed because `extract` and `annotate` write
+//! new claims about old files.
 
 use std::collections::BTreeSet;
 
@@ -21,19 +16,19 @@ use immure::Digest;
 use crate::audit::reference;
 use crate::claim::Claim;
 use crate::error::{Error, Result};
-use crate::log::{Log, Mend};
+use crate::log::Log;
 
 /// What a copy that holds the record up to one point lacks to hold it
 /// up to another.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Delta {
-    /// The segments the copy lacks, in the order the walk met them.
+    /// The segments the copy lacks, from `ahead` back.
     pub segments: Vec<Digest>,
     /// The files the copy lacks, by name. Whether `content/` or
     /// `derived/` holds them is not recorded in the log.
     pub files: BTreeSet<Digest>,
-    /// Whether the walk from `ahead` reaches `behind`. When it does not,
-    /// the copy holds a point this record does not lead to, and the
+    /// Whether the walk back from `ahead` reaches `behind`. When it does
+    /// not, the copy holds a point this record does not lead to, and the
     /// delta means nothing for it.
     pub follows: bool,
 }
@@ -42,33 +37,31 @@ pub struct Delta {
 /// everything behind `ahead` and the claims in `open`.
 ///
 /// `behind` is `None` for a copy that holds nothing yet. `ahead` is
-/// usually one segment, a seal; a dry run that has not sealed the open
-/// segment passes the segments the open segment names, and its claims
-/// as `open`.
+/// usually a seal; a dry run that has not sealed the open segment passes
+/// the segment the open segment names, and its claims as `open`.
 ///
-/// A segment that a mend names as replaced was lost before and is not
-/// lacked. A segment behind `behind` that this archive no longer holds
-/// is passed over: the copy holds it, and only the files its claims
-/// refer to cannot be subtracted, so they are listed again.
+/// A segment behind `behind` that this archive no longer holds ends the
+/// walk from `behind` there: the copy holds it, and only the files the
+/// claims before it refer to cannot be subtracted, so they are listed
+/// again.
 ///
 /// # Errors
 ///
 /// [`Error::SegmentMissing`] for a segment ahead of `behind` that the
-/// claims store does not hold and no mend replaces, and everything
-/// [`Log::contents`] can answer for a segment that does not read.
+/// claims store does not hold, and everything [`Log::contents`] can
+/// answer for a segment that does not read.
 pub fn delta(
     log: &Log,
     behind: Option<&Digest>,
-    ahead: &[Digest],
+    ahead: Option<&Digest>,
     open: &[Claim],
 ) -> Result<Delta> {
     let held = match behind {
-        Some(segment) => walk(log, std::slice::from_ref(segment), &BTreeSet::new())?,
+        Some(segment) => walk(log, Some(segment), None)?,
         None => Walk::default(),
     };
-    let lacked = walk(log, ahead, &held.reached)?;
-    let replaced: BTreeSet<&Digest> = held.replaced.union(&lacked.replaced).collect();
-    if let Some(lost) = lacked.missing.iter().find(|name| !replaced.contains(name)) {
+    let lacked = walk(log, ahead, behind)?;
+    if let Some(lost) = &lacked.missing {
         return Err(Error::SegmentMissing(lost.to_string()));
     }
     let mut refs = lacked.refs;
@@ -83,55 +76,45 @@ pub fn delta(
     Ok(Delta {
         segments: lacked.segments,
         files,
-        follows: behind.is_none_or(|segment| lacked.met.contains(segment)),
+        follows: behind.is_none() || lacked.met,
     })
 }
 
-/// One walk over `previous`.
+/// One walk back along the chain.
 #[derive(Default)]
 struct Walk {
-    /// Segments reached that the store holds, in the order met.
+    /// Segments read, in the order met.
     segments: Vec<Digest>,
-    /// Every name reached, held or not.
-    reached: BTreeSet<Digest>,
-    /// Names reached that the store does not hold.
-    missing: BTreeSet<Digest>,
-    /// Names that mends reached by the walk replace.
-    replaced: BTreeSet<Digest>,
-    /// Files the claims of the segments reached refer to.
+    /// The name the walk stopped at because the store does not hold it.
+    missing: Option<Digest>,
+    /// Files the claims of the segments read refer to.
     refs: BTreeSet<String>,
-    /// Names of `stop` the walk met.
-    met: BTreeSet<Digest>,
+    /// Whether the walk met `stop`.
+    met: bool,
 }
 
-/// Walk back from `from` over every name in every `previous`, without
-/// going past a name in `stop`.
-fn walk(log: &Log, from: &[Digest], stop: &BTreeSet<Digest>) -> Result<Walk> {
+/// Walk back from `from` to the first segment, or to `stop`, which is
+/// not read.
+fn walk(log: &Log, from: Option<&Digest>, stop: Option<&Digest>) -> Result<Walk> {
     let mut walk = Walk::default();
-    let mut pending = from.to_vec();
-    while let Some(digest) = pending.pop() {
-        if stop.contains(&digest) {
-            walk.met.insert(digest);
-            continue;
-        }
-        if !walk.reached.insert(digest.clone()) {
-            continue;
+    let mut next = from.cloned();
+    while let Some(digest) = next.take() {
+        if Some(&digest) == stop {
+            walk.met = true;
+            break;
         }
         let contents = match log.contents(&digest) {
             Ok(contents) => contents,
             Err(Error::SegmentMissing(_)) => {
-                walk.missing.insert(digest);
-                continue;
+                walk.missing = Some(digest);
+                break;
             }
             Err(error) => return Err(error),
         };
         for claim in contents.claims() {
             reference(claim, &mut walk.refs);
         }
-        if let Some(replaces) = contents.mend().and_then(Mend::replaces) {
-            walk.replaced.insert(replaces.clone());
-        }
-        pending.extend(contents.previous().iter().cloned());
+        next = contents.previous().cloned();
         walk.segments.push(digest);
     }
     Ok(walk)
@@ -190,7 +173,7 @@ mod tests {
         let second = take(&archive, b"second", "2026-09-02T00:00:00Z");
         let two = seal(&archive);
 
-        let delta = delta(archive.log(), None, std::slice::from_ref(&two), &[]).unwrap();
+        let delta = delta(archive.log(), None, Some(&two), &[]).unwrap();
 
         assert_eq!(delta.segments, [two, one]);
         assert_eq!(delta.files, files(&[&first, &second]));
@@ -208,7 +191,7 @@ mod tests {
         archive.log().append(&tag).unwrap();
         let two = seal(&archive);
 
-        let delta = delta(archive.log(), Some(&one), std::slice::from_ref(&two), &[]).unwrap();
+        let delta = delta(archive.log(), Some(&one), Some(&two), &[]).unwrap();
 
         assert_eq!(delta.segments, [two]);
         assert_eq!(
@@ -226,7 +209,7 @@ mod tests {
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let one = seal(&archive);
 
-        let delta = delta(archive.log(), Some(&one), std::slice::from_ref(&one), &[]).unwrap();
+        let delta = delta(archive.log(), Some(&one), Some(&one), &[]).unwrap();
 
         assert_eq!(
             delta,
@@ -235,34 +218,6 @@ mod tests {
                 ..Delta::default()
             }
         );
-    }
-
-    #[test]
-    fn a_merged_line_older_than_the_copy_is_lacked() {
-        let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
-        take(&archive, b"first", "2026-09-05T00:00:00Z");
-        let one = seal(&archive);
-        // A second line whose only segment is older than the copy's seal.
-        let (_, entry) = archive.content().add(b"theirs").unwrap();
-        let theirs = entry.digest().clone();
-        let mut text = r#"{"ossuary-segment":1}"#.to_string();
-        text.push('\n');
-        text.push_str(&claim(&theirs, "file:size", json!(6), "2026-09-01T00:00:00Z").to_line());
-        text.push('\n');
-        let (_, segment) = archive.log().store().add(text.as_bytes()).unwrap();
-        let line = segment.digest().clone();
-        archive
-            .log()
-            .head_follows(&[one.clone(), line.clone()])
-            .unwrap();
-        let two = seal(&archive);
-
-        let delta = delta(archive.log(), Some(&one), std::slice::from_ref(&two), &[]).unwrap();
-
-        assert_eq!(delta.segments, [two, line]);
-        assert_eq!(delta.files, files(&[&theirs]));
-        assert!(delta.follows);
     }
 
     #[test]
@@ -289,48 +244,13 @@ mod tests {
         let one = seal(&archive);
         let elsewhere = archive.log().store().digest(b"another archive's segment");
 
-        let delta = delta(
-            archive.log(),
-            Some(&elsewhere),
-            std::slice::from_ref(&one),
-            &[],
-        )
-        .unwrap();
+        let delta = delta(archive.log(), Some(&elsewhere), Some(&one), &[]).unwrap();
 
         assert!(!delta.follows);
     }
 
     #[test]
-    fn a_lost_segment_that_a_mend_replaces_is_not_lacked() {
-        let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
-        take(&archive, b"first", "2026-09-01T00:00:00Z");
-        let one = seal(&archive);
-        take(&archive, b"second", "2026-09-02T00:00:00Z");
-        let two = seal(&archive);
-        take(&archive, b"third", "2026-09-03T00:00:00Z");
-        let three = seal(&archive);
-        let path = archive.log().store().find(&two).unwrap().unwrap();
-        std::fs::remove_file(path).unwrap();
-        let mend = archive
-            .log()
-            .mend(&one, &Mend::new(Some(three.clone()), Some(two.clone())))
-            .unwrap();
-        archive
-            .log()
-            .head_follows(&[three.clone(), mend.digest().clone()])
-            .unwrap();
-        let four = seal(&archive);
-
-        let delta = delta(archive.log(), None, std::slice::from_ref(&four), &[]).unwrap();
-
-        assert!(!delta.segments.contains(&two));
-        assert!(delta.segments.contains(mend.digest()));
-        assert_eq!(delta.segments.len(), 4, "four, three, the mend and one");
-    }
-
-    #[test]
-    fn a_lost_segment_without_a_mend_is_an_error() {
+    fn a_lost_segment_ahead_of_the_copy_is_an_error() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
@@ -340,7 +260,7 @@ mod tests {
         let path = archive.log().store().find(&one).unwrap().unwrap();
         std::fs::remove_file(path).unwrap();
 
-        let error = delta(archive.log(), None, std::slice::from_ref(&two), &[]).unwrap_err();
+        let error = delta(archive.log(), None, Some(&two), &[]).unwrap_err();
 
         assert!(matches!(error, Error::SegmentMissing(name) if name == one.as_str()));
     }
@@ -353,36 +273,22 @@ mod tests {
         let one = seal(&archive);
         take(&archive, b"second", "2026-09-02T00:00:00Z");
         let two = seal(&archive);
-        take(&archive, b"third", "2026-09-03T00:00:00Z");
-        let three = seal(&archive);
-        // The copy holds the record up to `three`; here `two` is lost
-        // after that and mended.
-        let path = archive.log().store().find(&two).unwrap().unwrap();
+        // The copy holds the record up to `two`; here `one` is lost
+        // after that, and a later claim speaks of its file again.
+        let path = archive.log().store().find(&one).unwrap().unwrap();
         std::fs::remove_file(path).unwrap();
-        let mend = archive
-            .log()
-            .mend(&one, &Mend::new(Some(three.clone()), Some(two.clone())))
-            .unwrap();
-        archive
-            .log()
-            .head_follows(&[three.clone(), mend.digest().clone()])
-            .unwrap();
-        let four = seal(&archive);
+        let tag = claim(&first, "user:tag", json!("holiday"), "2026-09-03T00:00:00Z");
+        archive.log().append(&tag).unwrap();
+        let three = seal(&archive);
 
-        let delta = delta(
-            archive.log(),
-            Some(&three),
-            std::slice::from_ref(&four),
-            &[],
-        )
-        .unwrap();
+        let delta = delta(archive.log(), Some(&two), Some(&three), &[]).unwrap();
 
+        assert_eq!(delta.segments, [three]);
         assert_eq!(
-            delta.segments,
-            [four, mend.digest().clone(), one],
-            "the walk from the copy's seal cannot get past the lost segment, so `one` is listed again"
+            delta.files,
+            files(&[&first]),
+            "the walk from the copy's seal cannot get past the lost segment, so its file is listed again"
         );
-        assert_eq!(delta.files, files(&[&first]));
         assert!(delta.follows);
     }
 
@@ -397,7 +303,7 @@ mod tests {
 
         assert_eq!(head, head_after(&one));
         let contents = crate::log::Contents::parse(&head).unwrap();
-        assert_eq!(contents.previous(), std::slice::from_ref(&one));
+        assert_eq!(contents.previous(), Some(&one));
         assert!(contents.claims().is_empty());
     }
 }

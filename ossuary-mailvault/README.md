@@ -125,10 +125,6 @@ $ ossuary mailvault init --accounts ~/.config/ossuary/mailvault.toml
 $ ossuary mailvault fetch --accounts ~/.config/ossuary/mailvault.toml
 ```
 
-`ossuary merge` compares the accounts of two archives by the
-`mailvault.toml` in each archive root; a file named with `--accounts` is
-not part of that check.
-
 ## What is recorded
 
 Each message is stored like a file added by `ossuary ingest`, with its

@@ -21,7 +21,6 @@ mod browse;
 mod export;
 mod extract;
 mod maintain;
-mod merge;
 mod output;
 mod seal;
 
@@ -31,7 +30,7 @@ mod seal;
     version,
     about = "A personal archive that keeps files permanently and records what is known about them",
     after_help = "Commands by group:
-  archive    init, audit, maintain, merge
+  archive    init, audit, maintain
   record     ingest, extract, annotate, retract, seal
   query      about, standing, find, attributes, history, ls, tree, id
   retrieve   get, export
@@ -229,7 +228,7 @@ enum Command {
     ///
     /// Checks every sealed segment against its hash and the chain they
     /// form, closes the open segment, and prints the id: the hash of the
-    /// last sealed segment. Every segment names the ones before it, and
+    /// last sealed segment. Every segment names the one before it, and
     /// every claim names its file by hash, so the id covers every claim
     /// recorded up to it and every file they refer to. Kept outside the
     /// archive, it shows later whether the archive still holds all of
@@ -238,9 +237,9 @@ enum Command {
     ///
     /// No seal is made while the chain of sealed segments has a
     /// finding: a damaged or missing segment, a lost open segment, or a
-    /// mend the open segment does not name. `ossuary audit` and
-    /// `ossuary maintain mend` deal with those. The id is the only line
-    /// on stdout. Exits 1 if no seal was made.
+    /// segment the chain does not reach. `ossuary audit` names it and
+    /// the way to repair it. The id is the only line on stdout. Exits 1
+    /// if no seal was made.
     ///
     /// --check ID checks a seal instead: every sealed segment it covers
     /// must be present and match its hash, every file their claims refer
@@ -583,19 +582,14 @@ enum Command {
     /// to, as subject or as origin of a derived file, must be present in
     /// content/ or derived/.
     ///
-    /// A chain of sealed segments in more than one piece is also a
-    /// finding: a missing open segment, or a segment without a
-    /// predecessor other than the first, shows that the open segment
-    /// was lost with its claims. The report lists every piece with its
-    /// time span, so the lost period can be narrowed down; `ossuary
-    /// maintain mend` joins the pieces, and the lost claims can then be
-    /// recorded again. A mend that the open segment does not name, left
-    /// by an interrupted `ossuary maintain mend`, is a finding as well;
-    /// running it again names the mend. A mended break is reported, not
-    /// counted as a finding. Also reported and not counted: files
-    /// without claims (adding the same file again records them) and
-    /// files in both content/ and derived/ (`ossuary maintain weed`
-    /// removes the copy in derived/).
+    /// The sealed segments form one chain, from the open segment back to
+    /// the first. A segment the chain cannot follow, a lost open segment
+    /// and a segment the chain does not reach are findings as well, each
+    /// with the way to repair it: a copy of the archive, or
+    /// `ossuary-fix chain`. Also reported and not counted: files without
+    /// claims (adding the same file again records them) and files in
+    /// both content/ and derived/ (`ossuary maintain weed` removes the
+    /// copy in derived/).
     ///
     /// The report counts what it finds and lists up to five names per
     /// finding; --verbose lists all of them, --json prints one object
@@ -609,65 +603,6 @@ enum Command {
     /// Repair and clean up the archive
     #[command(subcommand)]
     Maintain(maintain::Maintenance),
-    /// Take another archive into this one
-    ///
-    /// Copies every file and every sealed segment of the archive at DIR
-    /// into this archive. A file that is already here is not copied
-    /// again: the same content has the same name in both archives. Then
-    /// the open segments of both archives are sealed, and the open
-    /// segment of this archive is made to follow the last segment of
-    /// each. Nothing already sealed is changed in either archive, and
-    /// the other archive is left as it was apart from the seal. It can
-    /// be kept and merged again later, or deleted.
-    ///
-    /// Afterwards `audit` shows the other archive's segments as a line
-    /// merged into the chain. `ossuary mailvault` carries on where the
-    /// other archive's fetches left off, for the folders this archive
-    /// has not fetched itself. config.toml and mailvault.toml are not
-    /// merged; compare them by hand. A copy in derived/ of a file that
-    /// content/ also holds is removed by `ossuary maintain weed`.
-    ///
-    /// Both archives must use the same hash algorithm, unless --rehash
-    /// is given: then every file of the other archive is hashed anew
-    /// with this archive's algorithm on the way in, and the other
-    /// archive's claims are written here with the new names, segment
-    /// for segment, with their time, source and run unchanged. Its
-    /// chain of segments is not carried over, and `audit` shows no
-    /// merged line. A rehash is done once: merging the same archive
-    /// again with --rehash writes its claims a second time. This is
-    /// also the way to move an archive to another hash algorithm:
-    /// create an empty archive with `init --algorithm` and merge the
-    /// old one into it with --rehash. A claim about a file the other
-    /// archive no longer holds cannot be rewritten and stops the merge;
-    /// --force leaves such claims out.
-    ///
-    /// A damaged file in the other archive, a finding in its chain of
-    /// segments, or an account name that both mailvault.toml files use
-    /// for different mailboxes stops the merge before the chains are
-    /// joined; --force merges anyway. Files copied before a stop stay
-    /// and are not copied again. Exits 1 if the merge was stopped or a
-    /// damaged file or a claim was left out.
-    Merge {
-        /// The archive to take in
-        #[arg(value_name = "DIR")]
-        dir: PathBuf,
-
-        /// Hash the other archive's files anew and replay its claims
-        /// with the new names; for an archive with another hash
-        /// algorithm
-        #[arg(long)]
-        rehash: bool,
-
-        /// Show what would be copied, write nothing
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Merge in spite of findings in the other archive, clashing
-        /// account names, damaged files and, with --rehash, claims about
-        /// files the other archive lacks
-        #[arg(long)]
-        force: bool,
-    },
     // An outside verb: `ossuary NAME …` becomes `ossuary-NAME …` from
     // the PATH, the way `mount` arrives without weighing this tool
     // down. The resolved archive travels in the environment; the rest
@@ -834,21 +769,6 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
         Command::Maintain(task) => maintain::run(&cli.archive, &task, cli.verbose, quiet),
-        Command::Merge {
-            dir,
-            rehash,
-            dry_run,
-            force,
-        } => merge::merge(
-            &cli.archive,
-            &dir,
-            merge::Options {
-                rehash,
-                dry_run,
-                force,
-            },
-            quiet,
-        ),
         Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }
 }

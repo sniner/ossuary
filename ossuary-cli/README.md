@@ -42,7 +42,6 @@ early, the output stops and the command still exits with success.
 | `get` | one file's content to stdout, or to `--output FILE` |
 | `export` | copy files out of the archive under their recorded paths: runs by id, single files by name, in any mix. `--dry-run` shows where each file would be written |
 | `audit` | check the archive: every file against its hash, every claim readable, no segment or referenced file missing. Exits 1 if there are findings |
-| `maintain mend` | join a broken chain of sealed segments and record each break, start a lost open segment again, and make the open segment name a mend it does not name. Sealed segments are not rewritten; `--dry-run` shows what would be mended. Exits 1 if a break was left open |
 | `maintain weed` | remove files from `derived/` that `content/` also contains, after checking both copies against their hash. `--repair` replaces a damaged file in `content/` with its sound copy from `derived/` and keeps the damaged one aside; `--dry-run` shows what would be removed. Exits 1 if a file was left in both |
 
 `--json` on `about`, `standing`, `find`, `attributes`, `history`, `ls`,

@@ -83,9 +83,8 @@ content, checks its output and records the result with a receipt. It
 reports progress as `Event`s to an `Observer` and prints nothing itself.
 `annotate` records user tags and comments on files already in the
 archive, `retract` retracts claims, `lay_out` computes the target paths
-of an export, `audit_store` and `audit_log` check the stores and the log
-for damage, and `mend` repairs a break in the segment chain found by
-`audit_log` without rewriting any sealed segment.
+of an export, and `audit_store` and `audit_log` check the stores and the
+log for damage.
 
 All errors are variants of one `Error` enum. `Error::spelled` returns the
 error with its causes as one line, ready to show to a user.

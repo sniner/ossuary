@@ -1,44 +1,19 @@
-//! `ossuary maintain`: repairs that add to the archive and rewrite
-//! nothing, and the one taking-out that loses nothing.
+//! `ossuary maintain`: the one taking-out that loses nothing.
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use ossuary_core::{Break, Cause, Error, Fixity, Twin, Weeded};
+use ossuary_core::{Fixity, Twin, Weeded};
 
 use crate::open;
-use crate::output::{self, errln, outln, say};
+use crate::output::{errln, say};
 
-/// The maintenance commands. `mend` only adds to the archive and
-/// rewrites nothing; `weed` removes copies in `derived/` of files that
-/// `content/` also contains.
+/// The maintenance commands. `weed` removes copies in `derived/` of
+/// files that `content/` also contains.
 #[derive(Subcommand)]
 pub(crate) enum Maintenance {
-    /// Join a broken chain of sealed segments and record each break
-    ///
-    /// Where `audit` finds the chain of sealed segments in more than one
-    /// piece, because the open segment was lost or a sealed segment is
-    /// missing, mend closes each break with a mend: a segment without
-    /// claims that names the two segments it joins. Sealed segments are
-    /// not changed, and the segment after the break still names its
-    /// original predecessor, so the record still shows what was lost
-    /// and where. A missing open segment is started again after the
-    /// mend; until then, nothing can be recorded. Lost claims are not
-    /// recovered; record them again afterwards if possible. A break
-    /// after a segment that is present but damaged is left open, and so
-    /// is a missing segment that no mend can stand in for: the first
-    /// segment of the archive, or the last segment of a line merged in.
-    /// Both can only be restored from a backup of the archive. A mend
-    /// that an interrupted run stored without the open segment naming
-    /// it is named. Reads the whole log, like `audit`. Exits 1 if a
-    /// break was left open.
-    Mend {
-        /// Show what would be mended, write nothing
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// Remove files from derived/ that are also in content/
     ///
     /// A file first extracted as a derived file (an attachment from a
@@ -68,165 +43,7 @@ pub(crate) enum Maintenance {
 /// Run one maintenance task.
 pub(crate) fn run(root: &Path, task: &Maintenance, verbose: bool, quiet: bool) -> Result<ExitCode> {
     match task {
-        Maintenance::Mend { dry_run } => mend(root, *dry_run, quiet),
         Maintenance::Weed { dry_run, repair } => weed(root, *dry_run, *repair, verbose, quiet),
-    }
-}
-
-/// `maintain mend`: every break the audit finds in the chain, closed
-/// with a mend where one can stand, and every mend the open segment
-/// does not name, named.
-fn mend(root: &Path, dry_run: bool, quiet: bool) -> Result<ExitCode> {
-    let archive = open(root)?;
-    if !quiet {
-        errln!("archive {}", archive.root().display());
-        errln!("reading every sealed segment and the open segment");
-    }
-    let log = ossuary_core::audit_log(archive.log())?;
-    // A line merged into the chain is not a piece of a broken one.
-    let pieces = log
-        .chains
-        .iter()
-        .filter(|chain| chain.joined.is_none())
-        .count();
-    let beyond = log.beyond_mending();
-    if pieces <= 1 && log.breaks.is_empty() && log.unnamed.is_empty() && beyond.is_empty() {
-        let line = "the chain is complete, nothing to mend";
-        if log.mended.is_empty() {
-            outln!("{line}")?;
-        } else {
-            outln!("{line}; {} break(s) mended earlier", log.mended.len())?;
-        }
-        return Ok(ExitCode::SUCCESS);
-    }
-    if pieces > 1 && log.breaks.is_empty() && log.unnamed.is_empty() && beyond.is_empty() {
-        outln!(
-            "the chain is in {pieces} pieces with no identifiable break; `ossuary audit` lists the pieces"
-        )?;
-        return Ok(ExitCode::FAILURE);
-    }
-    let mut left_open = 0;
-    for (successor, segment) in &beyond {
-        outln!(
-            "segment {segment} is missing, and no mend can stand in for it; {} names it; restore it from a backup of the archive",
-            named_by(successor)
-        )?;
-        left_open += 1;
-    }
-    // The open segment names every mend, so the break in front of it,
-    // where it may be missing, is mended first.
-    let breaks = log
-        .breaks
-        .iter()
-        .filter(|brk| brk.before.is_none())
-        .chain(log.breaks.iter().filter(|brk| brk.before.is_some()));
-    for (index, brk) in breaks.enumerate() {
-        outln!("break {}: {}", index + 1, describe(brk))?;
-        if !brk.sure {
-            outln!("  left open; the chain before this one cannot be determined")?;
-            left_open += 1;
-            continue;
-        }
-        if !brk.mendable() {
-            outln!(
-                "  left open; the segment is present but damaged; restore it from a backup of the archive"
-            )?;
-            left_open += 1;
-            continue;
-        }
-        if dry_run {
-            outln!("  would be mended; --dry-run, nothing written")?;
-            continue;
-        }
-        match ossuary_core::mend(archive.log(), brk) {
-            Ok(Some(segment)) if brk.before.is_none() => {
-                outln!(
-                    "  mended as {}; the open segment now follows the mend",
-                    segment.digest()
-                )?;
-            }
-            Ok(Some(segment)) => {
-                outln!("  mended as {}", segment.digest())?;
-            }
-            Ok(None) => {
-                // `mendable` said yes a moment ago; the archive did not
-                // change under this run's feet in a way that turns a
-                // break unmendable, but the report is honest either way.
-                outln!("  left open; the break could not be mended")?;
-                left_open += 1;
-            }
-            Err(Error::HeadLost(_)) => {
-                outln!(
-                    "  left open; the open segment is missing, and the break in front of it is open above"
-                )?;
-                left_open += 1;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    for mend in &log.unnamed {
-        if !name_mend(&archive, mend, dry_run)? {
-            left_open += 1;
-        }
-    }
-    if left_open > 0 {
-        Ok(ExitCode::FAILURE)
-    } else {
-        Ok(ExitCode::SUCCESS)
-    }
-}
-
-/// Name one mend the open segment does not name, and say so; false when
-/// it stays unnamed.
-fn name_mend(archive: &ossuary_core::Archive, mend: &str, dry_run: bool) -> Result<bool> {
-    outln!("mend {mend}: stored, but the open segment does not name it")?;
-    if dry_run {
-        outln!("  would be named; --dry-run, nothing written")?;
-        return Ok(true);
-    }
-    let digest = ossuary_core::Digest::parse(mend)?;
-    match ossuary_core::name_mend(archive.log(), &digest) {
-        Ok(()) => {
-            outln!("  named by the open segment")?;
-            Ok(true)
-        }
-        Err(Error::HeadLost(_)) => {
-            outln!(
-                "  left unnamed; the open segment is missing, and the break in front of it is open above"
-            )?;
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Who names a lost segment, in the words of a line.
-fn named_by(successor: &str) -> String {
-    if successor == ossuary_core::HEAD {
-        "the open segment".to_string()
-    } else {
-        format!("segment {successor}")
-    }
-}
-
-/// A break in a line: its two ends, and what the record says happened
-/// between them.
-fn describe(brk: &Break) -> String {
-    let before = brk.before.as_deref().unwrap_or("the open segment");
-    match &brk.cause {
-        Cause::HeadLost => format!(
-            "after {} and before {before}, an open segment was lost; {}",
-            brk.after,
-            output::lost_claims(brk.from.as_ref(), brk.to.as_ref()),
-        ),
-        Cause::SegmentLost(segment) => format!(
-            "after {} and before {before}, segment {segment} is missing; the mend records its name",
-            brk.after,
-        ),
-        Cause::SegmentUnreadable(segment) => format!(
-            "after {} and before {before}, segment {segment} is present but unreadable",
-            brk.after,
-        ),
     }
 }
 

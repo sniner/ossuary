@@ -30,7 +30,6 @@ const ON_THE_ENTRY: (&str, &str) = ("zip:path", "file:path");
 pub fn plan(log: &Log) -> Result<Plan> {
     let claims = record::whole(log)?;
     let mut plan = Plan {
-        apart: true,
         unit: "path(s)",
         done: "copied to packed:path and file:path with a leading @",
         nothing: "every zip:entry and zip:path is already recorded as packed:path or file:path",
@@ -181,7 +180,6 @@ mod tests {
             planned.claims[0].source().as_str(),
             "extractor:packed-list/1"
         );
-        assert!(planned.apart);
         assert_eq!(planned.notes, vec!["1 already recorded".to_string()]);
 
         planned.apply(log).unwrap();
