@@ -19,9 +19,11 @@
 pub const ATTRIBUTE: &str = "mailbox:place";
 
 /// The marks the mailbox has on a message beside its place: Outlook's
-/// categories and Gmail's labels, by name. Not in the message's bytes,
-/// and not a place: state as of the last sighting. Each fetch of a
-/// message records them anew and retracts those no longer there.
+/// categories and the labels of Gmail and Proton Mail, by name. Not in
+/// the message's bytes, and not a place: state as of the last sighting.
+/// Each fetch of a message records them anew and retracts those no
+/// longer there, except a Proton label: only its folder shows it, and
+/// that never says which labels a message lacks.
 pub const TAG: &str = "mailbox:tag";
 
 /// A folder of an account.

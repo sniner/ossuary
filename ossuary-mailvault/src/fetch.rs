@@ -29,6 +29,10 @@
 //! the folder being read, and those are recorded the same way. Over
 //! IMAP a message is listed again only when it is fetched again, so a
 //! label changed on a message fetched earlier is not seen until then.
+//! Proton Mail Bridge shows each label as a folder under `Labels/`.
+//! Those not configured are read after the configured folders, each
+//! from its own resume point; their messages get the label, and the
+//! folder as their place only when nothing else places them.
 //!
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
@@ -58,7 +62,7 @@ use crate::graph::{Graph, Halt, Miss, Offered, Round};
 use crate::memo::{ImapResume, Memo, Pending};
 use crate::output::{Progress, Say, counted};
 use crate::place;
-use crate::remote::{Each, Got, Mailbox, Remote, Stop};
+use crate::remote::{self, Each, Flavour, Got, Mailbox, Remote, Stop};
 use crate::tally::Tally;
 
 pub struct Options {
@@ -77,6 +81,10 @@ struct Place<'a> {
     account: &'a str,
     folder: &'a str,
     name: String,
+    /// For a Proton Mail Bridge label folder, the label its messages
+    /// are tagged with. The folder is then their place only where
+    /// nothing else places them.
+    label: Option<&'a str>,
 }
 
 impl<'a> Place<'a> {
@@ -85,6 +93,14 @@ impl<'a> Place<'a> {
             account,
             folder,
             name: place::folder(account, folder),
+            label: None,
+        }
+    }
+
+    fn labelled(account: &'a str, folder: &'a str, label: &'a str) -> Self {
+        Self {
+            label: Some(label),
+            ..Self::new(account, folder)
         }
     }
 }
@@ -184,6 +200,7 @@ pub fn run(
         tag: Attribute::parse(place::TAG)?,
         record: RefCell::new(record),
         said: RefCell::new(HashMap::new()),
+        placed: RefCell::new(HashSet::new()),
         landed: RefCell::new(Vec::new()),
         say,
     };
@@ -238,6 +255,9 @@ struct Fetch<'a> {
     /// see them yet, and a message met twice in one run must not take
     /// back what the run itself just said.
     said: RefCell<HashMap<String, BTreeSet<String>>>,
+    /// The subjects this run gave a place, which the record above does
+    /// not see yet.
+    placed: RefCell<HashSet<String>>,
     /// Under `--compare`, the messages stored in the current round, by
     /// server id as the memo has it, with their subjects: what decides
     /// whether another round is needed.
@@ -261,20 +281,29 @@ impl Fetch<'_> {
 
     /// A message is in: its bytes admitted, its place on the record —
     /// and its marks, where the mailbox says marks: those it carries
-    /// said, those it carried and no longer does taken back.
+    /// said, those it carried and no longer does taken back. From a
+    /// label folder the message gets the label, and the folder as its
+    /// place only when it has no place yet.
     ///
     /// # Errors
     ///
     /// The archive refusing.
     fn land(
         &self,
-        name: &str,
+        place: &Place<'_>,
         bytes: &[u8],
         tags: Option<&[String]>,
         tally: &mut Tally,
     ) -> Result<Subject> {
         let admitted = admit(self.archive.content(), bytes)?;
-        let mut facts = vec![(self.place.clone(), json!(name))];
+        let placing = place.label.is_none() || !self.placed(admitted.subject())?;
+        let mut facts = Vec::new();
+        if placing {
+            facts.push((self.place.clone(), json!(place.name)));
+        }
+        if let Some(label) = place.label {
+            facts.push((self.tag.clone(), json!(label)));
+        }
         for tag in tags.unwrap_or_default() {
             facts.push((self.tag.clone(), json!(tag)));
         }
@@ -290,6 +319,11 @@ impl Fetch<'_> {
                 time: None,
             },
         )?;
+        if placing {
+            self.placed
+                .borrow_mut()
+                .insert(admitted.subject().as_str().to_string());
+        }
         if admitted.is_new() {
             tally.stored += 1;
         } else {
@@ -299,6 +333,18 @@ impl Fetch<'_> {
             self.take_back(admitted.subject(), tags, tally)?;
         }
         Ok(admitted.subject().clone())
+    }
+
+    /// Whether a place stands on the message: on the record, or said
+    /// by this run.
+    fn placed(&self, subject: &Subject) -> Result<bool> {
+        if self.placed.borrow().contains(subject.as_str()) {
+            return Ok(true);
+        }
+        Ok(match self.record.borrow().as_ref() {
+            Some(record) => !record.values(subject, &self.place, Scope::Held)?.is_empty(),
+            None => false,
+        })
     }
 
     /// Under `--compare`, note which subject the message fetched under
@@ -380,8 +426,55 @@ impl Fetch<'_> {
         for folder in &folders {
             self.folder(account, &mut remote, folder, tally)?;
         }
+        if remote.flavour() == Flavour::Proton
+            && let Some(configured) = &account.folders
+        {
+            self.proton_labels(account, &mut remote, configured, tally)?;
+        }
         remote.logout();
         Ok(Ok(()))
+    }
+
+    /// Proton Mail Bridge shows each label as a folder under `Labels/`.
+    /// Those not configured as folders are read after the configured
+    /// ones, for the labels of their messages. Without a folders list
+    /// every folder is fetched, and a label folder is a place like any
+    /// other.
+    fn proton_labels(
+        &self,
+        account: &Account,
+        remote: &mut Remote,
+        configured: &[String],
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let listed = match remote.folders() {
+            Ok(listed) => listed,
+            Err(error) => {
+                tally.failed.push(format!("{}: {error:#}", account.name));
+                return Ok(());
+            }
+        };
+        let labels: Vec<(&str, &str)> = listed
+            .iter()
+            .filter(|folder| !configured.contains(folder))
+            .filter_map(|folder| Some((folder.as_str(), remote::proton_label(folder)?)))
+            .collect();
+        if labels.is_empty() {
+            return Ok(());
+        }
+        self.say.line(format_args!(
+            "{}: {}, read for the labels of their messages",
+            account.name,
+            counted(labels.len(), "label folder", "label folders")
+        ));
+        for (folder, label) in labels {
+            self.read_folder(
+                &Place::labelled(&account.name, folder, label),
+                remote,
+                tally,
+            )?;
+        }
+        Ok(())
     }
 
     /// One IMAP folder: from its resume point on, or whole, and what
@@ -395,20 +488,31 @@ impl Fetch<'_> {
         folder: &str,
         tally: &mut Tally,
     ) -> Result<()> {
-        let place = Place::new(&account.name, folder);
+        self.read_folder(&Place::new(&account.name, folder), mailbox, tally)
+    }
+
+    /// [`folder`](Self::folder), for a folder already made a place.
+    fn read_folder(
+        &self,
+        place: &Place<'_>,
+        mailbox: &mut impl Mailbox,
+        tally: &mut Tally,
+    ) -> Result<()> {
         let name = &place.name;
-        let opened = match mailbox.examine(folder) {
+        let opened = match mailbox.examine(place.folder) {
             Ok(opened) => opened,
             Err(error) => {
-                tally.failed.push(format!("{}: {error:#}", account.name));
+                tally.failed.push(format!("{}: {error:#}", place.account));
                 return Ok(());
             }
         };
-        if mailbox.labeled() && self.record.borrow().is_none() {
+        // Gmail's marks are taken back against the record; a Proton
+        // label folder asks it whether a message has a place.
+        if mailbox.flavour() != Flavour::Standard && self.record.borrow().is_none() {
             *self.record.borrow_mut() = Some(caught_up(self.archive, self.say)?);
         }
         if self.options.compare {
-            return self.imap_compare(&place, mailbox, opened.uidvalidity, tally);
+            return self.imap_compare(place, mailbox, opened.uidvalidity, tally);
         }
         let resume = self.memo.imap_resume(place.account, place.folder)?;
         // The pending list holds UIDs of the promise the point was saved
@@ -454,7 +558,7 @@ impl Fetch<'_> {
             return Ok(());
         }
         self.imap_fetch(
-            &place,
+            place,
             mailbox,
             &uids,
             opened.uidvalidity,
@@ -597,7 +701,7 @@ impl Fetch<'_> {
         let attempts = walk.pending.get(&uid).copied();
         match got {
             Got::Message(bytes, labels) => {
-                let subject = self.land(name, bytes, labels.as_deref(), tally)?;
+                let subject = self.land(place, bytes, labels.as_deref(), tally)?;
                 self.note(place, &compare::imap_id(walk.uidvalidity, uid), &subject)?;
                 walk.refused_in_a_row = 0;
                 if attempts.is_some() {
@@ -813,7 +917,7 @@ impl Fetch<'_> {
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
                 Ok(bytes) => {
-                    let subject = self.land(name, &bytes, Some(&message.detail), tally)?;
+                    let subject = self.land(place, &bytes, Some(&message.detail), tally)?;
                     self.note(place, &message.id, &subject)?;
                     self.memo
                         .remove_pending(place.account, place.folder, &message.id)?;
@@ -1345,8 +1449,9 @@ mod tests {
         /// Message-IDs the server lists in place of the one in the
         /// message.
         listed_as: BTreeMap<u32, String>,
-        /// The labels of each message, on a server that lists labels.
-        labels: Option<BTreeMap<u32, Vec<String>>>,
+        flavour: Flavour,
+        /// The labels of each message, handed over on Gmail.
+        labels: BTreeMap<u32, Vec<String>>,
     }
 
     impl Mailbox for Fake {
@@ -1356,8 +1461,8 @@ mod tests {
             })
         }
 
-        fn labeled(&self) -> bool {
-            self.labels.is_some()
+        fn flavour(&self) -> Flavour {
+            self.flavour
         }
 
         fn uids_above(&mut self, above: u32) -> Result<Vec<u32>> {
@@ -1393,9 +1498,8 @@ mod tests {
                     _ if self.refused.contains(uid) => Got::Refused(anyhow!("UID {uid}: NO")),
                     Some(bytes) => Got::Message(
                         bytes,
-                        self.labels
-                            .as_ref()
-                            .map(|labels| labels.get(uid).cloned().unwrap_or_default()),
+                        (self.flavour == Flavour::Gmail)
+                            .then(|| self.labels.get(uid).cloned().unwrap_or_default()),
                     ),
                     None => Got::Gone,
                 };
@@ -1422,7 +1526,8 @@ mod tests {
             give_up_after: None,
             refused: BTreeSet::new(),
             listed_as: BTreeMap::new(),
-            labels: None,
+            flavour: Flavour::Standard,
+            labels: BTreeMap::new(),
         }
     }
 
@@ -1459,6 +1564,7 @@ mod tests {
             tag: Attribute::parse(place::TAG).unwrap(),
             record: RefCell::new(Some(caught_up(&bench.archive, Say::new(true)).unwrap())),
             said: RefCell::new(HashMap::new()),
+            placed: RefCell::new(HashSet::new()),
             landed: RefCell::new(Vec::new()),
             say: Say::new(true),
         }
@@ -1969,12 +2075,11 @@ mod tests {
             .iter()
             .map(|(uid, bytes, _)| (*uid, bytes.to_vec()))
             .collect();
-        fake.labels = Some(
-            messages
-                .iter()
-                .map(|(uid, _, labels)| (*uid, labels.iter().map(ToString::to_string).collect()))
-                .collect(),
-        );
+        fake.flavour = Flavour::Gmail;
+        fake.labels = messages
+            .iter()
+            .map(|(uid, _, labels)| (*uid, labels.iter().map(ToString::to_string).collect()))
+            .collect();
         fake
     }
 
@@ -2042,6 +2147,63 @@ mod tests {
         );
         assert_eq!((later.stored, later.known, later.taken), (0, 0, 0));
         assert_eq!(held(&bench, &one, "mailbox:tag"), ["Pers\u{f6}nlich"]);
+    }
+
+    /// A Proton Mail Bridge folder holding these messages.
+    fn proton(uidvalidity: u32, messages: &[(u32, &[u8])]) -> Fake {
+        let mut fake = holding(uidvalidity, messages);
+        fake.flavour = Flavour::Proton;
+        fake
+    }
+
+    #[test]
+    fn a_proton_label_folder_tags_its_messages_and_places_only_those_without_a_place() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        let two = mail(2, "<two@example.org>");
+        let three = mail(3, "<three@example.org>");
+        // An earlier run placed the first.
+        fetch(&bench, &mut holding(7, &[(1, &one)]), false, false);
+
+        let options = options(false, false);
+        let mut run = fetcher(&bench, &options);
+        // As `run` leaves it: the record is read once a folder needs it.
+        run.record = RefCell::new(None);
+        let mut tally = Tally::new("fetch");
+        // This run places the second in All Mail, then reads the label.
+        run.folder(
+            &bench.account,
+            &mut proton(8, &[(1, &two)]),
+            "All Mail",
+            &mut tally,
+        )
+        .unwrap();
+        run.read_folder(
+            &Place::labelled("example.org", "Labels/Sales", "Sales"),
+            &mut proton(9, &[(1, &one), (2, &two), (3, &three)]),
+            &mut tally,
+        )
+        .unwrap();
+
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert_eq!(
+            held(&bench, &one, "mailbox:place"),
+            ["example.org:INBOX"],
+            "placed on the record"
+        );
+        assert_eq!(
+            held(&bench, &two, "mailbox:place"),
+            ["example.org:All Mail"],
+            "placed by this run"
+        );
+        assert_eq!(
+            held(&bench, &three, "mailbox:place"),
+            ["example.org:Labels/Sales"],
+            "seen only in the label folder"
+        );
+        for bytes in [&one, &two, &three] {
+            assert_eq!(held(&bench, bytes, "mailbox:tag"), ["Sales"]);
+        }
     }
 
     #[test]

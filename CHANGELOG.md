@@ -13,6 +13,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the place. The labels are read when a message is fetched: a label changed on a message fetched
   earlier is seen when the message is fetched again, such as with `--full`, and the tags it no
   longer has are then retracted
+- **`ossuary mailvault fetch` records Proton Mail labels as `mailbox:tag`.** After the configured
+  folders, a fetch from Proton Mail Bridge reads each folder under `Labels/` that is not configured
+  and tags its messages with the label; a message without a place yet gets the label folder as its
+  place. The first run downloads the labelled messages once more, later runs only what was added
+  to a label. A removed label is not seen
 
 ### Changed
 
@@ -24,6 +29,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   there, also when the archive has it in another Unicode form or `INBOX` in another case.
   `--no-auto-labels` records every place as the archive names it and reads no accounts; use it for
   mailboxes that are no longer fetched
+
+### Fixed
+
+- **`ossuary mailvault fetch` no longer fails on an empty folder of Proton Mail Bridge**, which
+  refused the search for new messages there
 
 ## [0.15.0] - 2026-10-30
 

@@ -60,10 +60,9 @@ pub trait Mailbox {
     /// does not state.
     fn examine(&mut self, folder: &str) -> Result<Folder>;
 
-    /// Whether the server lists labels beside the folder, as Gmail
-    /// does: then [`fetch`](Self::fetch) hands each message over with
-    /// them.
-    fn labeled(&self) -> bool;
+    /// Which kind of server it is, as far as labels go: on Gmail
+    /// [`fetch`](Self::fetch) hands each message over with its labels.
+    fn flavour(&self) -> Flavour;
 
     /// The UIDs above `above`, ascending — every UID of the folder for
     /// `0`. A folder must be examined first.
@@ -110,14 +109,34 @@ enum Answer {
 trait Stream: Read + Write {}
 impl<T: Read + Write> Stream for T {}
 
+/// How a server shows labels, beyond what IMAP itself knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavour {
+    /// Gmail, which says so with `X-GM-EXT-1`: each message comes with
+    /// its labels as `X-GM-LABELS`, less the label of the folder read.
+    Gmail,
+    /// Proton Mail Bridge, which names itself in its `ID` answer: each
+    /// label is a folder under `Labels/`.
+    Proton,
+    /// Any other server: no labels.
+    Standard,
+}
+
 pub struct Remote {
     session: Session<Box<dyn Stream>>,
-    /// The server is Gmail, which says so with `X-GM-EXT-1`.
-    labeled: bool,
+    flavour: Flavour,
+    /// How many messages the folder examined last holds.
+    exists: u32,
 }
 
 /// The capability Gmail announces its IMAP extensions with.
 const GMAIL: &str = "X-GM-EXT-1";
+
+/// How the name in Proton Mail Bridge's `ID` answer begins.
+const PROTON: &str = "Proton Mail";
+
+/// Where Proton Mail Bridge shows the labels, one folder each.
+const PROTON_LABELS: &str = "Labels/";
 
 /// How many messages one FETCH asks for. Messages come whole — a mail
 /// is bounded in size, a server sees to that — and stay in memory until
@@ -155,11 +174,12 @@ impl Remote {
                     account.host, account.user
                 )
             })?;
-        let labeled = session
-            .capabilities()
-            .with_context(|| format!("{name}: the server did not list its capabilities"))?
-            .has_str(GMAIL);
-        Ok(Self { session, labeled })
+        let flavour = flavour(&mut session).with_context(|| name.to_string())?;
+        Ok(Self {
+            session,
+            flavour,
+            exists: 0,
+        })
     }
 
     /// Every folder the server offers that can be opened, in the
@@ -188,6 +208,53 @@ impl Remote {
         // connection drops either way, and the messages are on disk.
         let _ = self.session.logout();
     }
+}
+
+/// Which kind of server the session talks to. Gmail says so in its
+/// capabilities; Proton Mail Bridge only in its `ID` answer, which is
+/// asked for only where the server lists `ID`.
+fn flavour(session: &mut Session<Box<dyn Stream>>) -> Result<Flavour> {
+    let capabilities = session
+        .capabilities()
+        .context("the server did not list its capabilities")?;
+    if capabilities.has_str(GMAIL) {
+        return Ok(Flavour::Gmail);
+    }
+    if !capabilities.has_str("ID") {
+        return Ok(Flavour::Standard);
+    }
+    let answer = match session.run_command_and_read_response("ID NIL") {
+        Ok(answer) => answer,
+        // Listed and then refused: nothing to learn from this server.
+        Err(imap::Error::No(_) | imap::Error::Bad(_)) => return Ok(Flavour::Standard),
+        Err(error) => return Err(error).context("the server did not answer ID"),
+    };
+    Ok(match server_name(&answer) {
+        Some(name) if name.starts_with(PROTON) => Flavour::Proton,
+        _ => Flavour::Standard,
+    })
+}
+
+/// The name a server gives in its `ID` answer, if it gives one.
+fn server_name(answer: &[u8]) -> Option<String> {
+    let mut rest = answer;
+    while !rest.is_empty() {
+        let (left, response) = imap_proto::Response::from_bytes(rest).ok()?;
+        if let imap_proto::Response::Id(Some(fields)) = response {
+            return fields.get("name").map(ToString::to_string);
+        }
+        rest = left;
+    }
+    None
+}
+
+/// The label a Proton Mail Bridge folder stands for: `Sales` for
+/// `Labels/Sales`; `None` for every other folder.
+#[must_use]
+pub fn proton_label(folder: &str) -> Option<&str> {
+    folder
+        .strip_prefix(PROTON_LABELS)
+        .filter(|label| !label.is_empty())
 }
 
 /// A label as the tag has it (see [`place::gmail_label`]). Gmail names
@@ -289,14 +356,20 @@ impl Mailbox for Remote {
         let Some(uidvalidity) = mailbox.uid_validity else {
             bail!("{folder}: the server sent no UIDVALIDITY");
         };
+        self.exists = mailbox.exists;
         Ok(Folder { uidvalidity })
     }
 
-    fn labeled(&self) -> bool {
-        self.labeled
+    fn flavour(&self) -> Flavour {
+        self.flavour
     }
 
     fn uids_above(&mut self, above: u32) -> Result<Vec<u32>> {
+        // Proton Mail Bridge answers "UID n:*" on an empty folder with
+        // NO, where other servers find nothing.
+        if self.exists == 0 {
+            return Ok(Vec::new());
+        }
         // "UID n:*" always includes the newest message even when its UID
         // is below n, so the filter is not decoration.
         let query = format!("UID {}:*", above.saturating_add(1));
@@ -370,7 +443,7 @@ impl Remote {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let items = if self.labeled {
+        let items = if self.flavour == Flavour::Gmail {
             "(UID BODY.PEEK[] X-GM-LABELS)"
         } else {
             "(UID BODY.PEEK[])"
@@ -401,7 +474,7 @@ impl Remote {
             let got = match fetch.body() {
                 Some(body) => Got::Message(
                     body,
-                    if self.labeled {
+                    if self.flavour == Flavour::Gmail {
                         fetch
                             .gmail_labels()
                             .map(|labels| labels.map(label).collect())
@@ -497,6 +570,23 @@ mod tests {
             "the first of two"
         );
         assert_eq!(message_id(b"\r\n"), "", "none");
+    }
+
+    #[test]
+    fn the_server_names_itself_in_its_id_answer() {
+        let proton = b"* ID (\"name\" \"Proton Mail Bridge\" \"version\" \"03.27.01\" \"vendor\" \"TODO\")\r\n";
+        assert_eq!(server_name(proton).as_deref(), Some("Proton Mail Bridge"));
+        assert_eq!(server_name(b"* ID NIL\r\n"), None, "no fields");
+        assert_eq!(server_name(b"* ID (\"vendor\" \"x\")\r\n"), None, "no name");
+        assert_eq!(server_name(b"garbage\r\n"), None);
+    }
+
+    #[test]
+    fn a_proton_label_folder_is_one_under_labels() {
+        assert_eq!(proton_label("Labels/Sales"), Some("Sales"));
+        assert_eq!(proton_label("Folders/Work"), None);
+        assert_eq!(proton_label("Labels/"), None);
+        assert_eq!(proton_label("All Mail"), None);
     }
 
     #[test]

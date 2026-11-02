@@ -150,8 +150,9 @@ For a Microsoft 365 mailbox, the message's Outlook categories are recorded
 as `mailbox:tag`, by the name Outlook shows. Each fetch records the
 categories a message has and retracts those it no longer has, so the
 standing `mailbox:tag` claims match the last fetch. A message whose
-categories were changed is included in the next fetch. Gmail labels are
-recorded the same way (see [Gmail labels](#gmail-labels)).
+categories were changed is included in the next fetch. Labels of Gmail and
+Proton Mail are recorded as `mailbox:tag` too (see [Gmail labels](#gmail-labels)
+and [Proton Mail labels](#proton-mail-labels)).
 
 ```console
 $ ossuary find 'mailbox:tag=Invoice' mail:subject
@@ -187,6 +188,26 @@ The Gmail API is not used. It takes only OAuth 2.0: a Google Cloud project
 of your own and a consent given in the browser, which Google lets lapse
 after seven days while the project is in testing. The app password that
 IMAP runs on does not work there.
+
+## Proton Mail labels
+
+Proton Mail Bridge shows each label as a folder under `Labels/`, and `All
+Mail` holds every message. Fetch `All Mail` alone.
+
+After the folders in the account's `folders` list, a fetch from Proton Mail
+Bridge reads each folder under `Labels/` that is not in the list, and
+records the label's name as `mailbox:tag` on every message in it: `Sales`
+for `Labels/Sales`. A message that has no `mailbox:place` yet, because none
+of the configured folders holds it, also gets the label folder as its place.
+
+Each label folder is read from its own resume point, like any other folder,
+so a run asks only for the messages added to the label since the last run.
+The first run downloads the messages of every label folder once more; the
+archive stores each message only once. A label removed from a message is not
+seen, and its tag stays.
+
+Without a `folders` list every folder is fetched, label folders included,
+and each is recorded as a `mailbox:place`.
 
 ## Resuming
 

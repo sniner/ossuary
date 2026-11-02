@@ -413,8 +413,8 @@ added when it is first needed.
 ### mailbox:tag
 
 - meaning: a tag the mailbox had on a message, in addition to its
-  place: an Outlook category or a Gmail label, under the name the
-  mailbox shows for it.
+  place: an Outlook category, or a Gmail or Proton Mail label, under
+  the name the mailbox shows for it.
   It is not part of the message's bytes, so no extractor can write it;
   it records what the mailbox had on its copy when the message was
   fetched, and it is lost when the mailbox is. Unlike places, tags do
@@ -432,8 +432,11 @@ added when it is first needed.
   when a message is fetched, which over IMAP is when it is new to the
   folder or the fetch is run with `--full`. An import of an archive of
   the Python tool mailvault records the labels that archive recorded as
-  folders, with the time its log gives for them
+  folders, with the time its log gives for them. A Proton Mail label is
+  recorded on each message in the label's folder under `Labels/` when the
+  fetch finds it there, and no fetch retracts it
 - value: string
-- written by: `ossuary mailvault`, for a mailbox fetched over MS Graph or
-  from Gmail, and for the Gmail labels in an imported Python mailvault
-  archive; other mailboxes fetched over IMAP get no tags
+- written by: `ossuary mailvault`, for a mailbox fetched over MS Graph,
+  from Gmail or from Proton Mail Bridge, and for the Gmail labels in an
+  imported Python mailvault archive; other mailboxes fetched over IMAP
+  get no tags

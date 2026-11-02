@@ -176,7 +176,9 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # folders = ["[Gmail]/All Mail"]
 
 # Proton Mail through Proton Bridge on this machine: plaintext IMAP on
-# localhost. The password is the one Bridge shows, not the Proton password.
+# localhost. All Mail contains every message; the labels are read from the
+# folders under Labels/ and recorded as tags. The password is the one
+# Bridge shows, not the Proton password.
 #
 # [[account]]
 # name = "proton.me"
