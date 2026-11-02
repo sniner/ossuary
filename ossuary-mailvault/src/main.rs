@@ -137,7 +137,10 @@ enum Command {
     /// Import an archive of the Python tool mailvault (github.com/sniner/mailvault)
     ///
     /// Each message is stored with the mailboxes and folders the Python
-    /// mailvault recorded for it.
+    /// mailvault recorded for it. Each mailbox needs an account of the
+    /// same name in mailvault.toml. A folder of a Gmail account that is
+    /// not in the account's folders list is a label and is recorded as
+    /// mailbox:tag.
     Import {
         /// The directory of the Python mailvault archive
         #[arg(value_name = "DIR")]
@@ -155,6 +158,11 @@ enum Command {
         /// Show what would be imported, write nothing
         #[arg(long)]
         dry_run: bool,
+
+        /// Record every folder as the Python mailvault named it, Gmail
+        /// labels included, without reading mailvault.toml
+        #[arg(long)]
+        no_auto_labels: bool,
     },
 }
 
@@ -226,10 +234,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             mailboxes,
             full,
             dry_run,
+            no_auto_labels,
         } => {
-            if let Source::Named(path) = &source {
+            if no_auto_labels && let Source::Named(path) = &source {
                 bail!(
-                    "--accounts {}: import reads no accounts; drop --accounts",
+                    "--accounts {}: --no-auto-labels reads no accounts; drop one of the two",
                     path.display()
                 );
             }
@@ -238,6 +247,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 archive.log().writable()?;
             }
             import::verify(&vault)?;
+            let config = if no_auto_labels {
+                None
+            } else {
+                Some(source.load().map_err(|error| {
+                    anyhow!("{error:#}; or pass --no-auto-labels to import without the accounts")
+                })?)
+            };
             let memo = opened(&memo_path, say, "the import reads every message again")?;
             say.line(format_args!(
                 "importing the Python mailvault archive at {}",
@@ -247,6 +263,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 &archive,
                 &vault,
                 &mailboxes,
+                config.as_ref(),
                 &memo,
                 &import::Options { full, dry_run },
                 say,

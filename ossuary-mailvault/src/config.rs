@@ -39,6 +39,10 @@ pub const FILE_NAME: &str = "mailvault.toml";
 /// What a `KEY_cmd` ends in.
 const CMD: &str = "_cmd";
 
+/// Gmail's IMAP hosts. Google Workspace uses the same; the second is
+/// the older name from when Gmail was Google Mail in some countries.
+const GMAIL_HOSTS: [&str; 2] = ["imap.gmail.com", "imap.googlemail.com"];
+
 /// Where the accounts are read from.
 #[derive(Debug, Clone)]
 pub enum Source {
@@ -411,6 +415,31 @@ impl Account {
     #[must_use]
     pub fn over_graph(&self) -> bool {
         matches!(self.backend, Backend::Graph)
+    }
+
+    /// Whether the mailbox is at Gmail, Google Workspace included: an
+    /// IMAP account whose host is Gmail's. Of the commands, only a
+    /// `host_cmd` is run for it.
+    ///
+    /// # Errors
+    ///
+    /// The host command failing or printing nothing.
+    pub fn on_gmail(&self) -> Result<bool> {
+        if self.over_graph() {
+            return Ok(false);
+        }
+        let host = if self.commands.contains_key("host") {
+            self.run("host")?
+        } else {
+            match self.given.get("host") {
+                Some(toml::Value::String(host)) => host.clone(),
+                _ => return Ok(false),
+            }
+        };
+        let host = host.trim_end_matches('.');
+        Ok(GMAIL_HOSTS
+            .iter()
+            .any(|gmail| host.eq_ignore_ascii_case(gmail)))
     }
 
     /// The way to the mailbox, every `KEY_cmd` run and its value filled
@@ -786,6 +815,30 @@ mod tests {
         assert!(
             format!("{refused:#}").contains("imap or msgraph"),
             "{refused:#}"
+        );
+    }
+
+    #[test]
+    fn gmail_is_known_by_its_host() {
+        let config = load(
+            "[[account]]\nname = \"a\"\nhost = \"IMAP.Gmail.com.\"\nuser = \"u\"\n\
+             [[account]]\nname = \"b\"\nhost = \"imap.googlemail.com\"\nuser = \"u\"\n\
+             [[account]]\nname = \"c\"\nhost_cmd = \"echo imap.gmail.com\"\nuser = \"u\"\n\
+             password_cmd = \"false\"\n\
+             [[account]]\nname = \"d\"\nhost = \"imap.example.org\"\nuser = \"u\"\n\
+             [[account]]\nname = \"e\"\nbackend = \"msgraph\"\ntenant_id = \"t\"\n\
+             client_id = \"c\"\nuser = \"u\"\n",
+        )
+        .unwrap();
+        let gmail: Vec<bool> = config
+            .accounts
+            .iter()
+            .map(|account| account.on_gmail().unwrap())
+            .collect();
+        assert_eq!(
+            gmail,
+            [true, true, true, false, false],
+            "only the host command runs, not the failing password command"
         );
     }
 }

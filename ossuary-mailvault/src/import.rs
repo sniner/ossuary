@@ -6,8 +6,16 @@
 //! per mailbox, folder and backup run, listing the messages seen there,
 //! with the time of the run in its header. Each message goes in through
 //! the same two steps as a fetched one (admit, then record), and each
-//! place the log names becomes a `mailbox:place` claim, as a fetch
-//! records it.
+//! place the log names becomes a claim.
+//!
+//! The Python mailvault records a Gmail label as one more folder; a
+//! fetch records only the folders `mailvault.toml` lists. So the places
+//! are matched against the accounts there, unless the caller passes
+//! none. A folder in an account's list becomes a `mailbox:place` under
+//! the name the list gives it, the value a fetch of that folder
+//! records. A folder of a Gmail account that is not in its list is a
+//! label and becomes a `mailbox:tag`. Every other place becomes a
+//! `mailbox:place` as the log names it.
 //!
 //! The claims carry the time from the log, not the time of the import. A
 //! claim's time is when the sighting was recorded, and the Python
@@ -31,8 +39,9 @@ use ossuary_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use unicode_normalization::UnicodeNormalization as _;
 
-use crate::config::valid_name;
+use crate::config::{Config, valid_name};
 use crate::memo::Memo;
 use crate::output::{Say, counted};
 use crate::place;
@@ -99,18 +108,22 @@ pub fn verify(vault: &Path) -> Result<()> {
 }
 
 /// Take the vault at `vault` over into the archive — the mailboxes
-/// named in `names`, every one when none is.
+/// named in `names`, every one when none is. With `accounts`, the
+/// places are matched against them (see the module documentation);
+/// without, every place is recorded as the log names it.
 ///
 /// # Errors
 ///
 /// A directory that is not a mailvault archive, a log directory that
-/// will not list, the memo refusing, or the archive refusing a message.
-/// A single log file or message that will not read is named in the
-/// tally, and the run goes on.
+/// will not list, a mailbox with no account in `accounts`, the memo
+/// refusing, or the archive refusing a message. A single log file or
+/// message that will not read is named in the tally, and the run goes
+/// on.
 pub fn run(
     archive: &Archive,
     vault: &Path,
     names: &[String],
+    accounts: Option<&Config>,
     memo: &Memo,
     options: &Options,
     say: Say,
@@ -126,12 +139,30 @@ pub fn run(
         counted(gathered.logs, "log file", "log files"),
         counted(gathered.sightings, "place", "places")
     ));
+    let plan = match accounts {
+        Some(config) => plan(config, &gathered)?,
+        None => Plan::new(),
+    };
+    let mut labels: BTreeMap<&str, usize> = BTreeMap::new();
+    for (logged, (mailbox, _)) in &gathered.folders {
+        if let Some(Fact::Tag(_)) = plan.get(logged) {
+            *labels.entry(mailbox.as_str()).or_default() += 1;
+        }
+    }
+    for (mailbox, count) in labels {
+        say.line(format_args!(
+            "{mailbox}: {} not in the account's folders list, imported as Gmail labels",
+            counted(count, "folder", "folders")
+        ));
+    }
 
     let takeover = Takeover {
         archive,
         vault,
         source: Source::parse(crate::SOURCE)?,
         place: Attribute::parse(place::ATTRIBUTE)?,
+        tag: Attribute::parse(place::TAG)?,
+        plan,
         memo: (!options.full).then_some(memo),
     };
     let total = gathered.places.len();
@@ -191,7 +222,93 @@ struct Takeover<'a> {
     vault: &'a Path,
     source: Source,
     place: Attribute,
+    tag: Attribute,
+    plan: Plan,
     memo: Option<&'a Memo>,
+}
+
+/// What a place of the log is recorded as.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Fact {
+    /// A `mailbox:place` with this value.
+    Place(String),
+    /// A `mailbox:tag`: a Gmail label, by its name.
+    Tag(String),
+}
+
+/// The places of the log that are not recorded as `mailbox:place` under
+/// the name the log gives them, keyed by that name.
+type Plan = BTreeMap<String, Fact>;
+
+/// Match the folders of the log against the accounts.
+///
+/// # Errors
+///
+/// A mailbox of the log with no account, or a `host_cmd` failing.
+fn plan(config: &Config, gathered: &Gathered) -> Result<Plan> {
+    let missing: Vec<&str> = gathered
+        .mailboxes
+        .iter()
+        .filter(|mailbox| !config.accounts.iter().any(|a| &a.name == *mailbox))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "{}: no account for {} from the Python mailvault archive; add an account for each, \
+             or import these by name with --no-auto-labels and the other mailboxes by name \
+             without it",
+            config.path.display(),
+            missing.join(", ")
+        );
+    }
+    // Per account of the log: whether it is at Gmail, and its folders
+    // list by compared name. No list means every folder is fetched, a
+    // label folder included, so nothing is a label.
+    let mut lists = BTreeMap::new();
+    for account in &config.accounts {
+        if !gathered.mailboxes.contains(&account.name) {
+            continue;
+        }
+        let Some(folders) = &account.folders else {
+            continue;
+        };
+        let folders: BTreeMap<String, &str> = folders
+            .iter()
+            .map(|folder| (compared(folder), folder.as_str()))
+            .collect();
+        lists.insert(account.name.as_str(), (account.on_gmail()?, folders));
+    }
+    let mut plan = Plan::new();
+    for (logged, (mailbox, folder)) in &gathered.folders {
+        let Some((gmail, folders)) = lists.get(mailbox.as_str()) else {
+            continue;
+        };
+        match folders.get(&compared(folder)) {
+            Some(listed) => {
+                let named = place::folder(mailbox, listed);
+                if named != *logged {
+                    plan.insert(logged.clone(), Fact::Place(named));
+                }
+            }
+            None if *gmail => {
+                plan.insert(logged.clone(), Fact::Tag(folder.clone()));
+            }
+            None => {}
+        }
+    }
+    Ok(plan)
+}
+
+/// A folder's name as compared with another: in NFC, and `INBOX` in any
+/// case, as IMAP defines it. The server, the Python mailvault and the
+/// person writing `mailvault.toml` need not agree on the Unicode form
+/// of a name: `ö` is one code point in NFC, `o` and a combining
+/// diaeresis in NFD.
+fn compared(folder: &str) -> String {
+    if folder.eq_ignore_ascii_case("INBOX") {
+        return "INBOX".to_string();
+    }
+    folder.nfc().collect()
 }
 
 /// The places one message was seen in, each with the earliest time the
@@ -305,9 +422,22 @@ impl Takeover<'_> {
                 &pending.admitted
             };
             seen[*index] = true;
-            let facts: Vec<(Attribute, serde_json::Value)> = places
+            // Two names of the log can match one folder of the list.
+            let facts: BTreeSet<Fact> = places
                 .iter()
-                .map(|place| (self.place.clone(), json!(place)))
+                .map(|place| {
+                    self.plan
+                        .get(*place)
+                        .cloned()
+                        .unwrap_or_else(|| Fact::Place((*place).clone()))
+                })
+                .collect();
+            let facts: Vec<(Attribute, serde_json::Value)> = facts
+                .into_iter()
+                .map(|fact| match fact {
+                    Fact::Place(place) => (self.place.clone(), json!(place)),
+                    Fact::Tag(label) => (self.tag.clone(), json!(label)),
+                })
                 .collect();
             tally.claims += record(
                 log,
@@ -341,6 +471,10 @@ impl Takeover<'_> {
 /// not read costs only itself.
 struct Gathered {
     places: BTreeMap<String, Places>,
+    /// Every mailbox the log files read name.
+    mailboxes: BTreeSet<String>,
+    /// Every place that names a mailbox and a folder, with the two.
+    folders: BTreeMap<String, (String, String)>,
     logs: usize,
     sightings: usize,
 }
@@ -348,6 +482,8 @@ struct Gathered {
 fn gather(meta: &Path, names: &[String], tally: &mut Tally) -> Result<Gathered> {
     let mut gathered = Gathered {
         places: BTreeMap::new(),
+        mailboxes: BTreeSet::new(),
+        folders: BTreeMap::new(),
         logs: 0,
         sightings: 0,
     };
@@ -416,11 +552,21 @@ fn read_log(path: &Path, names: &[String], gathered: &mut Gathered) -> Result<()
         .as_deref()
         .and_then(|date| Timestamp::from_rfc3339(date).ok());
     let place = match (&header.mailbox, &header.folder) {
-        (Some(mailbox), Some(folder)) => Some(place::folder(mailbox, folder)),
+        (Some(mailbox), Some(folder)) => {
+            let place = place::folder(mailbox, folder);
+            gathered
+                .folders
+                .entry(place.clone())
+                .or_insert_with(|| (mailbox.clone(), folder.clone()));
+            Some(place)
+        }
         (Some(mailbox), None) => Some(place::account(mailbox)),
         (None, Some(folder)) => Some(place::orphan(folder)),
         (None, None) => None,
     };
+    if let Some(mailbox) = &header.mailbox {
+        gathered.mailboxes.insert(mailbox.clone());
+    }
     for line in lines {
         // A torn last line — two writers, a power cut — names nothing
         // reliably and is passed by, the way the vault itself reads it.
@@ -598,11 +744,60 @@ mod tests {
             &bench.archive,
             &bench.vault,
             names,
+            None,
             &bench.memo,
             &Options { full, dry_run },
             Say::new(true),
         )
         .unwrap()
+    }
+
+    /// An import matched against the accounts in `toml`.
+    fn take_matched(bench: &Bench, toml: &str) -> Result<Tally> {
+        let path = bench.vault.with_file_name("mailvault.toml");
+        fs::write(&path, toml).unwrap();
+        let config = crate::config::Source::Named(path).load().unwrap();
+        run(
+            &bench.archive,
+            &bench.vault,
+            &[],
+            Some(&config),
+            &bench.memo,
+            &Options {
+                full: false,
+                dry_run: false,
+            },
+            Say::new(true),
+        )
+    }
+
+    /// `example.org` fetches its INBOX, `gmail.com` its All Mail and one
+    /// label folder, named in NFC.
+    const ACCOUNTS: &str = "[[account]]\nname = \"example.org\"\nhost = \"imap.example.org\"\n\
+         user = \"john\"\nfolders = [\"INBOX\"]\n\
+         [[account]]\nname = \"gmail.com\"\nhost = \"imap.gmail.com\"\nuser = \"john\"\n\
+         folders = [\"[Gmail]/All Mail\", \"Pers\u{f6}nlich\"]\n";
+
+    /// The vault of [`bench`] with a Gmail mailbox: message one in All
+    /// Mail, under the labels `\Inbox` and `Persönlich` (in NFD), and in
+    /// `inbox` of example.org.
+    fn gmail_bench() -> Bench {
+        let bench = bench();
+        for folder in ["[Gmail]/All Mail", "\\\\Inbox", "Perso\u{308}nlich"] {
+            log(
+                &bench.vault,
+                &format!(
+                    r#"{{"version": 2, "mailbox": "gmail.com", "folder": "{folder}", "date": "2024-04-01T00:00:00+00:00", "prev": null}}"#
+                ),
+                &[&id(ONE)],
+            );
+        }
+        log(
+            &bench.vault,
+            r#"{"version": 2, "mailbox": "example.org", "folder": "inbox", "date": "2024-04-01T00:00:00+00:00", "prev": null}"#,
+            &[&id(ONE)],
+        );
+        bench
     }
 
     fn standing(bench: &Bench, bytes: &[u8], attribute: &str) -> Vec<serde_json::Value> {
@@ -838,6 +1033,7 @@ mod tests {
                 &bench.archive,
                 bench.archive.root(),
                 &[],
+                None,
                 &bench.memo,
                 &Options {
                     full: false,
@@ -847,5 +1043,64 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn gmail_labels_become_tags_and_folders_take_the_name_of_the_list() {
+        let bench = gmail_bench();
+        let tally = take_matched(&bench, ACCOUNTS).unwrap();
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+
+        assert_eq!(
+            standing(&bench, ONE, "mailbox:place"),
+            vec![
+                json!("example.org:INBOX"),
+                json!("example.org:\\Sent"),
+                json!("gmail.com:Pers\u{f6}nlich"),
+                json!("gmail.com:[Gmail]/All Mail"),
+            ],
+            "inbox is INBOX, NFD is the list's NFC, and \\Sent stays: example.org is not at Gmail"
+        );
+        assert_eq!(
+            standing(&bench, ONE, "mailbox:tag"),
+            vec![json!("\\Inbox")],
+            "the label not in the list, by its name"
+        );
+        assert_eq!(
+            standing_as_of(&bench, ONE, "mailbox:tag", Some("2024-04-01T00:00:00Z")),
+            vec![json!("\\Inbox")],
+            "at the time of the log"
+        );
+        assert!(
+            standing_as_of(&bench, ONE, "mailbox:tag", Some("2024-03-31T23:59:59Z")).is_empty()
+        );
+        assert!(standing(&bench, TWO, "mailbox:tag").is_empty());
+    }
+
+    #[test]
+    fn a_gmail_account_without_a_folders_list_keeps_every_place() {
+        let bench = gmail_bench();
+        let accounts = ACCOUNTS.replace(
+            "folders = [\"[Gmail]/All Mail\", \"Pers\u{f6}nlich\"]\n",
+            "",
+        );
+        take_matched(&bench, &accounts).unwrap();
+        assert!(standing(&bench, ONE, "mailbox:tag").is_empty());
+        assert!(
+            standing(&bench, ONE, "mailbox:place").contains(&json!("gmail.com:\\Inbox")),
+            "every folder is fetched, a label folder included"
+        );
+    }
+
+    #[test]
+    fn a_mailbox_without_an_account_is_named_before_anything_is_written() {
+        let bench = gmail_bench();
+        let only_gmail = &ACCOUNTS[ACCOUNTS.find("[[account]]\nname = \"gmail.com\"").unwrap()..];
+        let refused = take_matched(&bench, only_gmail).err().unwrap();
+        let message = format!("{refused:#}");
+        assert!(message.contains("no account for example.org"), "{message}");
+        assert!(message.contains("--no-auto-labels"), "{message}");
+        assert!(bench.archive.log().head().unwrap().is_empty());
+        assert!(standing(&bench, ONE, "mailbox:place").is_empty());
     }
 }

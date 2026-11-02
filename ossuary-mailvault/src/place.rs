@@ -18,10 +18,11 @@
 /// The attribute every place stands under.
 pub const ATTRIBUTE: &str = "mailbox:place";
 
-/// The marks the mailbox has on a message beside its place — Outlook's
-/// categories, by name. Not in the message's bytes, and not a place:
-/// state as of the last sighting, said anew each time and taken back
-/// where it no longer stands.
+/// The marks the mailbox has on a message beside its place: Outlook's
+/// categories and Gmail's labels, by name. Not in the message's bytes,
+/// and not a place: state as of the last sighting. A fetch over MS
+/// Graph records them anew each time and retracts those no longer
+/// there; Gmail's labels come only from an import.
 pub const TAG: &str = "mailbox:tag";
 
 /// A folder of an account.

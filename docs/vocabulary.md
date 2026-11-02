@@ -399,7 +399,9 @@ added when it is first needed.
   accumulate. The claim's time is the time of the sighting: for a
   fetch the time of the fetch, for an import from an archive of the
   Python tool mailvault the time that archive's log gives for it. Such
-  an imported place may also name only the account (`"example.org"`,
+  an import records a folder in the account's `folders` list under the
+  name written there, which is the name a fetch of that folder records.
+  An imported place may also name only the account (`"example.org"`,
   folder unknown) or only a folder (`":old mail"`, no account). The number the
   server gives a message is not recorded here or anywhere else in the
   record: it is temporary, and the fetcher keeps it in its own memory
@@ -411,7 +413,8 @@ added when it is first needed.
 ### mailbox:tag
 
 - meaning: a tag the mailbox had on a message, in addition to its
-  place: an Outlook category, under the name the mailbox shows for it.
+  place: an Outlook category or a Gmail label, under the name the
+  mailbox shows for it.
   It is not part of the message's bytes, so no extractor can write it;
   it records what the mailbox had on its copy when the message was
   fetched, and it is lost when the mailbox is. Unlike places, tags do
@@ -421,7 +424,12 @@ added when it is first needed.
   as of the given time. A message fetched from two accounts that tag it
   differently has one set of tags, and a fetch retracts a tag it no
   longer sees, whichever account it came from. The category's colour
-  belongs to the mailbox's display and is not recorded
+  belongs to the mailbox's display and is not recorded. A Gmail label
+  comes from an import of an archive of the Python tool mailvault,
+  which recorded each label as a folder; the claim's time is the time
+  that archive's log gives for it. No fetch records Gmail labels, so no
+  fetch retracts them
 - value: string
-- written by: `ossuary mailvault`, for a mailbox fetched over MS Graph;
-  a mailbox fetched over IMAP gets no tags
+- written by: `ossuary mailvault`, for a mailbox fetched over MS Graph
+  and for the Gmail labels in an imported Python mailvault archive; a
+  mailbox fetched over IMAP gets no tags

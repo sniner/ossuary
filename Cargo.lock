@@ -1919,6 +1919,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "unicode-normalization",
  "ureq",
  "webpki-roots",
  "zstd",

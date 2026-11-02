@@ -158,8 +158,10 @@ $ ossuary find 'mailbox:tag=Invoice' mail:subject
 
 ## Gmail labels
 
-Gmail labels are not recorded. Microsoft 365 categories are, as
-`mailbox:tag` (see above).
+A fetch does not record Gmail labels. Microsoft 365 categories are
+recorded, as `mailbox:tag` (see above), and so are the Gmail labels in an
+imported Python mailvault archive (see
+[Importing a Python mailvault archive](#importing-a-python-mailvault-archive)).
 
 Over IMAP, Gmail shows each label as a folder. Fetch `[Gmail]/All Mail`
 alone, under whatever name the account gives it: it holds every message
@@ -176,8 +178,6 @@ Both ways to the labels themselves are a pain for an archive:
   Cloud project of your own and a consent given in the browser, which
   Google lets lapse after seven days while the project is in testing.
   The app password that IMAP runs on does not work there.
-
-Support for Gmail labels is therefore not expected.
 
 ## Resuming
 
@@ -303,17 +303,40 @@ archive /home/john/archive
 importing the Python mailvault archive at /srv/mailvault/private
 reading the log files
 131,504 messages in 3,207 log files, filed in 140,222 places
+gmail.com: 41 folders not in the account's folders list, imported as Gmail labels
 importing: 131,504 of 131,504 message(s), 131,504 stored
 131,504 messages stored; 543,502 claim(s) written, run 0c1e…
 ```
 
 Every message in the archive's log files is imported with every place the
-log lists for it, as `mailbox:place` (the same claim a fetch writes). Each
-claim gets the time at which the Python mailvault first recorded the
+log lists for it. The import reads `mailvault.toml`, or the file named with
+`--accounts`, and needs an account there for each mailbox it imports,
+under the same name:
+
+- A folder in the account's `folders` list is recorded as `mailbox:place`
+  under the name written in the list, the same value a fetch of that folder
+  records. Two names count as the same folder when they differ only in the
+  Unicode form of a character (`ö` as one character, or as `o` followed by
+  a combining diaeresis), and `INBOX` matches in any case.
+- The Python mailvault recorded each Gmail label as one more folder. For an
+  account at Gmail (host `imap.gmail.com`, Google Workspace included), a
+  folder that is not in the `folders` list is a label and is recorded as
+  `mailbox:tag`, as a fetch records a Microsoft 365 category. No fetch
+  records Gmail labels, so these tags are not removed later.
+- Every other place is recorded as `mailbox:place` as the log names it. An
+  account without a `folders` list fetches every folder, so none of its
+  folders is a label.
+
+Each claim gets the time at which the Python mailvault first recorded the
 message at that place, as a fetch's claim gets the time of the fetch, so
 `--as-of` shows the mailboxes as the Python mailvault knew them then. Each
 message is checked against its hash; a damaged file is reported and
 skipped.
+
+`--no-auto-labels` records every place as `mailbox:place`, as the log names
+it, and does not read the accounts. Use it for a mailbox that is no longer
+fetched and has no account: import it by name with `--no-auto-labels`, and
+the other mailboxes by name without it.
 
 An import of a large archive takes long. If it is interrupted, the next
 `import` continues where it stopped. The progress is kept in `cache/`, and
