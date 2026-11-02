@@ -150,7 +150,8 @@ For a Microsoft 365 mailbox, the message's Outlook categories are recorded
 as `mailbox:tag`, by the name Outlook shows. Each fetch records the
 categories a message has and retracts those it no longer has, so the
 standing `mailbox:tag` claims match the last fetch. A message whose
-categories were changed is included in the next fetch.
+categories were changed is included in the next fetch. Gmail labels are
+recorded the same way (see [Gmail labels](#gmail-labels)).
 
 ```console
 $ ossuary find 'mailbox:tag=Invoice' mail:subject
@@ -158,26 +159,34 @@ $ ossuary find 'mailbox:tag=Invoice' mail:subject
 
 ## Gmail labels
 
-A fetch does not record Gmail labels. Microsoft 365 categories are
-recorded, as `mailbox:tag` (see above), and so are the Gmail labels in an
-imported Python mailvault archive (see
-[Importing a Python mailvault archive](#importing-a-python-mailvault-archive)).
-
 Over IMAP, Gmail shows each label as a folder. Fetch `[Gmail]/All Mail`
 alone, under whatever name the account gives it: it holds every message
 except Spam and Trash. Each further label folder fetches the same
 messages again and records the folder as one more `mailbox:place`.
 
-Both ways to the labels themselves are a pain for an archive:
+A fetch from Gmail records the labels of each message it fetches as
+`mailbox:tag`, by the name Gmail shows, such as `Work`. Gmail's own labels
+begin with a backslash over IMAP (`\Inbox`, `\Important`); the tag begins
+with a slash instead (`/Inbox`, `/Important`), which needs no escaping in
+the shell or in a pattern. The label of the folder being read is not among
+them, because that folder is recorded as the place: a message fetched from
+INBOX gets no `/Inbox` tag. A message fetched from two folders in one run
+gets the tags of the folder fetched last.
 
-- IMAP has them only through Gmail's extension `X-GM-LABELS`, which
-  leaves out the label of the folder being read. A run asks only for
-  messages above the last UID, so a label added to or removed from a
-  message fetched earlier is never seen.
-- The Gmail API has proper labels, but takes only OAuth 2.0: a Google
-  Cloud project of your own and a consent given in the browser, which
-  Google lets lapse after seven days while the project is in testing.
-  The app password that IMAP runs on does not work there.
+```console
+$ ossuary find 'mailbox:tag=Work' mail:subject
+```
+
+The labels are read when a message is fetched. A fetch asks only for the
+messages that arrived since the last run, so a label added to or removed
+from a message fetched earlier is not seen until the message is fetched
+again, for example with `--full`. That fetch records the labels the message
+has then and retracts the tags it no longer has.
+
+The Gmail API is not used. It takes only OAuth 2.0: a Google Cloud project
+of your own and a consent given in the browser, which Google lets lapse
+after seven days while the project is in testing. The app password that
+IMAP runs on does not work there.
 
 ## Resuming
 
@@ -321,8 +330,8 @@ under the same name:
 - The Python mailvault recorded each Gmail label as one more folder. For an
   account at Gmail (host `imap.gmail.com`, Google Workspace included), a
   folder that is not in the `folders` list is a label and is recorded as
-  `mailbox:tag`, as a fetch records a Microsoft 365 category. No fetch
-  records Gmail labels, so these tags are not removed later.
+  `mailbox:tag`, as a fetch from Gmail records it: `\Sent` as `/Sent`. A
+  later fetch of the message retracts the tags it no longer has.
 - Every other place is recorded as `mailbox:place` as the log names it. An
   account without a `folders` list fetches every folder, so none of its
   folders is a label.

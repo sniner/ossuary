@@ -162,11 +162,11 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # password_cmd = "pass show mail/example.org"   # or password = "..."
 # folders = ["INBOX", "Sent"]  # all folders if omitted
 
-# Gmail. All Mail contains every message; each label folder would fetch
-# the same messages again. The folder name depends on the account's
-# language, such as "[Google Mail]/Alle Nachrichten" on a German account;
-# `ossuary mailvault folders` lists the names. The password is an app
-# password.
+# Gmail. All Mail contains every message, and each message's labels are
+# recorded as tags; each label folder would fetch the same messages again.
+# The folder name depends on the account's language, such as
+# "[Google Mail]/Alle Nachrichten" on a German account; `ossuary mailvault
+# folders` lists the names. The password is an app password.
 #
 # [[account]]
 # name = "gmail.com"

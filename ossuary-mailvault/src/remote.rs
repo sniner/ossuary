@@ -15,12 +15,12 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use imap::Session;
-use imap::types::NameAttribute;
+use imap_proto::NameAttribute;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, RootCertStore, StreamOwned};
 
 use crate::config::Imap;
-use crate::utf7;
+use crate::{place, utf7};
 
 /// A folder opened: what the server promised about its UIDs.
 pub struct Folder {
@@ -29,8 +29,10 @@ pub struct Folder {
 
 /// What became of one UID a fetch asked for.
 pub enum Got<'a> {
-    /// The message, whole.
-    Message(&'a [u8]),
+    /// The message, whole, and the labels the server lists for it
+    /// beside the folder being read: `None` from a server without
+    /// labels, and from Gmail when the answer leaves them out.
+    Message(&'a [u8], Option<Vec<String>>),
     /// The server would not hand it over: it refused the FETCH, or
     /// answered without the message. A later run may get it.
     Refused(anyhow::Error),
@@ -57,6 +59,11 @@ pub trait Mailbox {
     /// A folder that will not open, or one whose UIDVALIDITY the server
     /// does not state.
     fn examine(&mut self, folder: &str) -> Result<Folder>;
+
+    /// Whether the server lists labels beside the folder, as Gmail
+    /// does: then [`fetch`](Self::fetch) hands each message over with
+    /// them.
+    fn labeled(&self) -> bool;
 
     /// The UIDs above `above`, ascending — every UID of the folder for
     /// `0`. A folder must be examined first.
@@ -105,7 +112,12 @@ impl<T: Read + Write> Stream for T {}
 
 pub struct Remote {
     session: Session<Box<dyn Stream>>,
+    /// The server is Gmail, which says so with `X-GM-EXT-1`.
+    labeled: bool,
 }
+
+/// The capability Gmail announces its IMAP extensions with.
+const GMAIL: &str = "X-GM-EXT-1";
 
 /// How many messages one FETCH asks for. Messages come whole — a mail
 /// is bounded in size, a server sees to that — and stay in memory until
@@ -133,7 +145,7 @@ impl Remote {
         client
             .read_greeting()
             .with_context(|| format!("{name}: the server sent no IMAP greeting"))?;
-        let session = client
+        let mut session = client
             .login(&account.user, password)
             .map_err(|(error, _)| error)
             .with_context(|| {
@@ -143,7 +155,11 @@ impl Remote {
                     account.host, account.user
                 )
             })?;
-        Ok(Self { session })
+        let labeled = session
+            .capabilities()
+            .with_context(|| format!("{name}: the server did not list its capabilities"))?
+            .has_str(GMAIL);
+        Ok(Self { session, labeled })
     }
 
     /// Every folder the server offers that can be opened, in the
@@ -172,6 +188,37 @@ impl Remote {
         // connection drops either way, and the messages are on disk.
         let _ = self.session.logout();
     }
+}
+
+/// A label as the tag has it (see [`place::gmail_label`]). Gmail names
+/// labels in the same encoding as folders; a name that does not decode
+/// is kept as the server sent it, since the message matters more than
+/// the spelling of one of its labels, and the server sends the same
+/// spelling again.
+fn label(wire: &str) -> String {
+    let text = unescaped(wire);
+    place::gmail_label(&utf7::decode(&text).unwrap_or(text))
+}
+
+/// A quoted string with its escapes undone. imap-proto hands a quoted
+/// label over as it stood between the quotes, so Gmail's `"\\Inbox"`
+/// arrives as `\\Inbox`. A label sent as an atom, `\Inbox`, holds no
+/// escape: a backslash before anything but `\` or `"` stays.
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+            && matches!(next, '\\' | '"')
+        {
+            out.push(next);
+            chars.next();
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The value of the first Message-ID field in a header section,
@@ -245,6 +292,10 @@ impl Mailbox for Remote {
         Ok(Folder { uidvalidity })
     }
 
+    fn labeled(&self) -> bool {
+        self.labeled
+    }
+
     fn uids_above(&mut self, above: u32) -> Result<Vec<u32>> {
         // "UID n:*" always includes the newest message even when its UID
         // is below n, so the filter is not decoration.
@@ -274,7 +325,7 @@ impl Mailbox for Remote {
                 .uid_fetch(&set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
                 .context("fetching the Message-IDs failed")?;
             let mut asked: HashSet<u32> = batch.iter().copied().collect();
-            for fetch in &*fetches {
+            for fetch in fetches.iter() {
                 // `remove`: a UID answered twice is counted once.
                 let Some(uid) = fetch.uid.filter(|uid| asked.remove(uid)) else {
                     continue;
@@ -311,13 +362,20 @@ impl Remote {
     /// One FETCH for `batch`. PEEK keeps it from marking anything read
     /// even where EXAMINE would not. A NO or BAD refuses this command
     /// only; any other error means the connection is of no further use.
+    /// From Gmail the labels come in the same FETCH: asked of any other
+    /// server, the unknown item would fail the whole command.
     fn ask(&mut self, batch: &[u32], each: &mut Each<'_>) -> Result<Answer, Stop> {
         let set = batch
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let fetches = match self.session.uid_fetch(&set, "(UID BODY.PEEK[])") {
+        let items = if self.labeled {
+            "(UID BODY.PEEK[] X-GM-LABELS)"
+        } else {
+            "(UID BODY.PEEK[])"
+        };
+        let fetches = match self.session.uid_fetch(&set, items) {
             Ok(fetches) => fetches,
             Err(error @ (imap::Error::No(_) | imap::Error::Bad(_))) => {
                 return Ok(Answer::Refused(
@@ -331,7 +389,7 @@ impl Remote {
             }
         };
         let mut answered = HashSet::new();
-        for fetch in &*fetches {
+        for fetch in fetches.iter() {
             // A server may add FETCH responses nobody asked for, such
             // as flag changes of other messages.
             let Some(uid) = fetch.uid.filter(|uid| batch.contains(uid)) else {
@@ -341,7 +399,16 @@ impl Remote {
                 continue;
             }
             let got = match fetch.body() {
-                Some(body) => Got::Message(body),
+                Some(body) => Got::Message(
+                    body,
+                    if self.labeled {
+                        fetch
+                            .gmail_labels()
+                            .map(|labels| labels.map(label).collect())
+                    } else {
+                        None
+                    },
+                ),
                 None => Got::Refused(anyhow!("UID {uid}: the server sent no message body")),
             };
             if each(uid, got).map_err(Stop::Caller)?.is_break() {
@@ -430,5 +497,18 @@ mod tests {
             "the first of two"
         );
         assert_eq!(message_id(b"\r\n"), "", "none");
+    }
+
+    #[test]
+    fn a_label_is_decoded_like_a_folder_name() {
+        assert_eq!(label("Pers&APY-nlich"), "Pers\u{f6}nlich");
+        assert_eq!(label("\\Inbox"), "/Inbox", "Gmail's own, with a slash");
+        assert_eq!(label("Q&A"), "Q&A", "kept as sent when it does not decode");
+        assert_eq!(
+            label("\\\\Important"),
+            "/Important",
+            "quoted: \"\\\\Important\""
+        );
+        assert_eq!(label("say \\\"hi\\\""), "say \"hi\"");
     }
 }

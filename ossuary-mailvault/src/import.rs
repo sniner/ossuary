@@ -291,7 +291,7 @@ fn plan(config: &Config, gathered: &Gathered) -> Result<Plan> {
                 }
             }
             None if *gmail => {
-                plan.insert(logged.clone(), Fact::Tag(folder.clone()));
+                plan.insert(logged.clone(), Fact::Tag(place::gmail_label(folder)));
             }
             None => {}
         }
@@ -1063,12 +1063,12 @@ mod tests {
         );
         assert_eq!(
             standing(&bench, ONE, "mailbox:tag"),
-            vec![json!("\\Inbox")],
-            "the label not in the list, by its name"
+            vec![json!("/Inbox")],
+            "the label not in the list, Gmail's own with a slash"
         );
         assert_eq!(
             standing_as_of(&bench, ONE, "mailbox:tag", Some("2024-04-01T00:00:00Z")),
-            vec![json!("\\Inbox")],
+            vec![json!("/Inbox")],
             "at the time of the log"
         );
         assert!(

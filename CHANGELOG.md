@@ -5,15 +5,25 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary mailvault fetch` records Gmail labels as `mailbox:tag`**, by the name Gmail shows,
+  such as `Work`; Gmail's own labels with a slash in place of the backslash, `/Important` for
+  `\Important`. The label of the folder being read is not recorded as a tag, since that folder is
+  the place. The labels are read when a message is fetched: a label changed on a message fetched
+  earlier is seen when the message is fetched again, such as with `--full`, and the tags it no
+  longer has are then retracted
+
 ### Changed
 
 - **`ossuary mailvault import` records Gmail labels as `mailbox:tag`.** The Python tool mailvault
   recorded each Gmail label as a folder. The import now reads `mailvault.toml` (or the file named
   with `--accounts`) and needs an account of the same name for each mailbox it imports. For a
-  Gmail account, a folder not in the account's `folders` list is recorded as `mailbox:tag`. A
-  folder in the list is recorded under the name written there, also when the archive has it in
-  another Unicode form or `INBOX` in another case. `--no-auto-labels` records every place as the
-  archive names it and reads no accounts; use it for mailboxes that are no longer fetched
+  Gmail account, a folder not in the account's `folders` list is recorded as `mailbox:tag`, as a
+  fetch from Gmail records the label. A folder in the list is recorded under the name written
+  there, also when the archive has it in another Unicode form or `INBOX` in another case.
+  `--no-auto-labels` records every place as the archive names it and reads no accounts; use it for
+  mailboxes that are no longer fetched
 
 ## [0.15.0] - 2026-10-30
 

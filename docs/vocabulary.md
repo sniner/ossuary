@@ -420,16 +420,20 @@ added when it is first needed.
   fetched, and it is lost when the mailbox is. Unlike places, tags do
   not accumulate: a fetch records the tags it sees and retracts
   standing tags that are no longer there. The standing set is
-  therefore the tags as of the last fetch, and `--as-of` shows the tags
-  as of the given time. A message fetched from two accounts that tag it
+  therefore the tags as of the message's last fetch, and `--as-of`
+  shows the tags as of the given time. A message fetched from two accounts that tag it
   differently has one set of tags, and a fetch retracts a tag it no
   longer sees, whichever account it came from. The category's colour
   belongs to the mailbox's display and is not recorded. A Gmail label
-  comes from an import of an archive of the Python tool mailvault,
-  which recorded each label as a folder; the claim's time is the time
-  that archive's log gives for it. No fetch records Gmail labels, so no
-  fetch retracts them
+  has the name Gmail gives it, with a slash in place of the backslash
+  that begins one of Gmail's own over IMAP: `\Inbox` is `/Inbox`. Gmail
+  lists a message's labels without the label of the folder being read,
+  which is recorded as the place instead. Gmail labels are seen only
+  when a message is fetched, which over IMAP is when it is new to the
+  folder or the fetch is run with `--full`. An import of an archive of
+  the Python tool mailvault records the labels that archive recorded as
+  folders, with the time its log gives for them
 - value: string
-- written by: `ossuary mailvault`, for a mailbox fetched over MS Graph
-  and for the Gmail labels in an imported Python mailvault archive; a
-  mailbox fetched over IMAP gets no tags
+- written by: `ossuary mailvault`, for a mailbox fetched over MS Graph or
+  from Gmail, and for the Gmail labels in an imported Python mailvault
+  archive; other mailboxes fetched over IMAP get no tags

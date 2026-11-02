@@ -20,9 +20,8 @@ pub const ATTRIBUTE: &str = "mailbox:place";
 
 /// The marks the mailbox has on a message beside its place: Outlook's
 /// categories and Gmail's labels, by name. Not in the message's bytes,
-/// and not a place: state as of the last sighting. A fetch over MS
-/// Graph records them anew each time and retracts those no longer
-/// there; Gmail's labels come only from an import.
+/// and not a place: state as of the last sighting. Each fetch of a
+/// message records them anew and retracts those no longer there.
 pub const TAG: &str = "mailbox:tag";
 
 /// A folder of an account.
@@ -45,6 +44,18 @@ pub fn orphan(folder: &str) -> String {
     format!(":{folder}")
 }
 
+/// A Gmail label as a tag. Gmail marks its own labels with a leading
+/// backslash (`\Inbox`, `\Sent`); the tag has a slash there instead
+/// (`/Inbox`), because a backslash has to be escaped in JSON, in the
+/// shell and in a glob.
+#[must_use]
+pub fn gmail_label(label: &str) -> String {
+    match label.strip_prefix('\\') {
+        Some(rest) => format!("/{rest}"),
+        None => label.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +70,12 @@ mod tests {
         );
         assert_eq!(account("example.org"), "example.org");
         assert_eq!(orphan("old mail"), ":old mail");
+    }
+
+    #[test]
+    fn a_gmail_label_of_gmails_own_leads_with_a_slash() {
+        assert_eq!(gmail_label("\\Inbox"), "/Inbox");
+        assert_eq!(gmail_label("Work/Projects"), "Work/Projects");
+        assert_eq!(gmail_label("a\\b"), "a\\b", "only the leading one");
     }
 }

@@ -25,6 +25,11 @@
 //! retracted when a message is listed again without them, so the
 //! record holds the categories as of the last listing.
 //!
+//! Gmail hands each message over with its labels, less the label of
+//! the folder being read, and those are recorded the same way. Over
+//! IMAP a message is listed again only when it is fetched again, so a
+//! label changed on a message fetched earlier is not seen until then.
+//!
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
 //! the fetcher has to tell about it. The resume point moves forward
@@ -161,9 +166,10 @@ pub fn run(
     options: &Options,
     say: Say,
 ) -> Result<Tally> {
-    // Taking a mark back needs to know what stands, and only a Graph
-    // account says marks; a comparison reads the archive's side from
-    // it. Otherwise an IMAP run leaves the index alone.
+    // Taking a mark back needs to know what stands, and a Graph account
+    // says marks; a comparison reads the archive's side from it. Whether
+    // an IMAP account says marks only its server can tell, so a Gmail
+    // folder reads the record when it is reached (see `folder`).
     let record = if options.compare || accounts.iter().any(|account| account.over_graph()) {
         Some(caught_up(archive, say)?)
     } else {
@@ -176,7 +182,7 @@ pub fn run(
         source: Source::parse(crate::SOURCE)?,
         place: Attribute::parse(place::ATTRIBUTE)?,
         tag: Attribute::parse(place::TAG)?,
-        record,
+        record: RefCell::new(record),
         said: RefCell::new(HashMap::new()),
         landed: RefCell::new(Vec::new()),
         say,
@@ -223,9 +229,11 @@ struct Fetch<'a> {
     source: Source,
     place: Attribute,
     tag: Attribute,
-    /// The record as it stood when the run began, for the marks a
-    /// message carried before — `None` when no account says marks.
-    record: Option<Index>,
+    /// The record as it stood before the first account that says marks
+    /// was reached, for the marks a message carried before: `None`
+    /// until then. Only that account's claims could change what it
+    /// holds of marks, and those are in `said`.
+    record: RefCell<Option<Index>>,
     /// The marks this run said, by subject: the record above does not
     /// see them yet, and a message met twice in one run must not take
     /// back what the run itself just said.
@@ -314,7 +322,7 @@ impl Fetch<'_> {
     fn take_back(&self, subject: &Subject, tags: &[String], tally: &mut Tally) -> Result<()> {
         let current: BTreeSet<String> = tags.iter().cloned().collect();
         let mut stood = BTreeSet::new();
-        if let Some(record) = &self.record {
+        if let Some(record) = self.record.borrow().as_ref() {
             for value in record.values(subject, &self.tag, Scope::Held)? {
                 if let Value::String(tag) = value {
                     stood.insert(tag);
@@ -396,6 +404,9 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
+        if mailbox.labeled() && self.record.borrow().is_none() {
+            *self.record.borrow_mut() = Some(caught_up(self.archive, self.say)?);
+        }
         if self.options.compare {
             return self.imap_compare(&place, mailbox, opened.uidvalidity, tally);
         }
@@ -585,8 +596,8 @@ impl Fetch<'_> {
         // Some for a UID the last run left on the pending list.
         let attempts = walk.pending.get(&uid).copied();
         match got {
-            Got::Message(bytes) => {
-                let subject = self.land(name, bytes, None, tally)?;
+            Got::Message(bytes, labels) => {
+                let subject = self.land(name, bytes, labels.as_deref(), tally)?;
                 self.note(place, &compare::imap_id(walk.uidvalidity, uid), &subject)?;
                 walk.refused_in_a_row = 0;
                 if attempts.is_some() {
@@ -1002,8 +1013,8 @@ impl Fetch<'_> {
     /// have no Message-ID on record.
     fn comparison(&self, place: &Place<'_>) -> Result<Comparison> {
         self.landed.borrow_mut().clear();
-        let index = self
-            .record
+        let record = self.record.borrow();
+        let index = record
             .as_ref()
             .expect("run() reads the record when --compare is given");
         let archived = Archived::read(index, &self.place, &place.name)?;
@@ -1334,6 +1345,8 @@ mod tests {
         /// Message-IDs the server lists in place of the one in the
         /// message.
         listed_as: BTreeMap<u32, String>,
+        /// The labels of each message, on a server that lists labels.
+        labels: Option<BTreeMap<u32, Vec<String>>>,
     }
 
     impl Mailbox for Fake {
@@ -1341,6 +1354,10 @@ mod tests {
             Ok(Folder {
                 uidvalidity: self.uidvalidity,
             })
+        }
+
+        fn labeled(&self) -> bool {
+            self.labels.is_some()
         }
 
         fn uids_above(&mut self, above: u32) -> Result<Vec<u32>> {
@@ -1374,7 +1391,12 @@ mod tests {
                 }
                 let got = match self.messages.get(uid) {
                     _ if self.refused.contains(uid) => Got::Refused(anyhow!("UID {uid}: NO")),
-                    Some(bytes) => Got::Message(bytes),
+                    Some(bytes) => Got::Message(
+                        bytes,
+                        self.labels
+                            .as_ref()
+                            .map(|labels| labels.get(uid).cloned().unwrap_or_default()),
+                    ),
                     None => Got::Gone,
                 };
                 if each(*uid, got).map_err(Stop::Caller)?.is_break() {
@@ -1400,6 +1422,7 @@ mod tests {
             give_up_after: None,
             refused: BTreeSet::new(),
             listed_as: BTreeMap::new(),
+            labels: None,
         }
     }
 
@@ -1434,7 +1457,7 @@ mod tests {
             source: Source::parse(crate::SOURCE).unwrap(),
             place: Attribute::parse(place::ATTRIBUTE).unwrap(),
             tag: Attribute::parse(place::TAG).unwrap(),
-            record: Some(caught_up(&bench.archive, Say::new(true)).unwrap()),
+            record: RefCell::new(Some(caught_up(&bench.archive, Say::new(true)).unwrap())),
             said: RefCell::new(HashMap::new()),
             landed: RefCell::new(Vec::new()),
             say: Say::new(true),
@@ -1923,6 +1946,111 @@ mod tests {
             [("5".to_string(), 1)],
             "and touches none"
         );
+    }
+
+    /// The values standing on the message `bytes` under `attribute`.
+    fn held(bench: &Bench, bytes: &[u8], attribute: &str) -> Vec<String> {
+        let index = caught_up(&bench.archive, Say::new(true)).unwrap();
+        let subject = Subject::parse(Algorithm::Sha256.hash(bytes).as_str()).unwrap();
+        let mut values: Vec<String> = index
+            .values(&subject, &Attribute::parse(attribute).unwrap(), Scope::Held)
+            .unwrap()
+            .into_iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        values.sort();
+        values
+    }
+
+    /// A Gmail folder holding these messages, with these labels.
+    fn labeled(uidvalidity: u32, messages: &[(u32, &[u8], &[&str])]) -> Fake {
+        let mut fake = mailbox(uidvalidity, &[]);
+        fake.messages = messages
+            .iter()
+            .map(|(uid, bytes, _)| (*uid, bytes.to_vec()))
+            .collect();
+        fake.labels = Some(
+            messages
+                .iter()
+                .map(|(uid, _, labels)| (*uid, labels.iter().map(ToString::to_string).collect()))
+                .collect(),
+        );
+        fake
+    }
+
+    /// A fetch of INBOX as `run` makes one for an IMAP account: the
+    /// record is read only once the folder turns out to have labels.
+    fn fetch_labeled(bench: &Bench, mailbox: &mut Fake, full: bool) -> Tally {
+        let options = options(full, false);
+        let mut fetch = fetcher(bench, &options);
+        fetch.record = RefCell::new(None);
+        let mut tally = Tally::new("fetch");
+        fetch
+            .folder(&bench.account, mailbox, "INBOX", &mut tally)
+            .unwrap();
+        tally
+    }
+
+    #[test]
+    fn gmail_labels_are_recorded_and_those_gone_taken_back_when_the_message_comes_again() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        let two = mail(2, "<two@example.org>");
+
+        let first = fetch_labeled(
+            &bench,
+            &mut labeled(
+                7,
+                &[
+                    (1, &one, &["/Important", "Pers\u{f6}nlich"]),
+                    (2, &two, &[]),
+                ],
+            ),
+            false,
+        );
+        assert_eq!(
+            (first.stored, first.claims, first.taken),
+            (2, 8, 0),
+            "place, size, kind each, and two labels on the first"
+        );
+        assert_eq!(
+            held(&bench, &one, "mailbox:tag"),
+            ["/Important", "Pers\u{f6}nlich"]
+        );
+        assert!(held(&bench, &two, "mailbox:tag").is_empty());
+
+        // Fetched again with one label removed on the server.
+        let again = fetch_labeled(
+            &bench,
+            &mut labeled(7, &[(1, &one, &["Pers\u{f6}nlich"]), (2, &two, &[])]),
+            true,
+        );
+        assert_eq!(again.taken, 1, "/Important is taken back");
+        assert_eq!(held(&bench, &one, "mailbox:tag"), ["Pers\u{f6}nlich"]);
+        assert_eq!(
+            held(&bench, &one, "mailbox:place"),
+            ["example.org:INBOX"],
+            "the place stays"
+        );
+
+        // A label removed from a message that is not fetched again is not
+        // seen.
+        let later = fetch_labeled(
+            &bench,
+            &mut labeled(7, &[(1, &one, &[]), (2, &two, &[])]),
+            false,
+        );
+        assert_eq!((later.stored, later.known, later.taken), (0, 0, 0));
+        assert_eq!(held(&bench, &one, "mailbox:tag"), ["Pers\u{f6}nlich"]);
+    }
+
+    #[test]
+    fn a_server_without_labels_records_no_tags() {
+        let bench = bench();
+        let one = mail(1, "<one@example.org>");
+        let tally = fetch(&bench, &mut holding(7, &[(1, &one)]), false, false);
+        assert_eq!(tally.claims, 3, "place, size, kind");
+        assert!(held(&bench, &one, "mailbox:tag").is_empty());
     }
 
     mod graph {
