@@ -62,7 +62,7 @@ use crate::graph::{Graph, Halt, Miss, Offered, Round};
 use crate::memo::{ImapResume, Memo, Pending};
 use crate::output::{Progress, Say, counted};
 use crate::place;
-use crate::remote::{self, Each, Flavour, Got, Mailbox, Remote, Stop};
+use crate::remote::{Each, Flavour, Got, Mailbox, Remote, Stop};
 use crate::tally::Tally;
 
 pub struct Options {
@@ -457,7 +457,7 @@ impl Fetch<'_> {
         let labels: Vec<(&str, &str)> = listed
             .iter()
             .filter(|folder| !configured.contains(folder))
-            .filter_map(|folder| Some((folder.as_str(), remote::proton_label(folder)?)))
+            .filter_map(|folder| Some((folder.as_str(), place::proton_label(folder)?)))
             .collect();
         if labels.is_empty() {
             return Ok(());

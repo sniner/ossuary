@@ -333,7 +333,7 @@ archive /home/john/archive
 importing the Python mailvault archive at /srv/mailvault/private
 reading the log files
 131,504 messages in 3,207 log files, filed in 140,222 places
-gmail.com: 41 folders not in the account's folders list, imported as Gmail labels
+gmail.com: 41 folders not in the account's folders list, imported as labels
 importing: 131,504 of 131,504 message(s), 131,504 stored
 131,504 messages stored; 543,502 claim(s) written, run 0c1e…
 ```
@@ -348,11 +348,20 @@ under the same name:
   records. Two names count as the same folder when they differ only in the
   Unicode form of a character (`ö` as one character, or as `o` followed by
   a combining diaeresis), and `INBOX` matches in any case.
-- The Python mailvault recorded each Gmail label as one more folder. For an
-  account at Gmail (host `imap.gmail.com`, Google Workspace included), a
-  folder that is not in the `folders` list is a label and is recorded as
-  `mailbox:tag`, as a fetch from Gmail records it: `\Sent` as `/Sent`. A
-  later fetch of the message retracts the tags it no longer has.
+- The Python mailvault recorded each label of Gmail and Proton Mail as one
+  more folder. For an account at Gmail (host `imap.gmail.com`, Google
+  Workspace included), a folder that is not in the `folders` list is a
+  label and is recorded as `mailbox:tag`, as a fetch from Gmail records it:
+  `\Sent` as `/Sent`. A later fetch of the message retracts the tags it no
+  longer has.
+- For any other IMAP account, a folder under `Labels/` that is not in the
+  `folders` list is a Proton Mail label and is recorded as `mailbox:tag`,
+  as a fetch from Proton Mail Bridge records it: `Sales` for
+  `Labels/Sales`. The import does not connect to the server, so it does
+  not check that the account is at Proton Mail.
+- A message whose places in the log are all labels keeps its label folders
+  as places too, as a fetch does for a message that no configured folder
+  holds. Without a place, `ossuary find` would show it only with `--all`.
 - Every other place is recorded as `mailbox:place` as the log names it. An
   account without a `folders` list fetches every folder, so none of its
   folders is a label.

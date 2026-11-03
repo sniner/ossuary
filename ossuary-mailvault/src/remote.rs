@@ -135,9 +135,6 @@ const GMAIL: &str = "X-GM-EXT-1";
 /// How the name in Proton Mail Bridge's `ID` answer begins.
 const PROTON: &str = "Proton Mail";
 
-/// Where Proton Mail Bridge shows the labels, one folder each.
-const PROTON_LABELS: &str = "Labels/";
-
 /// How many messages one FETCH asks for. Messages come whole — a mail
 /// is bounded in size, a server sees to that — and stay in memory until
 /// stored, so the batch bounds the memory, not the round trips.
@@ -246,15 +243,6 @@ fn server_name(answer: &[u8]) -> Option<String> {
         rest = left;
     }
     None
-}
-
-/// The label a Proton Mail Bridge folder stands for: `Sales` for
-/// `Labels/Sales`; `None` for every other folder.
-#[must_use]
-pub fn proton_label(folder: &str) -> Option<&str> {
-    folder
-        .strip_prefix(PROTON_LABELS)
-        .filter(|label| !label.is_empty())
 }
 
 /// A label as the tag has it (see [`place::gmail_label`]). Gmail names
@@ -579,14 +567,6 @@ mod tests {
         assert_eq!(server_name(b"* ID NIL\r\n"), None, "no fields");
         assert_eq!(server_name(b"* ID (\"vendor\" \"x\")\r\n"), None, "no name");
         assert_eq!(server_name(b"garbage\r\n"), None);
-    }
-
-    #[test]
-    fn a_proton_label_folder_is_one_under_labels() {
-        assert_eq!(proton_label("Labels/Sales"), Some("Sales"));
-        assert_eq!(proton_label("Folders/Work"), None);
-        assert_eq!(proton_label("Labels/"), None);
-        assert_eq!(proton_label("All Mail"), None);
     }
 
     #[test]

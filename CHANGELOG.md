@@ -21,14 +21,15 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`ossuary mailvault import` records Gmail labels as `mailbox:tag`.** The Python tool mailvault
-  recorded each Gmail label as a folder. The import now reads `mailvault.toml` (or the file named
-  with `--accounts`) and needs an account of the same name for each mailbox it imports. For a
-  Gmail account, a folder not in the account's `folders` list is recorded as `mailbox:tag`, as a
-  fetch from Gmail records the label. A folder in the list is recorded under the name written
-  there, also when the archive has it in another Unicode form or `INBOX` in another case.
-  `--no-auto-labels` records every place as the archive names it and reads no accounts; use it for
-  mailboxes that are no longer fetched
+- **`ossuary mailvault import` records Gmail and Proton Mail labels as `mailbox:tag`.** The Python
+  tool mailvault recorded each label as a folder. The import now reads `mailvault.toml` (or the
+  file named with `--accounts`) and needs an account of the same name for each mailbox it imports.
+  A folder not in the account's `folders` list is recorded as `mailbox:tag`, as a fetch records
+  the label: for a Gmail account every such folder, for any other IMAP account those under
+  `Labels/`. A message found under labels only keeps the label folders as its places. A folder in
+  the list is recorded under the name written there, also when the archive has it in another
+  Unicode form or `INBOX` in another case. `--no-auto-labels` records every place as the archive
+  names it and reads no accounts; use it for mailboxes that are no longer fetched
 
 ### Fixed
 

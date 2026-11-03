@@ -401,6 +401,9 @@ added when it is first needed.
   Python tool mailvault the time that archive's log gives for it. Such
   an import records a folder in the account's `folders` list under the
   name written there, which is the name a fetch of that folder records.
+  A folder that shows a label (see `mailbox:tag`) is recorded as a
+  place only for a message that has no other place, so that the message
+  stays present.
   An imported place may also name only the account (`"example.org"`,
   folder unknown) or only a folder (`":old mail"`, no account). The number the
   server gives a message is not recorded here or anywhere else in the
@@ -437,6 +440,6 @@ added when it is first needed.
   fetch finds it there, and no fetch retracts it
 - value: string
 - written by: `ossuary mailvault`, for a mailbox fetched over MS Graph,
-  from Gmail or from Proton Mail Bridge, and for the Gmail labels in an
-  imported Python mailvault archive; other mailboxes fetched over IMAP
-  get no tags
+  from Gmail or from Proton Mail Bridge, and for the Gmail and Proton
+  Mail labels in an imported Python mailvault archive; other mailboxes
+  fetched over IMAP get no tags

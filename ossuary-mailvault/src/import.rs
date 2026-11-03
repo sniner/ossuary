@@ -8,14 +8,21 @@
 //! the same two steps as a fetched one (admit, then record), and each
 //! place the log names becomes a claim.
 //!
-//! The Python mailvault records a Gmail label as one more folder; a
-//! fetch records only the folders `mailvault.toml` lists. So the places
-//! are matched against the accounts there, unless the caller passes
-//! none. A folder in an account's list becomes a `mailbox:place` under
-//! the name the list gives it, the value a fetch of that folder
-//! records. A folder of a Gmail account that is not in its list is a
-//! label and becomes a `mailbox:tag`. Every other place becomes a
-//! `mailbox:place` as the log names it.
+//! The Python mailvault records a label of Gmail or Proton Mail as one
+//! more folder; a fetch records only the folders `mailvault.toml` lists.
+//! So the places are matched against the accounts there, unless the
+//! caller passes none. A folder in an account's list becomes a
+//! `mailbox:place` under the name the list gives it, the value a fetch
+//! of that folder records. A folder not in the list is a label and
+//! becomes a `mailbox:tag` when the account is at Gmail, or when it is
+//! under `Labels/` on any other IMAP account. The log does not name the
+//! server, and asking it would need the server and the login, so every
+//! IMAP server is taken to show labels as Proton Mail Bridge does. Every
+//! other place becomes a `mailbox:place` as the log names it.
+//!
+//! A message whose places are all labels keeps its label folders as
+//! places, as a fetch places such a message in its label folder; without
+//! a place it would no longer be present.
 //!
 //! The claims carry the time from the log, not the time of the import. A
 //! claim's time is when the sighting was recorded, and the Python
@@ -41,7 +48,7 @@ use serde::Deserialize;
 use serde_json::json;
 use unicode_normalization::UnicodeNormalization as _;
 
-use crate::config::{Config, valid_name};
+use crate::config::{Account, Config, valid_name};
 use crate::memo::Memo;
 use crate::output::{Say, counted};
 use crate::place;
@@ -151,7 +158,7 @@ pub fn run(
     }
     for (mailbox, count) in labels {
         say.line(format_args!(
-            "{mailbox}: {} not in the account's folders list, imported as Gmail labels",
+            "{mailbox}: {} not in the account's folders list, imported as labels",
             counted(count, "folder", "folders")
         ));
     }
@@ -232,8 +239,41 @@ struct Takeover<'a> {
 enum Fact {
     /// A `mailbox:place` with this value.
     Place(String),
-    /// A `mailbox:tag`: a Gmail label, by its name.
+    /// A `mailbox:tag`: a label of Gmail or Proton Mail, by its name.
     Tag(String),
+}
+
+/// Which folders of an account, of those not in its list, are labels.
+#[derive(Debug, Clone, Copy)]
+enum Labels {
+    /// At Gmail: every one.
+    Gmail,
+    /// Another IMAP server: those under `Labels/`, as on Proton Mail
+    /// Bridge.
+    Proton,
+    /// Over MS Graph: none.
+    None,
+}
+
+impl Labels {
+    fn of(account: &Account) -> Result<Self> {
+        Ok(if account.over_graph() {
+            Self::None
+        } else if account.on_gmail()? {
+            Self::Gmail
+        } else {
+            Self::Proton
+        })
+    }
+
+    /// The tag a folder not in the list is recorded as, if it is a label.
+    fn label(self, folder: &str) -> Option<String> {
+        match self {
+            Self::Gmail => Some(place::gmail_label(folder)),
+            Self::Proton => place::proton_label(folder).map(str::to_string),
+            Self::None => None,
+        }
+    }
 }
 
 /// The places of the log that are not recorded as `mailbox:place` under
@@ -261,7 +301,7 @@ fn plan(config: &Config, gathered: &Gathered) -> Result<Plan> {
             missing.join(", ")
         );
     }
-    // Per account of the log: whether it is at Gmail, and its folders
+    // Per account of the log: which folders are labels, and its folders
     // list by compared name. No list means every folder is fetched, a
     // label folder included, so nothing is a label.
     let mut lists = BTreeMap::new();
@@ -276,24 +316,20 @@ fn plan(config: &Config, gathered: &Gathered) -> Result<Plan> {
             .iter()
             .map(|folder| (compared(folder), folder.as_str()))
             .collect();
-        lists.insert(account.name.as_str(), (account.on_gmail()?, folders));
+        lists.insert(account.name.as_str(), (Labels::of(account)?, folders));
     }
     let mut plan = Plan::new();
     for (logged, (mailbox, folder)) in &gathered.folders {
-        let Some((gmail, folders)) = lists.get(mailbox.as_str()) else {
+        let Some((labels, folders)) = lists.get(mailbox.as_str()) else {
             continue;
         };
-        match folders.get(&compared(folder)) {
-            Some(listed) => {
-                let named = place::folder(mailbox, listed);
-                if named != *logged {
-                    plan.insert(logged.clone(), Fact::Place(named));
-                }
+        if let Some(listed) = folders.get(&compared(folder)) {
+            let named = place::folder(mailbox, listed);
+            if named != *logged {
+                plan.insert(logged.clone(), Fact::Place(named));
             }
-            None if *gmail => {
-                plan.insert(logged.clone(), Fact::Tag(place::gmail_label(folder)));
-            }
-            None => {}
+        } else if let Some(label) = labels.label(folder) {
+            plan.insert(logged.clone(), Fact::Tag(label));
         }
     }
     Ok(plan)
@@ -323,6 +359,9 @@ struct Pending {
     admitted: Admitted,
     /// The places not yet recorded, with their times from the log.
     places: Vec<(String, Option<Timestamp>)>,
+    /// Whether one of all its places, recorded or not, is not a label.
+    /// If none is, its label folders are its places as well.
+    elsewhere: bool,
 }
 
 impl Takeover<'_> {
@@ -347,6 +386,9 @@ impl Takeover<'_> {
             Some(recorded) => (true, recorded),
             None => (false, BTreeSet::new()),
         };
+        let elsewhere = places
+            .keys()
+            .any(|place| !matches!(self.plan.get(place), Some(Fact::Tag(_))));
         let places: Vec<(String, Option<Timestamp>)> = places
             .iter()
             .filter(|(place, _)| !recorded.contains(*place))
@@ -377,6 +419,7 @@ impl Takeover<'_> {
             store_id: store_id.to_string(),
             admitted,
             places,
+            elsewhere,
         }))
     }
 
@@ -425,11 +468,14 @@ impl Takeover<'_> {
             // Two names of the log can match one folder of the list.
             let facts: BTreeSet<Fact> = places
                 .iter()
-                .map(|place| {
-                    self.plan
+                .flat_map(|place| {
+                    let fact = self
+                        .plan
                         .get(*place)
                         .cloned()
-                        .unwrap_or_else(|| Fact::Place((*place).clone()))
+                        .unwrap_or_else(|| Fact::Place((*place).clone()));
+                    let kept = matches!(fact, Fact::Tag(_)) && !pending.elsewhere;
+                    std::iter::once(fact).chain(kept.then(|| Fact::Place((*place).clone())))
                 })
                 .collect();
             let facts: Vec<(Attribute, serde_json::Value)> = facts
@@ -660,6 +706,7 @@ mod tests {
 
     const ONE: &[u8] = b"From: a@example.org\r\nSubject: one\r\n\r\nfirst";
     const TWO: &[u8] = b"From: b@example.org\r\nSubject: two\r\n\r\nsecond";
+    const THREE: &[u8] = b"From: c@example.org\r\nSubject: three\r\n\r\nthird";
 
     /// A small vault named in `hash`: two messages, one seen in two
     /// places, one compressed; the newer log file dated, the older not.
@@ -1075,6 +1122,92 @@ mod tests {
             standing_as_of(&bench, ONE, "mailbox:tag", Some("2024-03-31T23:59:59Z")).is_empty()
         );
         assert!(standing(&bench, TWO, "mailbox:tag").is_empty());
+    }
+
+    #[test]
+    fn a_gmail_message_under_labels_only_keeps_them_as_places() {
+        let bench = gmail_bench();
+        store(&bench.vault, Algorithm::Sha384, THREE, false);
+        log(
+            &bench.vault,
+            r#"{"version": 2, "mailbox": "gmail.com", "folder": "Sales", "date": "2024-04-01T00:00:00+00:00", "prev": null}"#,
+            &[&id(THREE)],
+        );
+        take_matched(&bench, ACCOUNTS).unwrap();
+
+        assert_eq!(
+            standing(&bench, THREE, "mailbox:place"),
+            vec![json!("gmail.com:Sales")],
+            "no other place, so the label folder stays one"
+        );
+        assert_eq!(standing(&bench, THREE, "mailbox:tag"), vec![json!("Sales")]);
+        assert!(
+            !standing(&bench, ONE, "mailbox:place").contains(&json!("gmail.com:\\Inbox")),
+            "message one is in All Mail"
+        );
+    }
+
+    /// `proton.me` fetches All Mail, behind a host that does not name it.
+    const PROTON: &str = "[[account]]\nname = \"proton.me\"\nhost = \"127.0.0.1\"\n\
+         user = \"john\"\nfolders = [\"All Mail\"]\n";
+
+    fn proton_log(bench: &Bench, folder: &str, ids: &[&str]) {
+        log(
+            &bench.vault,
+            &format!(
+                r#"{{"version": 2, "mailbox": "proton.me", "folder": "{folder}", "date": "2024-04-01T00:00:00+00:00", "prev": null}}"#
+            ),
+            ids,
+        );
+    }
+
+    #[test]
+    fn a_proton_label_folder_becomes_a_tag_and_a_place_only_without_another() {
+        let bench = bench();
+        let three = store(&bench.vault, Algorithm::Sha384, THREE, false);
+        proton_log(&bench, "All Mail", &[&id(ONE)]);
+        proton_log(&bench, "Folders/Work", &[&id(ONE)]);
+        proton_log(&bench, "Labels/Sales", &[&id(ONE), &three]);
+        proton_log(&bench, "Labels/Alias", &[&three]);
+        let accounts = format!("{ACCOUNTS}{PROTON}");
+        take_matched(&bench, &accounts).unwrap();
+
+        assert_eq!(
+            standing(&bench, ONE, "mailbox:place"),
+            vec![
+                json!("example.org:INBOX"),
+                json!("example.org:\\Sent"),
+                json!("proton.me:All Mail"),
+                json!("proton.me:Folders/Work"),
+            ],
+            "a folder not under Labels/ is no label"
+        );
+        assert_eq!(standing(&bench, ONE, "mailbox:tag"), vec![json!("Sales")]);
+        assert_eq!(
+            standing(&bench, THREE, "mailbox:place"),
+            vec![
+                json!("proton.me:Labels/Alias"),
+                json!("proton.me:Labels/Sales")
+            ],
+            "no other place, so the label folders stay places"
+        );
+        assert_eq!(
+            standing(&bench, THREE, "mailbox:tag"),
+            vec![json!("Alias"), json!("Sales")]
+        );
+
+        // A label added later: message one has its place from the first
+        // import, which the memo skips.
+        proton_log(&bench, "Labels/Gmail", &[&id(ONE)]);
+        take_matched(&bench, &accounts).unwrap();
+        assert!(
+            !standing(&bench, ONE, "mailbox:place").contains(&json!("proton.me:Labels/Gmail")),
+            "All Mail places it"
+        );
+        assert_eq!(
+            standing(&bench, ONE, "mailbox:tag"),
+            vec![json!("Gmail"), json!("Sales")]
+        );
     }
 
     #[test]

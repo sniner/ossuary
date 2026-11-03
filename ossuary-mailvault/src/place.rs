@@ -58,6 +58,18 @@ pub fn gmail_label(label: &str) -> String {
     }
 }
 
+/// Where Proton Mail Bridge shows the labels, one folder each.
+const PROTON_LABELS: &str = "Labels/";
+
+/// The label a Proton Mail Bridge folder stands for: `Sales` for
+/// `Labels/Sales`; `None` for every other folder.
+#[must_use]
+pub fn proton_label(folder: &str) -> Option<&str> {
+    folder
+        .strip_prefix(PROTON_LABELS)
+        .filter(|label| !label.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,5 +91,13 @@ mod tests {
         assert_eq!(gmail_label("\\Inbox"), "/Inbox");
         assert_eq!(gmail_label("Work/Projects"), "Work/Projects");
         assert_eq!(gmail_label("a\\b"), "a\\b", "only the leading one");
+    }
+
+    #[test]
+    fn a_proton_label_folder_is_one_under_labels() {
+        assert_eq!(proton_label("Labels/Sales"), Some("Sales"));
+        assert_eq!(proton_label("Folders/Work"), None);
+        assert_eq!(proton_label("Labels/"), None);
+        assert_eq!(proton_label("All Mail"), None);
     }
 }

@@ -138,9 +138,10 @@ enum Command {
     ///
     /// Each message is stored with the mailboxes and folders the Python
     /// mailvault recorded for it. Each mailbox needs an account of the
-    /// same name in mailvault.toml. A folder of a Gmail account that is
-    /// not in the account's folders list is a label and is recorded as
-    /// mailbox:tag.
+    /// same name in mailvault.toml. A folder that is not in the
+    /// account's folders list is a label and is recorded as mailbox:tag:
+    /// every such folder of a Gmail account, and those under Labels/ of
+    /// any other IMAP account, as Proton Mail Bridge shows labels.
     Import {
         /// The directory of the Python mailvault archive
         #[arg(value_name = "DIR")]
@@ -159,8 +160,8 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
-        /// Record every folder as the Python mailvault named it, Gmail
-        /// labels included, without reading mailvault.toml
+        /// Record every folder as the Python mailvault named it, labels
+        /// included, without reading mailvault.toml
         #[arg(long)]
         no_auto_labels: bool,
     },
