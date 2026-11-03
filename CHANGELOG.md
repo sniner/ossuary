@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-03
+
 ### Added
 
 - **`ossuary mailvault fetch` records Gmail labels as `mailbox:tag`**, by the name Gmail shows,
@@ -30,6 +32,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the list is recorded under the name written there, also when the archive has it in another
   Unicode form or `INBOX` in another case. `--no-auto-labels` records every place as the archive
   names it and reads no accounts; use it for mailboxes that are no longer fetched
+- **An archive imported with an earlier version keeps the Gmail labels as `mailbox:place`.**
+  Importing again does not remove them, since places are never retracted. To have the labels only
+  as tags, import the Python tool mailvault's archive into a new archive
 
 ### Fixed
 
