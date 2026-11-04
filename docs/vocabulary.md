@@ -84,8 +84,8 @@ its source.
   for the archive that contains a file does not depend on whether it
   was a zip
 - `mailbox:` describes the mailbox as observed by `ossuary-mailvault`:
-  where a message was when it was fetched, and which tags the mailbox
-  had on it there
+  where a message was when it was fetched, which tags the mailbox had on
+  it there, and the id the mailbox gives it
 
 There is no vocabulary yet for subjects that are not blobs; it will be
 added when it is first needed.
@@ -401,14 +401,15 @@ added when it is first needed.
   Python tool mailvault the time that archive's log gives for it. Such
   an import records a folder in the account's `folders` list under the
   name written there, which is the name a fetch of that folder records.
-  A folder that shows a label (see `mailbox:tag`) is recorded as a
-  place only for a message that has no other place, so that the message
-  stays present.
+  An import records a folder that shows a label (see `mailbox:tag`) as
+  a place only for a message that has no other place, so that the
+  message stays present. A fetch never records a Proton Mail label
+  folder as a place.
   An imported place may also name only the account (`"example.org"`,
   folder unknown) or only a folder (`":old mail"`, no account). The number the
   server gives a message is not recorded here or anywhere else in the
   record: it is temporary, and the fetcher keeps it in its own memory
-  in `cache/`. A standing `mailbox:place` makes a message present in
+  in `cache/`. An id that lasts is recorded as `mailbox:id`. A standing `mailbox:place` makes a message present in
   the same way as a standing `file:path` makes a file present
 - value: string
 - written by: `ossuary mailvault`
@@ -437,9 +438,27 @@ added when it is first needed.
   the Python tool mailvault records the labels that archive recorded as
   folders, with the time its log gives for them. A Proton Mail label is
   recorded on each message in the label's folder under `Labels/` when the
-  fetch finds it there, and no fetch retracts it
+  fetch finds it there, on the files that carry the message's
+  `mailbox:id`, and no fetch retracts it
 - value: string
 - written by: `ossuary mailvault`, for a mailbox fetched over MS Graph,
   from Gmail or from Proton Mail Bridge, and for the Gmail and Proton
   Mail labels in an imported Python mailvault archive; other mailboxes
   fetched over IMAP get no tags
+
+### mailbox:id
+
+- meaning: the id the mail service gives a message, where that id
+  lasts: the same in every folder, and kept when the service renumbers
+  its folders. The value names the service, a colon, and the id:
+  `"proton:Xb3k…Zw=="` for Proton Mail, whose id Proton Mail Bridge
+  writes into the header `X-Pm-Internal-Id` of every message it hands
+  over. The id tells which files hold one message in different bytes:
+  Proton Mail Bridge builds each message when it is fetched, and after
+  it has rebuilt its local data the same message comes as other bytes.
+  A message whose id is on record is not fetched again, and its places
+  and tags go to the files that carry the id. Several files can carry
+  one id
+- value: string
+- written by: `ossuary mailvault`: the fetch from a Proton Mail account,
+  and the import, for every message that carries the header

@@ -197,17 +197,33 @@ Mail` holds every message. Fetch `All Mail` alone.
 After the folders in the account's `folders` list, a fetch from Proton Mail
 Bridge reads each folder under `Labels/` that is not in the list, and
 records the label's name as `mailbox:tag` on every message in it: `Sales`
-for `Labels/Sales`. A message that has no `mailbox:place` yet, because none
-of the configured folders holds it, also gets the label folder as its place.
+for `Labels/Sales`. Nothing is downloaded from a label folder, and it is not
+recorded as a place. The fetch finds each of its messages in the archive by
+the message's Proton id (see below) and tags it there. A message that is in
+a label folder but not yet in the archive, because it arrived after `All
+Mail` was read, is tagged by the next run. If a folder of the account could
+not be read, the label folders are left for the next run.
 
-Each label folder is read from its own resume point, like any other folder,
-so a run asks only for the messages added to the label since the last run.
-The first run downloads the messages of every label folder once more; the
-archive stores each message only once. A label removed from a message is not
-seen, and its tag stays.
+A run asks a label folder only about the messages it has not found there
+before. A label removed from a message is not seen, and its tag stays.
 
 Without a `folders` list every folder is fetched, label folders included,
 and each is recorded as a `mailbox:place`.
+
+### The Proton id
+
+Proton Mail Bridge builds each message when it is fetched. After the Bridge
+has rebuilt its local data, which also renumbers its folders, the same
+message comes as other bytes: some headers and the MIME boundaries differ,
+and the archive would store it a second time. For a Proton Mail account,
+ossuary therefore records the id Proton gives each message, the header
+`X-Pm-Internal-Id`, as `mailbox:id` (`proton:` and the id). A message whose
+id is in the archive is not downloaded again, after a renumbering, with
+`--full` or with `--compare`; only its place is recorded if it is missing.
+With `--compare` the folder is listed like with `--full` and compared by
+Proton id, so `ossuary extract mail` is not needed for it. An import of an
+archive of the Python tool mailvault records the id of every message that
+carries the header.
 
 ## Resuming
 
@@ -216,9 +232,11 @@ folder's UIDVALIDITY and the highest UID fetched. The next run asks the
 server only for messages above that UID. If the server changed the
 UIDVALIDITY, the folder is fetched again in full: messages already in the
 archive are not stored again, and their `mailbox:place` claims are
-written again. Like everything in `cache/`, the resume points can be
-deleted; the next fetch then fetches every folder in full, and no claim is
-lost. UIDs are not recorded as claims.
+written again. From Proton Mail Bridge only the messages whose Proton id
+is not in the archive are downloaded (see [The Proton id](#the-proton-id)).
+Like everything in `cache/`, the resume points can be deleted; the next
+fetch then fetches every folder in full, and no claim is lost. UIDs are
+not recorded as claims.
 
 A message the IMAP server will not hand over, because it refuses the
 fetch or sends nothing for a message the folder holds, goes on the
@@ -269,6 +287,10 @@ of every folder instead:
 - `--compare` lists every message with its Message-ID and downloads only
   those the archive does not hold in that folder under the same
   Message-ID.
+
+For a Proton Mail account both download only the messages whose Proton id
+is not in the archive, and the rest of this section does not apply to it
+(see [The Proton id](#the-proton-id)).
 
 ```console
 $ ossuary extract mail

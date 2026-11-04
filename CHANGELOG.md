@@ -5,6 +5,32 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`mailbox:id`**: for a message from Proton Mail Bridge, the id Proton gives it (the header
+  `X-Pm-Internal-Id`), recorded as `proton:` and the id by `ossuary mailvault fetch` and
+  `ossuary mailvault import`
+
+### Changed
+
+- **Proton Mail label folders are only read for their labels.** Nothing is downloaded from a
+  folder under `Labels/`, and it is no longer recorded as the place of a message that has none.
+  The label goes to the message from `All Mail`, found by its Proton id. A message that is not in
+  the archive yet is tagged by the next run
+- **`ossuary mailvault fetch --compare` on a Proton Mail account** lists each folder like `--full`
+  and compares by Proton id instead of by Message-ID, so `ossuary extract mail` is not needed first
+- **Archives with Proton Mail messages from 0.16.2 or earlier** have no `mailbox:id` on them, so a
+  fetch does not find them and downloads them again. Build such an archive anew: import the
+  archive of the Python tool mailvault again, or fetch the account into a new archive
+
+### Fixed
+
+- **A Proton Mail message is no longer stored twice.** Proton Mail Bridge hands a message over as
+  other bytes after it has rebuilt its local data. Whenever such a message was downloaded again,
+  by `--full`, by `--compare`, from a label folder, or because the Bridge renumbered its folders,
+  the archive stored it a second time. A fetch from Proton Mail now downloads only the messages
+  whose Proton id is not in the archive
+
 ## [0.16.2] - 2026-11-04
 
 ### Fixed
