@@ -657,7 +657,10 @@ impl Log {
     /// never half a file. A crash before the rename leaves the old head
     /// standing; a crash inside a rename that is not atomic leaves the
     /// `.tmp` as the only head, and the next writer finishes it (see the
-    /// module notes).
+    /// module notes). The new head reaches the device before the rename,
+    /// so that a power failure right after it cannot leave an empty head
+    /// behind; the rename itself needs no flush, since a rename that is
+    /// lost leaves the old head standing.
     ///
     /// When writing or renaming fails while the old head still stands,
     /// the `.tmp` is cleared, so that it cannot vouch for a head that
@@ -675,7 +678,7 @@ impl Log {
             context: format!("{}: {context}", self.head.display()),
             source,
         };
-        let replaced = fs::write(&tmp, text)
+        let replaced = write_flushed(&tmp, text)
             .map_err(|source| failed("writing the new head", source))
             .and_then(|()| {
                 fs::rename(&tmp, &self.head).map_err(|source| failed("replacing the head", source))
@@ -800,6 +803,14 @@ impl Log {
         let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
         parse_segment(&text)
     }
+}
+
+/// Write `text` to `path` and flush it to the device. `immure::sync_file`
+/// is the flush the stores use, which also works on SMB mounts on macOS.
+fn write_flushed(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(text.as_bytes())?;
+    immure::sync_file(&file)
 }
 
 /// Clear a `head.jsonl.tmp` that must not vouch for anything: remove it,

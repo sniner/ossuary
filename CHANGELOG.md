@@ -12,6 +12,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `head.jsonl.tmp`, and `ossuary audit` reported the claims since the last seal as lost while every
   run that writes refused. Nothing was lost, and now `ossuary audit` says so and stays sound; the
   next run that writes moves `head.jsonl.tmp` into place and says that it did
+- **A power failure right after a seal no longer leaves an empty open segment.** The new
+  `head.jsonl` is now written to the disk before it replaces the old one. Before, on some
+  filesystems, a power failure in that moment could leave an empty `head.jsonl`, which counts as a
+  lost open segment
 - **A `head.jsonl.tmp` left over from a failed seal is cleared** by the next run that writes, so
   that it cannot later be mistaken for the open segment. Where it can be neither removed nor
   emptied, the run stops and asks for it to be removed by hand
