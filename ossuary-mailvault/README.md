@@ -207,7 +207,10 @@ not be read, the label folders are left for the next run.
 Each label folder has its own resume point, like any other folder: a run
 asks only about the messages added to the label since the last run, and
 about those it did not find in the archive then. A label removed from a
-message is not seen, and its tag stays.
+message is not seen then. `--full` lists every label folder whole and
+retracts the tag from a message that a configured folder still holds but
+the label's folder no longer does, as `--full` does for Gmail. A message
+no longer in the mailbox keeps its tags.
 
 Without a `folders` list every folder is fetched, label folders included,
 and each is recorded as a `mailbox:place`.

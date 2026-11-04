@@ -42,7 +42,10 @@
 //! the point is looked up by its Proton id, and the files with the id
 //! get the label. A UID whose id is not on record yet, because the
 //! message arrived after `All Mail` was read, stays on the folder's
-//! pending list and is asked about again by the next run.
+//! pending list and is asked about again by the next run. Under
+//! `--full` the configured folders and the label folders are listed
+//! whole anyway, and a label is retracted from a message they show
+//! still in the mailbox but no longer in the label's folder.
 //!
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
@@ -61,8 +64,8 @@ use std::ops::ControlFlow;
 
 use anyhow::Result;
 use ossuary_core::{
-    Archive, Attribute, Claim, Index, Scope, Sighting, Source, Subject, Timestamp, Value, admit,
-    record,
+    Archive, Attribute, Claim, Index, Scope, Sighting, Source, Subject, Term, Timestamp, Value,
+    admit, record,
 };
 use serde_json::json;
 
@@ -224,6 +227,7 @@ pub fn run(
         id: Attribute::parse(proton::ATTRIBUTE)?,
         record: RefCell::new(None),
         landed: RefCell::new(Vec::new()),
+        in_mailbox: RefCell::new(HashSet::new()),
         say,
     };
     let mut tally = Tally::new("fetch");
@@ -279,6 +283,11 @@ struct Fetch<'a> {
     /// server id as the memo has it, with their subjects: what decides
     /// whether another round is needed.
     landed: RefCell<Vec<(String, String)>>,
+    /// Under `--full`, the Proton ids the current account's configured
+    /// folders listed: the messages still in the mailbox. The full
+    /// listing makes them at no extra cost; a label is taken back only
+    /// from one of these.
+    in_mailbox: RefCell<HashSet<String>>,
     say: Say,
 }
 
@@ -469,6 +478,7 @@ impl Fetch<'_> {
         tally: &mut Tally,
     ) -> Result<()> {
         let failed = tally.failed.len();
+        self.in_mailbox.borrow_mut().clear();
         for folder in folders {
             self.folder(account, mailbox, folder, tally)?;
         }
@@ -676,6 +686,11 @@ impl Fetch<'_> {
         asked.sort_unstable();
         asked.dedup();
         let listed = mailbox.header(&asked, proton::HEADER)?;
+        if self.options.full {
+            self.in_mailbox
+                .borrow_mut()
+                .extend(listed.iter().filter_map(|(_, value)| proton::id(value)));
+        }
         Ok(self.identified(place, &asked, &listed))
     }
 
@@ -713,6 +728,38 @@ impl Fetch<'_> {
             settled,
             ids,
         })
+    }
+
+    /// Under `--full`: the files that carry `label` but whose Proton id
+    /// the label folder no longer lists, while a configured folder of the
+    /// account still does. The label was removed from them. A message no
+    /// longer in the mailbox keeps its labels, as from Gmail, and a file
+    /// without a Proton id is not this folder's to judge.
+    fn label_removed(&self, label: &str, in_folder: &HashSet<String>) -> Result<Vec<Subject>> {
+        let in_mailbox = self.in_mailbox.borrow();
+        let borrowed = self.record.borrow();
+        let index = borrowed
+            .as_ref()
+            .expect("a Proton folder catches the record up");
+        // Quoted: the label is meant literally.
+        let terms = [
+            Term::Attribute(self.tag.clone(), format!("\"{label}\"")),
+            Term::Attribute(self.id.clone(), "proton:*".to_string()),
+        ];
+        let mut gone = Vec::new();
+        for subject in index.find(&terms, &[], Scope::Held)? {
+            let ids: Vec<String> = index
+                .values(&subject, &self.id, Scope::Held)?
+                .into_iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect();
+            let present = ids.iter().any(|id| in_mailbox.contains(id));
+            let labelled = ids.iter().any(|id| in_folder.contains(id));
+            if present && !labelled {
+                gone.push(subject);
+            }
+        }
+        Ok(gone)
     }
 
     /// A label folder of Proton Mail Bridge. Its messages are in `All
@@ -755,16 +802,18 @@ impl Fetch<'_> {
         let mut asked: Vec<u32> = uids.iter().chain(&open).copied().collect();
         asked.sort_unstable();
         asked.dedup();
-        let sorted = if asked.is_empty() {
-            proton::Sorted::default()
+        let listed = if asked.is_empty() {
+            Vec::new()
         } else {
-            let listed = match mailbox.header(&asked, proton::HEADER) {
+            match mailbox.header(&asked, proton::HEADER) {
                 Ok(listed) => listed,
                 Err(error) => {
                     tally.failed.push(format!("{name}: {error:#}"));
                     return Ok(());
                 }
-            };
+            }
+        };
+        let sorted = {
             let borrowed = self.record.borrow();
             let index = borrowed
                 .as_ref()
@@ -798,7 +847,24 @@ impl Fetch<'_> {
                 still_open.len()
             ));
         }
+        // Under --full the folder is listed whole, and with the listing of
+        // the configured folders that shows which labels were removed.
+        let in_folder: Option<HashSet<String>> = self.options.full.then(|| {
+            listed
+                .iter()
+                .filter_map(|(_, value)| proton::id(value))
+                .collect()
+        });
         if self.options.dry_run {
+            if let Some(in_folder) = &in_folder {
+                let gone = self.label_removed(label, in_folder)?;
+                if !gone.is_empty() {
+                    self.say.line(format_args!(
+                        "{name}: the label would be retracted from {} no longer in the folder",
+                        counted(gone.len(), "message", "messages")
+                    ));
+                }
+            }
             return Ok(());
         }
         self.memo.begin()?;
@@ -819,6 +885,29 @@ impl Fetch<'_> {
             for (_, holders) in &sorted.known {
                 let receivers = record.receivers(holders, &self.tag, &value)?;
                 self.assert_on(&receivers, &self.tag, &value, tally)?;
+            }
+        }
+        if let Some(in_folder) = &in_folder {
+            let gone = self.label_removed(label, in_folder)?;
+            let time = Timestamp::now();
+            for subject in &gone {
+                let claim = Claim::retract_value(
+                    subject.clone(),
+                    self.tag.clone(),
+                    value.clone(),
+                    time.clone(),
+                    self.source.clone(),
+                    tally.run.clone(),
+                )?;
+                self.archive.log().append(&claim)?;
+                tally.claims += 1;
+                tally.taken += 1;
+            }
+            if !gone.is_empty() {
+                self.say.line(format_args!(
+                    "{name}: the label retracted from {} no longer in the folder",
+                    counted(gone.len(), "message", "messages")
+                ));
             }
         }
         for uid in &open {
@@ -1900,6 +1989,7 @@ mod tests {
             id: Attribute::parse(proton::ATTRIBUTE).unwrap(),
             record: RefCell::new(Some(caught_up(&bench.archive, Say::new(true)).unwrap())),
             landed: RefCell::new(Vec::new()),
+            in_mailbox: RefCell::new(HashSet::new()),
             say: Say::new(true),
         }
     }
@@ -2846,6 +2936,59 @@ mod tests {
         );
         assert_eq!(bench.archive.log().head().unwrap().len(), head);
         assert_eq!(sales(&bench), point);
+    }
+
+    #[test]
+    fn full_retracts_a_proton_label_removed_from_a_message_still_in_all_mail() {
+        let bench = bench();
+        let (one, two) = (built(1, "a"), built(2, "a"));
+        let all = || proton(7, &[(1, &one), (2, &two)]);
+        with_label(
+            &bench,
+            &mut all(),
+            &mut proton(9, &[(1, &one), (2, &two)]),
+            &options(false, false),
+        );
+        assert_eq!(held(&bench, &two, "mailbox:tag"), ["Sales"]);
+
+        // The label was removed from the second. A normal run does not
+        // see it.
+        let after = || proton(9, &[(1, &one)]);
+        let normal = with_label(&bench, &mut all(), &mut after(), &options(false, false));
+        assert_eq!(normal.taken, 0);
+        let head = bench.archive.log().head().unwrap().len();
+        let dry = with_label(&bench, &mut all(), &mut after(), &options(true, true));
+        assert_eq!(
+            (dry.taken, bench.archive.log().head().unwrap().len()),
+            (0, head),
+            "a dry run writes nothing"
+        );
+
+        let full = with_label(&bench, &mut all(), &mut after(), &options(true, false));
+        assert_eq!(full.taken, 1);
+        assert!(held(&bench, &two, "mailbox:tag").is_empty());
+        assert_eq!(held(&bench, &one, "mailbox:tag"), ["Sales"]);
+    }
+
+    #[test]
+    fn a_message_gone_from_the_mailbox_keeps_its_proton_labels_under_full() {
+        let bench = bench();
+        let (one, two) = (built(1, "a"), built(2, "a"));
+        with_label(
+            &bench,
+            &mut proton(7, &[(1, &one), (2, &two)]),
+            &mut proton(9, &[(1, &one), (2, &two)]),
+            &options(false, false),
+        );
+        // Deleted: gone from All Mail and from the label folder.
+        let full = with_label(
+            &bench,
+            &mut proton(7, &[(1, &one)]),
+            &mut proton(9, &[(1, &one)]),
+            &options(true, false),
+        );
+        assert_eq!(full.taken, 0);
+        assert_eq!(held(&bench, &two, "mailbox:tag"), ["Sales"]);
     }
 
     #[test]

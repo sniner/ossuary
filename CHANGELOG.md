@@ -17,6 +17,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   folder under `Labels/`, and it is no longer recorded as the place of a message that has none.
   The label goes to the message from `All Mail`, found by its Proton id. A message that is not in
   the archive yet is tagged by the next run
+- **`ossuary mailvault fetch --full` retracts a removed Proton Mail label**, as it does for Gmail:
+  from a message that a configured folder still holds and the label's folder no longer does
 - **`ossuary mailvault fetch --compare` on a Proton Mail account** lists each folder like `--full`
   and compares by Proton id instead of by Message-ID, so `ossuary extract mail` is not needed first
 - **Archives with Proton Mail messages from 0.16.2 or earlier** have no `mailbox:id` on them, so a

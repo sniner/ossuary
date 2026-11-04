@@ -439,7 +439,9 @@ added when it is first needed.
   folders, with the time its log gives for them. A Proton Mail label is
   recorded on each message in the label's folder under `Labels/` when the
   fetch finds it there, on the files that carry the message's
-  `mailbox:id`, and no fetch retracts it
+  `mailbox:id`. Only a fetch with `--full` retracts it: from a message
+  that a configured folder of the account still holds and the label's
+  folder no longer does
 - value: string
 - written by: `ossuary mailvault`, for a mailbox fetched over MS Graph,
   from Gmail or from Proton Mail Bridge, and for the Gmail and Proton
