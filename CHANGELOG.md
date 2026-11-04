@@ -17,6 +17,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **macOS, SMB mounts**: storing a file in an archive on an SMB mount no longer fails with
+  `flushing to device: Operation not supported (os error 45)`
 - **A failed examination leaves no claims behind.** When a derived file could not be stored, the
   findings about the examined file were already in the log, without a receipt. Now the derived
   files are stored first and all claims of the examination are written at once
