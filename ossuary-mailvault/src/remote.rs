@@ -52,6 +52,16 @@ pub enum Stop {
 
 /// What the fetch asks of a mailbox, once it is logged in.
 pub trait Mailbox {
+    /// Every folder the server offers that can be opened, in the
+    /// server's order, as a person reads them. A name the server marks
+    /// `\Noselect` — `[Gmail]` itself, a bare branch of the hierarchy —
+    /// holds no messages and is left out.
+    ///
+    /// # Errors
+    ///
+    /// A list the server refuses, or a name that will not decode.
+    fn folders(&mut self) -> Result<Vec<String>>;
+
     /// Opens a folder read-only.
     ///
     /// # Errors
@@ -177,27 +187,6 @@ impl Remote {
             flavour,
             exists: 0,
         })
-    }
-
-    /// Every folder the server offers that can be opened, in the
-    /// server's order, as a person reads them. A name the server marks
-    /// `\Noselect` — `[Gmail]` itself, a bare branch of the hierarchy —
-    /// holds no messages and is left out.
-    ///
-    /// # Errors
-    ///
-    /// A list the server refuses, or a name that will not decode.
-    pub fn folders(&mut self) -> Result<Vec<String>> {
-        let names = self
-            .session
-            .list(Some(""), Some("*"))
-            .context("listing the folders failed")?;
-        names
-            .iter()
-            .filter(|name| !name.attributes().contains(&NameAttribute::NoSelect))
-            .map(|name| utf7::decode(name.name()))
-            .collect::<Result<Vec<_>>>()
-            .context("the server listed a folder name that cannot be decoded")
     }
 
     pub fn logout(mut self) {
@@ -354,6 +343,19 @@ fn reached(name: &str, account: &Imap) -> Result<TcpStream> {
 }
 
 impl Mailbox for Remote {
+    fn folders(&mut self) -> Result<Vec<String>> {
+        let names = self
+            .session
+            .list(Some(""), Some("*"))
+            .context("listing the folders failed")?;
+        names
+            .iter()
+            .filter(|name| !name.attributes().contains(&NameAttribute::NoSelect))
+            .map(|name| utf7::decode(name.name()))
+            .collect::<Result<Vec<_>>>()
+            .context("the server listed a folder name that cannot be decoded")
+    }
+
     fn examine(&mut self, folder: &str) -> Result<Folder> {
         let wire = utf7::encode(folder);
         let mailbox = self

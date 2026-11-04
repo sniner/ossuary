@@ -23,6 +23,10 @@
 //!
 //! The rules follow the Python mailvault's comparison after its issues
 //! #13 and #14.
+//!
+//! None of this is used for Proton Mail Bridge. The Proton id settles
+//! there what the Message-ID cannot, and `--compare` lists the folder
+//! like `--full` (see [`crate::proton`]).
 
 use std::collections::{HashMap, HashSet};
 

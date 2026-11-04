@@ -4,7 +4,7 @@
 //!
 //! All of it is cache by the archive's own rule: losing the file costs
 //! time, never a claim, and no claim is ever built from what stands
-//! here. Four tables:
+//! here. Five tables:
 //!
 //! - `resume` (account, folder, state): one row per folder, `state`
 //!   is a [`Resume`] as JSON, tagged with the backend that wrote it.
@@ -31,6 +31,12 @@
 //!   `uidvalidity/uid`, so a renumbered folder matches no row. Each
 //!   `--compare` removes the rows of messages no longer listed, no
 //!   longer at the place, or settled by the Message-ID.
+//! - `labelled` (account, folder, uidvalidity, uid, subject): for a
+//!   Proton Mail Bridge label folder, the UIDs already found in the
+//!   archive by their Proton id, with the files that carry the id. The
+//!   next run asks the server only about the other UIDs. A UID without
+//!   a row is asked about again, and a row of another UIDVALIDITY is
+//!   dropped.
 //!
 //! Server-side numbering like a UID belongs here and nowhere on a
 //! message's record: it means nothing once the UIDVALIDITY changes.
@@ -75,6 +81,15 @@ pub struct GraphResume {
 pub enum Resume {
     Imap(ImapResume),
     Graph(GraphResume),
+}
+
+/// What earlier runs found of a label folder, under one UIDVALIDITY.
+#[derive(Debug, Default)]
+pub struct Labelled {
+    /// The UIDs found in the archive, with the files of each.
+    pub uids: HashMap<u32, Vec<String>>,
+    /// Whether rows of another UIDVALIDITY are left.
+    pub stale: bool,
 }
 
 /// One entry of a folder's pending list.
@@ -179,6 +194,14 @@ impl Memo {
                  id      TEXT NOT NULL,
                  subject TEXT NOT NULL,
                  PRIMARY KEY (account, folder, id)
+             );
+             CREATE TABLE IF NOT EXISTS labelled (
+                 account     TEXT NOT NULL,
+                 folder      TEXT NOT NULL,
+                 uidvalidity INTEGER NOT NULL,
+                 uid         INTEGER NOT NULL,
+                 subject     TEXT NOT NULL,
+                 PRIMARY KEY (account, folder, uid, subject)
              );",
         )?;
         Ok(Self { connection, reset })
@@ -488,6 +511,74 @@ impl Memo {
         for id in ids {
             statement.execute(params![account, folder, id])?;
         }
+        Ok(())
+    }
+
+    /// What earlier runs found of a label folder: the UIDs already
+    /// found in the archive, with the files of each, under the
+    /// UIDVALIDITY they were found under. Rows of another UIDVALIDITY
+    /// are left out; [`clear_labelled`](Self::clear_labelled) removes
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn labelled(&self, account: &str, folder: &str, uidvalidity: u32) -> Result<Labelled> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT uidvalidity, uid, subject FROM labelled WHERE account = ?1 AND folder = ?2",
+        )?;
+        let rows = statement.query_map(params![account, folder], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut labelled = Labelled::default();
+        for row in rows {
+            let (promised, uid, subject) = row?;
+            if promised == uidvalidity {
+                labelled.uids.entry(uid).or_default().push(subject);
+            } else {
+                labelled.stale = true;
+            }
+        }
+        Ok(labelled)
+    }
+
+    /// Remember that the label folder's `uid` is these files.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn add_labelled<'a>(
+        &self,
+        account: &str,
+        folder: &str,
+        uidvalidity: u32,
+        uid: u32,
+        subjects: impl IntoIterator<Item = &'a str>,
+    ) -> Result<()> {
+        let mut statement = self.connection.prepare_cached(
+            "INSERT OR IGNORE INTO labelled (account, folder, uidvalidity, uid, subject)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for subject in subjects {
+            statement.execute(params![account, folder, uidvalidity, uid, subject])?;
+        }
+        Ok(())
+    }
+
+    /// Forget what was found of the label folder.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn clear_labelled(&self, account: &str, folder: &str) -> Result<()> {
+        let mut statement = self
+            .connection
+            .prepare_cached("DELETE FROM labelled WHERE account = ?1 AND folder = ?2")?;
+        statement.execute(params![account, folder])?;
         Ok(())
     }
 

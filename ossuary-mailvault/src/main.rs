@@ -48,7 +48,7 @@ use config::{Account, Config, Reach, Source};
 use graph::Graph;
 use memo::Memo;
 use output::Say;
-use remote::Remote;
+use remote::{Mailbox as _, Remote};
 use tally::Tally;
 
 /// What every claim of this program says as its source.
