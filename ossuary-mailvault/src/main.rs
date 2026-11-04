@@ -39,6 +39,7 @@ mod import;
 mod memo;
 mod output;
 mod place;
+mod proton;
 mod remote;
 mod tally;
 mod utf7;

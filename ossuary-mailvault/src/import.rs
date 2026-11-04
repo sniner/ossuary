@@ -52,6 +52,7 @@ use crate::config::{Account, Config, valid_name};
 use crate::memo::Memo;
 use crate::output::{Say, counted};
 use crate::place;
+use crate::proton;
 use crate::tally::Tally;
 
 /// The mark a mailvault archive carries in its root.
@@ -169,6 +170,7 @@ pub fn run(
         source: Source::parse(crate::SOURCE)?,
         place: Attribute::parse(place::ATTRIBUTE)?,
         tag: Attribute::parse(place::TAG)?,
+        id: Attribute::parse(proton::ATTRIBUTE)?,
         plan,
         memo: (!options.full).then_some(memo),
     };
@@ -230,6 +232,8 @@ struct Takeover<'a> {
     source: Source,
     place: Attribute,
     tag: Attribute,
+    /// Proton's id of a message the Bridge handed over.
+    id: Attribute,
     plan: Plan,
     memo: Option<&'a Memo>,
 }
@@ -362,6 +366,8 @@ struct Pending {
     /// Whether one of all its places, recorded or not, is not a label.
     /// If none is, its label folders are its places as well.
     elsewhere: bool,
+    /// The `mailbox:id` its bytes carry, from Proton Mail Bridge.
+    id: Option<String>,
 }
 
 impl Takeover<'_> {
@@ -420,6 +426,7 @@ impl Takeover<'_> {
             admitted,
             places,
             elsewhere,
+            id: proton::id_of(&bytes),
         }))
     }
 
@@ -458,11 +465,12 @@ impl Takeover<'_> {
         for (time, index, places) in &sightings {
             let pending = &batch[*index];
             let again;
-            let admitted = if seen[*index] {
+            let first = !seen[*index];
+            let admitted = if first {
+                &pending.admitted
+            } else {
                 again = pending.admitted.again();
                 &again
-            } else {
-                &pending.admitted
             };
             seen[*index] = true;
             // Two names of the log can match one folder of the list.
@@ -478,13 +486,17 @@ impl Takeover<'_> {
                     std::iter::once(fact).chain(kept.then(|| Fact::Place((*place).clone())))
                 })
                 .collect();
-            let facts: Vec<(Attribute, serde_json::Value)> = facts
+            let mut facts: Vec<(Attribute, serde_json::Value)> = facts
                 .into_iter()
                 .map(|fact| match fact {
                     Fact::Place(place) => (self.place.clone(), json!(place)),
                     Fact::Tag(label) => (self.tag.clone(), json!(label)),
                 })
                 .collect();
+            // The id holds for the message, not for one sighting.
+            if first && let Some(id) = &pending.id {
+                facts.push((self.id.clone(), json!(id)));
+            }
             tally.claims += record(
                 log,
                 admitted,
@@ -927,6 +939,33 @@ mod tests {
         let tally = take(&bench, &[], false, true);
         assert_eq!((tally.would, tally.claims), (2, 0));
         assert!(bench.archive.log().head().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_message_from_proton_mail_bridge_gets_its_proton_id() {
+        let bench = bench();
+        let built: &[u8] =
+            b"X-Pm-Internal-Id: abc==\r\nFrom: d@example.org\r\nSubject: four\r\n\r\nfourth";
+        let four = store(&bench.vault, Algorithm::Sha384, built, false);
+        for date in ["2024-03-06T10:00:00+00:00", "2024-03-07T10:00:00+00:00"] {
+            log(
+                &bench.vault,
+                &format!(
+                    r#"{{"version": 2, "mailbox": "example.org", "folder": "Archive {date}", "date": "{date}", "prev": null}}"#
+                ),
+                &[&four],
+            );
+        }
+        let tally = take(&bench, &[], false, false);
+        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+        assert_eq!(
+            standing(&bench, built, "mailbox:id"),
+            vec![json!("proton:abc==")]
+        );
+        assert!(
+            standing(&bench, ONE, "mailbox:id").is_empty(),
+            "no header, no id"
+        );
     }
 
     #[test]

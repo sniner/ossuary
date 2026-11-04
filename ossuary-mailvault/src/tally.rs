@@ -25,6 +25,9 @@ pub struct Tally {
     /// Messages `fetch --compare` did not fetch because an earlier
     /// `--compare` fetched them and the archive holds them.
     pub recalled: usize,
+    /// Messages from Proton Mail Bridge not fetched because the archive
+    /// holds them under their Proton id.
+    pub identified: usize,
     /// Claims appended to the log, retractions included.
     pub claims: usize,
     /// Marks taken back: a `mailbox:tag` that stood and no longer does.
@@ -47,6 +50,7 @@ impl Tally {
             left: 0,
             matched: 0,
             recalled: 0,
+            identified: 0,
             claims: 0,
             taken: 0,
             would: 0,
@@ -88,18 +92,21 @@ impl Tally {
         format!("{}; {record}", parts.join(", "))
     }
 
-    /// The messages `fetch --compare` did not fetch, and why.
+    /// The messages a fetch found in the archive and did not fetch, and
+    /// how it found them.
     fn found(&self) -> Option<String> {
-        match (self.matched, self.recalled) {
-            (0, 0) => None,
-            (matched, 0) => Some(format!("{matched} found in the archive by Message-ID")),
-            (0, recalled) => Some(format!(
-                "{recalled} found in the archive by an earlier --compare"
-            )),
-            (matched, recalled) => Some(format!(
-                "{matched} found in the archive by Message-ID, {recalled} by an earlier --compare"
-            )),
+        let ways = [
+            (self.matched, "by Message-ID"),
+            (self.recalled, "by an earlier --compare"),
+            (self.identified, "by their Proton id"),
+        ];
+        let mut found = ways.iter().filter(|(count, _)| *count > 0);
+        let (count, how) = found.next()?;
+        let mut text = format!("{count} found in the archive {how}");
+        for (count, how) in found {
+            text.push_str(&format!(", {count} {how}"));
         }
+        Some(text)
     }
 }
 
@@ -142,6 +149,12 @@ mod tests {
         assert_eq!(
             tally.verdict(true),
             "would fetch 1 message, 2 found in the archive by an earlier --compare; nothing written"
+        );
+        tally.recalled = 0;
+        tally.identified = 6440;
+        assert_eq!(
+            tally.verdict(true),
+            "would fetch 1 message, 6440 found in the archive by their Proton id; nothing written"
         );
     }
 
