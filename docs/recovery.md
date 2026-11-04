@@ -172,7 +172,10 @@ The complete log is the claims of every sealed segment in the order of
 the chain, followed by those in `head.jsonl`. The chain is read
 backwards: the first line of `head.jsonl` names the last sealed segment,
 the first line of every segment names the one before it, and the first
-segment names none. This writes the log to `~/recovery/log.jsonl`:
+segment names none. If `head.jsonl` is missing and `head.jsonl.tmp` is
+there, a seal stopped before its last step (see [the archive
+format](format.md#segments)); use `head.jsonl.tmp` in its place. This
+writes the log to `~/recovery/log.jsonl`:
 
 ```bash
 out=~/recovery

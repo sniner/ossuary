@@ -35,6 +35,9 @@ pub fn extract(
     if !quiet {
         errln!("archive {}", archive.root().display());
     }
+    if !dry_run {
+        crate::finish_interrupted_seal(&archive)?;
+    }
     let subjects = expand(&archive, subjects, quiet)?;
     // An observer cannot return an error, so a failed write to stdout is
     // kept and reported once the run is over.

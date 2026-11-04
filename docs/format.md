@@ -231,6 +231,18 @@ in `claims/` as an ordinary immure entry (zstd-compressed, and sealed if
 the store is), and a new `head.jsonl` is started. When to seal is up to
 the software; a reader must not assume anything about a segment's size.
 
+The new `head.jsonl` is written as `head.jsonl.tmp` and renamed over
+the old one. Where that rename is not atomic (macOS on an SMB mount
+removes the old file first), a writer that stops in between leaves no
+`head.jsonl`, only `head.jsonl.tmp`. A `head.jsonl.tmp` that reads as a
+segment and names the last sealed segment, the one no other segment
+names as its predecessor, stands for a missing `head.jsonl`: a reader
+takes it as the open segment, and a writer renames it to `head.jsonl`
+before it writes anything else. An empty `head.jsonl` has no such
+stand-in. Next to an existing `head.jsonl`, a `head.jsonl.tmp` is left
+over from a seal that failed and counts for nothing; a writer removes
+it, or empties it where it cannot be removed.
+
 A sealed segment is immutable like everything else in a store, and the
 format adds its own rule: **segments are never compacted, combined or
 rewritten.** Superseded and retracted claims stay where they were
@@ -257,8 +269,9 @@ looks complete. A seal kept outside the archive closes that gap (see
 **Every segment is reached from the head.** Writers keep one rule:
 every segment in the claims store can be reached by walking back from
 the open head over `previous`. The head therefore names the segment
-sealed last. A head that is missing while sealed segments exist was
-lost, and no new head is begun in its place. A segment the walk does
+sealed last. A head that is missing while sealed segments exist, with
+no `head.jsonl.tmp` standing in for it, was lost, and no new head is
+begun in its place. A segment the walk does
 not reach is a finding. A chain broken by a lost segment or a lost head
 can only be repaired by rewriting the segments after the break, which
 gives them new digests; the format has nothing that stands in for what
@@ -310,8 +323,9 @@ are sealed, the key:
 1. Read `FORMAT`: generation, algorithm, depths.
 2. Walk `claims/`, unseal each entry if it is sealed, decompress it
    (`zstd -dc`), and check that the first line has `ossuary-segment`.
-   Starting from `head.jsonl`, walk back over `previous` to the first
-   segment: that is the order of the segments. A name the walk finds no
+   Starting from `head.jsonl` (or the `head.jsonl.tmp` that stands in
+   for a missing one, see [Segments](#segments)), walk back over
+   `previous` to the first segment: that is the order of the segments. A name the walk finds no
    segment for is a missing segment, and a segment the walk does not
    reach does not belong to the record.
 3. Concatenate in that order, append `head.jsonl`: this is the complete

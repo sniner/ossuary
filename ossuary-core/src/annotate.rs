@@ -25,14 +25,17 @@ use crate::log::Log;
 ///
 /// # Errors
 ///
-/// Whatever appending to the log can answer; the claim grammar itself
-/// cannot refuse these claims.
+/// Whatever readying the log and appending to it can answer; the claim
+/// grammar itself cannot refuse these claims.
 pub fn annotate(
     log: &Log,
     subjects: &[Subject],
     comments: &[String],
     tags: &[String],
 ) -> Result<Written> {
+    // The CLI asks first and says when a seal was finished; here it only
+    // has to be done.
+    let _ = log.writable()?;
     let word = Source::parse("user")?;
     let time = Timestamp::now();
     let run = Run::new();

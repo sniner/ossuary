@@ -177,6 +177,15 @@ fn main() -> ExitCode {
     }
 }
 
+/// Ready the log before a run that writes, and say so when a seal that
+/// stopped before its last step was finished. A lost head is refused here,
+/// before a server is asked for anything.
+fn finish_interrupted_seal(archive: &Archive) -> Result<()> {
+    if let Some(note) = archive.log().writable()?.note() {
+        eprintln!("{note}");
+    }
+    Ok(())
+}
 fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         archive,
@@ -212,7 +221,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => {
             say.line(format_args!("archive {}", archive.root().display()));
             if !dry_run {
-                archive.log().writable()?;
+                finish_interrupted_seal(&archive)?;
             }
             let config = source.load()?;
             let chosen = chosen(&config, &accounts)?;
@@ -245,7 +254,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             say.line(format_args!("archive {}", archive.root().display()));
             if !dry_run {
-                archive.log().writable()?;
+                finish_interrupted_seal(&archive)?;
             }
             import::verify(&vault)?;
             let config = if no_auto_labels {

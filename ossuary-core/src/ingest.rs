@@ -134,7 +134,9 @@ where
     I: IntoIterator,
     I::Item: AsRef<Path>,
 {
-    log.writable()?;
+    // The CLI asks first and says when a seal was finished; here it
+    // only has to be done.
+    let _ = log.writable()?;
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
         run: Run::new(),

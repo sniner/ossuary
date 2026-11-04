@@ -811,6 +811,22 @@ pub(crate) fn open(root: &Path) -> Result<Archive> {
     })
 }
 
+/// Finish a seal that stopped before its last step, and say so, before a
+/// run that writes, so that the line comes before the run's own. A lost
+/// head is left to the run, which refuses it or reports it.
+pub(crate) fn finish_interrupted_seal(archive: &Archive) -> Result<()> {
+    match archive.log().writable() {
+        Ok(writable) => {
+            if let Some(note) = writable.note() {
+                errln!("{note}");
+            }
+            Ok(())
+        }
+        Err(Error::HeadLost(_)) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
     let requested = algorithm.map(str::parse::<Algorithm>).transpose()?;
     match Archive::create(root, requested.unwrap_or(Algorithm::Sha256)) {
@@ -889,6 +905,11 @@ fn ingest(
 
     if !quiet {
         errln!("archive {}", archive.root().display());
+    }
+    if !dry_run {
+        finish_interrupted_seal(&archive)?;
+    }
+    if !quiet {
         // One path is named; many — a glob's expansion — are counted,
         // the verdict tells how they fared.
         match paths {
@@ -1066,6 +1087,7 @@ fn annotate(
         ));
     }
     let archive = open(root)?;
+    finish_interrupted_seal(&archive)?;
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
 
@@ -1249,6 +1271,9 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
     }
 
     let archive = open(root)?;
+    if !dry_run {
+        finish_interrupted_seal(&archive)?;
+    }
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
 

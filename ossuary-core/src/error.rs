@@ -123,6 +123,22 @@ pub enum Error {
     )]
     HeadLost(std::path::PathBuf),
 
+    /// A `head.jsonl.tmp` that a seal left next to the open segment can
+    /// be neither removed nor emptied. Left as it is, it would vouch for
+    /// a head the open segment has grown past, were the open segment to
+    /// go missing. `after` is the failure that left it, when there was
+    /// one in this run.
+    #[error(
+        "{}{}: left over from a seal that did not finish, and it can be neither removed nor emptied ({cleanup}); remove it by hand before the next run",
+        .after.as_deref().map(|cause| format!("{}; ", cause.spelled())).unwrap_or_default(),
+        .path.display()
+    )]
+    LeftOver {
+        path: std::path::PathBuf,
+        cleanup: std::io::Error,
+        after: Option<Box<Error>>,
+    },
+
     /// A segment is UTF-8 text by definition, and these bytes are not.
     #[error("segment is not UTF-8 text")]
     NotText,

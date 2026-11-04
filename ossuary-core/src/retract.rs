@@ -29,9 +29,13 @@ pub enum Taking {
 ///
 /// # Errors
 ///
-/// Whatever appending to the log can answer, and [`crate::Error::NullValue`]
-/// for a `null` taking, which the claim grammar refuses.
+/// Whatever readying the log and appending to it can answer, and
+/// [`crate::Error::NullValue`] for a `null` taking, which the claim grammar
+/// refuses.
 pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<Written> {
+    // The CLI asks first and says when a seal was finished; here it only
+    // has to be done.
+    let _ = log.writable()?;
     let word = Source::parse("user")?;
     let time = Timestamp::now();
     let run = Run::new();

@@ -160,7 +160,7 @@ mod tests {
             "2 origin(s) copied to prov:origin; 1 already recorded"
         );
 
-        planned.apply(log).unwrap();
+        assert_eq!(planned.apply(log).unwrap(), ossuary_core::Writable::Ready);
         let mut index = Index::open(dir.path().join("cache").join("fix-test.sqlite")).unwrap();
         index.fold(log).unwrap();
         let new = Attribute::parse(NEW).unwrap();

@@ -212,8 +212,10 @@ fn run(cli: &Cli) -> Result<ExitCode> {
 
 /// A fix that adds claims: appended unless rehearsing.
 fn claims(cli: &Cli, archive: &Archive, plan: &Plan) -> Result<String> {
-    if !cli.dry_run {
-        plan.apply(archive.log())?;
+    if !cli.dry_run
+        && let Some(note) = plan.apply(archive.log())?.note()
+    {
+        eprintln!("{note}");
     }
     Ok(plan.sentence(cli.dry_run))
 }

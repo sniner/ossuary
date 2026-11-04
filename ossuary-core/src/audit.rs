@@ -190,6 +190,11 @@ pub struct LogAudit {
     /// sealed segments are there, and the claims recorded since the
     /// last seal went with it.
     pub head_lost: bool,
+    /// Whether a seal stopped before its fresh head was in place: the
+    /// head is missing, and the fresh head that vouches for it waits
+    /// next to it. Nothing is lost, and the next run that writes moves
+    /// it into place, so this is not a finding.
+    pub seal_interrupted: bool,
     /// The segments the walk back from the open head reached, in log
     /// order: the first segment first.
     pub chain: Vec<String>,
@@ -261,6 +266,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         broken: Vec::new(),
         head_broken: None,
         head_lost: false,
+        seal_interrupted: false,
         chain: Vec::new(),
         ends: Ends::First,
         unreached: Vec::new(),
@@ -303,6 +309,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         }
     }
     report.head_lost = !held.is_empty() && log.head_lost()?;
+    report.seal_interrupted = !held.is_empty() && log.seal_interrupted()?;
     let open = match log.head_contents() {
         Ok(contents) => {
             report.claims += contents.claims().len();

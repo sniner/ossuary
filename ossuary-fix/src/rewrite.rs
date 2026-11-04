@@ -29,7 +29,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use immure::Digest;
@@ -150,14 +149,7 @@ impl Rewrite {
             segments.insert(name.clone(), segment);
             texts.insert(name, (digest, text));
         }
-        let old_head = match fs::read_to_string(log.head_path()) {
-            Ok(text) if text.is_empty() => None,
-            Ok(text) => Some(text),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
-            Err(source) => {
-                return Err(source).context(format!("{}: reading", log.head_path().display()));
-            }
-        };
+        let old_head = log.head_text()?;
         let mut head = old_head
             .as_deref()
             .map(|text| parse(text).context("the open segment"))
@@ -269,7 +261,7 @@ impl Rewrite {
             }
         }
         if let Some(text) = &self.head {
-            replace_head(log.head_path(), text)?;
+            log.replace_head(text)?;
         }
         for step in self.steps.iter().rev() {
             store.remove(&step.old)?;
@@ -435,15 +427,6 @@ fn parse(text: &str) -> Result<Segment> {
         extra: header,
         lines: lines.map(str::to_string).collect(),
     })
-}
-
-/// The head replaced by rename, so it is never half a file.
-fn replace_head(head: &Path, text: &str) -> Result<()> {
-    let mut name = head.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    let tmp = head.with_file_name(name);
-    fs::write(&tmp, text).with_context(|| format!("{}: writing", tmp.display()))?;
-    fs::rename(&tmp, head).with_context(|| format!("{}: replacing", head.display()))
 }
 
 /// Drop what the cache knows of segments by name: the query index.

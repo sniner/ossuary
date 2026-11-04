@@ -1,7 +1,7 @@
 //! What a fix would append, and how it is appended and told.
 
 use anyhow::Result;
-use ossuary_core::{Claim, Log};
+use ossuary_core::{Claim, Log, Writable};
 
 /// A fix's answer: the claims to append, and the words for saying what
 /// was found.
@@ -22,16 +22,18 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Append the plan's claims to the log, like any writer's.
+    /// Append the plan's claims to the log, like any writer's: the log
+    /// readied first, and what readying it did is the answer.
     ///
     /// # Errors
     ///
-    /// Whatever appending can answer.
-    pub fn apply(&self, log: &Log) -> Result<()> {
+    /// Whatever readying the log and appending can answer.
+    pub fn apply(&self, log: &Log) -> Result<Writable> {
+        let writable = log.writable()?;
         for claim in &self.claims {
             log.append(claim)?;
         }
-        Ok(())
+        Ok(writable)
     }
 
     /// The one line the fix answers with.
@@ -89,9 +91,12 @@ mod tests {
         let log = archive.log();
         log.append(&claim("2026-09-20T10:00:00Z")).unwrap();
 
-        plan(vec![claim("2026-09-01T10:00:00Z")])
-            .apply(log)
-            .unwrap();
+        assert_eq!(
+            plan(vec![claim("2026-09-01T10:00:00Z")])
+                .apply(log)
+                .unwrap(),
+            Writable::Ready
+        );
 
         assert!(log.segments().unwrap().is_empty(), "nothing sealed");
         assert_eq!(

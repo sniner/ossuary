@@ -13,7 +13,6 @@
 //! the record up to it.
 
 use std::collections::BTreeSet;
-use std::fs;
 
 use immure::{Algorithm, Digest};
 
@@ -63,13 +62,19 @@ pub enum Sealing {
 ///
 /// # Errors
 ///
-/// Everything [`audit_log`] and [`Log::seal`](crate::Log::seal) can
-/// answer, and [`Error::Io`] reading the open head for a dry run.
+/// Everything [`audit_log`], [`Log::writable`](crate::Log::writable) and
+/// [`Log::seal`](crate::Log::seal) can answer, and everything
+/// [`Log::head_text`](crate::Log::head_text) can answer for a dry run.
 pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
     let log = archive.log();
     let report = audit_log(log)?;
     if report.findings() > 0 {
         return Ok(Sealing::Refused(Box::new(report)));
+    }
+    if !dry_run {
+        // A seal that stopped before its last step is finished before
+        // this one; a caller that wants to say so asks `writable` first.
+        let _ = log.writable()?;
     }
     let head = log.head_contents()?;
     let sealed_now = !head.claims().is_empty();
@@ -79,11 +84,11 @@ pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
             None => return Ok(Sealing::Empty),
         }
     } else if dry_run {
-        let bytes = fs::read(log.head_path()).map_err(|source| Error::Io {
-            context: format!("{}: reading", log.head_path().display()),
-            source,
-        })?;
-        log.store().digest(&bytes)
+        // The head was read a moment ago and had something to seal.
+        let Some(text) = log.head_text()? else {
+            return Ok(Sealing::Empty);
+        };
+        log.store().digest(text.as_bytes())
     } else {
         match log.seal()? {
             Some(segment) => segment.digest().clone(),
@@ -409,6 +414,8 @@ impl SealCheck {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -513,6 +520,26 @@ mod tests {
 
         assert!(rehearsed.sealed_now);
         assert_eq!(archive.log().head().unwrap().len(), 1, "nothing sealed");
+        let made = sealed(seal(&archive, false).unwrap());
+        assert_eq!(made.segment, rehearsed.segment);
+    }
+
+    #[test]
+    fn a_dry_run_reads_the_head_an_interrupted_rewrite_left() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"first", "2026-09-01T00:00:00Z");
+        archive.log().seal().unwrap().unwrap();
+        take(&archive, b"second", "2026-09-02T00:00:00Z");
+        // A head with claims that a replacement left as its only copy,
+        // as a rewrite of `ossuary-fix` can on macOS over SMB.
+        let head = archive.log().head_path().to_path_buf();
+        fs::rename(&head, head.with_file_name("head.jsonl.tmp")).unwrap();
+
+        let rehearsed = sealed(seal(&archive, true).unwrap());
+
+        assert!(rehearsed.sealed_now);
+        assert!(!head.exists(), "a dry run writes nothing");
         let made = sealed(seal(&archive, false).unwrap());
         assert_eq!(made.segment, rehearsed.segment);
     }

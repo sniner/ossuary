@@ -182,7 +182,7 @@ mod tests {
         );
         assert_eq!(planned.notes, vec!["1 already recorded".to_string()]);
 
-        planned.apply(log).unwrap();
+        assert_eq!(planned.apply(log).unwrap(), ossuary_core::Writable::Ready);
         let mut index = Index::open(dir.path().join("cache").join("fix-test.sqlite")).unwrap();
         index.fold(log).unwrap();
         assert_eq!(

@@ -5,6 +5,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A seal that stopped halfway no longer loses the open segment.** macOS on an SMB mount replaces
+  `head.jsonl` in two steps, removing the old file first. A run that stopped in between left only
+  `head.jsonl.tmp`, and `ossuary audit` reported the claims since the last seal as lost while every
+  run that writes refused. Nothing was lost, and now `ossuary audit` says so and stays sound; the
+  next run that writes moves `head.jsonl.tmp` into place and says that it did
+- **A `head.jsonl.tmp` left over from a failed seal is cleared** by the next run that writes, so
+  that it cannot later be mistaken for the open segment. Where it can be neither removed nor
+  emptied, the run stops and asks for it to be removed by hand
+
 ## [0.16.1] - 2026-11-04
 
 ### Changed

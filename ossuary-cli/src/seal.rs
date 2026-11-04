@@ -25,6 +25,11 @@ pub(crate) fn seal(
     let archive = open(root)?;
     if !quiet {
         errln!("archive {}", archive.root().display());
+    }
+    if !dry_run {
+        crate::finish_interrupted_seal(&archive)?;
+    }
+    if !quiet {
         errln!("checking every sealed segment against its hash");
     }
     match ossuary_core::seal(&archive, dry_run)? {

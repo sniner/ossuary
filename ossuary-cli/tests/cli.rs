@@ -214,3 +214,52 @@ fn an_archive_that_cannot_store_a_derived_file_stops_the_run_and_records_nothing
         "no claim of the stopped examination went on the record"
     );
 }
+
+/// An archive whose last seal stopped between removing the old head
+/// and renaming the new one into place, as macOS over SMB can leave it.
+fn archive_with_an_interrupted_seal() -> (TempDir, PathBuf) {
+    let (dir, archive) = archive_with_a_file();
+    assert!(run(ossuary(&archive).arg("seal")).status.success());
+    std::fs::rename(archive.join("head.jsonl"), archive.join("head.jsonl.tmp")).unwrap();
+    (dir, archive)
+}
+
+#[test]
+fn an_interrupted_seal_is_sound_and_named_by_the_audit() {
+    let (_dir, archive) = archive_with_an_interrupted_seal();
+
+    let output = run(ossuary(&archive).arg("audit"));
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "the last seal stopped before the new open segment was in place; nothing is lost"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("sound"), "{stdout}");
+    assert!(
+        !archive.join("head.jsonl").exists(),
+        "the audit wrote nothing"
+    );
+}
+
+#[test]
+fn the_next_run_that_writes_finishes_an_interrupted_seal_and_says_so() {
+    let (dir, archive) = archive_with_an_interrupted_seal();
+    let more = dir.path().join("more");
+    std::fs::create_dir(&more).unwrap();
+    std::fs::write(more.join("other.txt"), b"another note").unwrap();
+
+    let output = run(ossuary(&archive).arg("-q").arg("ingest").arg(&more));
+
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("the last seal stopped before the new open segment was in place; finished it, nothing was lost"),
+        "said even under -q: {stderr}"
+    );
+    assert!(archive.join("head.jsonl").exists());
+    assert!(!archive.join("head.jsonl.tmp").exists());
+}

@@ -24,6 +24,32 @@
 //! rewritten to hide (the head is the one mutable file); a seal kept
 //! outside the archive shows it (see `seal`).
 //!
+//! A seal replaces the head by rename, by way of `head.jsonl.tmp`. On a
+//! local filesystem the rename is atomic. macOS on an SMB mount is not:
+//! it removes the old head and then renames the new one onto the free
+//! name, and a run that stops between the two leaves no head, only the
+//! `.tmp`. That `.tmp` is a witness: a seal writes it only after the
+//! segment it names is stored, so it says that the head was exactly
+//! that segment when the seal began. A missing head whose `.tmp` reads
+//! as a segment and names the last sealed one is therefore a seal that
+//! stopped before its last step, not a lost head: a writer moves the
+//! `.tmp` into place, a reader reads it as the open segment, and nobody
+//! has to decide anything. Only a missing head counts. Nothing that
+//! replaces the head leaves an empty one next to a `.tmp`, so a `.tmp`
+//! beside an empty head vouches for an older head, and the head stays
+//! lost.
+//!
+//! The witness is only worth something if it is never stale, which is
+//! why a `.tmp` next to a standing head is cleared: by a replacement
+//! that failed while the old head still stood, and by every run that
+//! writes, before it writes. Cleared means removed, or emptied where it
+//! cannot be removed, since an empty file vouches for nothing. What
+//! remains is a seal whose rename failed and whose `.tmp` could be
+//! neither removed nor emptied (that is reported), followed by the loss
+//! of the head before the next writer. Then the claims since the
+//! witness read as never written rather than as lost: the same loss at
+//! the end of the chain that only a seal kept outside the archive shows.
+//!
 //! The head belongs to one writer at a time; concurrency lives in the store,
 //! not here. An append does not fsync — the open segment's tail is the one
 //! thing a crash may cost, and an ingest can say it again — while everything
@@ -31,8 +57,9 @@
 //! last line stops the reader (and with it the seal) rather than being
 //! quietly dropped, because a truth layer does not shrug.
 
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead as _, Write as _};
+use std::io::{BufRead as _, ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use immure::{Digest, Store};
@@ -198,6 +225,49 @@ impl Iterator for WalkBack<'_> {
     }
 }
 
+/// What the files of the open segment show; see the module notes on the
+/// witness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadState {
+    /// Nothing is sealed and no head has been begun. An empty file in the
+    /// head's place counts as no head.
+    Absent,
+    /// The head is there and holds `size` bytes.
+    Open { size: u64 },
+    /// The head is missing, and `head.jsonl.tmp` is the fresh head of a
+    /// seal that stopped before its last step.
+    Interrupted,
+    /// The head is missing or empty while sealed segments exist, and
+    /// nothing vouches for what it was.
+    Lost,
+}
+
+/// What [`Log::writable`] had to do before a run may write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum Writable {
+    /// The log takes claims as it is.
+    Ready,
+    /// A seal had stopped before its fresh head was in place, and the
+    /// fresh head was moved into place. Nothing was lost.
+    SealFinished,
+}
+
+impl Writable {
+    /// What a run says about readying the log, or `None` when there was
+    /// nothing to do. The head is named as it stands in the archive,
+    /// which the run has named already.
+    #[must_use]
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            Writable::Ready => None,
+            Writable::SealFinished => Some(
+                "head.jsonl: the last seal stopped before the new open segment was in place; finished it, nothing was lost",
+            ),
+        }
+    }
+}
+
 /// The claim log: one open segment in front, sealed segments behind it.
 ///
 /// A `Log` is a description — a store handle and a path — and describing is
@@ -235,9 +305,11 @@ impl Log {
     /// A head that is not there yet is begun, header first, naming no
     /// predecessor, but only in an archive with nothing sealed: every
     /// seal leaves a head behind, so a head missing over sealed segments
-    /// was lost (see [`head_lost`](Log::head_lost)). Header and claims go
-    /// out in one write, and nothing is fsynced; see the module notes on
-    /// what a crash may cost and what it may not.
+    /// was lost (see [`head_lost`](Log::head_lost)), unless a seal
+    /// stopped before its last step, and then its fresh head is moved
+    /// into place first. Header and claims go out in one write, and
+    /// nothing is fsynced; see the module notes on what a crash may cost
+    /// and what it may not.
     ///
     /// A head at [`SEAL_AT`] or larger is sealed before anything is
     /// written, so no writer needs a sealing policy of its own. The order
@@ -258,18 +330,20 @@ impl Log {
             context: format!("{}: appending", self.head.display()),
             source,
         };
-        let size = match fs::metadata(&self.head) {
-            Ok(metadata) => metadata.len(),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(source) => return Err(io(source)),
+        let fresh = match self.head_state()? {
+            HeadState::Absent => true,
+            HeadState::Open { size } => {
+                if size >= SEAL_AT {
+                    self.seal()?;
+                }
+                false
+            }
+            HeadState::Interrupted => {
+                self.finish_seal()?;
+                false
+            }
+            HeadState::Lost => return Err(Error::HeadLost(self.head.clone())),
         };
-        if size >= SEAL_AT {
-            self.seal()?;
-        }
-        let fresh = !self.head_begun()?;
-        if fresh && self.holds_segments()? {
-            return Err(Error::HeadLost(self.head.clone()));
-        }
         let mut lines = String::new();
         if fresh {
             lines.push_str(&header_line(None));
@@ -302,21 +376,40 @@ impl Log {
     /// it, and the claims appended since.
     ///
     /// A head that does not exist yet, or an empty file in its place,
-    /// names nothing and holds nothing.
+    /// names nothing and holds nothing. While a seal is interrupted, the
+    /// open segment is its fresh head (see [`head_text`](Log::head_text)).
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the file cannot be read, and everything
+    /// Everything [`head_text`](Log::head_text) can answer, and everything
     /// [`contents`](Log::contents) can answer for a segment that is broken.
     pub fn head_contents(&self) -> Result<Contents> {
-        let nothing = Contents {
-            previous: None,
-            claims: Vec::new(),
-        };
+        match self.head_text()? {
+            Some(text) => parse_segment(&text),
+            None => Ok(Contents {
+                previous: None,
+                claims: Vec::new(),
+            }),
+        }
+    }
+
+    /// The open segment's text, from the file the log reads it from:
+    /// the head, or, while a seal is interrupted, the fresh head it left
+    /// as `head.jsonl.tmp` (see the module notes). `None` when there is
+    /// no head or an empty file in its place.
+    ///
+    /// Nothing outside the log reads the head's file itself; this is the
+    /// way to its bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when a file cannot be read, and everything the
+    /// claims store can answer while looking for the last sealed segment.
+    pub fn head_text(&self) -> Result<Option<String>> {
         match fs::read_to_string(&self.head) {
-            Ok(text) if text.is_empty() => Ok(nothing),
-            Ok(text) => parse_segment(&text),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(nothing),
+            Ok(text) if text.is_empty() => Ok(None),
+            Ok(text) => Ok(Some(text)),
+            Err(source) if source.kind() == ErrorKind::NotFound => self.witness(),
             Err(source) => Err(Error::Io {
                 context: format!("{}: reading", self.head.display()),
                 source,
@@ -338,36 +431,175 @@ impl Log {
     /// [`Error::Io`] when the head cannot be looked at, and
     /// [`Error::Store`] when the claims store cannot be walked.
     pub fn head_lost(&self) -> Result<bool> {
-        Ok(!self.head_begun()? && self.holds_segments()?)
+        Ok(self.head_state()? == HeadState::Lost)
     }
 
-    /// Refuse a run that would write claims while the head is lost.
+    /// Whether a seal stopped before its fresh head was in place: the
+    /// head is missing, and `head.jsonl.tmp` vouches for it (see the
+    /// module notes). Nothing is lost then; the next run that writes
+    /// moves the fresh head into place.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`head_lost`](Log::head_lost) can answer.
+    pub fn seal_interrupted(&self) -> Result<bool> {
+        Ok(self.head_state()? == HeadState::Interrupted)
+    }
+
+    /// Ready the log for a run that writes, or refuse the run while the
+    /// head is lost.
     ///
     /// [`append`](Log::append) refuses each claim on its own; a run that
     /// stores bytes or asks an extractor or a server before recording
     /// what it got asks this first, so that it stops before any of that
-    /// work.
+    /// work. Readying finishes a seal that stopped before its last step
+    /// and clears a `head.jsonl.tmp` left next to a standing head (see
+    /// the module notes); the answer says which, so that the run can
+    /// tell.
     ///
     /// # Errors
     ///
-    /// [`Error::HeadLost`] when the head was lost, and everything
+    /// [`Error::HeadLost`] when the head was lost, [`Error::LeftOver`]
+    /// when a `head.jsonl.tmp` next to the head can be neither removed
+    /// nor emptied, [`Error::Io`] when the fresh head of an interrupted
+    /// seal cannot be moved into place, and everything
     /// [`head_lost`](Log::head_lost) can answer.
-    pub fn writable(&self) -> Result<()> {
-        if self.head_lost()? {
-            return Err(Error::HeadLost(self.head.clone()));
+    pub fn writable(&self) -> Result<Writable> {
+        match self.head_state()? {
+            HeadState::Lost => Err(Error::HeadLost(self.head.clone())),
+            HeadState::Interrupted => {
+                self.finish_seal()?;
+                Ok(Writable::SealFinished)
+            }
+            HeadState::Open { .. } => {
+                self.clear_left_over()?;
+                Ok(Writable::Ready)
+            }
+            HeadState::Absent => Ok(Writable::Ready),
         }
-        Ok(())
     }
 
-    /// Whether the head file exists and is not empty. An empty file
-    /// counts as no head: a head is written header first, in one write,
-    /// so an empty one holds nothing.
-    fn head_begun(&self) -> Result<bool> {
+    /// What the files of the open segment show. Telling an interrupted
+    /// seal from a lost head reads the header of every sealed segment,
+    /// but only when the head is missing.
+    fn head_state(&self) -> Result<HeadState> {
         match fs::metadata(&self.head) {
-            Ok(metadata) => Ok(metadata.len() > 0),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Ok(metadata) if metadata.len() > 0 => {
+                return Ok(HeadState::Open {
+                    size: metadata.len(),
+                });
+            }
+            // An empty head has no witness, whatever lies next to it.
+            Ok(_) => {
+                return Ok(if self.holds_segments()? {
+                    HeadState::Lost
+                } else {
+                    HeadState::Absent
+                });
+            }
+            Err(source) if source.kind() == ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    context: format!("{}: reading", self.head.display()),
+                    source,
+                });
+            }
+        }
+        if !self.holds_segments()? {
+            return Ok(HeadState::Absent);
+        }
+        Ok(if self.witness()?.is_some() {
+            HeadState::Interrupted
+        } else {
+            HeadState::Lost
+        })
+    }
+
+    /// Where a replacement writes the new head before renaming it over
+    /// the old one: `head.jsonl.tmp`, next to the head.
+    fn tmp_path(&self) -> PathBuf {
+        let mut name = self.head.file_name().unwrap_or_default().to_os_string();
+        name.push(".tmp");
+        self.head.with_file_name(name)
+    }
+
+    /// The text of `head.jsonl.tmp` when it vouches for the open
+    /// segment: it reads as a segment, and the segment it names as its
+    /// predecessor is the last sealed one. Asked only while the head is
+    /// missing. A `.tmp` that does not read, or names anything else,
+    /// vouches for nothing, and the head counts as lost.
+    fn witness(&self) -> Result<Option<String>> {
+        let tmp = self.tmp_path();
+        let text = match fs::read_to_string(&tmp) {
+            Ok(text) => text,
+            Err(source)
+                if matches!(source.kind(), ErrorKind::NotFound | ErrorKind::InvalidData) =>
+            {
+                return Ok(None);
+            }
+            Err(source) => {
+                return Err(Error::Io {
+                    context: format!("{}: reading", tmp.display()),
+                    source,
+                });
+            }
+        };
+        let Ok(contents) = parse_segment(&text) else {
+            return Ok(None);
+        };
+        let Some(named) = contents.previous else {
+            return Ok(None);
+        };
+        Ok((self.last_sealed()? == Some(named)).then_some(text))
+    }
+
+    /// The last sealed segment: the one that no other segment names as
+    /// its predecessor. `None` when there is none, or more than one, and
+    /// the end of the chain cannot be told.
+    fn last_sealed(&self) -> Result<Option<Digest>> {
+        let mut held = BTreeSet::new();
+        let mut named = BTreeSet::new();
+        for entry in self.store.entries() {
+            let digest = entry?.digest().clone();
+            if let Some(previous) = self.previous(&digest)? {
+                named.insert(previous);
+            }
+            held.insert(digest);
+        }
+        let mut ends = held.difference(&named);
+        Ok(match (ends.next(), ends.next()) {
+            (Some(end), None) => Some(end.clone()),
+            _ => None,
+        })
+    }
+
+    /// Move the fresh head of an interrupted seal into place. The head's
+    /// name is free, so nothing is replaced on the way.
+    fn finish_seal(&self) -> Result<()> {
+        fs::rename(self.tmp_path(), &self.head).map_err(|source| Error::Io {
+            context: format!("{}: finishing the interrupted seal", self.head.display()),
+            source,
+        })
+    }
+
+    /// Clear a `head.jsonl.tmp` that lies next to a standing head. It is
+    /// what is left of a seal that failed or stopped before the old head
+    /// went, and if it stayed, it would vouch for this head were the head
+    /// to go missing after it had grown. The log has one writer at a
+    /// time, so it is never the fresh head of a seal still running. An
+    /// empty one vouches for nothing and is left.
+    fn clear_left_over(&self) -> Result<()> {
+        let tmp = self.tmp_path();
+        match fs::metadata(&tmp) {
+            Ok(metadata) if metadata.len() == 0 => Ok(()),
+            Ok(_) => discard(&tmp).map_err(|cleanup| Error::LeftOver {
+                path: tmp,
+                cleanup,
+                after: None,
+            }),
+            Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
             Err(source) => Err(Error::Io {
-                context: format!("{}: reading", self.head.display()),
+                context: format!("{}: reading", tmp.display()),
                 source,
             }),
         }
@@ -385,17 +617,24 @@ impl Log {
     /// head of no claims. The whole head is validated first, so nothing
     /// broken is ever immured; and because the store is content-addressed,
     /// a run that was interrupted between storing and starting the fresh
-    /// head simply seals the same bytes again as a no-op.
+    /// head simply seals the same bytes again as a no-op. A seal that
+    /// stopped after that, with the old head gone and the fresh one not
+    /// yet in place, is finished, and leaves nothing to seal.
     ///
     /// # Errors
     ///
     /// Everything [`head`](Log::head) can answer, [`Error::Store`] from the
-    /// store, and [`Error::Io`] replacing the head file.
+    /// store, and everything [`replace_head`](Log::replace_head) can answer.
     pub fn seal(&self) -> Result<Option<Segment>> {
         let text = match fs::read_to_string(&self.head) {
             Ok(text) if text.is_empty() => return Ok(None),
             Ok(text) => text,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) if source.kind() == ErrorKind::NotFound => {
+                if self.head_state()? == HeadState::Interrupted {
+                    self.finish_seal()?;
+                }
+                return Ok(None);
+            }
             Err(source) => {
                 return Err(Error::Io {
                     context: format!("{}: reading", self.head.display()),
@@ -407,23 +646,53 @@ impl Log {
             return Ok(None);
         }
         let (_, entry) = self.store.add(text.as_bytes())?;
-
-        // The fresh head goes in over the old one by rename, so the head is
-        // never half a file: a crash before the rename leaves the old head
-        // standing, and sealing it again is the no-op above.
-        let io = |context: &str| {
-            let context = format!("{}: {context}", self.head.display());
-            move |source| Error::Io { context, source }
-        };
-        let mut name = self.head.file_name().unwrap_or_default().to_os_string();
-        name.push(".tmp");
-        let tmp = self.head.with_file_name(name);
-        fs::write(&tmp, head_after(entry.digest())).map_err(io("writing the new head"))?;
-        fs::rename(&tmp, &self.head).map_err(io("replacing the head"))?;
-
+        self.replace_head(&head_after(entry.digest()))?;
         Ok(Some(Segment {
             digest: entry.digest().clone(),
         }))
+    }
+
+    /// Replace the open segment with `text`: written to
+    /// `head.jsonl.tmp` next to it and renamed over it, so the head is
+    /// never half a file. A crash before the rename leaves the old head
+    /// standing; a crash inside a rename that is not atomic leaves the
+    /// `.tmp` as the only head, and the next writer finishes it (see the
+    /// module notes).
+    ///
+    /// When writing or renaming fails while the old head still stands,
+    /// the `.tmp` is cleared, so that it cannot vouch for a head that
+    /// grows on. When the old head is gone, the `.tmp` is the head and
+    /// stays.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the new head cannot be written or renamed into
+    /// place, and [`Error::LeftOver`] when, after that, the `.tmp` can be
+    /// neither removed nor emptied.
+    pub fn replace_head(&self, text: &str) -> Result<()> {
+        let tmp = self.tmp_path();
+        let failed = |context: &str, source| Error::Io {
+            context: format!("{}: {context}", self.head.display()),
+            source,
+        };
+        let replaced = fs::write(&tmp, text)
+            .map_err(|source| failed("writing the new head", source))
+            .and_then(|()| {
+                fs::rename(&tmp, &self.head).map_err(|source| failed("replacing the head", source))
+            });
+        let Err(error) = replaced else {
+            return Ok(());
+        };
+        if matches!(self.head.try_exists(), Ok(true))
+            && let Err(cleanup) = discard(&tmp)
+        {
+            return Err(Error::LeftOver {
+                path: tmp,
+                cleanup,
+                after: Some(Box::new(error)),
+            });
+        }
+        Err(error)
     }
 
     /// Every sealed segment in log order: along the chain, from the
@@ -530,6 +799,23 @@ impl Log {
             .ok_or_else(|| Error::SegmentMissing(digest.to_string()))?;
         let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
         parse_segment(&text)
+    }
+}
+
+/// Clear a `head.jsonl.tmp` that must not vouch for anything: remove it,
+/// or, where it cannot be removed, empty it, since an empty file does not
+/// read as a segment. The removal can fail where the truncation does not:
+/// Samba 4.22 up to 4.23.11 and 4.24.6 will not delete a file that has a
+/// stream while the share's top directory holds an entry of the same name
+/// (Samba bug 16144).
+fn discard(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != ErrorKind::NotFound => OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map(drop),
+        _ => Ok(()),
     }
 }
 
@@ -1000,5 +1286,252 @@ mod tests {
             log.read(torn.digest()),
             Err(Error::BadLine { line: 2, .. })
         ));
+    }
+
+    /// A log one segment in, and its head as a seal on macOS over SMB
+    /// leaves it when the run stops between removing the old head and
+    /// renaming the new one: no head, the fresh head as `head.jsonl.tmp`.
+    fn interrupted(dir: &TempDir) -> (Log, Segment) {
+        let log = log_in(dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        let segment = log.seal().unwrap().unwrap();
+        let head = dir.path().join("head.jsonl");
+        fs::rename(&head, dir.path().join("head.jsonl.tmp")).unwrap();
+        (log, segment)
+    }
+
+    #[test]
+    fn a_seal_stopped_after_the_old_head_went_is_not_a_lost_head() {
+        let dir = TempDir::new().unwrap();
+        let (log, segment) = interrupted(&dir);
+
+        assert!(!log.head_lost().unwrap(), "the .tmp vouches for the head");
+        assert!(log.seal_interrupted().unwrap());
+        assert_eq!(
+            log.head_contents().unwrap().previous(),
+            Some(segment.digest())
+        );
+        assert_eq!(log.segments().unwrap(), vec![segment]);
+        assert!(
+            !dir.path().join("head.jsonl").exists(),
+            "and reading wrote nothing"
+        );
+    }
+
+    #[test]
+    fn the_next_append_finishes_an_interrupted_seal() {
+        let dir = TempDir::new().unwrap();
+        let (log, segment) = interrupted(&dir);
+
+        log.append(&claim("after", "2026-09-02T00:00:00Z")).unwrap();
+
+        assert!(!dir.path().join("head.jsonl.tmp").exists());
+        let head = log.head_contents().unwrap();
+        assert_eq!(head.previous(), Some(segment.digest()));
+        assert_eq!(head.claims().len(), 1, "the claim, after the fresh header");
+    }
+
+    #[test]
+    fn readying_the_log_finishes_an_interrupted_seal_and_says_so() {
+        let dir = TempDir::new().unwrap();
+        let (log, _) = interrupted(&dir);
+        let head = dir.path().join("head.jsonl");
+
+        assert_eq!(log.writable().unwrap(), Writable::SealFinished);
+        assert!(head.exists());
+        assert!(
+            Writable::SealFinished
+                .note()
+                .unwrap()
+                .ends_with("finished it, nothing was lost")
+        );
+        assert_eq!(log.writable().unwrap(), Writable::Ready, "once is enough");
+        assert_eq!(Writable::Ready.note(), None);
+    }
+
+    #[test]
+    fn sealing_finishes_an_interrupted_seal_and_finds_nothing_to_seal() {
+        let dir = TempDir::new().unwrap();
+        let (log, _) = interrupted(&dir);
+
+        assert_eq!(log.seal().unwrap(), None);
+        assert!(dir.path().join("head.jsonl").exists());
+        assert!(!log.seal_interrupted().unwrap());
+    }
+
+    #[test]
+    fn an_empty_head_beside_a_witness_stays_lost() {
+        let dir = TempDir::new().unwrap();
+        let (log, _) = interrupted(&dir);
+        fs::write(dir.path().join("head.jsonl"), "").unwrap();
+
+        assert!(log.head_lost().unwrap());
+        assert!(!log.seal_interrupted().unwrap());
+        assert!(matches!(log.writable(), Err(Error::HeadLost(_))));
+    }
+
+    #[test]
+    fn a_witness_for_an_older_segment_vouches_for_nothing() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("first", "2026-09-01T00:00:00Z")).unwrap();
+        let first = log.seal().unwrap().unwrap();
+        log.append(&claim("second", "2026-09-02T00:00:00Z"))
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        fs::write(
+            dir.path().join("head.jsonl.tmp"),
+            head_after(first.digest()),
+        )
+        .unwrap();
+        fs::remove_file(dir.path().join("head.jsonl")).unwrap();
+
+        assert!(log.head_lost().unwrap());
+    }
+
+    #[test]
+    fn a_witness_that_does_not_read_vouches_for_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (log, _) = interrupted(&dir);
+        let tmp = dir.path().join("head.jsonl.tmp");
+
+        for text in [
+            "",
+            "{\"ossuary-segment\":1,\"previous\":",
+            "not a segment\n",
+        ] {
+            fs::write(&tmp, text).unwrap();
+            assert!(log.head_lost().unwrap(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_chain_with_two_ends_leaves_the_last_segment_untold() {
+        let dir = TempDir::new().unwrap();
+        let (log, _) = interrupted(&dir);
+        // A second first segment that nothing follows: the end of the
+        // chain is no longer one segment.
+        let stray = format!(
+            "{}{}\n",
+            header_line(None),
+            claim("stray", "2026-09-03T00:00:00Z").to_line()
+        );
+        log.store.add(stray.as_bytes()).unwrap();
+
+        assert!(log.head_lost().unwrap());
+    }
+
+    #[test]
+    fn readying_the_log_clears_a_left_over_beside_a_standing_head() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        let segment = log.seal().unwrap().unwrap();
+        let tmp = dir.path().join("head.jsonl.tmp");
+        fs::write(&tmp, head_after(segment.digest())).unwrap();
+
+        assert_eq!(log.writable().unwrap(), Writable::Ready);
+        assert!(!tmp.exists(), "it would vouch for a head that grows on");
+    }
+
+    #[test]
+    fn a_rename_refused_while_the_old_head_stands_clears_the_new_one() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        // A head the rename cannot replace: a directory that is not empty.
+        let head = dir.path().join("head.jsonl");
+        fs::create_dir(&head).unwrap();
+        fs::write(head.join("inside"), "").unwrap();
+
+        let replaced = log.replace_head("{\"ossuary-segment\":1}\n");
+
+        assert!(matches!(replaced, Err(Error::Io { .. })), "{replaced:?}");
+        assert!(!dir.path().join("head.jsonl.tmp").exists());
+    }
+
+    /// Run `with` while `path` has `mode`, and give it its mode back
+    /// before anything is asserted, so that the directory can go.
+    #[cfg(unix)]
+    fn with_mode<T>(path: &Path, mode: u32, with: impl FnOnce() -> T) -> T {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let saved = fs::metadata(path).unwrap().permissions();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        let result = with();
+        fs::set_permissions(path, saved).unwrap();
+        result
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_rename_refused_after_the_old_head_went_keeps_the_new_one() {
+        let dir = TempDir::new().unwrap();
+        let (log, segment) = interrupted(&dir);
+        let tmp = dir.path().join("head.jsonl.tmp");
+
+        // A directory that takes no rename; the .tmp itself stays writable.
+        let replaced = with_mode(dir.path(), 0o555, || {
+            log.replace_head(&head_after(segment.digest()))
+        });
+
+        assert!(replaced.is_err());
+        assert_eq!(
+            fs::read_to_string(&tmp).unwrap(),
+            head_after(segment.digest()),
+            "the .tmp is the only head and stays"
+        );
+        assert!(log.seal_interrupted().unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_left_over_that_cannot_be_removed_is_emptied() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        let segment = log.seal().unwrap().unwrap();
+        let tmp = dir.path().join("head.jsonl.tmp");
+        fs::write(&tmp, head_after(segment.digest())).unwrap();
+
+        let ready = with_mode(dir.path(), 0o555, || log.writable());
+
+        assert_eq!(ready.unwrap(), Writable::Ready);
+        assert_eq!(
+            fs::read(&tmp).unwrap(),
+            b"",
+            "an empty file vouches for nothing"
+        );
+        assert_eq!(log.writable().unwrap(), Writable::Ready, "and is left");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_left_over_that_can_be_neither_removed_nor_emptied_stops_the_run() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("sealed", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        let segment = log.seal().unwrap().unwrap();
+        let tmp = dir.path().join("head.jsonl.tmp");
+        fs::write(&tmp, head_after(segment.digest())).unwrap();
+
+        let ready = with_mode(&tmp, 0o444, || {
+            with_mode(dir.path(), 0o555, || log.writable())
+        });
+
+        let Err(error) = ready else {
+            panic!("readied over a left-over it could not clear");
+        };
+        assert!(matches!(error, Error::LeftOver { after: None, .. }));
+        assert!(
+            error
+                .spelled()
+                .ends_with("remove it by hand before the next run"),
+            "{}",
+            error.spelled()
+        );
     }
 }
