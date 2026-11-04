@@ -36,12 +36,13 @@
 //! IMAP a message is listed again only when it is fetched again, so a
 //! label changed on a message fetched earlier is not seen until then.
 //! Proton Mail Bridge shows each label as a folder under `Labels/`.
-//! Those not configured are read after the configured folders, and
-//! nothing is downloaded from them: every message of a label folder is
-//! in `All Mail` too. Each UID not found before is looked up by its
-//! Proton id, and the files with the id get the label. A UID whose id
-//! is not on record yet, because the message arrived after `All Mail`
-//! was read, is asked about again by the next run.
+//! Those not configured are read after the configured folders, each
+//! from its own resume point, and nothing is downloaded from them:
+//! every message of a label folder is in `All Mail` too. Each UID above
+//! the point is looked up by its Proton id, and the files with the id
+//! get the label. A UID whose id is not on record yet, because the
+//! message arrived after `All Mail` was read, stays on the folder's
+//! pending list and is asked about again by the next run.
 //!
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
@@ -715,10 +716,13 @@ impl Fetch<'_> {
     }
 
     /// A label folder of Proton Mail Bridge. Its messages are in `All
-    /// Mail` as well, so nothing is downloaded or stored here: each UID
-    /// not found before is looked up by its Proton id, and the files with
-    /// the id get the label. A UID whose id is not on record yet is asked
-    /// about again by the next run, after `All Mail` has brought it.
+    /// Mail` as well, so nothing is downloaded or stored here. The UIDs
+    /// above the folder's resume point, and those left open by earlier
+    /// runs, are looked up by their Proton id, and the files with the id
+    /// get the label. A UID whose id is not on record yet stays open, and
+    /// the next run asks about it again, after `All Mail` has brought it;
+    /// unlike a pending message it is never given up. The point passes
+    /// every UID asked about, since each is then tagged or open.
     fn label_folder(
         &self,
         place: &Place<'_>,
@@ -728,25 +732,33 @@ impl Fetch<'_> {
         tally: &mut Tally,
     ) -> Result<()> {
         let name = &place.name;
-        let found = self
-            .memo
-            .labelled(place.account, place.folder, uidvalidity)?;
-        let anew = self.options.full || found.stale;
-        let uids = match mailbox.uids_above(0) {
+        let resume = self.memo.imap_resume(place.account, place.folder)?;
+        let resumed =
+            !self.options.full && resume.is_some_and(|point| point.uidvalidity == uidvalidity);
+        let (above, how) = carry_on(resume, uidvalidity, self.options.full);
+        let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
             Err(error) => {
                 tally.failed.push(format!("{name}: {error:#}"));
                 return Ok(());
             }
         };
-        let new: Vec<u32> = uids
-            .into_iter()
-            .filter(|uid| self.options.full || !found.uids.contains_key(uid))
-            .collect();
-        let sorted = if new.is_empty() {
+        let open: Vec<u32> = if resumed {
+            self.memo
+                .pending::<()>(place.account, place.folder)?
+                .iter()
+                .filter_map(|entry| entry.id.parse().ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut asked: Vec<u32> = uids.iter().chain(&open).copied().collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let sorted = if asked.is_empty() {
             proton::Sorted::default()
         } else {
-            let listed = match mailbox.header(&new, proton::HEADER) {
+            let listed = match mailbox.header(&asked, proton::HEADER) {
                 Ok(listed) => listed,
                 Err(error) => {
                     tally.failed.push(format!("{name}: {error:#}"));
@@ -762,63 +774,74 @@ impl Fetch<'_> {
                 id: &self.id,
                 place: &self.place,
             };
-            proton::sort(&new, &listed, |id| record.holders(id))?
+            proton::sort(&asked, &listed, |id| record.holders(id))?
         };
-        let open = sorted.fetch.len();
-        // Under --full or after a renumbering every UID is looked up, not
-        // only those new to the folder.
-        let which = if anew {
-            "looked up anew"
-        } else {
-            "new in the folder"
-        };
-        if new.is_empty() {
+        // A UID the server no longer lists, or one without an id, can
+        // never be found; only an id not on record yet stays open.
+        let still_open: Vec<u32> = sorted
+            .fetch
+            .iter()
+            .filter_map(|(uid, id)| id.as_ref().map(|_| *uid))
+            .collect();
+        if asked.is_empty() {
             self.say
-                .line(format_args!("{name}: nothing new in the folder"));
-        } else if open == 0 {
+                .line(format_args!("{name}: {how}, nothing to look up"));
+        } else if still_open.is_empty() {
             self.say.line(format_args!(
-                "{name}: {} {which}, all found in the archive",
-                counted(new.len(), "message", "messages")
+                "{name}: {how}, {} to look up, all found in the archive",
+                counted(asked.len(), "message", "messages")
             ));
         } else {
             self.say.line(format_args!(
-                "{name}: {} {which}, {} not in the archive yet; the next run looks for them again",
-                counted(new.len(), "message", "messages"),
-                open
+                "{name}: {how}, {} to look up, {} not in the archive yet; the next run looks for them again",
+                counted(asked.len(), "message", "messages"),
+                still_open.len()
             ));
         }
         if self.options.dry_run {
             return Ok(());
         }
         self.memo.begin()?;
-        if anew {
-            self.memo.clear_labelled(place.account, place.folder)?;
+        if !resumed {
+            self.memo.clear_pending(place.account, place.folder)?;
         }
         let value = json!(label);
-        let borrowed = self.record.borrow();
-        let index = borrowed
-            .as_ref()
-            .expect("a Proton folder catches the record up");
-        let record = proton::Record {
-            index,
-            id: &self.id,
-            place: &self.place,
-        };
-        for (done, (uid, holders)) in sorted.known.iter().enumerate() {
-            let receivers = record.receivers(holders, &self.tag, &value)?;
-            self.assert_on(&receivers, &self.tag, &value, tally)?;
-            self.memo.add_labelled(
-                place.account,
-                place.folder,
-                uidvalidity,
-                *uid,
-                holders.iter().map(Subject::as_str),
-            )?;
-            if (done + 1).is_multiple_of(COMMIT_EVERY) {
-                self.memo.commit()?;
-                self.memo.begin()?;
+        {
+            let borrowed = self.record.borrow();
+            let index = borrowed
+                .as_ref()
+                .expect("a Proton folder catches the record up");
+            let record = proton::Record {
+                index,
+                id: &self.id,
+                place: &self.place,
+            };
+            for (_, holders) in &sorted.known {
+                let receivers = record.receivers(holders, &self.tag, &value)?;
+                self.assert_on(&receivers, &self.tag, &value, tally)?;
             }
         }
+        for uid in &open {
+            if !still_open.contains(uid) {
+                self.memo
+                    .remove_pending(place.account, place.folder, &uid.to_string())?;
+            }
+        }
+        let ids: Vec<String> = still_open.iter().map(ToString::to_string).collect();
+        self.memo.add_pending(
+            place.account,
+            place.folder,
+            ids.iter().map(|id| (id.as_str(), ())),
+        )?;
+        let top = uids.iter().copied().max().unwrap_or(above).max(above);
+        self.memo.advance_imap(
+            place.account,
+            place.folder,
+            ImapResume {
+                uidvalidity,
+                uid: top,
+            },
+        )?;
         self.memo.commit()
     }
 
@@ -2691,33 +2714,38 @@ mod tests {
         tally
     }
 
-    fn found_in_sales(bench: &Bench, uidvalidity: u32) -> Vec<u32> {
-        let mut uids: Vec<u32> = bench
+    /// The UIDs of `Labels/Sales` left open, and its resume point.
+    fn sales(bench: &Bench) -> (Vec<u32>, Option<ImapResume>) {
+        let mut open: Vec<u32> = bench
             .memo
-            .labelled("example.org", "Labels/Sales", uidvalidity)
+            .pending::<()>("example.org", "Labels/Sales")
             .unwrap()
-            .uids
-            .into_keys()
+            .iter()
+            .map(|entry| entry.id.parse().unwrap())
             .collect();
-        uids.sort_unstable();
-        uids
+        open.sort_unstable();
+        let point = bench
+            .memo
+            .imap_resume("example.org", "Labels/Sales")
+            .unwrap();
+        (open, point)
     }
 
     #[test]
     fn a_proton_label_folder_tags_the_file_from_all_mail_and_stores_nothing() {
         let bench = bench();
-        let (one, two, three) = (built(1, "a"), built(2, "a"), built(3, "a"));
+        let (one, two, three, four) = (built(1, "a"), built(2, "a"), built(3, "a"), built(4, "a"));
         // The label folder has the first as the Bridge builds it now, and
         // a third that All Mail has not brought yet.
-        let mut sales = proton(9, &[(1, &built(1, "b")), (2, &two), (3, &three)]);
+        let mut label = proton(9, &[(1, &built(1, "b")), (2, &two), (3, &three)]);
         let first = with_label(
             &bench,
             &mut proton(7, &[(1, &one), (2, &two)]),
-            &mut sales,
+            &mut label,
             &options(false, false),
         );
         assert!(
-            sales.fetched.is_empty(),
+            label.fetched.is_empty(),
             "nothing downloaded from a label folder"
         );
         assert_eq!(first.stored, 2, "only All Mail stores");
@@ -2729,30 +2757,61 @@ mod tests {
                 "a label folder is no place"
             );
         }
-        assert_eq!(found_in_sales(&bench, 9), [1, 2]);
+        assert_eq!(
+            sales(&bench),
+            (vec![3], Some(at(9, 3))),
+            "the third stays open"
+        );
 
-        // The next run: All Mail brings the third, and the label folder
-        // asks only about the UID it did not find before.
-        let mut sales = proton(9, &[(1, &built(1, "b")), (2, &two), (3, &three)]);
+        // The next run: All Mail brings the third and a fourth, and the
+        // label folder asks about the open UID and the one above its
+        // point, nothing else.
+        let mut label = proton(
+            9,
+            &[(1, &built(1, "b")), (2, &two), (3, &three), (4, &four)],
+        );
         with_label(
             &bench,
-            &mut proton(7, &[(1, &one), (2, &two), (3, &three)]),
-            &mut sales,
+            &mut proton(7, &[(1, &one), (2, &two), (3, &three), (4, &four)]),
+            &mut label,
             &options(false, false),
         );
-        assert_eq!(sales.headed, [3]);
-        assert_eq!(held(&bench, &three, "mailbox:tag"), ["Sales"]);
-        assert_eq!(found_in_sales(&bench, 9), [1, 2, 3]);
+        assert_eq!(label.headed, [3, 4]);
+        for bytes in [&three, &four] {
+            assert_eq!(held(&bench, bytes, "mailbox:tag"), ["Sales"]);
+        }
+        assert_eq!(sales(&bench), (vec![], Some(at(9, 4))));
     }
 
     #[test]
-    fn a_renumbered_label_folder_is_matched_anew_and_says_nothing_twice() {
+    fn an_open_uid_that_left_the_label_folder_is_dropped() {
         let bench = bench();
-        let one = built(1, "a");
-        let mut all = proton(7, &[(1, &one)]);
+        let (one, three) = (built(1, "a"), built(3, "a"));
         with_label(
             &bench,
-            &mut all,
+            &mut proton(7, &[(1, &one)]),
+            &mut proton(9, &[(1, &one), (3, &three)]),
+            &options(false, false),
+        );
+        assert_eq!(sales(&bench), (vec![3], Some(at(9, 3))));
+        let mut label = proton(9, &[(1, &one)]);
+        with_label(
+            &bench,
+            &mut proton(7, &[(1, &one)]),
+            &mut label,
+            &options(false, false),
+        );
+        assert_eq!(label.headed, [3], "asked about once more");
+        assert_eq!(sales(&bench), (vec![], Some(at(9, 3))));
+    }
+
+    #[test]
+    fn a_renumbered_label_folder_is_looked_up_whole_and_says_nothing_twice() {
+        let bench = bench();
+        let one = built(1, "a");
+        with_label(
+            &bench,
+            &mut proton(7, &[(1, &one)]),
             &mut proton(9, &[(1, &one)]),
             &options(false, false),
         );
@@ -2765,8 +2824,7 @@ mod tests {
         );
         assert_eq!(renumbered.headed, [4]);
         assert_eq!(again.claims, 0, "the label stands already");
-        assert!(found_in_sales(&bench, 9).is_empty());
-        assert_eq!(found_in_sales(&bench, 10), [4]);
+        assert_eq!(sales(&bench), (vec![], Some(at(10, 4))));
     }
 
     #[test]
@@ -2779,15 +2837,15 @@ mod tests {
             &mut proton(9, &[]),
             &options(false, false),
         );
-        let head = bench.archive.log().head().unwrap().len();
+        let (head, point) = (bench.archive.log().head().unwrap().len(), sales(&bench));
         with_label(
             &bench,
             &mut proton(7, &[(1, &one)]),
-            &mut proton(9, &[(1, &one)]),
+            &mut proton(9, &[(1, &one), (2, &built(2, "a"))]),
             &options(false, true),
         );
         assert_eq!(bench.archive.log().head().unwrap().len(), head);
-        assert!(found_in_sales(&bench, 9).is_empty());
+        assert_eq!(sales(&bench), point);
     }
 
     #[test]

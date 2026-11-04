@@ -204,8 +204,10 @@ a label folder but not yet in the archive, because it arrived after `All
 Mail` was read, is tagged by the next run. If a folder of the account could
 not be read, the label folders are left for the next run.
 
-A run asks a label folder only about the messages it has not found there
-before. A label removed from a message is not seen, and its tag stays.
+Each label folder has its own resume point, like any other folder: a run
+asks only about the messages added to the label since the last run, and
+about those it did not find in the archive then. A label removed from a
+message is not seen, and its tag stays.
 
 Without a `folders` list every folder is fetched, label folders included,
 and each is recorded as a `mailbox:place`.
