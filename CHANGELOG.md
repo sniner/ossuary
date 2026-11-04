@@ -5,6 +5,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The log no longer takes claims it reports as failed.** When the open segment was full and could
+  not be sealed into `claims/`, every later claim was still written but reported as an error. An
+  `ossuary extract` run then gave every file one claim and no receipt. Now the segment is sealed
+  before the next claim is written, and a failed seal writes nothing
+
 ## [0.16.0] - 2026-11-03
 
 ### Added

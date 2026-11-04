@@ -6,9 +6,9 @@
 //! begins. Nothing is reformatted on the way — what was appended is what is
 //! sealed, and a sealed segment is never compacted, combined or rewritten:
 //! superseded and retracted claims stay where they were written, which for
-//! an archive is not a limitation but the point. The head seals itself
-//! once it grows to [`SEAL_AT`]; sealing by hand remains for closing it
-//! on demand.
+//! an archive is not a limitation but the point. An append that finds the
+//! head at [`SEAL_AT`] or larger seals it first; sealing by hand remains
+//! for closing it on demand.
 //!
 //! Segments hang together. The fresh head that a seal begins names, in
 //! its header, the segment just sealed, so every segment but the first
@@ -47,7 +47,8 @@ use crate::error::{Error, Result};
 /// refused as [`Error::SegmentGeneration`] rather than guessed at.
 pub const GENERATION: u32 = 1;
 
-/// The open segment seals itself once an append grows it to this size.
+/// The open segment is sealed by the first append that finds it at this
+/// size or larger.
 ///
 /// A mebibyte of head is a few thousand claims — the granularity the
 /// concept asks of a segment — and seals into a store entry of one or two
@@ -219,52 +220,70 @@ impl Log {
         }
     }
 
-    /// Append one claim to the open segment.
+    /// Append one claim to the open segment, as [`append_all`](Log::append_all)
+    /// does for several.
+    ///
+    /// # Errors
+    ///
+    /// As [`append_all`](Log::append_all).
+    pub fn append(&self, claim: &Claim) -> Result<()> {
+        self.append_all(std::slice::from_ref(claim))
+    }
+
+    /// Append claims to the open segment, in one write.
     ///
     /// A head that is not there yet is begun, header first, naming no
     /// predecessor, but only in an archive with nothing sealed: every
     /// seal leaves a head behind, so a head missing over sealed segments
-    /// was lost (see [`head_lost`](Log::head_lost)). Header and claim go
-    /// out in one write, and nothing is fsynced — see the module notes on
+    /// was lost (see [`head_lost`](Log::head_lost)). Header and claims go
+    /// out in one write, and nothing is fsynced; see the module notes on
     /// what a crash may cost and what it may not.
     ///
-    /// An append that grows the head to [`SEAL_AT`] seals it in the same
-    /// breath, so no writer needs a sealing policy of its own. The claim
-    /// is on the record before the seal begins — trouble sealing is still
-    /// reported, but the head stands with everything in it, and a later
-    /// append crosses the threshold again.
+    /// A head at [`SEAL_AT`] or larger is sealed before anything is
+    /// written, so no writer needs a sealing policy of its own. The order
+    /// is what makes an error mean what it says: a seal that fails leaves
+    /// the claims unwritten, and the caller can treat them as not
+    /// recorded. The head may grow past the threshold by one append.
     ///
     /// # Errors
     ///
     /// [`Error::HeadLost`] when the head was lost, [`Error::Io`] when the
     /// file cannot be opened or written, and everything
-    /// [`seal`](Log::seal) can answer when this append crossed the
-    /// threshold.
-    pub fn append(&self, claim: &Claim) -> Result<()> {
+    /// [`seal`](Log::seal) can answer when the head was due to be sealed.
+    pub fn append_all(&self, claims: &[Claim]) -> Result<()> {
+        if claims.is_empty() {
+            return Ok(());
+        }
         let io = |source| Error::Io {
             context: format!("{}: appending", self.head.display()),
             source,
         };
+        let size = match fs::metadata(&self.head) {
+            Ok(metadata) => metadata.len(),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(source) => return Err(io(source)),
+        };
+        if size >= SEAL_AT {
+            self.seal()?;
+        }
         let fresh = !self.head_begun()?;
         if fresh && self.holds_segments()? {
             return Err(Error::HeadLost(self.head.clone()));
+        }
+        let mut lines = String::new();
+        if fresh {
+            lines.push_str(&header_line(None));
+        }
+        for claim in claims {
+            lines.push_str(&claim.to_line());
+            lines.push('\n');
         }
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(&self.head)
             .map_err(io)?;
-        let mut lines = String::new();
-        if fresh {
-            lines.push_str(&header_line(None));
-        }
-        lines.push_str(&claim.to_line());
-        lines.push('\n');
-        file.write_all(lines.as_bytes()).map_err(io)?;
-        if file.metadata().map_err(io)?.len() >= SEAL_AT {
-            self.seal()?;
-        }
-        Ok(())
+        file.write_all(lines.as_bytes()).map_err(io)
     }
 
     /// The claims of the open segment, in the order they were appended.
@@ -860,36 +879,80 @@ mod tests {
     }
 
     #[test]
-    fn an_append_that_fills_the_head_seals_it_by_itself() {
+    fn an_append_that_finds_the_head_full_seals_it_first() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         // A claim of three hundred thousand bytes: three of them leave the
         // head below the mebibyte, the fourth crosses it.
         let heavy = claim(&"x".repeat(300_000), "2026-09-05T12:00:00Z");
 
-        for _ in 0..3 {
+        for _ in 0..4 {
             log.append(&heavy).unwrap();
         }
         assert_eq!(
             log.segments().unwrap().len(),
             0,
-            "below the threshold the head waits"
+            "the append that crossed the threshold only wrote"
         );
 
         log.append(&heavy).unwrap();
 
         let segments = log.segments().unwrap();
-        assert_eq!(segments.len(), 1, "the fourth append sealed in passing");
+        assert_eq!(segments.len(), 1, "the fifth append sealed first");
         assert_eq!(
             log.read(segments[0].digest()).unwrap().len(),
             4,
-            "with everything appended so far inside"
+            "with the four claims before it inside"
         );
         assert_eq!(
             log.head().unwrap(),
-            Vec::new(),
-            "and a fresh head stands ready"
+            vec![heavy],
+            "and the fifth claim in the fresh head"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_append_whose_seal_fails_writes_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let heavy = claim(&"x".repeat(300_000), "2026-09-05T12:00:00Z");
+        for _ in 0..4 {
+            log.append(&heavy).unwrap();
+        }
+        let before = fs::read(dir.path().join("head.jsonl")).unwrap();
+
+        // A claims store that cannot take the segment.
+        let claims = dir.path().join("claims");
+        let saved = fs::metadata(&claims).unwrap().permissions();
+        fs::set_permissions(&claims, fs::Permissions::from_mode(0o555)).unwrap();
+        let appended = log.append(&claim("one more", "2026-09-05T12:00:01Z"));
+        fs::set_permissions(&claims, saved).unwrap();
+
+        assert!(appended.is_err(), "the failed seal is the append's error");
+        assert_eq!(
+            fs::read(dir.path().join("head.jsonl")).unwrap(),
+            before,
+            "and the claim was not written"
+        );
+        assert_eq!(log.segments().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn claims_appended_together_go_out_in_order() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let claims = [
+            claim("first", "2026-09-05T12:00:00Z"),
+            claim("second", "2026-09-05T12:00:00Z"),
+        ];
+
+        log.append_all(&claims).unwrap();
+        log.append_all(&[]).unwrap();
+
+        assert_eq!(log.head().unwrap(), claims);
     }
 
     #[test]
