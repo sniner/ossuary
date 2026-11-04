@@ -182,15 +182,6 @@ pub fn run(
     options: &Options,
     say: Say,
 ) -> Result<Tally> {
-    // Taking a mark back needs to know what stands, and a Graph account
-    // says marks; a comparison reads the archive's side from it. Whether
-    // an IMAP account says marks only its server can tell, so a Gmail
-    // folder reads the record when it is reached (see `folder`).
-    let record = if options.compare || accounts.iter().any(|account| account.over_graph()) {
-        Some(caught_up(archive, say)?)
-    } else {
-        None
-    };
     let fetch = Fetch {
         archive,
         memo,
@@ -198,9 +189,7 @@ pub fn run(
         source: Source::parse(crate::SOURCE)?,
         place: Attribute::parse(place::ATTRIBUTE)?,
         tag: Attribute::parse(place::TAG)?,
-        record: RefCell::new(record),
-        said: RefCell::new(HashMap::new()),
-        placed: RefCell::new(HashSet::new()),
+        record: RefCell::new(None),
         landed: RefCell::new(Vec::new()),
         say,
     };
@@ -246,18 +235,11 @@ struct Fetch<'a> {
     source: Source,
     place: Attribute,
     tag: Attribute,
-    /// The record as it stood before the first account that says marks
-    /// was reached, for the marks a message carried before: `None`
-    /// until then. Only that account's claims could change what it
-    /// holds of marks, and those are in `said`.
+    /// The record as it stood when the current folder was reached, with
+    /// what the folders before it wrote: `None` until the first folder
+    /// that needs it (see [`refresh`](Self::refresh)). No question asked
+    /// of it within a folder depends on what that folder writes.
     record: RefCell<Option<Index>>,
-    /// The marks this run said, by subject: the record above does not
-    /// see them yet, and a message met twice in one run must not take
-    /// back what the run itself just said.
-    said: RefCell<HashMap<String, BTreeSet<String>>>,
-    /// The subjects this run gave a place, which the record above does
-    /// not see yet.
-    placed: RefCell<HashSet<String>>,
     /// Under `--compare`, the messages stored in the current round, by
     /// server id as the memo has it, with their subjects: what decides
     /// whether another round is needed.
@@ -319,11 +301,6 @@ impl Fetch<'_> {
                 time: None,
             },
         )?;
-        if placing {
-            self.placed
-                .borrow_mut()
-                .insert(admitted.subject().as_str().to_string());
-        }
         if admitted.is_new() {
             tally.stored += 1;
         } else {
@@ -335,12 +312,8 @@ impl Fetch<'_> {
         Ok(admitted.subject().clone())
     }
 
-    /// Whether a place stands on the message: on the record, or said
-    /// by this run.
+    /// Whether a place stands on the message, as of the folder's start.
     fn placed(&self, subject: &Subject) -> Result<bool> {
-        if self.placed.borrow().contains(subject.as_str()) {
-            return Ok(true);
-        }
         Ok(match self.record.borrow().as_ref() {
             Some(record) => !record.values(subject, &self.place, Scope::Held)?.is_empty(),
             None => false,
@@ -364,7 +337,7 @@ impl Fetch<'_> {
     /// The marks that stood on the message and are not among `tags`
     /// any more are taken back, one retraction each — under this
     /// fetcher's source, in this run. What stood is what the record
-    /// held when the run began, and what this run has said since.
+    /// held when the folder was reached.
     fn take_back(&self, subject: &Subject, tags: &[String], tally: &mut Tally) -> Result<()> {
         let current: BTreeSet<String> = tags.iter().cloned().collect();
         let mut stood = BTreeSet::new();
@@ -374,10 +347,6 @@ impl Fetch<'_> {
                     stood.insert(tag);
                 }
             }
-        }
-        let mut said = self.said.borrow_mut();
-        if let Some(earlier) = said.get(subject.as_str()) {
-            stood.extend(earlier.iter().cloned());
         }
         let time = Timestamp::now();
         for gone in stood.difference(&current) {
@@ -393,7 +362,21 @@ impl Fetch<'_> {
             tally.claims += 1;
             tally.taken += 1;
         }
-        said.insert(subject.as_str().to_string(), current);
+        Ok(())
+    }
+
+    /// Bring the record up to date before a folder that reads it; it then
+    /// holds the claims of the folders before this one. The first call
+    /// builds it from the log, a later fold reads only the open head and
+    /// the segments sealed since.
+    fn refresh(&self) -> Result<()> {
+        let mut record = self.record.borrow_mut();
+        match record.as_mut() {
+            Some(index) => {
+                index.fold(self.archive.log())?;
+            }
+            None => *record = Some(caught_up(self.archive, self.say)?),
+        }
         Ok(())
     }
 
@@ -507,9 +490,10 @@ impl Fetch<'_> {
             }
         };
         // Gmail's marks are taken back against the record; a Proton
-        // label folder asks it whether a message has a place.
-        if mailbox.flavour() != Flavour::Standard && self.record.borrow().is_none() {
-            *self.record.borrow_mut() = Some(caught_up(self.archive, self.say)?);
+        // label folder asks it whether a message has a place, and a
+        // comparison reads the archive's side from it.
+        if mailbox.flavour() != Flavour::Standard || self.options.compare {
+            self.refresh()?;
         }
         if self.options.compare {
             return self.imap_compare(place, mailbox, opened.uidvalidity, tally);
@@ -991,6 +975,8 @@ impl Fetch<'_> {
     ) -> Result<()> {
         let place = Place::new(&account.name, folder);
         let name = &place.name;
+        // Categories are taken back against the record.
+        self.refresh()?;
         let Some(id) = client.resolve(folder).map(str::to_string) else {
             tally.failed.push(format!(
                 "{name}: no such folder; the mailbox has {}",
@@ -1120,7 +1106,7 @@ impl Fetch<'_> {
         let record = self.record.borrow();
         let index = record
             .as_ref()
-            .expect("run() reads the record when --compare is given");
+            .expect("the folder catches the record up under --compare");
         let archived = Archived::read(index, &self.place, &place.name)?;
         let known = self.memo.compared(place.account, place.folder)?;
         let comparison = Comparison::new(archived, known);
@@ -1563,8 +1549,6 @@ mod tests {
             place: Attribute::parse(place::ATTRIBUTE).unwrap(),
             tag: Attribute::parse(place::TAG).unwrap(),
             record: RefCell::new(Some(caught_up(&bench.archive, Say::new(true)).unwrap())),
-            said: RefCell::new(HashMap::new()),
-            placed: RefCell::new(HashSet::new()),
             landed: RefCell::new(Vec::new()),
             say: Say::new(true),
         }
