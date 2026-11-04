@@ -5,8 +5,21 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary extract` stops at a file it cannot record.** When a derived file or the log cannot be
+  written, or the extractor cannot be started, the run ends with an error that names the file. It
+  no longer goes on to the next file and lists the failure at the end of the pass. The files
+  examined before it stay recorded, and the next run starts again with that file
+- **`ossuary extract` reports a file that could not be examined at once**, as soon as the extractor
+  has refused it, instead of in a list at the end of the pass. The pass ends with the number of
+  such files
+
 ### Fixed
 
+- **A failed examination leaves no claims behind.** When a derived file could not be stored, the
+  findings about the examined file were already in the log, without a receipt. Now the derived
+  files are stored first and all claims of the examination are written at once
 - **The log no longer takes claims it reports as failed.** When the open segment was full and could
   not be sealed into `claims/`, every later claim was still written but reported as an error. An
   `ossuary extract` run then gave every file one claim and no receipt. Now the segment is sealed

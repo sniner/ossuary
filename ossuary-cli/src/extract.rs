@@ -127,7 +127,7 @@ fn expand(archive: &Archive, ids: &[String], quiet: bool) -> Result<Vec<String>>
 }
 
 /// One event onto the terminal. Idle notes and verdicts are answers and
-/// go to stdout; skipped entries and failure lists survive `-q` the way
+/// go to stdout; skipped entries and failed files survive `-q` the way
 /// every failure does; the rest is narration. Fails only when stdout
 /// cannot be written for another reason than a closed pipe.
 fn render(event: &Event<'_>, quiet: bool, dry_run: bool) -> Result<()> {
@@ -206,26 +206,48 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) -> Result<()> {
                 }
             }
         }
+        Event::Failed {
+            subject,
+            name,
+            error,
+            ..
+        } => {
+            // Told the moment it happens, -q or not: a failure that waits
+            // for the end of a long pass is a failure nobody sees in time.
+            let file = match name {
+                Some(name) => format!("{subject} ({name})"),
+                None => subject.to_string(),
+            };
+            errln!("could not examine {file}: {}", error.spelled());
+        }
         Event::Verdict {
             source,
             tally,
             already,
-            failures,
-        } => {
-            if dry_run {
-                outln!("{}", rehearsal_verdict(source, tally, *already))?;
-            } else {
-                outln!("{}", verdict(source, tally, *already))?;
-            }
-            if !failures.is_empty() {
-                errln!(
-                    "{} could not be examined, will be retried on the next run:",
-                    failures.len()
-                );
-                for (subject, error) in *failures {
-                    errln!("  {subject}: {}", error.spelled());
-                }
-            }
+        } => render_verdict(source, tally, *already, dry_run)?,
+    }
+    Ok(())
+}
+
+/// The end of a pass: the verdict onto stdout, and how many files failed
+/// onto stderr, where each of them was reported when it happened.
+fn render_verdict(source: &Source, tally: &Tally, already: usize, dry_run: bool) -> Result<()> {
+    if dry_run {
+        outln!("{}", rehearsal_verdict(source, tally, already))?;
+    } else {
+        outln!("{}", verdict(source, tally, already))?;
+    }
+    if tally.failed > 0 {
+        if dry_run {
+            errln!(
+                "{} file(s) could not be examined, each reported above",
+                tally.failed
+            );
+        } else {
+            errln!(
+                "{} file(s) could not be examined, each reported above; the next run offers them again",
+                tally.failed
+            );
         }
     }
     Ok(())

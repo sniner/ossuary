@@ -125,12 +125,12 @@ extractor does not know), and removes the program's name where a line
 begins with it. An extractor can therefore prefix its lines with its
 name for use by hand without the name appearing twice under
 `ossuary extract`. On a non-zero exit, the stderr output becomes the
-reason in the run's failure list.
+reason given for the failed file.
 
 **Exit 0 means the examination happened**, with or without findings;
 bytes the extractor cannot interpret also count as an examination, with
-nothing found. A non-zero exit means it did *not* happen: the file is
-listed in the run's failures, gets no receipt, and will be examined
+nothing found. A non-zero exit means it did *not* happen: the failure
+is reported at once, the file gets no receipt, and it will be examined
 again in a later run. Whatever was written to the directory is
 discarded, and nothing is stored.
 
@@ -161,8 +161,9 @@ The output for a file is rejected completely when any line does not
 parse, refers to a file that was never announced or never written,
 announces a file twice, or has a path where a bare name is required.
 Then nothing is recorded, there is no receipt, and the file is examined
-again in a later run. Otherwise, after all other claims, the
-orchestrator writes one receipt, on the examined file:
+again in a later run. Otherwise the orchestrator stores the derived
+files, then writes all claims of the examination in one write to the
+log, and last among them one receipt, on the examined file:
 
 ```json
 {"subject": "9f2a…", "attribute": "prov:examined", "value": "extractor:mail/1", "time": "…", "source": "extractor:mail/1"}
@@ -187,3 +188,11 @@ examined, never the content of a claim: an extractor's findings come
 from the bytes alone. The extractor knows neither the archive nor the
 record, and any decision that would need them is made by the
 orchestrator.
+
+A failure that belongs to one file lets the run go on: the extractor
+exits non-zero, its output is rejected, or the file cannot be read from
+the archive. Any other failure stops `ossuary extract` at that file
+with an error: a derived file or the log that cannot be written, an
+extractor that cannot be started. The examinations before it stay
+recorded, the stopped one has written no claim, and the next run starts
+again with that file.

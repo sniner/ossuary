@@ -21,9 +21,11 @@
 //! in `derived/` at all, only their claims; a subject names content
 //! wherever it lies, and an original needs no second-class copy.
 //!
-//! The receipt goes last: a run that dies halfway leaves findings without
-//! one, and the file is simply offered again — re-added bytes dedup in
-//! the store, re-said values land on the set elements already standing.
+//! An examination is recorded whole or not at all: the derived files are
+//! stored first, then every claim goes into the log in one write, the
+//! receipt last among them. A failure before that write leaves no claim;
+//! derived bytes it already stored are found again by the next run, which
+//! offers the file anew.
 
 use std::fs;
 use std::path::PathBuf;
@@ -33,7 +35,6 @@ use serde_json::json;
 use crate::archive::Archive;
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
-use crate::log::Log;
 
 /// The receipt attribute: this blob was examined by the claim's source,
 /// which the value names again.
@@ -74,9 +75,9 @@ pub struct Examined {
     pub known: usize,
 }
 
-/// One file's examination onto the record: every finding as a claim, each
-/// derived file into the derived store with what is known about it, then
-/// the receipt.
+/// One file's examination onto the record: each derived file into the
+/// derived store, then every finding, what is known about each derived
+/// file, and the receipt as claims in one write to the log.
 ///
 /// A derived file is content with a record like any other, and the log
 /// says so: its `file:mime` in the extractor's words, its
@@ -109,10 +110,10 @@ pub struct Examined {
 ///
 /// # Errors
 ///
-/// Whatever building or appending a claim can answer — a `null` value
-/// among the findings included — and [`Error::Io`] on a derived file that
-/// will not read. Nothing is rolled back: claims accrete, and without the
-/// receipt the file is examined again.
+/// [`Error::NullValue`] for a `null` among the findings, [`Error::Io`] on
+/// a derived file that will not read, and whatever storing a derived file
+/// or appending to the log can answer. A failure writes no claim, so the
+/// file has no receipt and is examined again.
 pub fn record_examination(
     archive: &Archive,
     subject: &Subject,
@@ -121,39 +122,41 @@ pub fn record_examination(
     source: &Source,
     run: &Run,
 ) -> Result<Examined> {
-    let log = archive.log();
     let time = Timestamp::now();
-    let mut examined = Examined {
-        claims: 0,
-        stored: 0,
-        known: 0,
-    };
+    let mut claims = Vec::new();
     for (attribute, value) in findings {
-        append(log, subject, attribute, value, &time, source, run)?;
-        examined.claims += 1;
+        claims.push(claim(subject, attribute, value, &time, source, run)?);
     }
+    let mut stored = 0;
+    let mut known = 0;
     for derivation in derivations {
-        let taken = take(archive, subject, derivation, &time, source, run)?;
-        examined.claims += taken.claims;
-        examined.stored += taken.stored;
-        examined.known += taken.known;
+        let (told, new) = take(archive, subject, derivation, &time, source, run)?;
+        claims.extend(told);
+        if new {
+            stored += 1;
+        } else {
+            known += 1;
+        }
     }
-    let receipt = Claim::assert(
-        subject.clone(),
-        known_attribute(EXAMINED),
-        json!(source.as_str()),
-        time,
-        source.clone(),
-        run.clone(),
-    )?;
-    log.append(&receipt)?;
-    examined.claims += 1;
-    Ok(examined)
+    claims.push(claim(
+        subject,
+        &known_attribute(EXAMINED),
+        &json!(source.as_str()),
+        &time,
+        source,
+        run,
+    )?);
+    archive.log().append_all(&claims)?;
+    Ok(Examined {
+        claims: claims.len(),
+        stored,
+        known,
+    })
 }
 
-/// One derived file: bytes into the derived store — unless content/
-/// already holds them as an original — and what is known about it into
-/// the log. Answers what it added to the tally.
+/// One derived file: bytes into the derived store, unless content/
+/// already holds them as an original. Answers the claims to record about
+/// it, and whether its bytes were new to the derived store.
 fn take(
     archive: &Archive,
     origin: &Subject,
@@ -161,15 +164,10 @@ fn take(
     time: &Timestamp,
     source: &Source,
     run: &Run,
-) -> Result<Examined> {
+) -> Result<(Vec<Claim>, bool)> {
     let content = archive.content();
     let derived = archive.derived();
-    let log = archive.log();
-    let mut examined = Examined {
-        claims: 0,
-        stored: 0,
-        known: 0,
-    };
+    let mut claims = Vec::new();
     let io = |source| Error::Io {
         context: format!("{}: reading the derived file", derivation.name),
         source,
@@ -188,6 +186,7 @@ fn take(
     // may choose, and content/ wins: bytes once taken in need no
     // second-class copy, the claims below stand either way. This asks
     // the store itself, truth asking truth; the index has no say here.
+    let mut new = false;
     if content.matching(digest.as_str())?.is_empty() {
         let (status, entry) = derived.add_reader(fs::File::open(&derivation.path).map_err(io)?)?;
         if entry.digest().as_str() != digest.as_str() {
@@ -204,49 +203,44 @@ fn take(
         // set.
         if status.is_new() {
             let attribute = known_attribute("file:size");
-            append(log, &subject, &attribute, &json!(size), time, source, run)?;
-            examined.claims += 1;
-            examined.stored += 1;
-        } else {
-            examined.known += 1;
+            claims.push(claim(
+                &subject,
+                &attribute,
+                &json!(size),
+                time,
+                source,
+                run,
+            )?);
+            new = true;
         }
-    } else {
-        examined.known += 1;
     }
     let told = [
         (known_attribute("file:mime"), json!(derivation.mime)),
         (known_attribute("prov:origin"), json!(origin.as_str())),
     ];
-    for (attribute, value) in &told {
-        append(log, &subject, attribute, value, time, source, run)?;
-        examined.claims += 1;
+    for (attribute, value) in told.iter().chain(&derivation.findings) {
+        claims.push(claim(&subject, attribute, value, time, source, run)?);
     }
-    for (attribute, value) in &derivation.findings {
-        append(log, &subject, attribute, value, time, source, run)?;
-        examined.claims += 1;
-    }
-    Ok(examined)
+    Ok((claims, new))
 }
 
-/// One claim of the examination, appended.
-fn append(
-    log: &Log,
+/// One claim of the examination.
+fn claim(
     subject: &Subject,
     attribute: &Attribute,
     value: &Value,
     time: &Timestamp,
     source: &Source,
     run: &Run,
-) -> Result<()> {
-    let claim = Claim::assert(
+) -> Result<Claim> {
+    Claim::assert(
         subject.clone(),
         attribute.clone(),
         value.clone(),
         time.clone(),
         source.clone(),
         run.clone(),
-    )?;
-    log.append(&claim)
+    )
 }
 
 /// An attribute this module spells itself.
@@ -717,6 +711,35 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "no receipt — the file will be offered again"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_examination_whose_derived_file_cannot_be_stored_writes_no_claim() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        let (archive, mut index) = archive(&dir);
+        let mail = take(&archive, &dir, "letter", b"From: b@example.com");
+        let pdf = derivation(&dir, "invoice.pdf", "application/pdf", b"%PDF-1.7 bytes");
+        let subject = Attribute::parse("mail:subject").unwrap();
+        let findings = [(subject.clone(), json!("Invoice"))];
+        index.fold(archive.log()).unwrap();
+        let before = index.about(&mail).unwrap().len();
+
+        let derived = archive.root().join("derived");
+        let saved = std::fs::metadata(&derived).unwrap().permissions();
+        std::fs::set_permissions(&derived, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = record_examination(&archive, &mail, &findings, &[pdf], &source(), &run());
+        std::fs::set_permissions(&derived, saved).unwrap();
+
+        assert!(result.is_err(), "the derived store refused the file");
+        index.fold(archive.log()).unwrap();
+        assert_eq!(
+            index.about(&mail).unwrap().len(),
+            before,
+            "neither the finding nor a receipt went on the record"
         );
     }
 }

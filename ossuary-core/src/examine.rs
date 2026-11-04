@@ -11,6 +11,12 @@
 //! receipt, offered again next run. The directory is the orchestrator's
 //! to make and to sweep, announced files and workspace leavings alike.
 //!
+//! Only trouble that belongs to one file lets the run go on: the
+//! extractor refusing it or answering outside the protocol, or the file
+//! not reading. Anything else stops the run at that file, writing to the
+//! archive above all, because every file after it would fail the same
+//! way, and a run that keeps going past such trouble hides it.
+//!
 //! One program may carry several contracts — separately named,
 //! separately sourced, separately receipted capabilities, announced as
 //! one identify line each. Downstream nothing changes: the worklist and
@@ -34,7 +40,7 @@ use crate::archive::Archive;
 use crate::claim::{Attribute, Source, Subject, Value};
 use crate::error::{Error, Result};
 use crate::extract::{Derivation, Examined, record_examination};
-use crate::index::Index;
+use crate::index::{Index, Scope};
 
 /// One thing the orchestration did or found, told as it happens. The
 /// observer decides what becomes of it; the variants only say what is.
@@ -93,14 +99,21 @@ pub enum Event<'a> {
         /// What was said, one or more lines.
         remark: &'a str,
     },
-    /// A pass ended: the verdict's material, what failed included.
+    /// A file could not be examined: it gets no receipt and is offered
+    /// again on the next run. Told as it happens; the pass goes on.
+    Failed {
+        source: &'a Source,
+        subject: &'a Subject,
+        /// The file's standing `file:name`, when the record has one.
+        name: Option<&'a str>,
+        error: &'a Error,
+    },
+    /// A pass ended, or stopped at a file: the verdict's material.
     Verdict {
         source: &'a Source,
         tally: &'a Tally,
         /// Named files that sat out because their receipt already stands.
         already: usize,
-        /// What could not be examined — no receipt, offered again.
-        failures: &'a [(Subject, Error)],
     },
 }
 
@@ -192,9 +205,12 @@ struct Line {
 /// lost and the run would record, naming trouble — [`Error::Unknown`],
 /// [`Error::Ambiguous`] — and [`Error::Extract`] for a named extractor
 /// that will not identify, a loop that never runs dry, or `temp_dir`
-/// handed to a run that derives nothing. A file the extractor fails is
-/// not an error here: it stands in [`Event::Verdict`] and costs the
-/// settlement its `clean`.
+/// handed to a run that derives nothing. [`Error::Extract`] as well when
+/// the run stops at a file because the archive could not be written, or
+/// for any other trouble that is not the file's own; the files examined
+/// before it stay recorded. A file the extractor fails, or that will not
+/// read, is not an error here: it is told as [`Event::Failed`], the run
+/// goes on, and the settlement loses its `clean`.
 pub fn examine(
     archive: &Archive,
     name: Option<&str>,
@@ -503,9 +519,7 @@ fn run_one(
     round: usize,
 ) -> Result<Outcome> {
     let Run {
-        program,
-        identity,
-        source,
+        identity, source, ..
     } = run;
     let archive = invocation.archive;
     let scratch = identity
@@ -561,36 +575,38 @@ fn run_one(
     };
 
     let mut tally = Tally::default();
-    let mut failures: Vec<(Subject, Error)> = Vec::new();
     for subject in worklist {
-        if invocation.dry_run {
-            match rehearse_one(invocation, run, &subject, scratch.as_deref()) {
-                Ok((nothing, remarks)) => {
-                    tally.examined += 1;
-                    if nothing {
-                        tally.nothing += 1;
-                    }
-                    relay(invocation, index, source, &subject, &remarks)?;
-                }
-                Err(error) => failures.push((subject, error)),
-            }
-            continue;
-        }
-        match examine_one(
-            archive,
-            program,
-            identity.contract.as_deref(),
-            &subject,
-            source,
-            &invocation.run_id,
-            scratch.as_deref(),
-        ) {
-            Ok((written, remarks)) => {
-                tally.add(&written);
-                invocation.examined.insert(memo_key(&subject, source));
+        let failure = match attempt(invocation, run, &subject, scratch.as_deref(), &mut tally) {
+            Ok(remarks) => {
                 relay(invocation, index, source, &subject, &remarks)?;
+                continue;
             }
-            Err(error) => failures.push((subject, error)),
+            Err(failure) => failure,
+        };
+        let name = name_of(index, &subject)?;
+        match failure {
+            Failure::Skip(error) => {
+                tally.failed += 1;
+                invocation.observer.event(Event::Failed {
+                    source,
+                    subject: &subject,
+                    name: name.as_deref(),
+                    error: &error,
+                });
+            }
+            Failure::Stop(error) => {
+                invocation.observer.event(Event::Verdict {
+                    source,
+                    tally: &tally,
+                    already,
+                });
+                return Err(stopped(
+                    &subject,
+                    name.as_deref(),
+                    &error,
+                    invocation.dry_run,
+                ));
+            }
         }
     }
 
@@ -598,13 +614,67 @@ fn run_one(
         source,
         tally: &tally,
         already,
-        failures: &failures,
     });
     Ok(Outcome {
-        clean: failures.is_empty(),
+        clean: tally.failed == 0,
         examined: tally.examined,
         derived: tally.stored + tally.known,
     })
+}
+
+/// One file through the extractor, rehearsed under --dry-run and recorded
+/// otherwise, and counted in the tally. Answers what the extractor said on
+/// stderr.
+fn attempt(
+    invocation: &mut Invocation,
+    run: &Run,
+    subject: &Subject,
+    scratch: Option<&Path>,
+    tally: &mut Tally,
+) -> std::result::Result<String, Failure> {
+    if invocation.dry_run {
+        let (nothing, remarks) = rehearse_one(invocation, run, subject, scratch)?;
+        tally.examined += 1;
+        if nothing {
+            tally.nothing += 1;
+        }
+        return Ok(remarks);
+    }
+    let (written, remarks) = examine_one(
+        invocation.archive,
+        &run.program,
+        run.identity.contract.as_deref(),
+        subject,
+        &run.source,
+        &invocation.run_id,
+        scratch,
+    )?;
+    tally.add(&written);
+    invocation.examined.insert(memo_key(subject, &run.source));
+    Ok(remarks)
+}
+
+/// The error that ends a run at `subject`: what went wrong, and that
+/// what was recorded before it stays.
+fn stopped(subject: &Subject, name: Option<&str>, error: &Error, dry_run: bool) -> Error {
+    let file = match name {
+        Some(name) => format!("{subject} ({name})"),
+        None => subject.to_string(),
+    };
+    Error::Extract(if dry_run {
+        format!("dry run stopped at {file}: {}", error.spelled())
+    } else {
+        format!(
+            "stopped at {file}: {}; the files examined before it are recorded, and the next run starts again with this one",
+            error.spelled()
+        )
+    })
+}
+
+/// The file's standing `file:name`, when the record has one.
+fn name_of(index: &Index, subject: &Subject) -> Result<Option<String>> {
+    let names = index.values(subject, &Attribute::parse("file:name")?, Scope::Held)?;
+    Ok(names.iter().find_map(Value::as_str).map(str::to_string))
 }
 
 /// What the pass did, counted for the verdict.
@@ -620,6 +690,8 @@ pub struct Tally {
     pub known: usize,
     /// Examinations whose whole harvest was the receipt.
     pub nothing: usize,
+    /// Files that could not be examined, each told as [`Event::Failed`].
+    pub failed: usize,
 }
 
 impl Tally {
@@ -786,9 +858,11 @@ fn examine_one(
     source: &Source,
     run_id: &crate::claim::Run,
     scratch_parent: Option<&Path>,
-) -> Result<(Examined, String)> {
+) -> std::result::Result<(Examined, String), Failure> {
     let (Harvest { findings, derived }, _scratch, remarks) =
         try_one(archive, program, contract, subject, scratch_parent)?;
+    // Everything the extractor said has passed the grammar by now, so
+    // what fails from here on is the archive being written.
     let written = record_examination(archive, subject, &findings, &derived, source, run_id)?;
     Ok((written, remarks))
 }
@@ -806,16 +880,11 @@ fn relay(
     if remarks.trim().is_empty() {
         return Ok(());
     }
-    let names = index.values(
-        subject,
-        &Attribute::parse("file:name")?,
-        crate::index::Scope::Held,
-    )?;
-    let name = names.iter().find_map(Value::as_str);
+    let name = name_of(index, subject)?;
     invocation.observer.event(Event::Remarked {
         source,
         subject,
-        name,
+        name: name.as_deref(),
         remark: remarks,
     });
     Ok(())
@@ -830,7 +899,7 @@ fn rehearse_one(
     run: &Run,
     subject: &Subject,
     scratch: Option<&Path>,
-) -> Result<(bool, String)> {
+) -> std::result::Result<(bool, String), Failure> {
     let (Harvest { findings, derived }, _scratch, remarks) = try_one(
         invocation.archive,
         &run.program,
@@ -855,6 +924,31 @@ fn rehearse_one(
     Ok((nothing, remarks))
 }
 
+/// Why one file's examination did not happen, by what the run does next.
+#[derive(Debug)]
+enum Failure {
+    /// Trouble with this file or with the extractor's answer about it:
+    /// reported, and the run goes on with the next file.
+    Skip(Error),
+    /// Anything else, writing to the archive above all: the run stops,
+    /// because the next file would meet the same trouble.
+    Stop(Error),
+}
+
+impl From<Error> for Failure {
+    /// An error nobody classified ends the run: carrying on past trouble
+    /// that was not understood is what must never happen silently.
+    fn from(error: Error) -> Self {
+        Failure::Stop(error)
+    }
+}
+
+impl From<immure::Error> for Failure {
+    fn from(error: immure::Error) -> Self {
+        Failure::Stop(error.into())
+    }
+}
+
 /// The examination itself, short of the record: the bytes handed over,
 /// the answer harvested, the extractor's stderr kept as its remarks.
 /// The scratch directory rides along so announced files still stand
@@ -865,7 +959,7 @@ fn try_one(
     contract: Option<&str>,
     subject: &Subject,
     scratch_parent: Option<&Path>,
-) -> Result<(Harvest, Option<tempfile::TempDir>, String)> {
+) -> std::result::Result<(Harvest, Option<tempfile::TempDir>, String), Failure> {
     let content = archive.content();
     // The examinee may be an original or itself derived — the PDF out of
     // a mail: content/ is asked first, derived/ second.
@@ -874,15 +968,22 @@ fn try_one(
         _ => match archive.derived().matching(subject.as_str())?.as_slice() {
             [one] => (archive.derived(), one.clone()),
             _ => {
-                return Err(Error::Extract(
+                return Err(Failure::Skip(Error::Extract(
                     "recorded, but neither content/ nor derived/ contains it".to_string(),
-                ));
+                )));
             }
         },
     };
+    // One file that will not open is that file's trouble; `ossuary audit`
+    // is what finds out why.
     let mut reader = store
-        .reader(&digest)?
-        .ok_or_else(|| Error::Extract("no longer present in content/ or derived/".to_string()))?;
+        .reader(&digest)
+        .map_err(|error| Failure::Skip(error.into()))?
+        .ok_or_else(|| {
+            Failure::Skip(Error::Extract(
+                "no longer present in content/ or derived/".to_string(),
+            ))
+        })?;
 
     // A fresh directory per file: names cannot collide across files, and
     // dropping it sweeps everything — announced files once they are taken
@@ -910,7 +1011,8 @@ fn try_one(
         program,
         &answer,
         scratch.as_ref().map(tempfile::TempDir::path),
-    )?;
+    )
+    .map_err(Failure::Skip)?;
     Ok((harvest, scratch, remarks))
 }
 
@@ -922,11 +1024,13 @@ fn try_one(
 /// the way. A non-zero exit is a refusal, and what stderr said is the
 /// reason. Exit 0 before the whole file was read is an error as well:
 /// the protocol has the extractor read to the end before it answers.
+/// What goes wrong between the two ends of the pipes is this file's
+/// trouble; a program that cannot be started or waited for stops the run.
 fn converse(
     command: &mut Command,
     program: &str,
     reader: &mut impl Read,
-) -> Result<(String, String)> {
+) -> std::result::Result<(String, String), Failure> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -969,21 +1073,23 @@ fn converse(
         Ok(()) => false,
         Err(Shortfall::Closed) => true,
         Err(Shortfall::Read(error)) => {
-            return Err(Error::Io {
+            return Err(Failure::Skip(Error::Io {
                 context: "reading the file from the archive".to_string(),
                 source: error,
-            });
+            }));
         }
         Err(Shortfall::Write(error)) => {
-            return Err(Error::Io {
+            return Err(Failure::Skip(Error::Io {
                 context: "writing the file to the extractor".to_string(),
                 source: error,
-            });
+            }));
         }
     };
-    let read_error = |error| Error::Io {
-        context: "reading the extractor's output".to_string(),
-        source: error,
+    let read_error = |error| {
+        Failure::Skip(Error::Io {
+            context: "reading the extractor's output".to_string(),
+            source: error,
+        })
     };
     let answer = answer.map_err(read_error)?;
     let remarks = unprefixed(
@@ -993,18 +1099,18 @@ fn converse(
     if !status.success() {
         // The reason on one line, as a failure list wants it.
         let complaint = remarks.lines().collect::<Vec<_>>().join("; ");
-        return Err(Error::Extract(if complaint.is_empty() {
+        return Err(Failure::Skip(Error::Extract(if complaint.is_empty() {
             format!("`{program}` failed ({status})")
         } else {
             format!("`{program}` failed ({status}): {complaint}")
-        }));
+        })));
     }
     if closed {
         // Exit 0 says the file was examined, but part of it was never
         // read.
-        return Err(Error::Extract(format!(
+        return Err(Failure::Skip(Error::Extract(format!(
             "`{program}` exited before it had read the whole file"
-        )));
+        ))));
     }
     Ok((String::from_utf8_lossy(&answer).into_owned(), remarks))
 }
@@ -1186,6 +1292,38 @@ mod tests {
         assert_eq!(remarks, "a remark");
     }
 
+    /// The error of a failure the run goes on after; a failure that stops
+    /// the run fails the test.
+    fn skipped(failure: Failure) -> Error {
+        match failure {
+            Failure::Skip(error) => error,
+            Failure::Stop(error) => panic!("the run stopped: {}", error.spelled()),
+        }
+    }
+
+    #[test]
+    fn a_program_that_cannot_be_started_stops_the_run() {
+        let mut command = Command::new("/nonexistent/ossuary-extract-gone");
+        let mut bytes: &[u8] = b"the file";
+        let failure = converse(&mut command, "ossuary-extract-gone", &mut bytes).unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Stop(error) if error.spelled().starts_with("running `ossuary-extract-gone`")),
+            "{failure:?}"
+        );
+    }
+
+    #[test]
+    fn a_null_value_is_outside_the_protocol() {
+        let error = harvest("x", "{\"attribute\":\"a:b\",\"value\":null}", None)
+            .err()
+            .unwrap();
+        assert!(
+            error.spelled().contains("outside the extractor protocol"),
+            "{}",
+            error.spelled()
+        );
+    }
+
     #[test]
     fn a_refusal_carries_what_stderr_said() {
         let mut command = Command::new("/bin/sh");
@@ -1194,7 +1332,7 @@ mod tests {
             "cat > /dev/null; echo 'sh: cannot read this' >&2; exit 3",
         ]);
         let mut bytes: &[u8] = b"the file";
-        let error = converse(&mut command, "sh", &mut bytes).unwrap_err();
+        let error = skipped(converse(&mut command, "sh", &mut bytes).unwrap_err());
         let spelled = error.to_string();
         assert!(
             spelled.contains("`sh` failed") && spelled.contains("cannot read this"),
@@ -1212,7 +1350,8 @@ mod tests {
     fn an_extractor_that_stops_reading_gives_its_own_reason() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "echo 'sh: no such contract' >&2; exit 2"]);
-        let error = converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap_err();
+        let error =
+            skipped(converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap_err());
         let spelled = error.spelled();
         assert!(
             spelled.contains("`sh` failed") && spelled.contains("no such contract"),
@@ -1224,7 +1363,8 @@ mod tests {
     fn exit_0_before_the_end_of_the_file_is_an_error() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "exit 0"]);
-        let error = converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap_err();
+        let error =
+            skipped(converse(&mut command, "sh", &mut a_large_file().as_slice()).unwrap_err());
         assert_eq!(
             error.spelled(),
             "`sh` exited before it had read the whole file"
@@ -1264,7 +1404,7 @@ mod tests {
             "-c",
             "cat > /dev/null; echo '{\"attribute\":\"a:b\",\"value\":1}'",
         ]);
-        let error = converse(&mut command, "sh", &mut Damaged(0)).unwrap_err();
+        let error = skipped(converse(&mut command, "sh", &mut Damaged(0)).unwrap_err());
         assert_eq!(
             error.spelled(),
             "reading the file from the archive: frame damaged"
