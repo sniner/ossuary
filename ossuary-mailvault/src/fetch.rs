@@ -1194,7 +1194,7 @@ impl Fetch<'_> {
         let mut comparison = self.comparison(place)?;
         let listed = match mailbox
             .uids_above(0)
-            .and_then(|uids| mailbox.message_ids(&uids))
+            .and_then(|uids| mailbox.header(&uids, compare::HEADER))
         {
             Ok(listed) => listed,
             Err(error) => {
@@ -1460,17 +1460,19 @@ mod tests {
                 .collect())
         }
 
-        fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, String)>> {
+        fn header(&mut self, uids: &[u32], name: &str) -> Result<Vec<(u32, String)>> {
             Ok(uids
                 .iter()
                 .filter_map(|uid| {
                     let bytes = self.messages.get(uid)?;
-                    let id = self
+                    let listed = self
                         .listed_as
                         .get(uid)
+                        .filter(|_| name.eq_ignore_ascii_case(compare::HEADER));
+                    let value = listed
                         .cloned()
-                        .unwrap_or_else(|| crate::remote::message_id(bytes));
-                    Some((*uid, id))
+                        .unwrap_or_else(|| crate::remote::header_value(bytes, name));
+                    Some((*uid, value))
                 })
                 .collect())
         }

@@ -32,6 +32,9 @@ use ossuary_core::{Attribute, Index, Scope, Term};
 /// The attribute `ossuary extract mail` records the Message-ID under.
 pub const MESSAGE_ID: &str = "mail:message-id";
 
+/// The header field the server's side is listed by.
+pub const HEADER: &str = "Message-ID";
+
 /// Length above which a server's Message-ID may be a truncated one.
 /// Exchange cuts the value in folder listings at about 255 characters;
 /// the threshold lies well below, and only keeps the prefix search

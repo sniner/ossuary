@@ -72,14 +72,14 @@ pub trait Mailbox {
     /// A search the server refuses.
     fn uids_above(&mut self, above: u32) -> Result<Vec<u32>>;
 
-    /// The Message-ID header of each of `uids`, as the message spells
-    /// it, unfolded; `""` for a message without one. A UID the server
-    /// leaves out of its answer is left out here.
+    /// The first header field `name` of each of `uids`, as the message
+    /// spells it, unfolded; `""` for a message without one. A UID the
+    /// server leaves out of its answer is left out here.
     ///
     /// # Errors
     ///
     /// A fetch the server refuses.
-    fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, String)>>;
+    fn header(&mut self, uids: &[u32], name: &str) -> Result<Vec<(u32, String)>>;
 
     /// Whole messages by UID. Every UID asked for is handed to `each`
     /// once, with what became of it, in the order the server answers,
@@ -140,8 +140,8 @@ const PROTON: &str = "Proton Mail";
 /// stored, so the batch bounds the memory, not the round trips.
 const BATCH: usize = 25;
 
-/// How many Message-IDs one FETCH asks for. A line each, so the batch
-/// bounds the round trips.
+/// How many header fields one FETCH asks for. A line each, so the
+/// batch bounds the round trips.
 const ID_BATCH: usize = 1000;
 
 impl Remote {
@@ -276,16 +276,19 @@ fn unescaped(text: &str) -> String {
     out
 }
 
-/// The value of the first Message-ID field in a header section,
-/// unfolded; `""` when there is none.
-pub(crate) fn message_id(header: &[u8]) -> String {
-    let text = String::from_utf8_lossy(header);
-    let mut lines = text.split('\n').map(|line| line.trim_end_matches('\r'));
+/// The value of the first field `name` in a header section, unfolded;
+/// `""` when there is none. The section ends at the first empty line,
+/// so a whole message may be handed in: a field in a part's own header
+/// is not the message's.
+pub(crate) fn header_value(header: &[u8], name: &str) -> String {
+    let text = String::from_utf8_lossy(header_section(header));
+    let mut lines = text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .take_while(|line| !line.is_empty());
     let Some(first) = lines.by_ref().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.trim()
-            .eq_ignore_ascii_case("message-id")
-            .then_some(value)
+        let (field, value) = line.split_once(':')?;
+        field.trim().eq_ignore_ascii_case(name).then_some(value)
     }) else {
         return String::new();
     };
@@ -295,6 +298,22 @@ pub(crate) fn message_id(header: &[u8]) -> String {
         value.push_str(line.trim());
     }
     value.trim().to_string()
+}
+
+/// The bytes up to the empty line that ends the header section, or all
+/// of them when there is none. Only this part is decoded.
+fn header_section(message: &[u8]) -> &[u8] {
+    let ends = [&b"\r\n\r\n"[..], &b"\n\n"[..]];
+    let end = ends
+        .iter()
+        .filter_map(|end| {
+            message
+                .windows(end.len())
+                .position(|window| window == *end)
+                .map(|at| at + end.len())
+        })
+        .min();
+    &message[..end.unwrap_or(message.len())]
 }
 
 /// TLS to the account's server, the certificate held against the
@@ -373,7 +392,7 @@ impl Mailbox for Remote {
     // The header field rather than ENVELOPE: the envelope brings every
     // address along, and the parser fails a whole batch on one it cannot
     // read.
-    fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, String)>> {
+    fn header(&mut self, uids: &[u32], name: &str) -> Result<Vec<(u32, String)>> {
         let mut found = Vec::with_capacity(uids.len());
         for batch in uids.chunks(ID_BATCH) {
             let set = batch
@@ -383,15 +402,15 @@ impl Mailbox for Remote {
                 .join(",");
             let fetches = self
                 .session
-                .uid_fetch(&set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
-                .context("fetching the Message-IDs failed")?;
+                .uid_fetch(&set, format!("(UID BODY.PEEK[HEADER.FIELDS ({name})])"))
+                .with_context(|| format!("fetching the {name} fields failed"))?;
             let mut asked: HashSet<u32> = batch.iter().copied().collect();
             for fetch in fetches.iter() {
                 // `remove`: a UID answered twice is counted once.
                 let Some(uid) = fetch.uid.filter(|uid| asked.remove(uid)) else {
                     continue;
                 };
-                found.push((uid, message_id(fetch.header().unwrap_or_default())));
+                found.push((uid, header_value(fetch.header().unwrap_or_default(), name)));
             }
         }
         Ok(found)
@@ -542,7 +561,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_message_id_is_read_from_its_header_field() {
+    fn a_header_field_is_read_from_the_header_section() {
+        let message_id = |header: &[u8]| header_value(header, "Message-ID");
         assert_eq!(
             message_id(b"Message-ID: <a@example.org>\r\n\r\n"),
             "<a@example.org>"
@@ -558,6 +578,19 @@ mod tests {
             "the first of two"
         );
         assert_eq!(message_id(b"\r\n"), "", "none");
+        assert_eq!(
+            message_id(b"Subject: x\r\n\r\n--b\r\nMessage-ID: <part@example.org>\r\n"),
+            "",
+            "a field below the header section is not the message's"
+        );
+        assert_eq!(
+            header_value(
+                b"X-Pm-Internal-Id: abc==\nSubject: x\n\nbody",
+                "x-pm-internal-id"
+            ),
+            "abc==",
+            "any field, bare line ends"
+        );
     }
 
     #[test]
