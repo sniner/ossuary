@@ -765,17 +765,24 @@ impl Fetch<'_> {
             proton::sort(&new, &listed, |id| record.holders(id))?
         };
         let open = sorted.fetch.len();
+        // Under --full or after a renumbering every UID is looked up, not
+        // only those new to the folder.
+        let which = if anew {
+            "looked up anew"
+        } else {
+            "new in the folder"
+        };
         if new.is_empty() {
             self.say
                 .line(format_args!("{name}: nothing new in the folder"));
         } else if open == 0 {
             self.say.line(format_args!(
-                "{name}: {} new in the folder, all found in the archive",
+                "{name}: {} {which}, all found in the archive",
                 counted(new.len(), "message", "messages")
             ));
         } else {
             self.say.line(format_args!(
-                "{name}: {} new in the folder, {} not in the archive yet; the next run looks for them again",
+                "{name}: {} {which}, {} not in the archive yet; the next run looks for them again",
                 counted(new.len(), "message", "messages"),
                 open
             ));
