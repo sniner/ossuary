@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-04
+
 ### Changed
 
 - **`ossuary extract` stops at a file it cannot record.** When a derived file or the log cannot be
