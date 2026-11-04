@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-11-04
+
 ### Fixed
 
 - **A seal that stopped halfway no longer loses the open segment.** macOS on an SMB mount replaces
