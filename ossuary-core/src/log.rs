@@ -82,10 +82,10 @@ pub const GENERATION: u32 = 1;
 /// The open segment is sealed by the first append that finds it at this
 /// size or larger.
 ///
-/// A mebibyte of head is a few thousand claims — the granularity the
-/// concept asks of a segment — and seals into a store entry of one or two
-/// hundred compressed kilobytes: a comfortable unit to read whole, to
-/// replicate, and for a bloom filter to answer for without going blunt.
+/// A mebibyte of head is about four thousand claims, the granularity the
+/// concept asks of a segment, and seals into a store entry of about sixty
+/// compressed kilobytes. A segment is read whole when it is sealed,
+/// audited or read into the index, and copied whole by a sync.
 /// When to seal is the software's business (`docs/format.md` says so in
 /// words), so this is a constant, not a knob; [`seal`](Log::seal) stays
 /// alongside as the on-demand grip, and a head below the threshold simply

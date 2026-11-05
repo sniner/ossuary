@@ -431,8 +431,8 @@ impl Fetch<'_> {
 
     /// Bring the record up to date before a folder that reads it; it then
     /// holds the claims of the folders before this one. The first call
-    /// builds it from the log, a later fold reads only the open head and
-    /// the segments sealed since.
+    /// builds it from the log, a later fold reads only the segments sealed
+    /// since and what was appended to the open head.
     fn refresh(&self) -> Result<()> {
         let mut record = self.record.borrow_mut();
         match record.as_mut() {
