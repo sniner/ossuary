@@ -5,6 +5,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-05
+
 ### Changed
 
 - **`ossuary ingest` is slower for files whose content the archive already holds**: the claims of
@@ -18,7 +20,7 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Claims are on disk before a command reports them written.** Before, a power failure or crash
   could lose the claims of the last seconds while the query index in `cache/` still listed them.
-  Delete `cache/index.sqlite` in an archive where that happened; the next command rebuilds it
+  The query index is rebuilt once after the update, which also removes such claims from it
 - **Queries on a read-only archive** work while the query index in `cache/` is up to date
 - **A query while another command records claims** no longer fails on a claim that is only half
   written
