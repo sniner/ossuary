@@ -10,7 +10,7 @@ repository.workspace = true
 
 [dependencies]
 globset = "0.4.19"
-immure = "0.3.2"
+immure = "0.3.3"
 infer = "0.22.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

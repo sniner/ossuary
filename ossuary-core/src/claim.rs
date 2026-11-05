@@ -4,10 +4,17 @@
 //! append-only facts, one JSON object per line. The shape is fixed by
 //! generation 1 of the format (`docs/format.md`): seven fields and no
 //! eighth, `subject`, `attribute`, `value`, `time`, `source`, `run` and
-//! `retract`. Nothing is ever updated or deleted in place; a correction is
+//! `retracts`. Nothing is ever updated or deleted in place; a correction is
 //! a newer claim, a deletion is a retraction, and the log only grows. Every
 //! claim this crate writes names its run; a claim written before there was
 //! a run to name reads like any other, and has none.
+//!
+//! A claim is identified by the hash of its line, as the log holds it
+//! ([`ClaimId`]). A retraction names the claims it retracts by id, so it
+//! means the same wherever it stands in the log: a claim stands while no
+//! retraction names it. The id is computed when a line is read from the
+//! log, with the archive's algorithm; a claim built here has none until it
+//! is written.
 //!
 //! Every field with rules of its own is a type of its own, and parsing
 //! validates: a [`Subject`], [`Attribute`], [`Timestamp`], [`Source`] or
@@ -18,6 +25,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use immure::{Algorithm, Digest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -32,6 +40,71 @@ pub use serde_json::Value;
 /// The digest lengths a subject may have, in hex characters — those of the
 /// algorithms immure speaks: 32, 48 or 64 bytes.
 const DIGEST_LENGTHS: [usize; 3] = [64, 96, 128];
+
+/// A claim's id: the digest of its line as the log holds it, without the
+/// newline, under the archive's algorithm. What a retraction names.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClaimId(Digest);
+
+impl Serialize for ClaimId {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ClaimId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        ClaimId::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl fmt::Display for ClaimId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ClaimId {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        ClaimId::parse(s)
+    }
+}
+
+impl ClaimId {
+    /// The id of `line`, a claim as it stands in the log without its
+    /// newline, under `algorithm`.
+    #[must_use]
+    pub fn of(line: &str, algorithm: Algorithm) -> Self {
+        ClaimId(algorithm.hash(line.as_bytes()))
+    }
+
+    /// Parse an id: bare lowercase hex of a digest's length.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ClaimId`] when it is not.
+    pub fn parse(s: &str) -> Result<Self> {
+        match Digest::parse(s) {
+            Ok(digest) if DIGEST_LENGTHS.contains(&s.len()) => Ok(ClaimId(digest)),
+            _ => Err(Error::ClaimId(s.to_string())),
+        }
+    }
+
+    /// The id as hex.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
 
 /// What a claim is about: a blob, named by its content — the digest as bare
 /// lowercase hex, nothing around it.
@@ -491,28 +564,46 @@ pub struct Written {
 /// One fact: an attribute of a subject has a value — who says so, when,
 /// and in which call.
 ///
-/// Three shapes and no fourth, enforced at construction and again at
+/// Two shapes and no third, enforced at construction and again at
 /// parsing:
 ///
-/// - an **assertion** carries a value and no `retract`
-/// - a **retraction of one value** carries the value and `retract: true`
-/// - a **retraction of the whole attribute** carries `retract: true` and no
-///   value at all
+/// - an **assertion** carries a value and no `retracts`
+/// - a **retraction** carries `retracts`, the ids of the claims it
+///   retracts, and no value
 ///
 /// A retraction is a claim like any other — stamped, sourced, and never
-/// removing from the log what it retracts.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// removing from the log what it retracts. It keeps the subject and
+/// attribute of the claims it names, so that it is found with them.
+#[derive(Debug, Clone, Serialize)]
 pub struct Claim {
     subject: Subject,
     attribute: Attribute,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    retracts: Vec<ClaimId>,
     time: Timestamp,
     source: Source,
     #[serde(skip_serializing_if = "Option::is_none")]
     run: Option<Run>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    retract: bool,
+    /// The id of the line this claim was read from; `None` on a claim
+    /// built here and not yet written.
+    #[serde(skip)]
+    id: Option<ClaimId>,
+}
+
+/// Two claims are equal when their lines are: the id is derived from the
+/// line and says only where the claim was read from.
+impl PartialEq for Claim {
+    fn eq(&self, other: &Self) -> bool {
+        self.subject == other.subject
+            && self.attribute == other.attribute
+            && self.value == other.value
+            && self.retracts == other.retracts
+            && self.time == other.time
+            && self.source == other.source
+            && self.run == other.run
+    }
 }
 
 impl Claim {
@@ -536,72 +627,58 @@ impl Claim {
             subject,
             attribute,
             value: Some(value),
+            retracts: Vec::new(),
             time,
             source,
             run: Some(run),
-            retract: false,
+            id: None,
         })
     }
 
-    /// Retract exactly this value of the attribute.
+    /// Retract the claims `retracts` names: assertions of `attribute` on
+    /// `subject`, which no longer stand once this is in the log, wherever
+    /// it is.
     ///
-    /// The value travels in the retraction because nothing else could say
-    /// which of a multi-valued attribute's values is meant — which of three
-    /// tags, say.
+    /// Which claims to name is the caller's business, looked up in the
+    /// index before anything is written: every claim that asserts the
+    /// value to retract, or every claim of the attribute. A claim the
+    /// caller did not see is not named and stands on.
     ///
     /// # Errors
     ///
-    /// [`Error::NullValue`] — `null` is not a value here either.
-    pub fn retract_value(
+    /// [`Error::RetractsNothing`] when `retracts` is empty.
+    pub fn retract(
         subject: Subject,
         attribute: Attribute,
-        value: Value,
+        retracts: Vec<ClaimId>,
         time: Timestamp,
         source: Source,
         run: Run,
     ) -> Result<Self> {
-        if value.is_null() {
-            return Err(Error::NullValue);
+        if retracts.is_empty() {
+            return Err(Error::RetractsNothing);
         }
         Ok(Claim {
             subject,
             attribute,
-            value: Some(value),
-            time,
-            source,
-            run: Some(run),
-            retract: true,
-        })
-    }
-
-    /// Retract every value the attribute has for this subject.
-    #[must_use]
-    pub fn retract_attribute(
-        subject: Subject,
-        attribute: Attribute,
-        time: Timestamp,
-        source: Source,
-        run: Run,
-    ) -> Self {
-        Claim {
-            subject,
-            attribute,
             value: None,
+            retracts,
             time,
             source,
             run: Some(run),
-            retract: true,
-        }
+            id: None,
+        })
     }
 
     /// A claim as the record holds it, run and all — for reading rows
     /// back from an index, where a claim from before runs has none.
-    /// The three shapes are enforced as at every other door.
+    /// The two shapes are enforced as at every other door; the id comes
+    /// with [`with_id`](Claim::with_id).
     ///
     /// # Errors
     ///
-    /// [`Error::NullValue`] and [`Error::ValueRequired`] when the shape
-    /// is not one of the three.
+    /// [`Error::NullValue`], [`Error::ValueRequired`] and
+    /// [`Error::RetractionWithValue`] when the shape is not one of the two.
     pub(crate) fn recorded(
         subject: Subject,
         attribute: Attribute,
@@ -609,17 +686,23 @@ impl Claim {
         time: Timestamp,
         source: Source,
         run: Option<Run>,
-        retract: bool,
+        retracts: Vec<ClaimId>,
     ) -> Result<Self> {
         Claim::try_from(RawClaim {
             subject,
             attribute,
             value,
+            retracts,
             time,
             source,
             run,
-            retract,
         })
+    }
+
+    /// This claim under the id the index stored for it.
+    pub(crate) fn with_id(mut self, id: ClaimId) -> Self {
+        self.id = Some(id);
+        self
     }
 
     /// Read one line of the log back.
@@ -636,6 +719,28 @@ impl Claim {
     pub fn parse_line(line: &str) -> Result<Self> {
         let raw: RawClaim = serde_json::from_str(line)?;
         Claim::try_from(raw)
+    }
+
+    /// Read one line of the log back, with its id: the digest of `line`
+    /// under `algorithm`, the archive's. What the log's readers use, so
+    /// that every claim out of the log can be named by a retraction.
+    ///
+    /// # Errors
+    ///
+    /// As [`parse_line`](Claim::parse_line).
+    pub fn read_line(line: &str, algorithm: Algorithm) -> Result<Self> {
+        let mut claim = Claim::parse_line(line)?;
+        claim.id = Some(ClaimId::of(line, algorithm));
+        Ok(claim)
+    }
+
+    /// This claim with the id its line has under `algorithm`: what a
+    /// writer knows about a claim it just appended, so that a retraction
+    /// in the same run can name it before the index has read it.
+    #[must_use]
+    pub fn identified(mut self, algorithm: Algorithm) -> Self {
+        self.id = Some(ClaimId::of(&self.to_line(), algorithm));
+        self
     }
 
     /// The claim as its line: one JSON object, fields in the order of the
@@ -665,10 +770,23 @@ impl Claim {
         &self.attribute
     }
 
-    /// The value — `None` only on a whole-attribute retraction.
+    /// The value — `None` on a retraction.
     #[must_use]
     pub fn value(&self) -> Option<&Value> {
         self.value.as_ref()
+    }
+
+    /// The claims this one retracts; empty on an assertion.
+    #[must_use]
+    pub fn retracts(&self) -> &[ClaimId] {
+        &self.retracts
+    }
+
+    /// The id of the line this claim was read from; `None` on a claim built
+    /// here and not yet written.
+    #[must_use]
+    pub fn id(&self) -> Option<&ClaimId> {
+        self.id.as_ref()
     }
 
     /// When the claim was recorded.
@@ -693,7 +811,7 @@ impl Claim {
     /// Whether this claim retracts rather than asserts.
     #[must_use]
     pub fn is_retraction(&self) -> bool {
-        self.retract
+        !self.retracts.is_empty()
     }
 }
 
@@ -709,12 +827,12 @@ struct RawClaim {
     attribute: Attribute,
     #[serde(default, deserialize_with = "value_present")]
     value: Option<Value>,
+    #[serde(default)]
+    retracts: Vec<ClaimId>,
     time: Timestamp,
     source: Source,
     #[serde(default)]
     run: Option<Run>,
-    #[serde(default)]
-    retract: bool,
 }
 
 /// A `value` key that is present arrives here — even `null`, which `Option`
@@ -731,20 +849,49 @@ impl TryFrom<RawClaim> for Claim {
     type Error = Error;
 
     fn try_from(raw: RawClaim) -> Result<Self> {
-        match (&raw.value, raw.retract) {
+        match (&raw.value, raw.retracts.is_empty()) {
             (Some(Value::Null), _) => Err(Error::NullValue),
-            (None, false) => Err(Error::ValueRequired),
+            (None, true) => Err(Error::ValueRequired),
+            (Some(_), false) => Err(Error::RetractionWithValue),
             _ => Ok(Claim {
                 subject: raw.subject,
                 attribute: raw.attribute,
                 value: raw.value,
+                retracts: raw.retracts,
                 time: raw.time,
                 source: raw.source,
                 run: raw.run,
-                retract: raw.retract,
+                id: None,
             }),
         }
     }
+}
+
+/// The ids of the assertions of `attribute` on `subject` among `claims`
+/// that no retraction among them names: of `value` when one is given,
+/// every one otherwise. What a retraction written against these claims
+/// names. Only claims with ids count, as those read from the log have.
+#[must_use]
+pub fn standing_ids_in<'a>(
+    claims: impl IntoIterator<Item = &'a Claim> + Clone,
+    subject: &Subject,
+    attribute: &Attribute,
+    value: Option<&Value>,
+) -> Vec<ClaimId> {
+    let retracted: std::collections::HashSet<&ClaimId> = claims
+        .clone()
+        .into_iter()
+        .flat_map(|claim| claim.retracts().iter())
+        .collect();
+    claims
+        .into_iter()
+        .filter(|claim| claim.subject() == subject && claim.attribute() == attribute)
+        .filter(|claim| claim.value().is_some())
+        .filter(|claim| value.is_none_or(|value| claim.value() == Some(value)))
+        .filter_map(Claim::id)
+        .filter(|id| !retracted.contains(id))
+        .cloned()
+        .collect()
 }
 
 /// `Display`, `FromStr` and a validating `Deserialize` for the string
@@ -828,7 +975,7 @@ mod tests {
             r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
             r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
             r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
-            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4","retract":true}"#,
+            r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","retracts":["5be05be05be05be05be05be05be05be05be05be05be05be05be05be05be05be0"],"time":"2030-04-01T10:00:00Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#,
         ];
         for line in lines {
             let claim = Claim::parse_line(line).unwrap();
@@ -837,11 +984,25 @@ mod tests {
     }
 
     #[test]
-    fn a_value_retraction_carries_the_value_and_the_mark() {
-        let claim = Claim::retract_value(
+    fn a_retraction_names_the_claims_it_retracts_and_carries_no_value() {
+        let holiday = Claim::read_line(
+            &Claim::assert(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                json!("holiday"),
+                time(),
+                Source::parse("user").unwrap(),
+                run(),
+            )
+            .unwrap()
+            .to_line(),
+            Algorithm::Sha256,
+        )
+        .unwrap();
+        let claim = Claim::retract(
             subject(),
             Attribute::parse("user:tag").unwrap(),
-            json!("holiday"),
+            vec![holiday.id().unwrap().clone()],
             time(),
             Source::parse("user").unwrap(),
             run(),
@@ -849,27 +1010,48 @@ mod tests {
         .unwrap();
 
         assert!(claim.is_retraction());
-        assert_eq!(claim.value(), Some(&json!("holiday")));
-        assert!(claim.to_line().ends_with(r#""retract":true}"#));
-    }
-
-    #[test]
-    fn an_attribute_retraction_carries_no_value_at_all() {
-        let claim = Claim::retract_attribute(
-            subject(),
-            Attribute::parse("user:note").unwrap(),
-            time(),
-            Source::parse("user").unwrap(),
-            run(),
-        );
-
-        assert!(claim.is_retraction());
         assert_eq!(claim.value(), None);
+        assert_eq!(claim.retracts(), &[holiday.id().unwrap().clone()]);
         assert!(
             !claim.to_line().contains(r#""value""#),
             "no value key, not a value of null"
         );
         assert_eq!(Claim::parse_line(&claim.to_line()).unwrap(), claim);
+        assert!(
+            Claim::retract(
+                subject(),
+                Attribute::parse("user:tag").unwrap(),
+                Vec::new(),
+                time(),
+                Source::parse("user").unwrap(),
+                run(),
+            )
+            .is_err(),
+            "a retraction of nothing is refused"
+        );
+    }
+
+    #[test]
+    fn the_id_is_the_digest_of_the_line_as_read() {
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#;
+        let claim = Claim::read_line(line, Algorithm::Sha256).unwrap();
+        assert_eq!(
+            claim.id().unwrap().as_str(),
+            Algorithm::Sha256.hash(line.as_bytes()).as_str()
+        );
+        assert!(
+            Claim::parse_line(line).unwrap().id().is_none(),
+            "parsed without an algorithm, a claim has no id"
+        );
+        assert!(
+            Claim::parse_line(&format!(
+                "{}{}",
+                &line[..line.len() - 1],
+                r#","retract":true}"#
+            ))
+            .is_err(),
+            "the flag of the old form is an unknown field"
+        );
     }
 
     #[test]
@@ -890,8 +1072,8 @@ mod tests {
         assert!(matches!(Claim::parse_line(line), Err(Error::NullValue)));
 
         // `"value": null` on a retraction is not the same line as no value
-        // key: it must be refused, not read as a whole-attribute retraction.
-        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"time":"2026-09-01T21:14:03Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4","retract":true}"#;
+        // key: it must be refused, not read as a retraction.
+        let line = r#"{"subject":"9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e","attribute":"user:tag","value":null,"retracts":["5be05be05be05be05be05be05be05be05be05be05be05be05be05be05be05be0"],"time":"2026-09-01T21:14:03Z","source":"user","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}"#;
         assert!(matches!(Claim::parse_line(line), Err(Error::NullValue)));
     }
 

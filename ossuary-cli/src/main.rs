@@ -1180,7 +1180,7 @@ fn matched(
     subject: &Subject,
     pairs: &[(Attribute, Asked)],
 ) -> Result<(
-    Vec<(Subject, Attribute, ossuary_core::Taking)>,
+    Vec<(Subject, Attribute, Vec<ossuary_core::ClaimId>)>,
     Vec<(String, Vec<Value>)>,
 )> {
     let mut takings = Vec::new();
@@ -1200,7 +1200,7 @@ fn matched(
                 takings.push((
                     subject.clone(),
                     attribute.clone(),
-                    ossuary_core::Taking::All,
+                    index.standing_ids(subject, attribute, None)?,
                 ));
             }
             Asked::Literal(literal) => {
@@ -1219,7 +1219,7 @@ fn matched(
                     takings.push((
                         subject.clone(),
                         attribute.clone(),
-                        ossuary_core::Taking::Value(value.clone()),
+                        index.standing_ids(subject, attribute, Some(&value))?,
                     ));
                     match falling
                         .iter_mut()
@@ -1290,7 +1290,7 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
             subjects.push(subject);
         }
     }
-    let mut takings: Vec<(Subject, Attribute, ossuary_core::Taking)> = Vec::new();
+    let mut takings: Vec<(Subject, Attribute, Vec<ossuary_core::ClaimId>)> = Vec::new();
     let mut told: Vec<String> = Vec::new();
     let mut values = 0usize;
     for subject in &subjects {

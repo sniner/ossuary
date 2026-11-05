@@ -302,7 +302,7 @@ mod tests {
         let head = std::fs::read_to_string(archive.log().head_path()).unwrap();
 
         assert_eq!(head, head_after(&one));
-        let contents = crate::log::Contents::parse(&head).unwrap();
+        let contents = crate::log::Contents::parse(&head, immure::Algorithm::Sha256).unwrap();
         assert_eq!(contents.previous(), Some(&one));
         assert!(contents.claims().is_empty());
     }

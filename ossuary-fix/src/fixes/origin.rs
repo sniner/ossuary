@@ -84,21 +84,28 @@ mod tests {
         Subject::parse(&format!("{first}{}", "0".repeat(64 - first.len()))).unwrap()
     }
 
-    fn claim(subject: &str, attribute: &str, origin: &str, time: &str, retract: bool) -> Claim {
-        let make = if retract {
-            Claim::retract_value
-        } else {
-            Claim::assert
-        };
-        make(
-            self::subject(subject),
-            Attribute::parse(attribute).unwrap(),
-            json!(self::subject(origin).as_str()),
-            Timestamp::parse(time).unwrap(),
-            Source::parse("extractor:mail/1").unwrap(),
-            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-        )
-        .unwrap()
+    /// An assertion, or with `retract` a retraction of what stands in
+    /// `log` for it, named by id.
+    fn claim(
+        log: &Log,
+        subject: &str,
+        attribute: &str,
+        origin: &str,
+        time: &str,
+        retract: bool,
+    ) -> Claim {
+        let subject = self::subject(subject);
+        let attribute = Attribute::parse(attribute).unwrap();
+        let value = json!(self::subject(origin).as_str());
+        let time = Timestamp::parse(time).unwrap();
+        let source = Source::parse("extractor:mail/1").unwrap();
+        let run = Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap();
+        if retract {
+            let claims = record::whole(log).unwrap();
+            let ids = ossuary_core::standing_ids_in(&claims, &subject, &attribute, Some(&value));
+            return Claim::retract(subject, attribute, ids, time, source, run).unwrap();
+        }
+        Claim::assert(subject, attribute, value, time, source, run).unwrap()
     }
 
     #[test]
@@ -108,20 +115,20 @@ mod tests {
         let log = archive.log();
         // Four origins under the old word: one taken back, one already
         // standing under the new word too, two waiting.
-        log.append(&claim("a1", OLD, "0e", "2026-09-01T10:00:00Z", false))
+        log.append(&claim(log, "a1", OLD, "0e", "2026-09-01T10:00:00Z", false))
             .unwrap();
-        log.append(&claim("b2", OLD, "0e", "2026-09-01T10:00:01Z", false))
+        log.append(&claim(log, "b2", OLD, "0e", "2026-09-01T10:00:01Z", false))
             .unwrap();
-        log.append(&claim("c3", OLD, "0e", "2026-09-01T10:00:02Z", false))
+        log.append(&claim(log, "c3", OLD, "0e", "2026-09-01T10:00:02Z", false))
             .unwrap();
-        log.append(&claim("c3", OLD, "0e", "2026-09-02T10:00:00Z", true))
+        log.append(&claim(log, "c3", OLD, "0e", "2026-09-02T10:00:00Z", true))
             .unwrap();
-        log.append(&claim("d4", OLD, "0f", "2026-09-03T10:00:00Z", false))
+        log.append(&claim(log, "d4", OLD, "0f", "2026-09-03T10:00:00Z", false))
             .unwrap();
-        log.append(&claim("d4", NEW, "0f", "2026-09-03T10:00:00Z", false))
+        log.append(&claim(log, "d4", NEW, "0f", "2026-09-03T10:00:00Z", false))
             .unwrap();
         log.seal().unwrap();
-        log.append(&claim("e5", NEW, "0f", "2026-09-20T10:00:00Z", false))
+        log.append(&claim(log, "e5", NEW, "0f", "2026-09-20T10:00:00Z", false))
             .unwrap();
 
         let planned = plan(log).unwrap();

@@ -28,6 +28,19 @@ pub enum Error {
     #[error("not a run id: {0:?}")]
     Run(String),
 
+    /// The claim id is not bare lowercase hex of a digest's length.
+    #[error("not a claim id: {0:?}")]
+    ClaimId(String),
+
+    /// A retraction names no claim.
+    #[error("a retraction must name the claims it retracts")]
+    RetractsNothing,
+
+    /// A claim carries a value and names claims it retracts; it is neither
+    /// an assertion nor a retraction.
+    #[error("a retraction carries no value")]
+    RetractionWithValue,
+
     /// A term without a colon named no field of a claim.
     #[error(
         "unknown field {0:?}; a term without a colon must name a field: subject, attribute, value, time, source, run or retract"
@@ -41,16 +54,14 @@ pub enum Error {
     /// `null` stood where a value belongs.
     ///
     /// A value may be any JSON type but this one: a claim that asserts
-    /// nothing is not a claim, and a retraction says which value it retracts
-    /// by carrying it — or none at all, by carrying no `value` key.
+    /// nothing is not a claim.
     #[error("null is not allowed as a value")]
     NullValue,
 
     /// The claim carries no value and is not a retraction.
     ///
-    /// Only a retraction may leave the value out — that is the form that
-    /// retracts the whole attribute. An assertion without a value says
-    /// nothing.
+    /// Only a retraction leaves the value out, and it names what it
+    /// retracts instead. An assertion without a value says nothing.
     #[error("a claim without a value must be a retraction")]
     ValueRequired,
 

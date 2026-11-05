@@ -59,13 +59,13 @@
 //! goes on to the next. The archive or the memo refusing ends the run.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use anyhow::Result;
 use ossuary_core::{
-    Archive, Attribute, Claim, Index, Scope, Sighting, Source, Subject, Term, Timestamp, Value,
-    admit, record,
+    Archive, Attribute, Claim, ClaimId, Index, Scope, Sighting, Source, Subject, Term, Timestamp,
+    Value, admit, record,
 };
 use serde_json::json;
 
@@ -227,6 +227,7 @@ pub fn run(
         id: Attribute::parse(proton::ATTRIBUTE)?,
         record: RefCell::new(None),
         landed: RefCell::new(Vec::new()),
+        said: RefCell::new(HashMap::new()),
         in_mailbox: RefCell::new(HashSet::new()),
         say,
     };
@@ -288,6 +289,10 @@ struct Fetch<'a> {
     /// server id as the memo has it, with their subjects: what decides
     /// whether another round is needed.
     landed: RefCell<Vec<(String, String)>>,
+    /// The tag assertions this run wrote, by subject and value, with the
+    /// ids they got: what a retraction later in the run has to name as
+    /// well, since the record only catches up between folders.
+    said: RefCell<HashMap<(String, String), Vec<ClaimId>>>,
     /// Under `--full`, the Proton ids the current account's configured
     /// folders listed: the messages still in the mailbox. The full
     /// listing makes them at no extra cost; a label is taken back only
@@ -334,7 +339,7 @@ impl Fetch<'_> {
         if let Some(id) = id {
             facts.push((self.id.clone(), json!(id)));
         }
-        tally.claims += record(
+        let written = record(
             self.archive.log(),
             &admitted,
             &Sighting {
@@ -346,6 +351,21 @@ impl Fetch<'_> {
                 time: None,
             },
         )?;
+        tally.claims += written.len();
+        {
+            let mut said = self.said.borrow_mut();
+            for claim in written {
+                if claim.attribute() != &self.tag {
+                    continue;
+                }
+                let Some((value, id)) = claim.value().zip(claim.id()) else {
+                    continue;
+                };
+                said.entry((claim.subject().as_str().to_string(), value.to_string()))
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
         if admitted.is_new() {
             tally.stored += 1;
         } else {
@@ -403,21 +423,42 @@ impl Fetch<'_> {
     /// held when the folder was reached.
     fn take_back(&self, subject: &Subject, tags: &[String], tally: &mut Tally) -> Result<()> {
         let current: BTreeSet<String> = tags.iter().cloned().collect();
-        let mut stood = BTreeSet::new();
+        // What stood, with the ids of the claims that put it there: a
+        // retraction names them. The record's claims, and the ones this
+        // run said since the record last caught up.
+        let mut gone: BTreeMap<String, Vec<ClaimId>> = BTreeMap::new();
         if let Some(record) = self.record.borrow().as_ref() {
             for value in record.values(subject, &self.tag, Scope::Held)? {
-                if let Value::String(tag) = value {
-                    stood.insert(tag);
+                let Value::String(tag) = &value else {
+                    continue;
+                };
+                if !current.contains(tag) {
+                    gone.entry(tag.clone())
+                        .or_default()
+                        .extend(record.standing_ids(subject, &self.tag, Some(&value))?);
                 }
+            }
+        }
+        for ((said_subject, value), ids) in self.said.borrow().iter() {
+            if said_subject != subject.as_str() {
+                continue;
+            }
+            let Ok(Value::String(tag)) = serde_json::from_str::<Value>(value) else {
+                continue;
+            };
+            if !current.contains(&tag) {
+                gone.entry(tag).or_default().extend(ids.iter().cloned());
             }
         }
         let time = Timestamp::now();
         let mut claims = Vec::new();
-        for gone in stood.difference(&current) {
-            claims.push(Claim::retract_value(
+        for (_, mut ids) in gone {
+            ids.sort();
+            ids.dedup();
+            claims.push(Claim::retract(
                 subject.clone(),
                 self.tag.clone(),
-                json!(gone),
+                ids,
                 time.clone(),
                 self.source.clone(),
                 tally.run.clone(),
@@ -898,11 +939,28 @@ impl Fetch<'_> {
             let gone = self.label_removed(label, in_folder)?;
             let time = Timestamp::now();
             let mut claims = Vec::new();
+            let borrowed = self.record.borrow();
+            let index = borrowed
+                .as_ref()
+                .expect("a Proton folder catches the record up");
             for subject in &gone {
-                claims.push(Claim::retract_value(
+                let mut ids = index.standing_ids(subject, &self.tag, Some(&value))?;
+                if let Some(said) = self
+                    .said
+                    .borrow()
+                    .get(&(subject.as_str().to_string(), value.to_string()))
+                {
+                    ids.extend(said.iter().cloned());
+                }
+                ids.sort();
+                ids.dedup();
+                if ids.is_empty() {
+                    continue;
+                }
+                claims.push(Claim::retract(
                     subject.clone(),
                     self.tag.clone(),
-                    value.clone(),
+                    ids,
                     time.clone(),
                     self.source.clone(),
                     tally.run.clone(),
@@ -1997,6 +2055,7 @@ mod tests {
             id: Attribute::parse(proton::ATTRIBUTE).unwrap(),
             record: RefCell::new(Some(caught_up(&bench.archive, Say::new(true)).unwrap())),
             landed: RefCell::new(Vec::new()),
+            said: RefCell::new(HashMap::new()),
             in_mailbox: RefCell::new(HashSet::new()),
             say: Say::new(true),
         }
@@ -2620,14 +2679,12 @@ mod tests {
         let source = Source::parse(crate::SOURCE).unwrap();
         let run = ossuary_core::Run::new();
         let claim = if retracted {
-            Claim::retract_value(
-                subject,
-                attribute,
-                json!(value),
-                Timestamp::now(),
-                source,
-                run,
-            )
+            let mut index = bench.archive.index().unwrap();
+            index.fold(bench.archive.log()).unwrap();
+            let ids = index
+                .standing_ids(&subject, &attribute, Some(&json!(value)))
+                .unwrap();
+            Claim::retract(subject, attribute, ids, Timestamp::now(), source, run)
         } else {
             Claim::assert(
                 subject,

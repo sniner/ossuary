@@ -37,7 +37,7 @@ use rusqlite::{Connection, params};
 use serde_json::json;
 
 use crate::accession::{Sighting, admit, known_attribute, record};
-use crate::claim::{Claim, Run, Source, Subject, Timestamp, Value};
+use crate::claim::{Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::config::Excludes;
 use crate::error::{Error, Result};
 use crate::index::Index;
@@ -204,11 +204,11 @@ where
     // observed anew and gets its place back on the record.
     let time = Timestamp::now();
     let mut retractions = Vec::new();
-    for (path, subject) in &gone {
-        retractions.push(Claim::retract_value(
+    for (_, subject, ids) in &gone {
+        retractions.push(Claim::retract(
             subject.clone(),
             known_attribute("file:path"),
-            Value::String(path.to_string_lossy().into_owned()),
+            ids.clone(),
             time.clone(),
             source.clone(),
             result.run.clone(),
@@ -218,7 +218,7 @@ where
     result.claims += retractions.len();
     result.gone += retractions.len();
     if let Some(memory) = sweep.memory {
-        for (path, _) in &gone {
+        for (path, _, _) in &gone {
             memory.forget(sweep.host, path)?;
         }
     }
@@ -234,8 +234,9 @@ where
 /// back, and the roots that could not be judged.
 #[derive(Debug, Default)]
 struct Judged {
-    /// Places no file was met at, each with the file that stood there.
-    gone: Vec<(PathBuf, Subject)>,
+    /// Places no file was met at, each with the file that stood there
+    /// and the ids of the claims that put it there.
+    gone: Vec<(PathBuf, Subject, Vec<ClaimId>)>,
     /// Walked roots with places on record and not one file met.
     empty: Vec<PathBuf>,
 }
@@ -294,7 +295,12 @@ fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judge
             {
                 continue;
             }
-            judged.gone.push((path, subject));
+            let ids = record.standing_ids(
+                &subject,
+                &known_attribute("file:path"),
+                Some(&Value::String(path.to_string_lossy().into_owned())),
+            )?;
+            judged.gone.push((path, subject, ids));
         }
     }
     Ok(judged)
@@ -457,7 +463,7 @@ where
         bytes: 0,
         unchanged: 0,
         excluded: gathered.excluded,
-        gone: gone.into_iter().map(|(path, _)| path).collect(),
+        gone: gone.into_iter().map(|(path, _, _)| path).collect(),
         empty,
         archives: gathered.archives,
         failed: gathered.failed,
@@ -566,7 +572,7 @@ fn take(
             time: None,
         },
     )?;
-    Ok((admitted.is_new(), claims))
+    Ok((admitted.is_new(), claims.len()))
 }
 
 /// The moment the filesystem reported, spelled as the RFC 3339 instant it

@@ -141,12 +141,13 @@ pub fn admit(content: &Store, bytes: impl Read) -> Result<Admitted> {
 /// the store their size, and the sniffed kind where the taker had no
 /// word. Every claim of one call carries one moment, the sighting's
 /// own or now, and one run.
-/// Answers how many claims went in.
+/// Answers the claims that went in, each with the id it has in the log,
+/// so that a retraction in the same run can name one.
 ///
 /// # Errors
 ///
 /// Whatever building or appending a claim can answer.
-pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usize> {
+pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<Vec<Claim>> {
     let time = said.time.cloned().unwrap_or_else(Timestamp::now);
     let word = Source::parse("user")?;
     let subject = &admitted.subject;
@@ -202,7 +203,11 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usi
         )?);
     }
     log.append_all(&claims)?;
-    Ok(claims.len())
+    let algorithm = log.store().algorithm();
+    Ok(claims
+        .into_iter()
+        .map(|claim| claim.identified(algorithm))
+        .collect())
 }
 
 /// One claim of the record.
@@ -438,7 +443,7 @@ mod tests {
         let second = record(&log, &admitted.again(), &sighting(&archive_folder, &late)).unwrap();
 
         assert_eq!(
-            (first, second),
+            (first.len(), second.len()),
             (3, 2),
             "the size once, on the first sighting"
         );
@@ -484,7 +489,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(written, 3);
+        assert_eq!(written.len(), 3);
         let head = log.head().unwrap();
         let spelled: Vec<(&str, Value)> = head
             .iter()
@@ -532,7 +537,8 @@ mod tests {
         let written = record(&log, &again, &said(&second)).unwrap();
 
         assert_eq!(
-            written, 1,
+            written.len(),
+            1,
             "the place alone — size and kind were said on day one"
         );
         let head = log.head().unwrap();
@@ -560,7 +566,8 @@ mod tests {
         let written = record(&log, &again, &told).unwrap();
 
         assert_eq!(
-            written, 1,
+            written.len(),
+            1,
             "the kind alone — the size the log has from day one"
         );
         let kinds = log

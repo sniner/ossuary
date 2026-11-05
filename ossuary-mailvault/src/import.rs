@@ -508,7 +508,8 @@ impl Takeover<'_> {
                     tags: &[],
                     time: Some(time),
                 },
-            )?;
+            )?
+            .len();
         }
         log.seal()?;
         if let Some(memo) = self.memo {

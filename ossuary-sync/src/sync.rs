@@ -59,7 +59,7 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
             anyhow::anyhow!("the target's open segment is not text; name another target")
         })?,
     };
-    let head = Contents::parse(&text).map_err(|error| {
+    let head = Contents::parse(&text, archive.log().store().algorithm()).map_err(|error| {
         anyhow::anyhow!(
             "the target's open segment cannot be read: {}; name another target",
             error.spelled()

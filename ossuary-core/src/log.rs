@@ -176,8 +176,8 @@ impl Contents {
     /// [`Error::SegmentGeneration`] for a header that does not read or
     /// is in another form, and [`Error::BadLine`] naming the first claim
     /// that does not read.
-    pub fn parse(text: &str) -> Result<Contents> {
-        parse_segment(text)
+    pub fn parse(text: &str, algorithm: immure::Algorithm) -> Result<Contents> {
+        parse_segment(text, algorithm)
     }
 
     /// The segment sealed before this one, as its header names it;
@@ -237,6 +237,7 @@ impl Stamp {
 pub struct OpenHead {
     reader: BufReader<fs::File>,
     path: PathBuf,
+    algorithm: immure::Algorithm,
     previous: Option<Digest>,
     /// The offset of the first claim: the length of the header line.
     claims_at: u64,
@@ -301,9 +302,11 @@ impl OpenHead {
         let mut claims = Vec::new();
         for (index, line) in text.lines().enumerate() {
             // The header is line 1, the first claim line 2.
-            claims.push(Claim::parse_line(line).map_err(|source| Error::BadLine {
-                line: claims_before + index + 2,
-                source: Box::new(source),
+            claims.push(Claim::read_line(line, self.algorithm).map_err(|source| {
+                Error::BadLine {
+                    line: claims_before + index + 2,
+                    source: Box::new(source),
+                }
             })?);
         }
         Ok(Tail {
@@ -508,7 +511,7 @@ impl Log {
     /// [`contents`](Log::contents) can answer for a segment that is broken.
     pub fn head_contents(&self) -> Result<Contents> {
         match self.head_text()? {
-            Some(text) => parse_segment(&text),
+            Some(text) => parse_segment(&text, self.store.algorithm()),
             None => Ok(Contents {
                 previous: None,
                 claims: Vec::new(),
@@ -667,7 +670,7 @@ impl Log {
                 });
             }
         };
-        let Ok(contents) = parse_segment(&text) else {
+        let Ok(contents) = parse_segment(&text, self.store.algorithm()) else {
             return Ok(None);
         };
         let Some(named) = contents.previous else {
@@ -767,7 +770,10 @@ impl Log {
                 });
             }
         };
-        if parse_segment(&text)?.claims.is_empty() {
+        if parse_segment(&text, self.store.algorithm())?
+            .claims
+            .is_empty()
+        {
             return Ok(None);
         }
         let (_, entry) = self.store.add(text.as_bytes())?;
@@ -933,6 +939,7 @@ impl Log {
         Ok(Some(OpenHead {
             reader,
             path,
+            algorithm: self.store.algorithm(),
             previous,
             claims_at,
             stamp,
@@ -999,7 +1006,7 @@ impl Log {
             .read(digest)?
             .ok_or_else(|| Error::SegmentMissing(digest.to_string()))?;
         let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
-        parse_segment(&text)
+        parse_segment(&text, self.store.algorithm())
     }
 }
 
@@ -1065,14 +1072,15 @@ fn parse_header(first: &str) -> Result<Option<Digest>> {
     }
 }
 
-/// Header first, claims after, strict throughout.
-fn parse_segment(text: &str) -> Result<Contents> {
+/// Header first, claims after, strict throughout. Every claim gets its id
+/// under `algorithm`, the archive's.
+fn parse_segment(text: &str, algorithm: immure::Algorithm) -> Result<Contents> {
     let mut lines = text.lines().enumerate();
     let first = lines.next().map(|(_, line)| line).unwrap_or_default();
     let previous = parse_header(first)?;
     let mut claims = Vec::new();
     for (index, line) in lines {
-        let claim = Claim::parse_line(line).map_err(|source| Error::BadLine {
+        let claim = Claim::read_line(line, algorithm).map_err(|source| Error::BadLine {
             line: index + 1,
             source: Box::new(source),
         })?;

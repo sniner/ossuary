@@ -99,21 +99,28 @@ mod tests {
         Subject::parse(&format!("{first}{}", "0".repeat(64 - first.len()))).unwrap()
     }
 
-    fn claim(subject: &str, attribute: &str, value: &str, time: &str, retract: bool) -> Claim {
-        let make = if retract {
-            Claim::retract_value
-        } else {
-            Claim::assert
-        };
-        make(
-            self::subject(subject),
-            Attribute::parse(attribute).unwrap(),
-            json!(value),
-            Timestamp::parse(time).unwrap(),
-            Source::parse("extractor:packed-list/1").unwrap(),
-            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-        )
-        .unwrap()
+    /// An assertion, or with `retract` a retraction of what stands in
+    /// `log` for it, named by id.
+    fn claim(
+        log: &Log,
+        subject: &str,
+        attribute: &str,
+        value: &str,
+        time: &str,
+        retract: bool,
+    ) -> Claim {
+        let subject = self::subject(subject);
+        let attribute = Attribute::parse(attribute).unwrap();
+        let value = json!(value);
+        let time = Timestamp::parse(time).unwrap();
+        let source = Source::parse("extractor:packed-list/1").unwrap();
+        let run = Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap();
+        if retract {
+            let claims = record::whole(log).unwrap();
+            let ids = ossuary_core::standing_ids_in(&claims, &subject, &attribute, Some(&value));
+            return Claim::retract(subject, attribute, ids, time, source, run).unwrap();
+        }
+        Claim::assert(subject, attribute, value, time, source, run).unwrap()
     }
 
     #[test]
@@ -143,7 +150,7 @@ mod tests {
             ),
             ("b2", "zip:path", "dir/a.txt", "2026-09-01T10:00:01Z", false),
         ] {
-            log.append(&claim(subject, attribute, value, time, retract))
+            log.append(&claim(log, subject, attribute, value, time, retract))
                 .unwrap();
         }
         log.seal().unwrap();

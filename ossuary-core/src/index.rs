@@ -53,14 +53,14 @@ use std::time::Duration;
 use immure::Digest;
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 
-use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
+use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::export::Placement;
 use crate::log::{Log, Stamp};
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
-const SCHEMA: i64 = 1;
+const SCHEMA: i64 = 2;
 
 /// The open head's row in `segments`: id 0, named `head`, ranked past
 /// every sealed segment so it sorts last wherever log order is asked.
@@ -98,6 +98,7 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
      );
      CREATE TABLE IF NOT EXISTS claims (
          id        INTEGER PRIMARY KEY,
+         cid       TEXT NOT NULL UNIQUE,
          subject   INTEGER NOT NULL,
          attribute INTEGER NOT NULL,
          value     TEXT,
@@ -105,11 +106,20 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          source    INTEGER NOT NULL,
          run       INTEGER,
          retract   INTEGER NOT NULL DEFAULT 0,
+         retracted INTEGER NOT NULL DEFAULT 0,
          segment   INTEGER NOT NULL,
          position  INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS claims_subject
          ON claims (subject, attribute);
+     CREATE TABLE IF NOT EXISTS retractions (
+         target TEXT NOT NULL,
+         claim  INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS retractions_target
+         ON retractions (target);
+     CREATE INDEX IF NOT EXISTS retractions_claim
+         ON retractions (claim);
      CREATE INDEX IF NOT EXISTS claims_attribute
          ON claims (attribute, time);
      CREATE INDEX IF NOT EXISTS claims_segment
@@ -127,8 +137,9 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
      CREATE INDEX IF NOT EXISTS standing_lookup
          ON standing (attribute, value);
      CREATE VIEW IF NOT EXISTS v_claims AS
-         SELECT c.id, su.digest AS subject, a.name AS attribute, c.value, c.time,
-                so.name AS source, r.name AS run, c.retract, s.digest AS segment, s.seq, c.position
+         SELECT c.id, c.cid, su.digest AS subject, a.name AS attribute, c.value, c.time,
+                so.name AS source, r.name AS run, c.retract, c.retracted,
+                s.digest AS segment, s.seq, c.position
          FROM claims c
          JOIN subjects su ON su.id = c.subject
          JOIN attributes a ON a.id = c.attribute
@@ -189,6 +200,44 @@ pub struct Standing {
 
 /// One row of `segments`: id, digest, place in the chain.
 type SegmentRow = (i64, String, i64);
+
+/// The columns a claim is read back from, spoken of `c` the claim, `su`,
+/// `a`, `so` and `r` its names: what [`claim`] builds a [`Claim`] from.
+/// The retracted ids come as a JSON array, empty for an assertion.
+const CLAIM_COLUMNS: &str = "su.digest, a.name, c.value, c.time, so.name, r.name, c.cid,
+     (SELECT json_group_array(rt.target) FROM retractions rt WHERE rt.claim = c.id)";
+
+/// The joins that give [`CLAIM_COLUMNS`] their names.
+const CLAIM_JOINS: &str = "JOIN subjects su ON su.id = c.subject
+     JOIN attributes a ON a.id = c.attribute
+     JOIN sources so ON so.id = c.source
+     LEFT JOIN runs r ON r.id = c.run";
+
+/// A claim's fields as [`CLAIM_COLUMNS`] read them.
+type ClaimRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+);
+
+/// Read [`CLAIM_COLUMNS`] from a row, starting at column 0.
+fn claim_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClaimRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+    ))
+}
 
 /// What a question reads: the present, the standing set whole, or the
 /// record.
@@ -423,6 +472,7 @@ impl Index {
                  DROP VIEW IF EXISTS v_places;
                  DROP VIEW IF EXISTS v_runs;
                  DROP TABLE IF EXISTS standing;
+                 DROP TABLE IF EXISTS retractions;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
                  DROP TABLE IF EXISTS head_read;
@@ -621,8 +671,10 @@ impl Index {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction
-            .execute_batch("DELETE FROM claims; DELETE FROM standing; DELETE FROM head_read;")?;
+        transaction.execute_batch(
+            "DELETE FROM claims; DELETE FROM retractions; DELETE FROM standing;
+                 DELETE FROM head_read;",
+        )?;
         transaction.execute("DELETE FROM segments WHERE id != ?1", params![HEAD])?;
         transaction.commit()?;
         Ok(())
@@ -723,30 +775,18 @@ impl Index {
             })?
             .collect();
         let mut statement = self.connection.prepare(&format!(
-            "SELECT su.digest, a.name, c.value, c.time, so.name, r.name, c.retract,
-                    c.segment, c.position
+            "SELECT {CLAIM_COLUMNS}, c.segment, c.position
              FROM claims c
-             JOIN subjects su ON su.id = c.subject
-             JOIN attributes a ON a.id = c.attribute
-             JOIN sources so ON so.id = c.source
-             LEFT JOIN runs r ON r.id = c.run
+             {CLAIM_JOINS}
              JOIN segments s ON s.id = c.segment
              WHERE {until}
              ORDER BY s.seq, c.position"
         ))?;
         let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
-                (
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, bool>(6)?,
-                ),
-                row.get::<_, i64>(7)?,
+                claim_row(row)?,
                 row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
             ))
         })?;
         let Index { connection, ids } = &mut replayed;
@@ -776,33 +816,57 @@ impl Index {
     /// [`Error::Index`] from `SQLite`; the row-to-claim errors cannot happen
     /// for rows a fold wrote, but are propagated rather than sworn away.
     pub fn about(&self, subject: &Subject) -> Result<Vec<Claim>> {
-        let mut statement = self.connection.prepare(
-            "SELECT su.digest, a.name, c.value, c.time, so.name, r.name, c.retract
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {CLAIM_COLUMNS}
              FROM claims c
-             JOIN subjects su ON su.id = c.subject
-             JOIN attributes a ON a.id = c.attribute
-             JOIN sources so ON so.id = c.source
-             LEFT JOIN runs r ON r.id = c.run
+             {CLAIM_JOINS}
              JOIN segments s ON s.id = c.segment
              WHERE su.digest = ?1
-             ORDER BY s.seq, c.position",
-        )?;
-        let rows = statement.query_map(params![subject.as_str()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, bool>(6)?,
-            ))
-        })?;
+             ORDER BY s.seq, c.position"
+        ))?;
+        let rows = statement.query_map(params![subject.as_str()], claim_row)?;
         let mut claims = Vec::new();
         for row in rows {
             claims.push(claim(row?)?);
         }
         Ok(claims)
+    }
+
+    /// The ids of the assertions that stand for `attribute` on `subject`:
+    /// those of `value` when one is given, every one otherwise. What a
+    /// retraction names, looked up before it is written. Empty when
+    /// nothing stands.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`.
+    pub fn standing_ids(
+        &self,
+        subject: &Subject,
+        attribute: &Attribute,
+        value: Option<&Value>,
+    ) -> Result<Vec<ClaimId>> {
+        let mut statement = self.connection.prepare(
+            "SELECT c.cid FROM claims c
+             WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
+               AND c.attribute = (SELECT id FROM attributes WHERE name = ?2)
+               AND c.retract = 0 AND c.retracted = 0
+               AND (?3 IS NULL OR c.value = ?3)
+             ORDER BY c.id",
+        )?;
+        let rows = statement.query_map(
+            params![
+                subject.as_str(),
+                attribute.as_str(),
+                value.map(Value::to_string)
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(ClaimId::parse(&row?)?);
+        }
+        Ok(ids)
     }
 
     /// One subject's values for one attribute, sorted by their stored
@@ -1142,7 +1206,8 @@ impl Index {
         };
 
         let mut statement = self.connection.prepare(
-            "SELECT su.digest, c.value, c.time, c.retract, c.id
+            "SELECT su.digest, c.value, c.time, c.id, c.cid,
+                    (SELECT json_group_array(rt.target) FROM retractions rt WHERE rt.claim = c.id)
              FROM claims c
              JOIN subjects su ON su.id = c.subject
              JOIN segments s ON s.id = c.segment
@@ -1155,37 +1220,63 @@ impl Index {
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, bool>(3)?,
-                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
 
-        let mut folded: BTreeMap<String, BTreeMap<String, (String, u64)>> = BTreeMap::new();
+        // Every assertion by subject and value, each under its id, so that
+        // a retraction can take one of several assertions of a value away
+        // and the others keep it standing. Retractions apply whichever
+        // side of their target they stand on.
+        type Held = BTreeMap<String, BTreeMap<String, BTreeMap<String, (String, u64)>>>;
+        let mut held: Held = BTreeMap::new();
+        let mut where_is: HashMap<String, (String, String)> = HashMap::new();
+        let mut retracted: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
-            let (subject, value, time, retract, claim) = row?;
-            match (retract, value) {
-                // A repeated assertion collapses in the set but renews
-                // the moment: the newest surviving assertion is the one
-                // that answers for when.
-                (false, Some(value)) => {
-                    folded
-                        .entry(subject)
+            let (subject, value, time, claim, cid, targets) = row?;
+            match value {
+                Some(value) => {
+                    if retracted.contains(&cid) {
+                        continue;
+                    }
+                    where_is.insert(cid.clone(), (subject.clone(), value.clone()));
+                    held.entry(subject)
                         .or_default()
-                        .insert(value, (time, order_of(claim)));
+                        .entry(value)
+                        .or_default()
+                        .insert(cid, (time, order_of(claim)));
                 }
-                (true, Some(value)) => {
-                    if let Some(values) = folded.get_mut(&subject) {
-                        values.remove(&value);
+                None => {
+                    let targets: Vec<String> = serde_json::from_str(&targets)?;
+                    for target in targets {
+                        if let Some((subject, value)) = where_is.remove(&target)
+                            && let Some(values) = held.get_mut(&subject)
+                            && let Some(claims) = values.get_mut(&value)
+                        {
+                            claims.remove(&target);
+                        }
+                        retracted.insert(target);
                     }
                 }
-                (true, None) => {
-                    folded.remove(&subject);
-                }
-                // An assertion always carries a value; rows a fold
-                // wrote cannot lack one.
-                (false, None) => {}
             }
         }
+        let folded: BTreeMap<String, BTreeMap<String, (String, u64)>> = held
+            .into_iter()
+            .map(|(subject, values)| {
+                let values = values
+                    .into_iter()
+                    .filter_map(|(value, claims)| {
+                        claims
+                            .into_values()
+                            .max_by_key(|(_, order)| *order)
+                            .map(|newest| (value, newest))
+                    })
+                    .collect();
+                (subject, values)
+            })
+            .collect();
 
         let mut standing = Vec::new();
         for (subject, values) in folded {
@@ -1824,6 +1915,13 @@ fn holds_claims(connection: &Connection) -> Result<bool> {
 
 /// One claim into the tables: into the history as it is, onto the
 /// standing what it asserts or takes away.
+///
+/// A claim is known by its id, so one that is already in the tables, read
+/// from the open segment before it was sealed, only gets its segment and
+/// position; the history row and the standing stay. An assertion stands
+/// unless a retraction names it, whichever of the two the fold met first:
+/// a retraction marks the claims it names as retracted, and an assertion
+/// arriving after its retraction is marked on arrival.
 fn replay(
     transaction: &rusqlite::Transaction<'_>,
     ids: &mut Ids,
@@ -1831,6 +1929,10 @@ fn replay(
     segment: i64,
     position: i64,
 ) -> Result<()> {
+    let cid = claim
+        .id()
+        .expect("a claim out of the log carries its id")
+        .as_str();
     let subject = ids.subject(transaction, claim.subject().as_str())?;
     let attribute = ids.attribute(transaction, claim.attribute().as_str())?;
     let source = ids.source(transaction, claim.source().as_str())?;
@@ -1839,12 +1941,28 @@ fn replay(
         None => None,
     };
     let value = claim.value().map(Value::to_string);
+    let retracted: bool = transaction.query_row(
+        "SELECT EXISTS (SELECT 1 FROM retractions WHERE target = ?1)",
+        params![cid],
+        |row| row.get(0),
+    )?;
     let mut history = transaction.prepare_cached(
         "INSERT INTO claims
-             (subject, attribute, value, time, source, run, retract, segment, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (cid, subject, attribute, value, time, source, run, retract, retracted,
+              segment, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT (cid) DO UPDATE SET segment = excluded.segment,
+                                         position = excluded.position",
     )?;
+    let known: Option<i64> = transaction
+        .query_row(
+            "SELECT id FROM claims WHERE cid = ?1",
+            params![cid],
+            |row| row.get(0),
+        )
+        .optional()?;
     history.execute(params![
+        cid,
         subject,
         attribute,
         value,
@@ -1852,12 +1970,16 @@ fn replay(
         source,
         run,
         claim.is_retraction(),
+        retracted,
         segment,
         position,
     ])?;
+    if known.is_some() {
+        return Ok(());
+    }
     let id = transaction.last_insert_rowid();
-    match (value, claim.is_retraction()) {
-        (Some(value), false) => {
+    if let Some(value) = value {
+        if !retracted {
             // Said again, the value stands as before, but the moment and
             // the row that answer for it are the newest.
             let mut put = transaction.prepare_cached(
@@ -1874,36 +1996,68 @@ fn replay(
                 id
             ])?;
         }
-        (Some(value), true) => {
-            let mut take = transaction.prepare_cached(
-                "DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3",
+        return Ok(());
+    }
+    let mut name =
+        transaction.prepare_cached("INSERT INTO retractions (target, claim) VALUES (?1, ?2)")?;
+    let mut mark = transaction.prepare_cached(
+        "UPDATE claims SET retracted = 1 WHERE cid = ?1 AND retract = 0 AND retracted = 0
+         RETURNING subject, attribute, value",
+    )?;
+    for target in claim.retracts() {
+        name.execute(params![target.as_str(), id])?;
+        let taken: Option<(i64, i64, Option<String>)> = mark
+            .query_row(params![target.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()?;
+        if let Some((subject, attribute, Some(value))) = taken {
+            restand(transaction, subject, attribute, &value)?;
+        }
+    }
+    Ok(())
+}
+
+/// The standing row of one value after an assertion of it was retracted:
+/// the newest assertion of it that still stands answers for it, or the row
+/// goes.
+fn restand(
+    transaction: &rusqlite::Transaction<'_>,
+    subject: i64,
+    attribute: i64,
+    value: &str,
+) -> Result<()> {
+    let newest: Option<(i64, String)> = transaction
+        .query_row(
+            "SELECT id, time FROM claims
+             WHERE subject = ?1 AND attribute = ?2 AND value = ?3
+               AND retract = 0 AND retracted = 0
+             ORDER BY id DESC LIMIT 1",
+            params![subject, attribute, value],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match newest {
+        Some((claim, time)) => {
+            transaction.execute(
+                "INSERT OR REPLACE INTO standing (subject, attribute, value, time, claim)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![subject, attribute, value, time, claim],
             )?;
-            take.execute(params![subject, attribute, value])?;
         }
-        (None, true) => {
-            let mut empty = transaction
-                .prepare_cached("DELETE FROM standing WHERE subject = ?1 AND attribute = ?2")?;
-            empty.execute(params![subject, attribute])?;
+        None => {
+            transaction.execute(
+                "DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3",
+                params![subject, attribute, value],
+            )?;
         }
-        // A claim without value and without retract cannot be built.
-        (None, false) => {}
     }
     Ok(())
 }
 
 /// A row back into the claim it was — through the validating constructors,
 /// so the index cannot smuggle in what the log could not have held.
-fn claim(
-    (subject, attribute, value, time, source, run, retract): (
-        String,
-        String,
-        Option<String>,
-        String,
-        String,
-        Option<String>,
-        bool,
-    ),
-) -> Result<Claim> {
+fn claim((subject, attribute, value, time, source, run, cid, retracts): ClaimRow) -> Result<Claim> {
     let subject = Subject::parse(&subject)?;
     let attribute = Attribute::parse(&attribute)?;
     let time = Timestamp::parse(&time)?;
@@ -1913,7 +2067,13 @@ fn claim(
         .as_deref()
         .map(serde_json::from_str::<Value>)
         .transpose()?;
-    Claim::recorded(subject, attribute, value, time, source, run, retract)
+    let targets: Vec<String> = serde_json::from_str(&retracts)?;
+    let retracts = targets
+        .iter()
+        .map(|target| ClaimId::parse(target))
+        .collect::<Result<Vec<_>>>()?;
+    let id = ClaimId::parse(&cid)?;
+    Ok(Claim::recorded(subject, attribute, value, time, source, run, retracts)?.with_id(id))
 }
 
 /// The rows a [`Scope`] reads: the standing set, or the claims.
@@ -2393,14 +2553,44 @@ mod tests {
         assert_eq!(rows(&index), 2);
     }
 
-    fn untag(tag: &str, time: &str) -> Claim {
-        Claim::retract_value(
-            subject(),
-            Attribute::parse("user:tag").unwrap(),
-            json!(tag),
-            Timestamp::parse(time).unwrap(),
-            Source::parse("user").unwrap(),
+    fn untag(log: &Log, tag: &str, time: &str) -> Claim {
+        unsay(
+            log,
+            &subject(),
+            "user:tag",
+            Some(json!(tag)),
+            time,
+            "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        )
+    }
+
+    /// A retraction of what stands in `log` for `attribute` on `subject`:
+    /// of `value`, or of every value, named by id the way a writer does
+    /// after looking the claims up.
+    fn unsay(
+        log: &Log,
+        subject: &Subject,
+        attribute: &str,
+        value: Option<serde_json::Value>,
+        time: &str,
+        source: &str,
+        run: Run,
+    ) -> Claim {
+        let mut claims = Vec::new();
+        for segment in log.segments().unwrap() {
+            claims.extend(log.read(segment.digest()).unwrap());
+        }
+        claims.extend(log.head().unwrap());
+        let attribute = Attribute::parse(attribute).unwrap();
+        let ids = crate::claim::standing_ids_in(&claims, subject, &attribute, value.as_ref());
+        Claim::retract(
+            subject.clone(),
+            attribute,
+            ids,
+            Timestamp::parse(time).unwrap(),
+            Source::parse(source).unwrap(),
+            run,
         )
         .unwrap()
     }
@@ -2425,7 +2615,7 @@ mod tests {
         index.fold(&log).unwrap();
         assert_eq!(tagged(&index, "holiday"), [subject()]);
 
-        log.append(&untag("holiday", "2026-09-01T00:00:00Z"))
+        log.append(&untag(&log, "holiday", "2026-09-01T00:00:00Z"))
             .unwrap();
         log.seal().unwrap().unwrap();
         index.fold(&log).unwrap();
@@ -2524,24 +2714,27 @@ mod tests {
         let mut index = index_in(&dir);
 
         log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("user:tag").unwrap(),
-                json!("holiday"),
-                Timestamp::parse("2030-04-01T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            Some(json!("holiday")),
+            "2030-04-01T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
 
         let claims = index.about(&subject()).unwrap();
         assert_eq!(claims.len(), 2, "nothing is interpreted away");
         assert!(claims[1].is_retraction());
-        assert_eq!(claims[1].value(), Some(&json!("holiday")));
+        assert_eq!(claims[1].value(), None);
+        assert_eq!(
+            claims[1].retracts(),
+            &[claims[0].id().unwrap().clone()],
+            "and it names the claim it retracts"
+        );
     }
 
     #[test]
@@ -2817,17 +3010,15 @@ mod tests {
             &run_x('a'),
         ))
         .unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("file:path").unwrap(),
-                json!("/home/s/a.txt"),
-                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
-                Source::parse("ingest").unwrap(),
-                run_x('c'),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "file:path",
+            Some(json!("/home/s/a.txt")),
+            "2026-09-03T10:00:00Z",
+            "ingest",
+            run_x('c'),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
 
@@ -2853,14 +3044,21 @@ mod tests {
         );
         assert_eq!(
             index
+                .find(&[field(Field::Retract, "true")], &[], Scope::Record)
+                .unwrap(),
+            [subject()],
+            "the retraction claim itself is on the record"
+        );
+        assert_eq!(
+            index
                 .find(
                     &[field(Field::Retract, "true"), path.clone()],
                     &[],
                     Scope::Record
                 )
                 .unwrap(),
-            [subject()],
-            "what was ever taken back, by the retraction claim itself"
+            [],
+            "a retraction carries no value to match; it names claims"
         );
         assert_eq!(
             index
@@ -2963,17 +3161,15 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        log.append(
-            &Claim::retract_value(
-                other(),
-                Attribute::parse("file:name").unwrap(),
-                json!("b.txt"),
-                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-                Source::parse("ingest").unwrap(),
-                run_x('b'),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &other(),
+            "file:name",
+            Some(json!("b.txt")),
+            "2026-09-02T10:00:00Z",
+            "ingest",
+            run_x('b'),
+        ))
         .unwrap();
         // A claim from before runs were written belongs to no run.
         log.append(
@@ -2984,7 +3180,7 @@ mod tests {
                 Timestamp::parse("2026-08-01T10:00:00Z").unwrap(),
                 Source::parse("user").unwrap(),
                 None,
-                false,
+                Vec::new(),
             )
             .unwrap(),
         )
@@ -3145,17 +3341,15 @@ mod tests {
         let mut index = index_in(&dir);
         log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
         log.append(&tag("crete", "2026-09-01T21:14:04Z")).unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("user:tag").unwrap(),
-                json!("holiday"),
-                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            Some(json!("holiday")),
+            "2026-09-02T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
 
@@ -3181,11 +3375,13 @@ mod tests {
         let mut index = index_in(&dir);
         log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
         log.append(&tag("crete", "2026-09-01T21:14:04Z")).unwrap();
-        log.append(&Claim::retract_attribute(
-            subject(),
-            Attribute::parse("user:tag").unwrap(),
-            Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-            Source::parse("user").unwrap(),
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            None,
+            "2026-09-02T10:00:00Z",
+            "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         ))
         .unwrap();
@@ -3208,17 +3404,15 @@ mod tests {
         // which every fold applies afresh.
         log.append(&tag("holiday", "2026-09-01T21:14:03Z")).unwrap();
         log.seal().unwrap().unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("user:tag").unwrap(),
-                json!("holiday"),
-                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            Some(json!("holiday")),
+            "2026-09-02T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
 
         index.fold(&log).unwrap();
@@ -3241,17 +3435,15 @@ mod tests {
         log.append(&tag("crete", "2026-09-01T21:14:04Z")).unwrap();
         log.append(&tag("crete", "2026-09-02T08:00:00Z")).unwrap();
         log.append(&tag("beach", "2026-09-02T08:00:01Z")).unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("user:tag").unwrap(),
-                json!("holiday"),
-                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            Some(json!("holiday")),
+            "2026-09-03T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
 
@@ -3434,17 +3626,15 @@ mod tests {
         let mut index = index_in(&dir);
         log.append(&tag("holiday", "2026-09-01T10:00:00Z")).unwrap();
         log.seal().unwrap().unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("user:tag").unwrap(),
-                json!("holiday"),
-                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            Some(json!("holiday")),
+            "2026-09-03T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         log.append(&tag("beach", "2026-09-04T10:00:00Z")).unwrap();
         index.fold(&log).unwrap();
@@ -3490,17 +3680,15 @@ mod tests {
         ))
         .unwrap();
         log.append(&tag("holiday", "2026-09-01T21:14:06Z")).unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("user:tag").unwrap(),
-                json!("holiday"),
-                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            Some(json!("holiday")),
+            "2026-09-02T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         let other =
             Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
@@ -3664,17 +3852,15 @@ mod tests {
             .unwrap();
         log.append(&say(&other, "exif:make", json!("Google"), when))
             .unwrap();
-        log.append(
-            &Claim::retract_value(
-                other.clone(),
-                Attribute::parse("exif:make").unwrap(),
-                json!("Google"),
-                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &other.clone(),
+            "exif:make",
+            Some(json!("Google")),
+            "2026-09-02T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
 
@@ -4020,17 +4206,15 @@ mod tests {
         .unwrap();
         log.append(&say(&subject(), "file:path", json!(42), when))
             .unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("file:path").unwrap(),
-                json!("/home/john/a.txt"),
-                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "file:path",
+            Some(json!("/home/john/a.txt")),
+            "2026-09-02T10:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
 
@@ -4054,17 +4238,15 @@ mod tests {
             "2026-01-01T00:00:00Z",
         ))
         .unwrap();
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("file:path").unwrap(),
-                place.clone(),
-                Timestamp::parse("2026-02-01T00:00:00Z").unwrap(),
-                Source::parse("user").unwrap(),
-                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "file:path",
+            Some(place.clone()),
+            "2026-02-01T00:00:00Z",
+            "user",
+            Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+        ))
         .unwrap();
         log.append(&say(
             &subject(),
@@ -4109,11 +4291,13 @@ mod tests {
         log.append(&tag("holiday", "2026-01-01T00:00:00Z")).unwrap();
         log.append(&tag("beach", "2026-01-02T00:00:00Z")).unwrap();
         log.append(&tag("holiday", "2026-01-03T00:00:00Z")).unwrap();
-        log.append(&Claim::retract_attribute(
-            subject(),
-            Attribute::parse("user:tag").unwrap(),
-            Timestamp::parse("2026-01-04T00:00:00Z").unwrap(),
-            Source::parse("user").unwrap(),
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "user:tag",
+            None,
+            "2026-01-04T00:00:00Z",
+            "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         ))
         .unwrap();
@@ -4212,17 +4396,15 @@ mod tests {
         // A run that only took something back is on the record and names
         // no file; only has_run tells it from a run that never was.
         let run = run_x('d');
-        log.append(
-            &Claim::retract_value(
-                subject(),
-                Attribute::parse("file:path").unwrap(),
-                json!("/home/s/a.txt"),
-                Timestamp::parse("2026-09-03T10:00:00Z").unwrap(),
-                Source::parse("ingest").unwrap(),
-                run.clone(),
-            )
-            .unwrap(),
-        )
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "file:path",
+            Some(json!("/home/s/a.txt")),
+            "2026-09-03T10:00:00Z",
+            "ingest",
+            run.clone(),
+        ))
         .unwrap();
         index.fold(&log).unwrap();
         assert_eq!(index.run_sightings(&run).unwrap(), []);
@@ -4351,16 +4533,16 @@ mod tests {
         .unwrap()
     }
 
-    fn taken_back(subject: Subject, attribute: &str, value: Value, time: &str) -> Claim {
-        Claim::retract_value(
-            subject,
-            Attribute::parse(attribute).unwrap(),
-            value,
-            Timestamp::parse(time).unwrap(),
-            Source::parse("test").unwrap(),
+    fn taken_back(log: &Log, subject: Subject, attribute: &str, value: Value, time: &str) -> Claim {
+        unsay(
+            log,
+            &subject,
+            attribute,
+            Some(value),
+            time,
+            "test",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
         )
-        .unwrap()
     }
 
     #[test]
@@ -4407,6 +4589,7 @@ mod tests {
         );
 
         log.append(&taken_back(
+            &log,
             placed.clone(),
             "file:path",
             json!("/x/a"),
@@ -4474,6 +4657,7 @@ mod tests {
         );
 
         log.append(&taken_back(
+            &log,
             image.clone(),
             "prov:origin",
             json!(mail.as_str()),
@@ -4542,6 +4726,7 @@ mod tests {
         );
 
         log.append(&taken_back(
+            &log,
             pdf.clone(),
             "prov:origin",
             json!(other_mail.as_str()),
@@ -4598,6 +4783,7 @@ mod tests {
         );
 
         log.append(&taken_back(
+            &log,
             origin,
             "file:path",
             json!("/x/mail.eml"),
@@ -4660,6 +4846,7 @@ mod tests {
         );
 
         log.append(&taken_back(
+            &log,
             archive,
             "file:path",
             json!("/x/bundle.zip"),

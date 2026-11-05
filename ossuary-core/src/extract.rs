@@ -361,15 +361,22 @@ mod tests {
         );
     }
 
-    /// A retraction from the user, later than everything before it.
+    /// A retraction from the user, later than everything before it: of
+    /// every standing claim of `value`, looked up the way the CLI does.
     fn retract(archive: &Archive, subject: &Subject, attribute: &str, value: Value) {
+        let attribute = Attribute::parse(attribute).unwrap();
+        let mut index = archive.index().unwrap();
+        index.fold(archive.log()).unwrap();
+        let ids = index
+            .standing_ids(subject, &attribute, Some(&value))
+            .unwrap();
         archive
             .log()
             .append(
-                &Claim::retract_value(
+                &Claim::retract(
                     subject.clone(),
-                    Attribute::parse(attribute).unwrap(),
-                    value,
+                    attribute,
+                    ids,
                     Timestamp::now(),
                     Source::parse("user").unwrap(),
                     Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),

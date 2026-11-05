@@ -1,38 +1,30 @@
 //! Retract: taking a statement back.
 //!
 //! A retraction is a claim like any other: appended, sourced, timed,
-//! editing nothing. What it names no longer stands; the record keeps
-//! the story, and a later assertion may honestly put the value back —
-//! a retraction is an event, not a curse.
+//! editing nothing. It names the claims it retracts by id; those no longer
+//! stand, the record keeps the story, and a later assertion may put the
+//! value back.
 
-use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
+use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Written};
 use crate::error::Result;
 use crate::log::Log;
-
-/// What one retraction takes back of an attribute.
-#[derive(Debug, Clone)]
-pub enum Taking {
-    /// One value, named exactly.
-    Value(Value),
-    /// Every value the attribute holds.
-    All,
-}
 
 /// Take statements back: one retraction claim per taking, all under the
 /// source `user` — the human takes back, this function is only the pen.
 /// One moment for the whole call.
 ///
-/// Answers what was written, the call's run included. Takings are taken as
-/// given — resolving spellings to subjects, and checking that what is
-/// named actually stands, is the caller's business, done *before*
-/// anything is written.
+/// A taking is a subject, an attribute and the ids of the claims to
+/// retract, as [`Index::standing_ids`](crate::Index::standing_ids) answers
+/// them: every assertion of one value, or every assertion of the
+/// attribute. Looking them up is the caller's business, done *before*
+/// anything is written. A taking with no ids writes nothing.
+///
+/// Answers what was written, the call's run included.
 ///
 /// # Errors
 ///
-/// Whatever readying the log and appending to it can answer, and
-/// [`crate::Error::NullValue`] for a `null` taking, which the claim grammar
-/// refuses.
-pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<Written> {
+/// Whatever readying the log and appending to it can answer.
+pub fn retract(log: &Log, takings: &[(Subject, Attribute, Vec<ClaimId>)]) -> Result<Written> {
     // The CLI asks first and says when a seal was finished; here it only
     // has to be done.
     let _ = log.writable()?;
@@ -40,24 +32,18 @@ pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<Wr
     let time = Timestamp::now();
     let run = Run::new();
     let mut claims = Vec::new();
-    for (subject, attribute, taking) in takings {
-        claims.push(match taking {
-            Taking::Value(value) => Claim::retract_value(
-                subject.clone(),
-                attribute.clone(),
-                value.clone(),
-                time.clone(),
-                word.clone(),
-                run.clone(),
-            )?,
-            Taking::All => Claim::retract_attribute(
-                subject.clone(),
-                attribute.clone(),
-                time.clone(),
-                word.clone(),
-                run.clone(),
-            ),
-        });
+    for (subject, attribute, ids) in takings {
+        if ids.is_empty() {
+            continue;
+        }
+        claims.push(Claim::retract(
+            subject.clone(),
+            attribute.clone(),
+            ids.clone(),
+            time.clone(),
+            word.clone(),
+            run.clone(),
+        )?);
     }
     log.append_all(&claims)?;
     Ok(Written {
@@ -101,30 +87,40 @@ mod tests {
         )
         .unwrap();
 
-        let written = retract(
-            &log,
-            &[
-                (subject(), tag.clone(), Taking::Value(json!("beach"))),
-                (subject(), comment.clone(), Taking::All),
-            ],
-        )
-        .unwrap();
-        assert_eq!(written.claims, 2, "one claim per taking, All is one claim");
-
         let cache = dir.path().join("cache");
         std::fs::create_dir_all(&cache).unwrap();
         let mut index = crate::Index::open(cache.join("index.sqlite")).unwrap();
         index.fold(&log).unwrap();
+        let beach = index
+            .standing_ids(&subject(), &tag, Some(&json!("beach")))
+            .unwrap();
+        let comments = index.standing_ids(&subject(), &comment, None).unwrap();
+        assert_eq!((beach.len(), comments.len()), (1, 2));
+
+        let written = retract(
+            &log,
+            &[
+                (subject(), tag.clone(), beach),
+                (subject(), comment.clone(), comments),
+                (subject(), tag.clone(), Vec::new()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            written.claims, 2,
+            "one claim per taking, an empty taking writes none"
+        );
+        index.fold(&log).unwrap();
         assert_eq!(
             index.values(&subject(), &tag, crate::Scope::Held).unwrap(),
-            Vec::<Value>::new(),
+            Vec::<crate::Value>::new(),
             "the tag no longer stands"
         );
         assert_eq!(
             index
                 .values(&subject(), &comment, crate::Scope::Held)
                 .unwrap(),
-            Vec::<Value>::new(),
+            Vec::<crate::Value>::new(),
             "All emptied both comments with one claim"
         );
         assert_eq!(

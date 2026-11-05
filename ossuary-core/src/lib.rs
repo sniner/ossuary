@@ -45,7 +45,9 @@ pub use archive::{Archive, is_archive};
 pub use audit::{
     Audit, Ends, Fixity, HEAD, LINKS, LogAudit, StoreAudit, Twin, audit_log, audit_store,
 };
-pub use claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value, Written};
+pub use claim::{
+    Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value, Written, standing_ids_in,
+};
 pub use config::{Config, Excludes};
 pub use delta::{Delta, delta};
 pub use error::{Error, Result};
@@ -58,7 +60,7 @@ pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{
     Contents, GENERATION, Log, OpenHead, Segment, Stamp, Tail, WalkBack, Writable, head_after,
 };
-pub use retract::{Taking, retract};
+pub use retract::retract;
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,
 };
