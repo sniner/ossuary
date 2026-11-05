@@ -66,9 +66,9 @@ pub trait Remote: Send + Sync {
     /// When the directory cannot be listed, or is not there.
     fn list(&self, path: &str) -> Result<Vec<String>>;
 
-    /// Remove the directory at `path` with everything in it; one that is
-    /// not there is nothing to do. Only the copy's open segment is ever
-    /// removed, when the next one takes its place.
+    /// Remove what is at `path`, a directory with everything in it or a
+    /// file; one that is not there is nothing to do. Only the copy's open
+    /// segment is ever removed, when the next one takes its place.
     ///
     /// # Errors
     ///

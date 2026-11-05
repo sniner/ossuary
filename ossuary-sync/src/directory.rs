@@ -135,7 +135,12 @@ impl Remote for Directory {
 
     fn remove_tree(&self, path: &str) -> Result<()> {
         let full = self.full(path);
-        match fs::remove_dir_all(&full) {
+        let removed = match fs::symlink_metadata(&full) {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&full),
+            Ok(_) => fs::remove_file(&full),
+            Err(error) => Err(error),
+        };
+        match removed {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).with_context(|| format!("{}: removing", full.display())),

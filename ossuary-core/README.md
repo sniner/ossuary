@@ -29,7 +29,7 @@ stores: the hash algorithm and the shard depths. The directory contains:
 |---|---|
 | `content/` | the ingested files, unchanged, each named by the hash of its content |
 | `derived/` | files produced by extractors (unpacked attachments, extracted text), stored separately from the originals |
-| `claims/`, `head.jsonl` | the log: every claim ever written, in sealed segments (`claims/`) and the open head (`head.jsonl`) |
+| `claims/`, `open-…/` | the log: every claim ever written, in sealed segments (`claims/`) and the open segment, a directory with one file per append |
 | `config.toml` | settings for writing: which paths ingest excludes, whether new entries are compressed, which extractors `extract` runs when none is named. Not needed for reading |
 | `cache/` | the query index and the list of files ingest has already seen. Can be deleted; it is rebuilt, and the next query and ingest take longer |
 
@@ -54,17 +54,22 @@ for subject in index.find(&[mime], &[], Scope::Present)? {
 ```
 
 **Claims.** A `Claim` is built from a `Subject`, an `Attribute`, a
-`Value`, a `Timestamp`, a `Source` and a `Run`. `Claim::assert`,
-`Claim::retract_value` and `Claim::retract_attribute` create one;
-`Claim::parse_line` and `Claim::to_line` read and write the JSON line
-format, and round-trip. Claims are never edited: a retraction is a new
-claim.
+`Value`, a `Timestamp`, a `Source` and a `Run`. `Claim::assert` creates
+an assertion, `Claim::retract` a retraction of the claims named by
+`ClaimId`, the digest of a claim's line; `Index::standing_ids` looks
+them up. `Claim::parse_line` and `Claim::to_line` read and write the
+JSON line format, and round-trip; `Claim::read_line` reads a line with
+its id. Claims are never edited: a retraction is a new claim.
 
-**The log.** `Log::append` appends a claim to the open head, and
-`Log::seal` turns the head into a sealed segment named by its digest.
-`Log::segments` lists the sealed segments in the order of the chain,
-reading only their headers, and `Log::read` reads one. `Log::walk_back`
-walks the chain from the open head, one segment at a time.
+**The log.** `Log::append` writes a bundle into the open segment's
+directory, and `Log::seal` turns the bundles into a sealed segment
+named by its digest, by renaming the directory; several processes can
+append and seal at once, and `Log::writable` finishes a seal that
+stopped. `Log::segments` lists the sealed segments in the order of the
+chain, reading only their headers, and `Log::read` reads one.
+`Log::walk_back` walks the chain from the open segment, one segment at
+a time; `Log::open` lists the open segment's bundles for a reader that
+keeps track of them.
 
 **The index.** `Index` folds the log into SQLite. It is a cache:
 everything in it can be rebuilt from the log. `about` returns every

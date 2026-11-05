@@ -5,6 +5,44 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Run `ossuary-fix open` once on every archive.** The open segment is no longer the file
+  `head.jsonl` but a directory, `open-…`, with one file per append, and a retraction no longer
+  carries the value it retracts but names the claims it retracts by id. Every command refuses an
+  archive that still has `head.jsonl` and names the fix. The fix moves the open segment into its
+  directory and rewrites every retraction; the segments from the first rewritten retraction on
+  get new names, so seal ids given out for them no longer check, and `ossuary seal` gives the new
+  id. Make a copy of the archive first. An archive written by 0.14 or earlier needs
+  `ossuary-fix list` of ossuary 0.17 before it
+- **`ossuary find --all retract=true` no longer matches a retracted value.** A retraction carries
+  no value, so `retract=true file:path=*` finds nothing; `retract=true file:path` lists the files
+  with a retraction recorded, with their paths, and `about` shows which claims a retraction took
+  back
+- **Within a segment, claims are ordered by time, then by their line.** A run's cutoff
+  (`--as-of RUN`) and the order of `history` follow that order; two runs within one second in
+  the same segment are no longer told apart by the order they were written in
+- **The query index is rebuilt once.** `cache/index.sqlite` has a new schema; the first command
+  after the update rebuilds it, which takes a moment on a large archive
+
+### Changed
+
+- **Several programs can write to one archive at once**, on one machine or on several over a
+  network share: each append is one file that is never written again, and sealing is a rename
+  that one process wins. A seal that another process started is finished by the next run that
+  writes, which says so; a seal is never waited for with a lock. The open segment is sealed at a
+  thousand appends instead of a mebibyte
+- **`ossuary audit` reports a seal under way** as an observation, not a finding, and reads the
+  chain from the open segment's name meanwhile
+- **`ossuary-sync` names the copy's open segment the same way**, as a directory. A copy made by
+  0.17 is brought into the current form by the next sync; copies on WebDAV need a server that
+  removes a collection on `DELETE`, which every WebDAV server does
+- immure 0.3.3
+
+### Added
+
+- **`ossuary-fix open`**: brings an archive of 0.17 or earlier into the current form, see above
+
 ## [0.17.1] - 2026-11-05
 
 ### Changed

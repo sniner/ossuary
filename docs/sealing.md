@@ -147,7 +147,7 @@ out:
 |---|---|
 | A sealed segment is damaged or cannot be read | Copy it back from a copy of the archive and seal again |
 | A sealed segment is missing | Copy it back from a copy of the archive and seal again. If no copy has it, `ossuary-fix chain --accept-loss` closes the chain over it; its claims are lost. Seal again after that |
-| The open segment, `head.jsonl`, is missing | `ossuary-fix chain --accept-loss` begins a new one after the last sealed segment; record the lost claims again if possible, then seal again |
+| The open segment, the `open-…` directory, is missing | `ossuary-fix chain --accept-loss` begins a new one after the last sealed segment; record the lost claims again if possible, then seal again |
 | A sealed segment that the chain does not reach | `ossuary-fix chain` takes it into the chain; seal again after that |
 
 ```console
@@ -268,8 +268,8 @@ the open segment no longer leads to the seal: the record was cut back to an earl
 
 Everything the seal covers may still be there, but the record was cut
 off after it: the segments recorded after the seal were removed, and the
-open segment was made to name an earlier one. Restore `claims/` and
-`head.jsonl` from a backup made after the seal.
+open segment was made to name an earlier one. Restore `claims/` and the
+open segment's directory from a backup made after the seal.
 
 If the archive does not hold the seal's segment at all, the check says
 so:
@@ -363,7 +363,7 @@ and [the archive format](format.md#the-seal) is the exact description.
   the open segment sealed on its own as it grew, is a valid seal, so
   there is no list of seals to keep in the archive: the list is the ids
   you kept outside it.
-* **A lost open segment stops the archive.** While `head.jsonl` is
+* **A lost open segment stops the archive.** While its directory is
   missing, every command that records claims refuses to run until
   `ossuary-fix chain --accept-loss` has begun a new one. The record
   cannot start over unnoticed.

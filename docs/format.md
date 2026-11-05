@@ -29,7 +29,7 @@ archive/
     content/        immure store: the ingested files
     derived/        immure store: files produced by extractors
     claims/         immure store: sealed claim segments only
-    head.jsonl      the open segment
+    open-<S>/       the open segment: one file per append, see below
     cache/          rebuildable, safe to delete at any time
 ```
 
@@ -139,7 +139,7 @@ line breaks within a claim):
 {"subject":"9f2ac41e…","attribute":"file:size","value":4194304,"time":"2026-09-01T21:14:03Z","source":"ingest","run":"315e360b-020e-48be-8f2d-f2002a2ea9b4"}
 {"subject":"9f2ac41e…","attribute":"exif:date-time-original","value":"2019-07-14T11:02:41","time":"2026-09-22T08:30:00Z","source":"extractor:exif-rs/0.7","run":"c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31"}
 {"subject":"9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2026-10-05T19:00:00Z","source":"user","run":"a3f8c2e1-5d47-4b9a-9e02-7c1d3b6f8a54"}
-{"subject":"9f2ac41e…","attribute":"user:tag","value":"holiday","time":"2030-04-01T10:00:00Z","source":"user","run":"0b9d4e7a-2c31-4f58-b6a0-e5d7f1c2a983","retract":true}
+{"subject":"9f2ac41e…","attribute":"user:tag","retracts":["5be0…"],"time":"2030-04-01T10:00:00Z","source":"user","run":"0b9d4e7a-2c31-4f58-b6a0-e5d7f1c2a983"}
 ```
 
 *(Digests shortened here for legibility; real ones are full-length hex.)*
@@ -166,9 +166,10 @@ retraction always has one.
 
 **Time** is when the claim was recorded, not when the thing it
 describes happened: `exif:date-time-original` above has a value from
-2019 in a claim from 2026. Within one second, claims are ordered by
-their position in the log: line order within a segment, segment order
-across segments.
+2019 in a claim from 2026. Within a segment the lines are sorted by
+time and then by the line itself, so a claim's place in a segment says
+nothing beyond its time; between segments the chain is the order (see
+[Segments](#segments)).
 
 **Source** is `ingest`, `user`, or `kind:name/version` for tools, such
 as `extractor:exif-rs/0.7`. The grammar is flat so that a fold can
@@ -186,11 +187,15 @@ Every claim this software writes has one. A claim written before runs
 were recorded has none and is read like any other claim; it belongs to
 no run, and a query by run does not find it.
 
-**Retraction.** A claim with `retract: true` and a `value` retracts
-exactly that value of that attribute; with the `value` field absent, it
-retracts every value the attribute had for this subject. A retraction
-is a claim like any other, with its own time and source, and it never
-removes the retracted claim from the log.
+**Retraction.** A claim with `retracts` retracts the claims it names,
+by id, and carries no `value`; `retracts` is never empty. It keeps the
+subject and attribute of the claims it names. A claim stands while no
+retraction in the log names it, wherever the two stand in the log: a
+retraction that comes first in the record, from a writer on another
+machine, say, retracts the same. A writer that retracts a value names
+every standing assertion of that value it knows of; one it did not see
+stands on. A retraction is a claim like any other, with its own time and
+source, and it never removes the retracted claim from the log.
 
 ## Attributes
 
@@ -224,24 +229,40 @@ absent from a first segment. A reader skips header members it does not
 know: generation 1 may gain members that add information to a header,
 and none of them changes how the claims after it are read.
 
-The open segment is `head.jsonl` in the archive root. It has the same
-format, claims are appended to it as they are written, and it is the
-only mutable file in the archive. Sealing closes it: the file is stored
-in `claims/` as an ordinary immure entry (zstd-compressed, and sealed if
-the store is), and a new `head.jsonl` is started. When to seal is up to
-the software; a reader must not assume anything about a segment's size.
+The open segment is a directory in the archive root, `open-<S>/`, where
+`S` is the digest of the segment sealed last; before the first seal it
+is `open/`. It holds one file per append, a *bundle*: the claim lines
+of that append, line-delimited JSON without a header, named by the
+digest of its bytes with the suffix `.jsonl`, and written once. The
+directory also holds `tmp/`, where bundles are written before they are
+renamed into place; what lies in it is not part of the record. Every
+bundle in the directory is unsealed, whatever its name.
 
-The new `head.jsonl` is written as `head.jsonl.tmp` and renamed over
-the old one. Where that rename is not atomic (macOS on an SMB mount
-removes the old file first), a writer that stops in between leaves no
-`head.jsonl`, only `head.jsonl.tmp`. A `head.jsonl.tmp` that reads as a
-segment and names the last sealed segment, the one no other segment
-names as its predecessor, stands for a missing `head.jsonl`: a reader
-takes it as the open segment, and a writer renames it to `head.jsonl`
-before it writes anything else. An empty `head.jsonl` has no such
-stand-in. Next to an existing `head.jsonl`, a `head.jsonl.tmp` is left
-over from a seal that failed and counts for nothing; a writer removes
-it, or empties it where it cannot be removed.
+Sealing turns the bundles into one sealed segment and the directory into
+the next open segment. It is done by renames, each atomic, so that
+several writers, on several machines, can seal without a lock:
+
+1. `open-<S>/` is renamed to `sealing-<S>/`. A bundle that still lands
+   in it after the rename is not part of this seal and stays for the
+   next.
+2. The segment is built from the bundles found in `sealing-<S>/`: the
+   header line naming `S` as `previous`, then every line of every bundle,
+   sorted by `time` and then by the line itself. Its bytes are written
+   into the directory as `segment-<pid>-<n>.seg`.
+3. `sealing-<S>/` is renamed to `sealed-<S>-<S'>/`, `S'` being the
+   digest of that segment. Only one rename wins, so one segment is
+   decided.
+4. The segment is stored in `claims/` under `S'`.
+5. The bundles whose lines are all in the segment are deleted, the
+   `segment-*.seg` files too, and the directory is renamed to
+   `open-<S'>/`.
+
+A directory named `sealing-` or `sealed-` with no `open-` beside it is a
+seal under way or stopped. A reader takes its bundles as unsealed; a
+writer finishes the seal from the step it stopped at, which is what the
+names say: a `sealed-<S>-<S'>/` whose `S'` is not yet in `claims/` holds
+the segment's bytes in a `segment-*.seg` file. When to seal is up to the
+software; a reader must not assume anything about a segment's size.
 
 A sealed segment is immutable like everything else in a store, and the
 format adds its own rule: **segments are never compacted, combined or
@@ -249,33 +270,36 @@ rewritten.** Superseded and retracted claims stay where they were
 written.
 
 The order of the record is the order of the chain (see below): the
-claims of the first segment in the order of their lines, then those of
-the segment that names it, and so on, the open segment last. A claim's
-`time` says when it was made and plays no part in the order. A claim
-written later stands later in the record, whatever its `time` says.
+claims of the first segment, then those of the segment that names it,
+and so on, the open segment last. Within a segment the lines are sorted
+by `time` and then by the line itself; the order within a segment
+carries no meaning of its own, and a retraction names what it retracts
+by id, so nothing in the record depends on which of two claims in one
+segment stands first. A claim written later can stand in an earlier
+line of the same segment, when its `time` is earlier.
 
-**The chain.** Sealing stores the head and starts a new one whose
-header names the segment just sealed. Every segment except the first
-therefore names the one before it, and the open head names the last
-sealed segment. A store can prove that its entries are unchanged, since
-every name is a checksum, but not that none is missing; the chain shows
-that. If a sealed segment goes missing, the header of the next segment,
-or of the head, has a `previous` that names no existing segment. The
-chain cannot show a loss at its end: the head is the only mutable file,
-and a head rewritten to name an earlier segment leaves a chain that
-looks complete. A seal kept outside the archive closes that gap (see
-[the seal](#the-seal) below).
+**The chain.** Sealing stores the segment and names it in the open
+segment's directory name. Every segment except the first names the one
+before it in its header, and the open segment names the last sealed
+segment in its name. A store can prove that its entries are unchanged,
+since every name is a checksum, but not that none is missing; the chain
+shows that. If a sealed segment goes missing, the header of the next
+segment, or the name of the open segment, has a `previous` that names
+no existing segment. The chain cannot show a loss at its end: an open
+segment renamed to name an earlier segment, with the segments after it
+removed, leaves a chain that looks complete. A seal kept outside the
+archive closes that gap (see [the seal](#the-seal) below).
 
-**Every segment is reached from the head.** Writers keep one rule:
-every segment in the claims store can be reached by walking back from
-the open head over `previous`. The head therefore names the segment
-sealed last. A head that is missing while sealed segments exist, with
-no `head.jsonl.tmp` standing in for it, was lost, and no new head is
-begun in its place. A segment the walk does
-not reach is a finding. A chain broken by a lost segment or a lost head
-can only be repaired by rewriting the segments after the break, which
-gives them new digests; the format has nothing that stands in for what
-is lost.
+**Every segment is reached from the open segment.** Writers keep one
+rule: every segment in the claims store can be reached by walking back
+from the open segment over `previous`. The open segment therefore names
+the segment sealed last. No open segment while sealed segments exist,
+and no `sealing-` or `sealed-` directory either, is a lost open
+segment, and no new one is begun in its place by a writer. A segment
+the walk does not reach is a finding. A chain broken by a lost segment
+or a lost open segment can only be repaired by rewriting the segments
+after the break, which gives them new digests; the format has nothing
+that stands in for what is lost.
 
 ### The seal
 
@@ -299,7 +323,7 @@ A seal is checked against an archive by walking back from its segment:
 2. Every file the claims of those segments refer to, as subject or as
    the value of `prov:origin`, must be in `content/` or `derived/` and
    match its name.
-3. The walk back from the open head must reach the seal's segment.
+3. The walk back from the open segment must reach the seal's segment.
    Otherwise the record was cut back to an earlier point, or begun
    anew, after the seal was made.
 
@@ -308,8 +332,8 @@ seal was made, unchanged. What was recorded after it is not covered.
 
 ## Caches
 
-Everything under `cache/` is derived from the stores and `head.jsonl`,
-and deleting it loses nothing. What is kept there (query indexes in
+Everything under `cache/` is derived from the stores and the open
+segment, and deleting it loses nothing. What is kept there (query indexes in
 SQLite, full-text or whatever the queries need) is internal to the
 software and deliberately
 not specified: no cache is ever authoritative, and none is part of the
@@ -323,13 +347,14 @@ are sealed, the key:
 1. Read `FORMAT`: generation, algorithm, depths.
 2. Walk `claims/`, unseal each entry if it is sealed, decompress it
    (`zstd -dc`), and check that the first line has `ossuary-segment`.
-   Starting from `head.jsonl` (or the `head.jsonl.tmp` that stands in
-   for a missing one, see [Segments](#segments)), walk back over
-   `previous` to the first segment: that is the order of the segments. A name the walk finds no
-   segment for is a missing segment, and a segment the walk does not
-   reach does not belong to the record.
-3. Concatenate in that order, append `head.jsonl`: this is the complete
-   claim log.
+   Starting from the segment the open segment's directory is named
+   after (`open-<S>/`; a `sealing-` or `sealed-` directory stands in for
+   it, see [Segments](#segments)), walk back over `previous` to the
+   first segment: that is the order of the segments. A name the walk
+   finds no segment for is a missing segment, and a segment the walk
+   does not reach does not belong to the record.
+3. Concatenate in that order, append the lines of every `.jsonl` file
+   in the open segment's directory: this is the complete claim log.
 4. Walk `content/` and `derived/` the same way for the content itself;
    each file can be checked against its name with the algorithm's
    checksum tool.

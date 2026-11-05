@@ -43,7 +43,7 @@ $ find . -type f -not -path './cache/*' | sort
 ./content/93/03/9303125ef2413d42a1083e036accd9a3aeb323d2f90828fdf361273b0c8cfad5
 ./content/da/d5/dad58b5df9916f9338240587a484fd02aafd319e2cccff10537f31979da289ea
 ./FORMAT
-./head.jsonl
+./open-880387cd1af17fcaa6b19182eabe63d2d851d5647b3be472ce211ca3dfd59af0/5be0c3e1e6d3b2d0d4f0f1c2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6.jsonl
 ```
 
 - `content/` holds the files that were added to the archive. Each file is
@@ -53,10 +53,12 @@ $ find . -type f -not -path './cache/*' | sort
 - `derived/` holds files that extractors produced from the files in
   `content/`, such as attachments unpacked from a mail. It is read the
   same way as `content/`.
-- `claims/` and `head.jsonl` hold the claim log: everything recorded
-  about the files, such as their original paths, dates and tags. A stored
-  file has no name other than its checksum; its original name is in the
-  log.
+- `claims/` and the `open-…/` directory hold the claim log: everything
+  recorded about the files, such as their original paths, dates and tags.
+  `claims/` holds the sealed segments; the directory is the open segment,
+  one file per append, and its name carries the segment sealed last. A
+  stored file has no name other than its checksum; its original name is
+  in the log.
 - `config.toml` holds settings for adding files. Reading does not need it.
 - `cache/` holds only data that can be rebuilt from the rest, and the
   `tmp/` directories inside `content/`, `derived/` and `claims/` hold
@@ -72,8 +74,8 @@ The form of each stored file shows in its suffix:
 The name is the checksum of the original content in both forms. A
 compressed archive can also hold uncompressed files, added before
 compression was switched on. The segments of the claim log in `claims/`
-are compressed in every archive (`.seg.zst`); `head.jsonl` is a plain
-text file.
+are compressed in every archive (`.seg.zst`); the files of the open
+segment are plain text.
 
 A file whose name ends in `.corrupt`, or in `.corrupt` and a number, is a
 damaged copy that was set aside and replaced by an intact one. The
@@ -106,7 +108,7 @@ content/da/d5/dad58b5d…289ea: news or mail, ASCII text
 ```
 
 The original names and paths are in the claim log. Its sealed segments
-are compressed with zstd, `head.jsonl` is plain text:
+are compressed with zstd, the files of the open segment are plain text:
 
 ```console
 $ zstd -dc claims/88/880387cd1af17fcaa6b19182eabe63d2d851d5647b3be472ce211ca3dfd59af0.seg.zst | head -3
@@ -169,19 +171,22 @@ read_entry() {
 ```
 
 The complete log is the claims of every sealed segment in the order of
-the chain, followed by those in `head.jsonl`. The chain is read
-backwards: the first line of `head.jsonl` names the last sealed segment,
-the first line of every segment names the one before it, and the first
-segment names none. If `head.jsonl` is missing and `head.jsonl.tmp` is
-there, a seal stopped before its last step (see [the archive
-format](format.md#segments)); use `head.jsonl.tmp` in its place. This
-writes the log to `~/recovery/log.jsonl`:
+the chain, followed by those in the open segment's directory. The chain
+is read backwards: the directory's name, `open-<segment>`, names the
+last sealed segment, the first line of every segment names the one
+before it, and the first segment names none. Before the first seal the
+directory is `open`. A directory named `sealing-…` or `sealed-…` instead
+is a seal that stopped (see [the archive format](format.md#segments)):
+treat it like the open segment, the last name in it being the segment
+sealed last. This writes the log to `~/recovery/log.jsonl`:
 
 ```bash
 out=~/recovery
 mkdir -p "$out"
+open=$(echo open* sealing* sealed*)
 order=
-segment=$(head -n 1 head.jsonl | jq -r '.previous // empty')
+segment=${open##*-}
+[ "$segment" = "$open" ] && segment=
 while [ -n "$segment" ]; do
     order="$segment $order"
     segment=$(read_entry "claims/${segment:0:2}/$segment.seg.zst" | head -n 1 | jq -r '.previous // empty')
@@ -189,17 +194,18 @@ done
 for segment in $order; do
     read_entry "claims/${segment:0:2}/$segment.seg.zst" | tail -n +2
 done > "$out/log.jsonl"
-tail -n +2 head.jsonl >> "$out/log.jsonl"
+cat "$open"/*.jsonl >> "$out/log.jsonl"
 ```
 
-The order matters when a claim was retracted later. For simple searches,
-`grep` over the log is enough.
+A retraction names the claims it retracts by id, so the order of the
+log does not matter for reading it. For simple searches, `grep` over
+the log is enough.
 
 Everything known about one file:
 
 ```console
 $ jq -r --arg file 9303125ef2413d42a1083e036accd9a3aeb323d2f90828fdf361273b0c8cfad5 \
-    'select(.subject == $file) | "\(.time)  \(.attribute)  \(.value)\(if .retract then "  (retracted)" else "" end)"' \
+    'select(.subject == $file) | "\(.time)  \(.attribute)  \(.value // "")\(if .retracts then "  (retracts \(.retracts | length) claim(s))" else "" end)"' \
     ~/recovery/log.jsonl
 2026-03-12T19:04:11Z  file:path  /home/john/docs/notes.txt
 2026-03-12T19:04:11Z  file:name  notes.txt
@@ -219,27 +225,36 @@ $ jq -r 'select(.attribute == "user:tag" and .value == "meetings") | .subject' ~
 9303125ef2413d42a1083e036accd9a3aeb323d2f90828fdf361273b0c8cfad5
 ```
 
-A claim with `"retract": true` withdraws an earlier one: with a `value`,
-that value of the attribute; without one, every value of the attribute.
-The two searches above do not take retractions into account. The next
-section does.
+A claim with `retracts` withdraws earlier ones: it names them by id,
+the SHA-256 checksum of each one's line. The two searches above do not
+take retractions into account. The next section does.
 
 ## Restoring all files under their paths
 
 A file's paths are its `file:path` claims. A file can have several, for
 example when the same content was added from two places, and a path can
-have been retracted since. This lists the path of every file that is
-still current, as the hex name and the path separated by a tab:
+have been retracted since. A retraction names the claims it retracts by
+id, and the id of a claim is the checksum of its line, so each line gets
+its id first:
 
 ```bash
-jq -n -r '
-    reduce (inputs | select(.attribute == "file:path")) as $claim ({};
-        if ($claim.retract | not) then .[$claim.subject][$claim.value] = true
-        elif ($claim | has("value")) then del(.[$claim.subject][$claim.value])
-        else del(.[$claim.subject])
-        end)
-    | to_entries[] | .key as $file | .value | keys[] | "\($file)\t\(.)"
-' "$out/log.jsonl" > "$out/paths.tsv"
+while IFS= read -r line; do
+    printf '%s %s\n' "$(printf '%s' "$line" | sha256sum | cut -d' ' -f1)" "$line"
+done < "$out/log.jsonl" > "$out/log.ids"
+```
+
+This lists the path of every file that is still current, as the hex
+name and the path separated by a tab: every `file:path` assertion that
+no retraction names.
+
+```bash
+jq -n -R -r '
+    [inputs | capture("^(?<id>[0-9a-f]+) (?<claim>.*)$") | .claim |= fromjson]
+    | (map(.claim.retracts // [] | .[]) | unique) as $retracted
+    | map(select(.claim.attribute == "file:path" and (.claim | has("retracts") | not)))
+    | map(select(.id | IN($retracted[]) | not))
+    | map("\(.claim.subject)\t\(.claim.value)") | unique | .[]
+' "$out/log.ids" > "$out/paths.tsv"
 ```
 
 ```console
@@ -348,8 +363,8 @@ and the content stores depth 2 here, as in every archive created with
 the defaults. For another algorithm, change the prefix and the checksum
 tool, as above.
 
-One thing is left to check by hand: the walk back from `head.jsonl`,
-started with the name in its first line, must reach the seal's
-segment. If it does not, the archive's record was cut back or begun
-anew after the seal was made.
+One thing is left to check by hand: the walk back from the open
+segment, started with the name its directory carries, must reach the
+seal's segment. If it does not, the archive's record was cut back or
+begun anew after the seal was made.
 

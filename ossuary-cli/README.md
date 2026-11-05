@@ -101,9 +101,10 @@ A name without a colon is a field of the claim: `subject`, `attribute`,
 claims behind all attribute terms: `find run=RUN file:name` lists the
 files a run recorded, `find source=user user:tag` the tags you set
 yourself, `find time=2026-09-01..` what was recorded since September (a
-date covers the whole day, as with `--as-of`), and `find --all
-retract=true file:path=*` the retracted paths, where `retract=true
-file:path` finds any retraction and shows the paths. A field term shows
+date covers the whole day, as with `--all`), and `find --all
+retract=true file:path` the files with a retraction recorded, with their
+paths. A retraction carries no value, it names the claims it retracts,
+so `retract=true` matches no `attribute=value` term. A field term shows
 nothing itself; a bare field name shows the field. `--all` searches
 every claim ever written instead of the standing values, retractions
 included, and is required for the `retract` field.

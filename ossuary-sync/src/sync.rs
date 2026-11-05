@@ -369,10 +369,15 @@ pub fn copy_segments(archive: &Archive, remote: &dyn Remote, segments: &[Piece])
 /// When the copy cannot be written.
 pub fn advance(remote: &dyn Remote, seal: &Digest) -> Result<()> {
     let next = format!("open-{seal}");
+    // The open segment of a copy made by 0.17 or earlier is one file,
+    // which held nothing but the seal's name: it goes the same way.
     let old: Vec<String> = remote
         .list("")?
         .into_iter()
-        .filter(|name| name != &next && (name == "open" || name.starts_with("open-")))
+        .filter(|name| {
+            name != &next
+                && (name == "open" || name.starts_with("open-") || name == ossuary_core::OLD_HEAD)
+        })
         .collect();
     for name in &old {
         remote.remove_tree(name)?;

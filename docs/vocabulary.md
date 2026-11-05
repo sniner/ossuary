@@ -10,8 +10,9 @@ understands yet is kept like any other and is not an error.*
 ## Reading rules
 
 **Every attribute is a set.** An assertion adds a value, and a
-retraction removes exactly that value; a retraction without a value
-removes every value of the attribute. No claim ever overwrites another.
+retraction takes assertions out of the set: it names, by id, the
+standing assertions of one value, or every standing assertion of the
+attribute. No claim ever overwrites another.
 The result for an attribute is its standing values, deduplicated: a
 value asserted twice is in the set once. No attribute declares how many
 values it may have, and none needs to: `user:tag` has several values

@@ -57,12 +57,12 @@ pub fn line(claim: &Claim) -> String {
         .run()
         .map(|run| format!(" [run:{}]", run.as_str()))
         .unwrap_or_default();
-    match (claim.value(), claim.is_retraction()) {
-        (Some(value), false) => format!("{time}  {attribute} = {value}  [{source}]{run}"),
-        (Some(value), true) => {
-            format!("{time}  retracted: {attribute} = {value}  [{source}]{run}")
-        }
-        (None, _) => format!("{time}  retracted: {attribute}, all values  [{source}]{run}"),
+    match claim.value() {
+        Some(value) => format!("{time}  {attribute} = {value}  [{source}]{run}"),
+        None => format!(
+            "{time}  retracted: {attribute}, {} claim(s)  [{source}]{run}",
+            claim.retracts().len()
+        ),
     }
 }
 

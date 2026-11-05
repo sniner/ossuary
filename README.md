@@ -310,8 +310,8 @@ e9ed6104
 
 A name without a colon is a field of the claim itself (`run`, `source`,
 `time`, `retract`). It filters on the claim behind a value: what a run
-recorded, what you tagged yourself, what was written since a date, what
-was ever retracted:
+recorded, what you tagged yourself, what was written since a date, which
+files have a retraction recorded:
 
 ```console
 $ ossuary find run=315e360b-020e-48be-8f2d-f2002a2ea9b4 file:name
@@ -321,22 +321,21 @@ bd84e795
   file:name=DSC_1042.jpg
 …
 5 file(s)
-$ ossuary find --all retract=true file:path=*
+$ ossuary find --all retract=true file:path
 6ca81e7a
   file:path=/home/john/photos/DSC_1043.jpg
 1 file(s)
 ```
 
-The last query lists files that are gone, with one catch. A field term
-applies to every attribute term at once, so `retract=true file:path=*`
-asks for a retracted *path*. That is what a deleted file has, because
-`ingest` retracts the path it no longer finds, not the name.
-`retract=true file:name=*` asks for a retracted name and finds nothing,
-because no name was ever retracted. A bare `file:name` next to
-`retract=true` does not filter; it only shows the names of files that
-have any retraction recorded. A field term shows nothing by itself, but
-a bare field name does, so `find run=… run` lists the runs a file was
-written in.
+The last query lists the files that had something retracted, with every
+path ever recorded for them, which is where a deleted file turns up:
+`ingest` retracts the path it no longer finds. A retraction carries no
+value of its own, it names the claims it retracts, so a field term
+`retract=true` matches no `attribute=value` term; a bare attribute next
+to it shows that attribute's values of the files found. Which values a
+retraction took back is what `about` shows. A field term shows nothing
+by itself, but a bare field name does, so `find run=… run` lists the
+runs a file was written in.
 
 `attributes` lists every attribute that has current claims, sorted. A
 namespace narrows the list:
@@ -529,7 +528,7 @@ $ ossuary retract e9ed6104 user:tag=taxes
 1 value(s) retracted from 1 file(s); 1 retraction(s) written
 $ ossuary about e9ed6104 user:tag
 2026-03-12T09:15:02Z  user:tag = "taxes"  [user]
-2026-03-14T18:40:51Z  retracted: user:tag = "taxes"  [user]
+2026-03-14T18:40:51Z  retracted: user:tag, 1 claim(s)  [user]
 ```
 
 Any claim can be retracted, including those written by `ingest` and the

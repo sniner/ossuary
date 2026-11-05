@@ -331,7 +331,13 @@ impl Remote for Filebridge {
         let entries = match self.runtime.block_on(location.list(Some(&full))) {
             Ok(entries) => entries,
             Err(error) if status(&error) == Some(404) => return Ok(()),
-            Err(error) => return Err(self.failed("reading the folder", path, &error)),
+            // A file, not a folder.
+            Err(_) => {
+                return self
+                    .runtime
+                    .block_on(location.delete(&full))
+                    .map_err(|error| self.failed("removing", path, &error));
+            }
         };
         for entry in entries {
             let below = format!("{path}/{}", entry.name);
