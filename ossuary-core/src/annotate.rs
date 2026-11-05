@@ -41,33 +41,32 @@ pub fn annotate(
     let run = Run::new();
     let comment = Attribute::parse("user:comment")?;
     let tag = Attribute::parse("user:tag")?;
-    let mut written = 0usize;
+    let mut claims = Vec::new();
     for subject in subjects {
         for text in comments {
-            log.append(&Claim::assert(
+            claims.push(Claim::assert(
                 subject.clone(),
                 comment.clone(),
                 json!(text),
                 time.clone(),
                 word.clone(),
                 run.clone(),
-            )?)?;
-            written += 1;
+            )?);
         }
         for label in tags {
-            log.append(&Claim::assert(
+            claims.push(Claim::assert(
                 subject.clone(),
                 tag.clone(),
                 json!(label),
                 time.clone(),
                 word.clone(),
                 run.clone(),
-            )?)?;
-            written += 1;
+            )?);
         }
     }
+    log.append_all(&claims)?;
     Ok(Written {
-        claims: written,
+        claims: claims.len(),
         run,
     })
 }

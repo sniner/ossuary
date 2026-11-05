@@ -135,9 +135,13 @@ pub fn rehash(
             target.display()
         );
     }
-    for claim in renamed.into_iter().flatten() {
-        rehashed.log().append(&claim)?;
-        done.claims += 1;
+    // Every append is flushed, and the head is sealed only between
+    // appends: chunks keep the flushes few and the segments near the size
+    // at which the log seals them.
+    let renamed: Vec<Claim> = renamed.into_iter().flatten().collect();
+    for chunk in renamed.chunks(1024) {
+        rehashed.log().append_all(chunk)?;
+        done.claims += chunk.len();
     }
     rehashed.log().seal()?;
     done.dropped = dropped;

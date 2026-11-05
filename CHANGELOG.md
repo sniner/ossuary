@@ -5,6 +5,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary ingest` is slower for files whose content the archive already holds**: the claims of
+  each file are now flushed to disk on their own, which takes a few milliseconds per file
+
+### Fixed
+
+- **Claims are on disk before a command reports them written.** Before, a power failure or crash
+  could lose the claims of the last seconds while the query index in `cache/` still listed them.
+  Delete `cache/index.sqlite` in an archive where that happened; the next command rebuilds it
+
 ## [0.17.0] - 2026-11-05
 
 ### Added

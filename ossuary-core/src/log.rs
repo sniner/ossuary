@@ -51,11 +51,15 @@
 //! the end of the chain that only a seal kept outside the archive shows.
 //!
 //! The head belongs to one writer at a time; concurrency lives in the store,
-//! not here. An append does not fsync — the open segment's tail is the one
-//! thing a crash may cost, and an ingest can say it again — while everything
-//! sealed is durable the way the store promises. Reading is strict: a torn
-//! last line stops the reader (and with it the seal) rather than being
-//! quietly dropped, because a truth layer does not shrug.
+//! not here. An append is flushed to the device before it returns, and a
+//! head that is created or renamed into place also has its directory entry
+//! flushed. A claim that an append reported as written survives a crash,
+//! so a cache folded from the head never holds a claim the head loses.
+//! Everything sealed is durable the way the store promises.
+//!
+//! Reading is strict: a torn last line stops the reader (and with it the
+//! seal) rather than being quietly dropped, because a truth layer does not
+//! shrug.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -307,9 +311,9 @@ impl Log {
     /// seal leaves a head behind, so a head missing over sealed segments
     /// was lost (see [`head_lost`](Log::head_lost)), unless a seal
     /// stopped before its last step, and then its fresh head is moved
-    /// into place first. Header and claims go out in one write, and
-    /// nothing is fsynced; see the module notes on what a crash may cost
-    /// and what it may not.
+    /// into place first. Header and claims go out in one write, flushed
+    /// to the device before this returns. Each call costs one flush, so a
+    /// caller with many claims passes them together.
     ///
     /// A head at [`SEAL_AT`] or larger is sealed before anything is
     /// written, so no writer needs a sealing policy of its own. The order
@@ -320,7 +324,7 @@ impl Log {
     /// # Errors
     ///
     /// [`Error::HeadLost`] when the head was lost, [`Error::Io`] when the
-    /// file cannot be opened or written, and everything
+    /// file cannot be opened, written or flushed, and everything
     /// [`seal`](Log::seal) can answer when the head was due to be sealed.
     pub fn append_all(&self, claims: &[Claim]) -> Result<()> {
         if claims.is_empty() {
@@ -357,7 +361,12 @@ impl Log {
             .create(true)
             .open(&self.head)
             .map_err(io)?;
-        file.write_all(lines.as_bytes()).map_err(io)
+        file.write_all(lines.as_bytes()).map_err(io)?;
+        immure::sync_file(&file).map_err(io)?;
+        if fresh {
+            sync_parent(&self.head);
+        }
+        Ok(())
     }
 
     /// The claims of the open segment, in the order they were appended.
@@ -579,7 +588,9 @@ impl Log {
         fs::rename(self.tmp_path(), &self.head).map_err(|source| Error::Io {
             context: format!("{}: finishing the interrupted seal", self.head.display()),
             source,
-        })
+        })?;
+        sync_parent(&self.head);
+        Ok(())
     }
 
     /// Clear a `head.jsonl.tmp` that lies next to a standing head. It is
@@ -657,10 +668,12 @@ impl Log {
     /// never half a file. A crash before the rename leaves the old head
     /// standing; a crash inside a rename that is not atomic leaves the
     /// `.tmp` as the only head, and the next writer finishes it (see the
-    /// module notes). The new head reaches the device before the rename,
-    /// so that a power failure right after it cannot leave an empty head
-    /// behind; the rename itself needs no flush, since a rename that is
-    /// lost leaves the old head standing.
+    /// module notes). The new head is flushed before the rename, so that
+    /// a power failure right after it cannot leave an empty head, and the
+    /// directory is flushed after it. A lost rename would leave the old
+    /// head in place although its claims are sealed already, and the next
+    /// seal would store them again in a second segment after the same
+    /// predecessor.
     ///
     /// When writing or renaming fails while the old head still stands,
     /// the `.tmp` is cleared, so that it cannot vouch for a head that
@@ -684,6 +697,7 @@ impl Log {
                 fs::rename(&tmp, &self.head).map_err(|source| failed("replacing the head", source))
             });
         let Err(error) = replaced else {
+            sync_parent(&self.head);
             return Ok(());
         };
         if matches!(self.head.try_exists(), Ok(true))
@@ -811,6 +825,20 @@ fn write_flushed(path: &Path, text: &str) -> std::io::Result<()> {
     let mut file = fs::File::create(path)?;
     file.write_all(text.as_bytes())?;
     immure::sync_file(&file)
+}
+
+/// Flush the directory entry of `path` after the file was created or
+/// renamed into place. Best effort, as in the store: some filesystems do
+/// not let a directory be opened or flushed, and then only this one name
+/// may be lost in a crash.
+fn sync_parent(path: &Path) {
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    if let Ok(handle) = fs::File::open(dir) {
+        immure::sync_file(&handle).ok();
+    }
 }
 
 /// Clear a `head.jsonl.tmp` that must not vouch for anything: remove it,

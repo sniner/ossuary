@@ -362,18 +362,19 @@ impl Fetch<'_> {
         tally: &mut Tally,
     ) -> Result<()> {
         let time = Timestamp::now();
+        let mut claims = Vec::new();
         for subject in subjects {
-            let claim = Claim::assert(
+            claims.push(Claim::assert(
                 subject.clone(),
                 attribute.clone(),
                 value.clone(),
                 time.clone(),
                 self.source.clone(),
                 tally.run.clone(),
-            )?;
-            self.archive.log().append(&claim)?;
-            tally.claims += 1;
+            )?);
         }
+        self.archive.log().append_all(&claims)?;
+        tally.claims += claims.len();
         Ok(())
     }
 
@@ -406,19 +407,20 @@ impl Fetch<'_> {
             }
         }
         let time = Timestamp::now();
+        let mut claims = Vec::new();
         for gone in stood.difference(&current) {
-            let claim = Claim::retract_value(
+            claims.push(Claim::retract_value(
                 subject.clone(),
                 self.tag.clone(),
                 json!(gone),
                 time.clone(),
                 self.source.clone(),
                 tally.run.clone(),
-            )?;
-            self.archive.log().append(&claim)?;
-            tally.claims += 1;
-            tally.taken += 1;
+            )?);
         }
+        self.archive.log().append_all(&claims)?;
+        tally.claims += claims.len();
+        tally.taken += claims.len();
         Ok(())
     }
 
@@ -890,19 +892,20 @@ impl Fetch<'_> {
         if let Some(in_folder) = &in_folder {
             let gone = self.label_removed(label, in_folder)?;
             let time = Timestamp::now();
+            let mut claims = Vec::new();
             for subject in &gone {
-                let claim = Claim::retract_value(
+                claims.push(Claim::retract_value(
                     subject.clone(),
                     self.tag.clone(),
                     value.clone(),
                     time.clone(),
                     self.source.clone(),
                     tally.run.clone(),
-                )?;
-                self.archive.log().append(&claim)?;
-                tally.claims += 1;
-                tally.taken += 1;
+                )?);
             }
+            self.archive.log().append_all(&claims)?;
+            tally.claims += claims.len();
+            tally.taken += claims.len();
             if !gone.is_empty() {
                 self.say.line(format_args!(
                     "{name}: the label retracted from {} no longer in the folder",

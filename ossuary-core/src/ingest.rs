@@ -203,20 +203,23 @@ where
     // the place with them, so a file that comes back unchanged is
     // observed anew and gets its place back on the record.
     let time = Timestamp::now();
-    for (path, subject) in gone {
-        let claim = Claim::retract_value(
-            subject,
+    let mut retractions = Vec::new();
+    for (path, subject) in &gone {
+        retractions.push(Claim::retract_value(
+            subject.clone(),
             known_attribute("file:path"),
             Value::String(path.to_string_lossy().into_owned()),
             time.clone(),
             source.clone(),
             result.run.clone(),
-        )?;
-        log.append(&claim)?;
-        result.claims += 1;
-        result.gone += 1;
-        if let Some(memory) = sweep.memory {
-            memory.forget(sweep.host, &path)?;
+        )?);
+    }
+    log.append_all(&retractions)?;
+    result.claims += retractions.len();
+    result.gone += retractions.len();
+    if let Some(memory) = sweep.memory {
+        for (path, _) in &gone {
+            memory.forget(sweep.host, path)?;
         }
     }
     if let Some(remembering) = remembering {

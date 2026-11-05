@@ -201,9 +201,7 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<usi
             said.run,
         )?);
     }
-    for claim in &claims {
-        log.append(claim)?;
-    }
+    log.append_all(&claims)?;
     Ok(claims.len())
 }
 

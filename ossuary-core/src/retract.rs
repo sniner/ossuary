@@ -39,9 +39,9 @@ pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<Wr
     let word = Source::parse("user")?;
     let time = Timestamp::now();
     let run = Run::new();
-    let mut written = 0usize;
+    let mut claims = Vec::new();
     for (subject, attribute, taking) in takings {
-        let claim = match taking {
+        claims.push(match taking {
             Taking::Value(value) => Claim::retract_value(
                 subject.clone(),
                 attribute.clone(),
@@ -57,12 +57,11 @@ pub fn retract(log: &Log, takings: &[(Subject, Attribute, Taking)]) -> Result<Wr
                 word.clone(),
                 run.clone(),
             ),
-        };
-        log.append(&claim)?;
-        written += 1;
+        });
     }
+    log.append_all(&claims)?;
     Ok(Written {
-        claims: written,
+        claims: claims.len(),
         run,
     })
 }
