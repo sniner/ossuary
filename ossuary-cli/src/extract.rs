@@ -158,9 +158,13 @@ fn render(event: &Event<'_>, quiet: bool, dry_run: bool) -> Result<()> {
             }
             outln!("{block}")?;
         }
-        Event::CaughtUp { segments } => {
+        Event::CaughtUp { segments, rebuilt } => {
             if !quiet {
-                errln!("index updated: {segments} new log segment(s)");
+                if *rebuilt {
+                    errln!("index rebuilt: {segments} log segment(s)");
+                } else {
+                    errln!("index updated: {segments} new log segment(s)");
+                }
             }
         }
         Event::Skipped { trouble, .. } => errln!("skipped: {}", trouble.spelled()),

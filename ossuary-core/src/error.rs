@@ -68,6 +68,12 @@ pub enum Error {
     #[error(transparent)]
     Index(#[from] rusqlite::Error),
 
+    /// The index still did not match the log after it was emptied and
+    /// built anew: the log changed elsewhere than at its end while it was
+    /// read.
+    #[error("the log changed while the query index was built anew; run the command again")]
+    IndexMismatch,
+
     /// Reading or writing the open segment failed.
     #[error("{context}")]
     Io {

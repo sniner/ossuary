@@ -195,7 +195,12 @@ fn open(root: &Path) -> Result<Archive> {
 fn caught_up(archive: &Archive, quiet: bool) -> Result<Index> {
     let mut index = archive.index()?;
     let folded = index.fold(archive.log())?;
-    if folded.segments > 0 && !quiet {
+    if quiet {
+        return Ok(index);
+    }
+    if folded.rebuilt {
+        eprintln!("index rebuilt: {} log segment(s)", folded.segments);
+    } else if folded.segments > 0 {
         eprintln!("index updated: {} new log segment(s)", folded.segments);
     }
     Ok(index)

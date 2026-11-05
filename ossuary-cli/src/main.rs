@@ -1334,7 +1334,12 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
 /// Fold the log in and, unless quiet, say when that was real work.
 pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Result<()> {
     let folded = index.fold(archive.log())?;
-    if folded.segments > 0 && !quiet {
+    if quiet {
+        return Ok(());
+    }
+    if folded.rebuilt {
+        errln!("index rebuilt: {} log segment(s)", folded.segments);
+    } else if folded.segments > 0 {
         errln!("index updated: {} new log segment(s)", folded.segments);
     }
     Ok(())

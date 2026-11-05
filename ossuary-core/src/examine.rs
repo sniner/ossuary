@@ -46,10 +46,14 @@ use crate::index::{Index, Scope};
 /// observer decides what becomes of it; the variants only say what is.
 #[derive(Debug)]
 pub enum Event<'a> {
-    /// The index caught up on sealed segments it had not seen.
+    /// The index caught up on sealed segments it had not seen, or was
+    /// built anew.
     CaughtUp {
         /// How many segments the fold brought in.
         segments: usize,
+        /// Whether the index did not match the log and was built anew
+        /// from all of it.
+        rebuilt: bool,
     },
     /// A listed entry did not identify; the rest of the list still runs.
     Skipped {
@@ -383,9 +387,10 @@ const MAX_ROUNDS: usize = 32;
 /// Fold the log in and, when that was real work, say so.
 fn catch_up(index: &mut Index, archive: &Archive, observer: &mut dyn Observer) -> Result<()> {
     let folded = index.fold(archive.log())?;
-    if folded.segments > 0 {
+    if folded.segments > 0 || folded.rebuilt {
         observer.event(Event::CaughtUp {
             segments: folded.segments,
+            rebuilt: folded.rebuilt,
         });
     }
     Ok(())
@@ -1540,12 +1545,15 @@ mod tests {
     fn a_closure_serves_as_an_observer() {
         let mut seen = Vec::new();
         let mut observer = |event: Event<'_>| {
-            if let Event::CaughtUp { segments } = event {
+            if let Event::CaughtUp { segments, .. } = event {
                 seen.push(segments);
             }
         };
         let observer: &mut dyn Observer = &mut observer;
-        observer.event(Event::CaughtUp { segments: 3 });
+        observer.event(Event::CaughtUp {
+            segments: 3,
+            rebuilt: false,
+        });
         assert_eq!(seen, [3]);
     }
 }

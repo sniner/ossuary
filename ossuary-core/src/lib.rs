@@ -55,7 +55,9 @@ pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::{Algorithm, Digest, Store};
 pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
-pub use log::{Contents, GENERATION, Log, Segment, WalkBack, Writable, head_after};
+pub use log::{
+    Contents, GENERATION, Log, OpenHead, Segment, Stamp, Tail, WalkBack, Writable, head_after,
+};
 pub use retract::{Taking, retract};
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,

@@ -63,8 +63,9 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead as _, ErrorKind, Write as _};
+use std::io::{BufRead as _, BufReader, ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use immure::{Digest, Store};
 use serde::{Deserialize, Serialize};
@@ -196,6 +197,119 @@ impl Contents {
     #[must_use]
     pub fn into_claims(self) -> Vec<Claim> {
         self.claims
+    }
+}
+
+/// The size and modification time of the open segment's file, from one
+/// `stat`. A reader that keeps its place in the head compares two stamps
+/// to tell whether anything was appended or sealed since it last read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    /// The size in bytes.
+    pub size: u64,
+    /// The modification time in nanoseconds since the Unix epoch; `None`
+    /// where the filesystem keeps none.
+    pub modified: Option<i64>,
+}
+
+impl Stamp {
+    fn of(metadata: &fs::Metadata) -> Stamp {
+        let modified =
+            metadata
+                .modified()
+                .ok()
+                .and_then(|time| match time.duration_since(UNIX_EPOCH) {
+                    Ok(after) => i64::try_from(after.as_nanos()).ok(),
+                    Err(before) => i64::try_from(before.duration().as_nanos())
+                        .ok()
+                        .map(|nanos| -nanos),
+                });
+        Stamp {
+            size: metadata.len(),
+            modified,
+        }
+    }
+}
+
+/// The open segment, opened by [`Log::open_head`] with its header read,
+/// for reading on from a byte offset.
+#[derive(Debug)]
+pub struct OpenHead {
+    reader: BufReader<fs::File>,
+    path: PathBuf,
+    previous: Option<Digest>,
+    /// The offset of the first claim: the length of the header line.
+    claims_at: u64,
+    stamp: Stamp,
+}
+
+/// Claims read from the open segment, and the offset after them.
+#[derive(Debug)]
+pub struct Tail {
+    /// The claims, in the order appended.
+    pub claims: Vec<Claim>,
+    /// The offset just after the last line read, where the next read
+    /// begins.
+    pub end: u64,
+}
+
+impl OpenHead {
+    /// The last sealed segment as the head names it; `None` for a head
+    /// in an archive with nothing sealed.
+    #[must_use]
+    pub fn previous(&self) -> Option<&Digest> {
+        self.previous.as_ref()
+    }
+
+    /// The file's stamp, taken when it was opened, before anything was
+    /// read: a later append changes it, so the next comparison sees it.
+    #[must_use]
+    pub fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    /// The claims on the lines from byte `offset` on; `claims_before` is
+    /// the number of claims in front of that offset, for the line number
+    /// in an error. An offset inside the header reads from the first
+    /// claim.
+    ///
+    /// Only complete lines are read. The bytes after the last newline
+    /// can be an append that is still being written, and the next read
+    /// from [`Tail::end`] takes them once the line is complete. Sealing
+    /// and the audit read the head whole and refuse such a line.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the file cannot be read, [`Error::NotText`]
+    /// for bytes that are not UTF-8, and [`Error::BadLine`] naming the
+    /// first line that does not read as a claim.
+    pub fn read_from(&mut self, offset: u64, claims_before: usize) -> Result<Tail> {
+        let path = &self.path;
+        let io = |source| Error::Io {
+            context: format!("{}: reading", path.display()),
+            source,
+        };
+        let offset = offset.max(self.claims_at);
+        self.reader.seek(SeekFrom::Start(offset)).map_err(io)?;
+        let mut bytes = Vec::new();
+        self.reader.read_to_end(&mut bytes).map_err(io)?;
+        let complete = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |last| last + 1);
+        let text = std::str::from_utf8(&bytes[..complete]).map_err(|_| Error::NotText)?;
+        let mut claims = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            // The header is line 1, the first claim line 2.
+            claims.push(Claim::parse_line(line).map_err(|source| Error::BadLine {
+                line: claims_before + index + 2,
+                source: Box::new(source),
+            })?);
+        }
+        Ok(Tail {
+            claims,
+            end: offset + complete as u64,
+        })
     }
 }
 
@@ -747,12 +861,82 @@ impl Log {
             return Err(Error::HeadLost(self.head.clone()));
         }
         let head = self.head_contents()?;
-        Ok(WalkBack {
+        Ok(self.walk_back_from(head.previous()))
+    }
+
+    /// Walk back along the chain from `segment`, the one the open head
+    /// names: for a reader that has read the head's header itself, as
+    /// [`OpenHead::previous`] gives it. `None` walks nothing. A step
+    /// answers as in [`walk_back`](Log::walk_back).
+    #[must_use]
+    pub fn walk_back_from(&self, segment: Option<&Digest>) -> WalkBack<'_> {
+        WalkBack {
             log: self,
-            next: head
-                .previous
-                .map(|digest| ("the open segment".to_string(), digest)),
-        })
+            next: segment.map(|digest| ("the open segment".to_string(), digest.clone())),
+        }
+    }
+
+    /// The stamp of the head's file, from one `stat`: `None` when there
+    /// is no file with bytes in it. Nothing else is looked at, so this is
+    /// cheap enough to ask before every read; whether a missing head was
+    /// lost or a seal was interrupted is for [`open_head`](Log::open_head)
+    /// to find out.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the file cannot be looked at.
+    pub fn head_stamp(&self) -> Result<Option<Stamp>> {
+        match fs::metadata(&self.head) {
+            Ok(metadata) if metadata.len() > 0 => Ok(Some(Stamp::of(&metadata))),
+            Ok(_) => Ok(None),
+            Err(source) if source.kind() == ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(Error::Io {
+                context: format!("{}: reading", self.head.display()),
+                source,
+            }),
+        }
+    }
+
+    /// Open the open segment and read its header, for a reader that
+    /// keeps its place in the head, as the index does: it reads the
+    /// claims from where it stopped last time with
+    /// [`OpenHead::read_from`]. `None` when there is no head yet. While a
+    /// seal is interrupted, the open segment is its fresh head (see the
+    /// module notes).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeadLost`] when the head was lost, [`Error::Io`] when the
+    /// file cannot be opened or read, [`Error::NotText`],
+    /// [`Error::SegmentHeader`], [`Error::PreviousList`] and
+    /// [`Error::SegmentGeneration`] for a header that does not read, and
+    /// [`Error::Store`] while looking for the last sealed segment.
+    pub fn open_head(&self) -> Result<Option<OpenHead>> {
+        let path = match self.head_state()? {
+            HeadState::Absent => return Ok(None),
+            HeadState::Lost => return Err(Error::HeadLost(self.head.clone())),
+            HeadState::Open { .. } => self.head.clone(),
+            HeadState::Interrupted => self.tmp_path(),
+        };
+        let io = |source| Error::Io {
+            context: format!("{}: reading", path.display()),
+            source,
+        };
+        let file = fs::File::open(&path).map_err(io)?;
+        let stamp = Stamp::of(&file.metadata().map_err(io)?);
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line).map_err(io)?;
+        let header = String::from_utf8(line).map_err(|_| Error::NotText)?;
+        let previous = parse_header(header.lines().next().unwrap_or_default())?;
+        let claims_at = header.len() as u64;
+        Ok(Some(OpenHead {
+            reader,
+            path,
+            previous,
+            claims_at,
+            stamp,
+        }))
     }
 
     /// The segment a sealed segment names as the one sealed before it,
@@ -1355,6 +1539,41 @@ mod tests {
         assert!(
             !dir.path().join("head.jsonl").exists(),
             "and reading wrote nothing"
+        );
+    }
+
+    #[test]
+    fn an_opened_head_is_the_fresh_head_of_an_interrupted_seal() {
+        let dir = TempDir::new().unwrap();
+        let (log, segment) = interrupted(&dir);
+
+        assert_eq!(log.head_stamp().unwrap(), None, "no head file to stat");
+        let mut head = log.open_head().unwrap().unwrap();
+
+        assert_eq!(head.previous(), Some(segment.digest()));
+        assert!(head.read_from(0, 0).unwrap().claims.is_empty());
+        assert!(!dir.path().join("head.jsonl").exists(), "nothing written");
+    }
+
+    #[test]
+    fn a_read_from_an_offset_names_the_line_in_the_file() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("first", "2026-09-01T00:00:00Z")).unwrap();
+        let mut head = log.open_head().unwrap().unwrap();
+        let after_first = head.read_from(0, 0).unwrap();
+        assert_eq!(after_first.claims.len(), 1);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(log.head_path())
+            .unwrap();
+        file.write_all(b"not a claim\n").unwrap();
+
+        let error = head.read_from(after_first.end, 1).unwrap_err();
+
+        assert!(
+            matches!(error, Error::BadLine { line: 3, .. }),
+            "header, first claim, then the third line: {error:?}"
         );
     }
 

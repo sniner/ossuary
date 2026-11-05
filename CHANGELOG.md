@@ -9,12 +9,19 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`ossuary ingest` is slower for files whose content the archive already holds**: the claims of
   each file are now flushed to disk on their own, which takes a few milliseconds per file
+- **Queries read only the claims recorded since the last query**, and nothing when nothing was
+  recorded, instead of every claim of the open segment each time. A query index in `cache/` that
+  does not match the archive is rebuilt, and the command says so. The first command after the
+  update rebuilds it once
 
 ### Fixed
 
 - **Claims are on disk before a command reports them written.** Before, a power failure or crash
   could lose the claims of the last seconds while the query index in `cache/` still listed them.
   Delete `cache/index.sqlite` in an archive where that happened; the next command rebuilds it
+- **Queries on a read-only archive** work while the query index in `cache/` is up to date
+- **A query while another command records claims** no longer fails on a claim that is only half
+  written
 
 ## [0.17.0] - 2026-11-05
 

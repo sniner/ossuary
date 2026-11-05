@@ -88,7 +88,8 @@ fn the_skeleton_walks() {
         Folded {
             segments: 1,
             claims: 3,
-            head: 2
+            head: 2,
+            rebuilt: false
         }
     );
     let answer = index.about(&photo()).unwrap();

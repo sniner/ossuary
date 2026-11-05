@@ -8,11 +8,18 @@
 //!
 //! The fold is incremental, and the log's own shape is what makes that
 //! cheap: a sealed segment never changes, so a segment folded once is
-//! folded forever, and a new one only ever joins the chain at its end. The
-//! fold walks back from the open head to the first segment it knows and
-//! folds the ones it passed, oldest first. Only the open head is folded
-//! afresh each time, because only the head moves. The order of the fold
-//! is the order of the log, and claim times play no part in it.
+//! folded forever, and a new one only ever joins the chain at its end.
+//! The head only grows until it is sealed, so the index keeps how far it
+//! read it: the segment the head follows, the offset after the last line
+//! read, and the head file's size and modification time at that read.
+//! While the size and time are the same, nothing was appended or sealed,
+//! and a fold reads nothing. When the head still follows the same
+//! segment, only the lines after the offset are read. When it follows
+//! another, the fold walks back to the segment it knows: the first new
+//! segment is the old head as it was sealed, so the head's rows are moved
+//! to it and only the claims after them are read; later segments are read
+//! whole, and then the new head. The order of the fold is the order of
+//! the log, and claim times play no part in it.
 //!
 //! The fold keeps two tables of substance and four of names. `claims` is
 //! the history, verbatim: every claim a row, retractions included, in
@@ -31,21 +38,25 @@
 //! un-baked is *narrowing*: which of several standing values a reader
 //! prefers is query-time policy, and the sets carry them all.
 //!
-//! Standing follows the log forward, the only direction a log moves; a
-//! `head.jsonl` edited backwards leaves it stale until the cache is
-//! deleted and refolded — the cure every cache here has.
+//! Standing follows the log forward, the only direction a log moves. A
+//! log changed in any other way is found where it shows: a head shorter
+//! than what was read, a sealed head with fewer claims than the index
+//! holds for it, a chain that does not lead back to where the index
+//! stopped. The index is then emptied and folded anew, which is what
+//! deleting the cache does.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension as _, params};
+use immure::Digest;
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::export::Placement;
-use crate::log::Log;
+use crate::log::{Log, Stamp};
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
@@ -77,6 +88,13 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          id     INTEGER PRIMARY KEY,
          digest TEXT NOT NULL UNIQUE,
          seq    INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS head_read (
+         id       INTEGER PRIMARY KEY CHECK (id = 0),
+         previous TEXT,
+         bytes    INTEGER NOT NULL,
+         size     INTEGER,
+         mtime    INTEGER
      );
      CREATE TABLE IF NOT EXISTS claims (
          id        INTEGER PRIMARY KEY,
@@ -141,10 +159,14 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
 pub struct Folded {
     /// Sealed segments that were new to the index.
     pub segments: usize,
-    /// Claims those segments brought.
+    /// Claims those segments brought that the index did not hold yet
+    /// as claims of the open head.
     pub claims: usize,
-    /// Claims in the open head, folded afresh.
+    /// Claims read from the open head, appended since the last fold.
     pub head: usize,
+    /// Whether the index did not match the log and was emptied and
+    /// folded anew; the counts are then those of the whole log.
+    pub rebuilt: bool,
 }
 
 /// One value standing at a closing time: whose record it is on, what
@@ -403,6 +425,7 @@ impl Index {
                  DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
+                 DROP TABLE IF EXISTS head_read;
                  DROP TABLE IF EXISTS subjects;
                  DROP TABLE IF EXISTS attributes;
                  DROP TABLE IF EXISTS sources;
@@ -412,31 +435,46 @@ impl Index {
         }
         // The integer columns of `claims` and `standing` are ids into the
         // five name tables; `standing.claim` is a row of `claims`. None of
-        // it is declared a foreign key on purpose: the head's claim rows
-        // are deleted and rewritten each fold while standing rows still
-        // point at the old ones, until the same assertion, folded again,
-        // points them at the new.
+        // it is declared a foreign key. `head_read` is a single row: how
+        // far the open head has been read (see the module notes); `size`
+        // and `mtime` are empty while nothing of the head after
+        // `previous` has been read.
         connection.execute_batch(DDL)?;
-        connection.execute(
-            "INSERT OR IGNORE INTO segments (id, digest, seq) VALUES (?1, 'head', ?2)",
-            params![HEAD, HEAD_SEQ],
+        // Asked first: an insert that is ignored still needs write access,
+        // and a current index on a read-only archive is to be read.
+        let head_row: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM segments WHERE id = ?1)",
+            params![HEAD],
+            |row| row.get(0),
         )?;
+        if !head_row {
+            connection.execute(
+                "INSERT INTO segments (id, digest, seq) VALUES (?1, 'head', ?2)",
+                params![HEAD, HEAD_SEQ],
+            )?;
+        }
         Ok(Index {
             connection,
             ids: Ids::default(),
         })
     }
 
-    /// Fold the log in: new segments once, the head afresh.
+    /// Fold the log in: new segments once, and of the open head what was
+    /// appended since the last fold.
     ///
-    /// Safe to call as often as wanted — a segment already folded is
-    /// recognised by its digest and skipped, and each segment lands in one
-    /// transaction, so an interrupted fold left nothing half-indexed.
+    /// Safe to call as often as wanted. While the head file's size and
+    /// modification time are what the last fold saw, nothing is read and
+    /// nothing is written. A segment already folded is recognised by its
+    /// digest and skipped, and each segment lands in one transaction, so
+    /// an interrupted fold left nothing half-indexed. An index that does
+    /// not match the log is emptied and folded anew, and
+    /// [`Folded::rebuilt`] says so.
     ///
     /// # Errors
     ///
-    /// [`Error::Index`] from `SQLite`, and everything reading the log can
-    /// answer.
+    /// [`Error::Index`] from `SQLite`, [`Error::IndexMismatch`] when the
+    /// index still does not match the log after it was folded anew, and
+    /// everything reading the log can answer.
     pub fn fold(&mut self, log: &Log) -> Result<Folded> {
         let folded = self.fold_in(log);
         if folded.is_err() {
@@ -448,69 +486,146 @@ impl Index {
     }
 
     fn fold_in(&mut self, log: &Log) -> Result<Folded> {
-        let mut folded = Folded::default();
+        if let Some(folded) = self.follow(log)? {
+            return Ok(folded);
+        }
+        self.empty()?;
+        match self.follow(log)? {
+            Some(folded) => Ok(Folded {
+                rebuilt: true,
+                ..folded
+            }),
+            None => Err(Error::IndexMismatch),
+        }
+    }
 
-        // Back from the head to the first segment this index knows: every
-        // segment passed on the way is new, and newer than everything
-        // folded before it.
+    /// Fold in what the log holds beyond the index. `None` when the index
+    /// does not match the log and has to be emptied first.
+    ///
+    /// Every step that writes runs in a transaction that takes the write
+    /// lock before it reads `head_read`: a mount and a CLI call can fold
+    /// into the same file, and both reading the same offset would fold
+    /// the same claims twice.
+    fn follow(&mut self, log: &Log) -> Result<Option<Folded>> {
+        let read = head_read(&self.connection)?;
+        if let Some(read) = &read
+            && let Some(stamp) = log.head_stamp()?
+            && stamp.modified.is_some()
+            && read.stamp == Some(stamp)
+        {
+            return Ok(Some(Folded::default()));
+        }
+        let Some(mut head) = log.open_head()? else {
+            // No head, so nothing sealed either.
+            return Ok((!holds_claims(&self.connection)?).then(Folded::default));
+        };
+        if read.is_none() && holds_claims(&self.connection)? {
+            // Claims without a record of how far the head was read: an
+            // index from a build that read the head whole on every fold.
+            return Ok(None);
+        }
+        let followed = read.and_then(|read| read.previous);
+
+        // Back from the head to the segment the index's head followed.
+        // Every segment passed on the way is new; the oldest of them is
+        // the index's head as it was sealed.
         let mut fresh = Vec::new();
-        let mut known = None;
-        for segment in log.walk_back()? {
-            let segment = segment?;
-            let seq: Option<i64> = self
-                .connection
-                .query_row(
-                    "SELECT seq FROM segments WHERE digest = ?1",
-                    params![segment.digest().to_string()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if seq.is_some() {
-                known = seq;
-                break;
+        if head.previous().map(Digest::as_str) != followed.as_deref() {
+            let mut reached = None;
+            for segment in log.walk_back_from(head.previous()) {
+                let segment = segment?;
+                if known(&self.connection, segment.digest().as_str())?.is_some() {
+                    reached = Some(segment.digest().to_string());
+                    break;
+                }
+                fresh.push(segment);
             }
-            fresh.push(segment);
-        }
-        if known.is_none() {
-            // The walk reached the first segment without meeting one this
-            // index knows. An index that holds segments all the same was
-            // folded from another chain, as when segments were rewritten
-            // and the cache kept: it is emptied and folded anew.
-            let foreign: bool = self.connection.query_row(
-                "SELECT EXISTS (SELECT 1 FROM segments WHERE id != ?1)",
-                params![HEAD],
-                |row| row.get(0),
-            )?;
-            if foreign {
-                self.connection
-                    .execute_batch("DELETE FROM claims; DELETE FROM standing;")?;
-                self.connection
-                    .execute("DELETE FROM segments WHERE id != ?1", params![HEAD])?;
+            if reached != followed {
+                return Ok(None);
             }
         }
-        let places = known.map_or(0, |seq| seq + 1)..;
+        let places = match followed.as_deref() {
+            None => 0,
+            Some(digest) => match known(&self.connection, digest)? {
+                Some(seq) => seq + 1,
+                None => return Ok(None),
+            },
+        }..;
+
+        let mut folded = Folded::default();
+        let mut before = followed;
         for (seq, segment) in places.zip(fresh.iter().rev()) {
+            let digest = segment.digest().to_string();
             let claims = log.read(segment.digest())?;
-            let transaction = self.connection.transaction()?;
-            transaction.execute(
-                "INSERT INTO segments (digest, seq) VALUES (?1, ?2)",
-                params![segment.digest().to_string(), seq],
-            )?;
-            let id = transaction.last_insert_rowid();
-            insert(&transaction, &mut self.ids, id, &claims)?;
-            transaction.commit()?;
-            folded.segments += 1;
-            folded.claims += claims.len();
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // A segment that another process folded since the walk is
+            // passed over.
+            if known(&transaction, &digest)?.is_none() {
+                if head_read(&transaction)?.and_then(|read| read.previous) != before {
+                    return Ok(None);
+                }
+                let in_head = head_rows(&transaction)?;
+                if claims.len() < in_head {
+                    return Ok(None);
+                }
+                transaction.execute(
+                    "INSERT INTO segments (digest, seq) VALUES (?1, ?2)",
+                    params![digest, seq],
+                )?;
+                let id = transaction.last_insert_rowid();
+                transaction.execute(
+                    "UPDATE claims SET segment = ?1 WHERE segment = ?2",
+                    params![id, HEAD],
+                )?;
+                insert(&transaction, &mut self.ids, id, &claims[in_head..], in_head)?;
+                mark(&transaction, Some(&digest), 0, None)?;
+                transaction.commit()?;
+                folded.segments += 1;
+                folded.claims += claims.len() - in_head;
+            }
+            before = Some(digest);
         }
 
-        let head = log.head()?;
-        let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM claims WHERE segment = ?1", params![HEAD])?;
-        insert(&transaction, &mut self.ids, HEAD, &head)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (previous, bytes) =
+            head_read(&transaction)?.map_or((None, 0), |read| (read.previous, read.bytes));
+        if previous.as_deref() != head.previous().map(Digest::as_str) {
+            // Another process folded a seal made after the head was
+            // opened, and read the head after it.
+            return Ok(Some(folded));
+        }
+        if head.stamp().size < bytes {
+            return Ok(None);
+        }
+        let in_head = head_rows(&transaction)?;
+        let tail = head.read_from(bytes, in_head)?;
+        insert(&transaction, &mut self.ids, HEAD, &tail.claims, in_head)?;
+        mark(
+            &transaction,
+            head.previous().map(Digest::as_str),
+            tail.end,
+            Some(head.stamp()),
+        )?;
         transaction.commit()?;
-        folded.head = head.len();
+        folded.head = tail.claims.len();
+        Ok(Some(folded))
+    }
 
-        Ok(folded)
+    /// Empty the index of everything the log put in it. The names stay,
+    /// and the ids cached for them stay right.
+    fn empty(&mut self) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction
+            .execute_batch("DELETE FROM claims; DELETE FROM standing; DELETE FROM head_read;")?;
+        transaction.execute("DELETE FROM segments WHERE id != ?1", params![HEAD])?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// The record as it stood at `cutoff`, as an index of its own: every
@@ -1595,22 +1710,116 @@ fn order_of(claim: i64) -> u64 {
     u64::try_from(claim).expect("row ids are positive")
 }
 
-/// One segment's claims into the tables, in their order: every claim a
-/// history row, and each one folded into `standing` — an assertion puts
-/// the value in and renews its moment, a retraction takes it out, a
-/// valueless retraction empties the attribute. All three are idempotent,
-/// which is what lets the head be applied afresh each fold.
+/// Claims of one segment into the tables, in their order, the first of
+/// them at position `first`: every claim a history row, and each one
+/// folded into `standing`. An assertion puts the value in and renews its
+/// moment, a retraction takes it out, a valueless retraction empties the
+/// attribute.
 fn insert(
     transaction: &rusqlite::Transaction<'_>,
     ids: &mut Ids,
     segment: i64,
     claims: &[Claim],
+    first: usize,
 ) -> Result<()> {
-    for (position, claim) in claims.iter().enumerate() {
+    for (position, claim) in (first..).zip(claims) {
         let position = i64::try_from(position).expect("fewer claims than i64 can count");
         replay(transaction, ids, claim, segment, position)?;
     }
     Ok(())
+}
+
+/// How far the open head has been read into the index: the row of
+/// `head_read`.
+struct HeadRead {
+    /// The segment the head follows, bare hex; `None` before anything
+    /// was sealed.
+    previous: Option<String>,
+    /// The offset after the last line read.
+    bytes: u64,
+    /// The head file's stamp at that read; `None` while nothing of the
+    /// head after `previous` has been read.
+    stamp: Option<Stamp>,
+}
+
+/// The row of `head_read`, or `None` in an index that has not read a
+/// head yet.
+fn head_read(connection: &Connection) -> Result<Option<HeadRead>> {
+    let read = connection
+        .query_row(
+            "SELECT previous, bytes, size, mtime FROM head_read WHERE id = 0",
+            [],
+            |row| {
+                let bytes: i64 = row.get(1)?;
+                let size: Option<i64> = row.get(2)?;
+                let mtime: Option<i64> = row.get(3)?;
+                Ok(HeadRead {
+                    previous: row.get(0)?,
+                    // No fold writes a negative offset. Read as past the
+                    // end of any head, it has the index folded anew.
+                    bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
+                    stamp: size
+                        .and_then(|size| u64::try_from(size).ok())
+                        .map(|size| Stamp {
+                            size,
+                            modified: mtime,
+                        }),
+                })
+            },
+        )
+        .optional()?;
+    Ok(read)
+}
+
+/// Record how far the open head has been read; see [`HeadRead`].
+fn mark(
+    connection: &Connection,
+    previous: Option<&str>,
+    bytes: u64,
+    stamp: Option<Stamp>,
+) -> Result<()> {
+    let bytes = i64::try_from(bytes).expect("an offset in a file fits in i64");
+    let size = stamp.map(|stamp| i64::try_from(stamp.size).expect("a file's size fits in i64"));
+    connection.execute(
+        "INSERT OR REPLACE INTO head_read (id, previous, bytes, size, mtime)
+         VALUES (0, ?1, ?2, ?3, ?4)",
+        params![
+            previous,
+            bytes,
+            size,
+            stamp.and_then(|stamp| stamp.modified)
+        ],
+    )?;
+    Ok(())
+}
+
+/// The place in log order of a segment the index holds, by its digest.
+fn known(connection: &Connection, digest: &str) -> Result<Option<i64>> {
+    let seq = connection
+        .query_row(
+            "SELECT seq FROM segments WHERE digest = ?1",
+            params![digest],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(seq)
+}
+
+/// How many claims of the open head the index holds.
+fn head_rows(connection: &Connection) -> Result<usize> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM claims WHERE segment = ?1",
+        params![HEAD],
+        |row| row.get(0),
+    )?;
+    Ok(usize::try_from(count).expect("a count is not negative"))
+}
+
+/// Whether the index holds any claim at all.
+fn holds_claims(connection: &Connection) -> Result<bool> {
+    let held =
+        connection.query_row("SELECT EXISTS (SELECT 1 FROM claims)", [], |row| row.get(0))?;
+    Ok(held)
 }
 
 /// One claim into the tables: into the history as it is, onto the
@@ -1958,6 +2167,9 @@ fn lacking(
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+
     use immure::Store;
     use serde_json::json;
     use tempfile::TempDir;
@@ -2015,20 +2227,170 @@ mod tests {
             Folded {
                 segments: 1,
                 claims: 1,
-                head: 1
+                head: 1,
+                rebuilt: false
             }
         );
 
         let again = index.fold(&log).unwrap();
         assert_eq!(
             again,
-            Folded {
-                segments: 0,
-                claims: 0,
-                head: 1
-            },
-            "the sealed segment is folded forever; only the head moves"
+            Folded::default(),
+            "nothing appended or sealed, nothing read"
         );
+    }
+
+    fn rows(index: &Index) -> i64 {
+        index
+            .connection
+            .query_row("SELECT COUNT(*) FROM claims", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_fold_reads_only_what_was_appended_to_the_head() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T00:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+
+        log.append(&tag("beach", "2026-09-02T00:00:00Z")).unwrap();
+        let folded = index.fold(&log).unwrap();
+
+        assert_eq!(folded.head, 1, "only the claim appended since");
+        assert_eq!(rows(&index), 2, "no claim held twice");
+        assert_eq!(tagged(&index, "holiday"), [subject()]);
+        assert_eq!(tagged(&index, "beach"), [subject()]);
+    }
+
+    #[test]
+    fn a_sealed_head_keeps_its_rows_and_brings_only_what_came_after_them() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("one", "2026-09-01T00:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+        log.append(&tag("two", "2026-09-02T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&tag("three", "2026-09-03T00:00:00Z")).unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&tag("four", "2026-09-04T00:00:00Z")).unwrap();
+
+        let folded = index.fold(&log).unwrap();
+
+        assert_eq!(
+            folded,
+            Folded {
+                segments: 2,
+                claims: 2,
+                head: 1,
+                rebuilt: false
+            },
+            "the first claim was in the index already"
+        );
+        assert_eq!(rows(&index), 4);
+        let order: Vec<_> = index
+            .about(&subject())
+            .unwrap()
+            .iter()
+            .map(|claim| claim.value().cloned())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                Some(json!("one")),
+                Some(json!("two")),
+                Some(json!("three")),
+                Some(json!("four"))
+            ],
+            "log order"
+        );
+        let fresh_dir = TempDir::new().unwrap();
+        let mut fresh = index_in(&fresh_dir);
+        fresh.fold(&log).unwrap();
+        let positions = |index: &Index| -> Vec<(i64, i64)> {
+            index
+                .connection
+                .prepare("SELECT seq, position FROM v_claims ORDER BY seq, position")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(std::result::Result::unwrap)
+                .collect()
+        };
+        assert_eq!(
+            positions(&index),
+            positions(&fresh),
+            "as a fresh fold has them"
+        );
+    }
+
+    #[test]
+    fn a_line_still_being_written_is_read_once_it_is_complete() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T00:00:00Z")).unwrap();
+        let line = format!("{}\n", tag("beach", "2026-09-02T00:00:00Z").to_line());
+        let (front, back) = line.split_at(40);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(log.head_path())
+            .unwrap();
+        file.write_all(front.as_bytes()).unwrap();
+
+        assert_eq!(index.fold(&log).unwrap().head, 1, "the half line waits");
+
+        file.write_all(back.as_bytes()).unwrap();
+        assert_eq!(index.fold(&log).unwrap().head, 1);
+        assert_eq!(tagged(&index, "beach"), [subject()]);
+        assert_eq!(rows(&index), 2);
+    }
+
+    /// The head lost what the index had read: without the head written
+    /// to disk at each append, a power failure did this, and the standing
+    /// value pointed at a claim row that a later claim about another file
+    /// took over.
+    #[test]
+    fn a_head_shorter_than_what_was_read_has_the_index_built_anew() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T00:00:00Z")).unwrap();
+        let before = std::fs::read(log.head_path()).unwrap();
+        log.append(&tag("secret", "2026-09-02T00:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+        std::fs::write(log.head_path(), &before).unwrap();
+        let other = Subject::parse(&"0".repeat(64)).unwrap();
+        log.append(&tag_about(other, "n", "2026-09-03T00:00:00Z"))
+            .unwrap();
+
+        let folded = index.fold(&log).unwrap();
+
+        assert!(folded.rebuilt);
+        assert_eq!(tagged(&index, "secret"), [], "nothing of the lost claim");
+        assert_eq!(rows(&index), 2);
+    }
+
+    #[test]
+    fn an_index_without_a_record_of_the_head_is_built_anew() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("holiday", "2026-09-01T00:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+        index
+            .connection
+            .execute("DELETE FROM head_read", [])
+            .unwrap();
+        log.append(&tag("beach", "2026-09-02T00:00:00Z")).unwrap();
+
+        let folded = index.fold(&log).unwrap();
+
+        assert!(folded.rebuilt);
+        assert_eq!(folded.head, 2, "the whole head, read anew");
+        assert_eq!(rows(&index), 2);
     }
 
     fn untag(tag: &str, time: &str) -> Claim {

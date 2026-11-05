@@ -255,7 +255,12 @@ pub fn run(
 fn caught_up(archive: &Archive, say: Say) -> Result<Index> {
     let mut index = archive.index()?;
     let folded = index.fold(archive.log())?;
-    if folded.segments > 0 {
+    if folded.rebuilt {
+        say.line(format_args!(
+            "index rebuilt: {}",
+            counted(folded.segments, "log segment", "log segments")
+        ));
+    } else if folded.segments > 0 {
         say.line(format_args!(
             "index updated: {}",
             counted(folded.segments, "new log segment", "new log segments")
