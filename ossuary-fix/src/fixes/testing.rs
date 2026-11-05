@@ -66,22 +66,16 @@ pub fn list_header(previous: &[&Digest]) -> String {
     )
 }
 
-/// The open segment, naming `previous` in the form of ossuary 0.14.
-pub fn listed_head(archive: &Archive, previous: &[&Digest]) {
-    fs::write(
-        archive.log().head_path(),
-        format!("{}\n", list_header(previous)),
-    )
-    .unwrap();
+/// The open segment begun anew after `previous`, whatever stood before.
+pub fn head(archive: &Archive, previous: &Digest) {
+    let log = archive.log();
+    log.discard_open().unwrap();
+    log.begin(Some(previous)).unwrap();
 }
 
-/// The open segment, naming `previous` in the current form.
-pub fn head(archive: &Archive, previous: &Digest) {
-    fs::write(
-        archive.log().head_path(),
-        ossuary_core::head_after(previous),
-    )
-    .unwrap();
+/// The open segment removed: lost.
+pub fn lose_head(archive: &Archive) {
+    archive.log().discard_open().unwrap();
 }
 
 /// The time of each segment's claim, in the order of the chain.

@@ -56,7 +56,7 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::export::Placement;
-use crate::log::{Log, Stamp};
+use crate::log::{Log, sort_as_sealed};
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
@@ -89,13 +89,13 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          digest TEXT NOT NULL UNIQUE,
          seq    INTEGER NOT NULL
      );
-     CREATE TABLE IF NOT EXISTS head_read (
+     CREATE TABLE IF NOT EXISTS open_read (
          id       INTEGER PRIMARY KEY CHECK (id = 0),
-         previous TEXT,
-         bytes    INTEGER NOT NULL,
-         size     INTEGER,
-         mtime    INTEGER
+         previous TEXT
      );
+     CREATE TABLE IF NOT EXISTS bundles (
+         digest TEXT PRIMARY KEY
+     ) WITHOUT ROWID;
      CREATE TABLE IF NOT EXISTS claims (
          id        INTEGER PRIMARY KEY,
          cid       TEXT NOT NULL UNIQUE,
@@ -475,7 +475,9 @@ impl Index {
                  DROP TABLE IF EXISTS retractions;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
-                 DROP TABLE IF EXISTS head_read;
+                 DROP TABLE IF EXISTS open_read;
+                 DROP TABLE IF EXISTS open_read;
+                 DROP TABLE IF EXISTS bundles;
                  DROP TABLE IF EXISTS subjects;
                  DROP TABLE IF EXISTS attributes;
                  DROP TABLE IF EXISTS sources;
@@ -485,10 +487,9 @@ impl Index {
         }
         // The integer columns of `claims` and `standing` are ids into the
         // five name tables; `standing.claim` is a row of `claims`. None of
-        // it is declared a foreign key. `head_read` is a single row: how
-        // far the open head has been read (see the module notes); `size`
-        // and `mtime` are empty while nothing of the head after
-        // `previous` has been read.
+        // it is declared a foreign key. `open_read` is a single row, the
+        // segment the open segment followed when it was last read;
+        // `bundles` the bundles of it read so far (see the module notes).
         connection.execute_batch(DDL)?;
         // Asked first: an insert that is ignored still needs write access,
         // and a current index on a read-only archive is to be read.
@@ -553,36 +554,29 @@ impl Index {
     /// does not match the log and has to be emptied first.
     ///
     /// Every step that writes runs in a transaction that takes the write
-    /// lock before it reads `head_read`: a mount and a CLI call can fold
-    /// into the same file, and both reading the same offset would fold
-    /// the same claims twice.
+    /// lock before it reads `open_read`: a mount and a CLI call can fold
+    /// into the same file, and both reading the same state would fold the
+    /// same claims twice. A claim is known by its id, so a bundle read
+    /// twice, or a segment that holds what was read from bundles, costs
+    /// nothing but the reading.
     fn follow(&mut self, log: &Log) -> Result<Option<Folded>> {
-        let read = head_read(&self.connection)?;
-        if let Some(read) = &read
-            && let Some(stamp) = log.head_stamp()?
-            && stamp.modified.is_some()
-            && read.stamp == Some(stamp)
-        {
-            return Ok(Some(Folded::default()));
-        }
-        let Some(mut head) = log.open_head()? else {
-            // No head, so nothing sealed either.
+        let read = open_read(&self.connection)?;
+        let Some(open) = log.open()? else {
+            // No open segment, so nothing sealed either.
             return Ok((!holds_claims(&self.connection)?).then(Folded::default));
         };
         if read.is_none() && holds_claims(&self.connection)? {
-            // Claims without a record of how far the head was read: an
-            // index from a build that read the head whole on every fold.
+            // Claims without a record of what was read: not this build's.
             return Ok(None);
         }
-        let followed = read.and_then(|read| read.previous);
+        let followed = read.flatten();
 
-        // Back from the head to the segment the index's head followed.
-        // Every segment passed on the way is new; the oldest of them is
-        // the index's head as it was sealed.
+        // Back from the open segment to the segment the index followed.
+        // Every segment passed on the way is new.
         let mut fresh = Vec::new();
-        if head.previous().map(Digest::as_str) != followed.as_deref() {
+        if open.previous().map(Digest::as_str) != followed.as_deref() {
             let mut reached = None;
-            for segment in log.walk_back_from(head.previous()) {
+            for segment in log.walk_back_from(open.previous()) {
                 let segment = segment?;
                 if known(&self.connection, segment.digest().as_str())?.is_some() {
                     reached = Some(segment.digest().to_string());
@@ -613,55 +607,84 @@ impl Index {
             // A segment that another process folded since the walk is
             // passed over.
             if known(&transaction, &digest)?.is_none() {
-                if head_read(&transaction)?.and_then(|read| read.previous) != before {
+                if open_read(&transaction)?.flatten() != before {
                     return Ok(None);
                 }
-                let in_head = head_rows(&transaction)?;
-                if claims.len() < in_head {
-                    return Ok(None);
-                }
+                let had = count_claims(&transaction)?;
                 transaction.execute(
                     "INSERT INTO segments (digest, seq) VALUES (?1, ?2)",
                     params![digest, seq],
                 )?;
                 let id = transaction.last_insert_rowid();
+                insert(&transaction, &mut self.ids, id, &claims, 0)?;
+                // The bundles read so far went into this segment, or stay
+                // in the open one and are read again, which costs nothing
+                // but the reading.
+                transaction.execute("DELETE FROM bundles", [])?;
                 transaction.execute(
-                    "UPDATE claims SET segment = ?1 WHERE segment = ?2",
-                    params![id, HEAD],
+                    "INSERT OR REPLACE INTO open_read (id, previous) VALUES (0, ?1)",
+                    params![digest],
                 )?;
-                insert(&transaction, &mut self.ids, id, &claims[in_head..], in_head)?;
-                mark(&transaction, Some(&digest), 0, None)?;
                 transaction.commit()?;
                 folded.segments += 1;
-                folded.claims += claims.len() - in_head;
+                folded.claims += count_claims(&self.connection)? - had;
             }
             before = Some(digest);
         }
 
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (previous, bytes) =
-            head_read(&transaction)?.map_or((None, 0), |read| (read.previous, read.bytes));
-        if previous.as_deref() != head.previous().map(Digest::as_str) {
-            // Another process folded a seal made after the head was
-            // opened, and read the head after it.
-            return Ok(Some(folded));
+        // The bundles not read yet, their claims in the order the seal
+        // will give them, so that the rows follow the record's order as
+        // far as the open segment has one.
+        let mut unread = Vec::new();
+        let mut claims = Vec::new();
+        for bundle in open.bundles() {
+            if has_bundle(&self.connection, bundle.as_str())? {
+                continue;
+            }
+            // A bundle sealed since the listing has its segment read
+            // next time.
+            if let Some(read) = log.bundle(&open, bundle)? {
+                claims.extend(read);
+                unread.push(bundle.as_str());
+            }
         }
-        if head.stamp().size < bytes {
-            return Ok(None);
+        if !unread.is_empty() {
+            sort_as_sealed(&mut claims);
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if open_read(&transaction)?.flatten().as_deref() != open.previous().map(Digest::as_str)
+            {
+                // Another process folded a seal made after the listing.
+                return Ok(Some(folded));
+            }
+            let position = head_rows(&transaction)?;
+            insert(&transaction, &mut self.ids, HEAD, &claims, position)?;
+            for bundle in &unread {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO bundles (digest) VALUES (?1)",
+                    params![bundle],
+                )?;
+            }
+            transaction.execute(
+                "INSERT OR REPLACE INTO open_read (id, previous) VALUES (0, ?1)",
+                params![open.previous().map(Digest::as_str)],
+            )?;
+            transaction.commit()?;
+            folded.head += claims.len();
         }
-        let in_head = head_rows(&transaction)?;
-        let tail = head.read_from(bytes, in_head)?;
-        insert(&transaction, &mut self.ids, HEAD, &tail.claims, in_head)?;
-        mark(
-            &transaction,
-            head.previous().map(Digest::as_str),
-            tail.end,
-            Some(head.stamp()),
-        )?;
-        transaction.commit()?;
-        folded.head = tail.claims.len();
+        if open_read(&self.connection)?.is_none() {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if open_read(&transaction)?.is_none() {
+                transaction.execute(
+                    "INSERT INTO open_read (id, previous) VALUES (0, ?1)",
+                    params![open.previous().map(Digest::as_str)],
+                )?;
+            }
+            transaction.commit()?;
+        }
         Ok(Some(folded))
     }
 
@@ -673,7 +696,7 @@ impl Index {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(
             "DELETE FROM claims; DELETE FROM retractions; DELETE FROM standing;
-                 DELETE FROM head_read;",
+             DELETE FROM open_read; DELETE FROM bundles;",
         )?;
         transaction.execute("DELETE FROM segments WHERE id != ?1", params![HEAD])?;
         transaction.commit()?;
@@ -709,24 +732,32 @@ impl Index {
     /// [`Error::Index`] from `SQLite`, as for [`as_of`](Index::as_of).
     pub fn as_of_run(&self, run: &Run) -> Result<Option<Index>> {
         use rusqlite::types::Value as Sql;
+        // The record's order: the chain between segments, time within
+        // one, and the row where times are equal.
         let last = self
             .connection
             .query_row(
-                "SELECT s.seq, c.position
+                "SELECT s.seq, c.time, c.position
                  FROM claims c JOIN segments s ON s.id = c.segment
                  WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
-                 ORDER BY s.seq DESC, c.position DESC
+                 ORDER BY s.seq DESC, c.time DESC, c.position DESC
                  LIMIT 1",
                 params![run.as_str()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((seq, position)) = last else {
+        let Some((seq, time, position)) = last else {
             return Ok(None);
         };
         let replayed = self.replay_until(
-            "s.seq < ?1 OR (s.seq = ?1 AND c.position <= ?2)",
-            &[Sql::Integer(seq), Sql::Integer(position)],
+            "s.seq < ?1 OR (s.seq = ?1 AND (c.time < ?2 OR (c.time = ?2 AND c.position <= ?3)))",
+            &[Sql::Integer(seq), Sql::Text(time), Sql::Integer(position)],
         )?;
         Ok(Some(replayed))
     }
@@ -1270,7 +1301,7 @@ impl Index {
                     .filter_map(|(value, claims)| {
                         claims
                             .into_values()
-                            .max_by_key(|(_, order)| *order)
+                            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
                             .map(|newest| (value, newest))
                     })
                     .collect();
@@ -1484,14 +1515,15 @@ impl Index {
     /// sworn away.
     pub fn history(&self) -> Result<Vec<Episode>> {
         let mut statement = self.connection.prepare(
-            // Runs in log order of their first claim: the lowest segment
-            // and the lowest position taken apart would put a run that
-            // went on past a seal before one that began earlier.
+            // Runs in record order of their first claim: the chain
+            // between segments, time within one. The lowest segment and
+            // the lowest position taken apart would put a run that went
+            // on past a seal before one that began earlier.
             "WITH first AS (
-                 SELECT run, seq, position FROM (
-                     SELECT c.run, s.seq, c.position,
+                 SELECT run, seq, time, position FROM (
+                     SELECT c.run, s.seq, c.time, c.position,
                             ROW_NUMBER() OVER (
-                                PARTITION BY c.run ORDER BY s.seq, c.position
+                                PARTITION BY c.run ORDER BY s.seq, c.time, c.position
                             ) AS rank
                      FROM claims c JOIN segments s ON s.id = c.segment
                      WHERE c.run IS NOT NULL)
@@ -1502,7 +1534,7 @@ impl Index {
              JOIN runs r ON r.id = c.run
              JOIN first f ON f.run = c.run
              GROUP BY c.run
-             ORDER BY f.seq, f.position",
+             ORDER BY f.seq, f.time, f.position",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -1820,68 +1852,32 @@ fn insert(
     Ok(())
 }
 
-/// How far the open head has been read into the index: the row of
-/// `head_read`.
-struct HeadRead {
-    /// The segment the head follows, bare hex; `None` before anything
-    /// was sealed.
-    previous: Option<String>,
-    /// The offset after the last line read.
-    bytes: u64,
-    /// The head file's stamp at that read; `None` while nothing of the
-    /// head after `previous` has been read.
-    stamp: Option<Stamp>,
-}
-
-/// The row of `head_read`, or `None` in an index that has not read a
-/// head yet.
-fn head_read(connection: &Connection) -> Result<Option<HeadRead>> {
+/// The segment the open segment followed when the index last read it:
+/// the row of `open_read`. `None` for an index that has not read one yet,
+/// `Some(None)` before the first seal.
+fn open_read(connection: &Connection) -> Result<Option<Option<String>>> {
     let read = connection
-        .query_row(
-            "SELECT previous, bytes, size, mtime FROM head_read WHERE id = 0",
-            [],
-            |row| {
-                let bytes: i64 = row.get(1)?;
-                let size: Option<i64> = row.get(2)?;
-                let mtime: Option<i64> = row.get(3)?;
-                Ok(HeadRead {
-                    previous: row.get(0)?,
-                    // No fold writes a negative offset. Read as past the
-                    // end of any head, it has the index folded anew.
-                    bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
-                    stamp: size
-                        .and_then(|size| u64::try_from(size).ok())
-                        .map(|size| Stamp {
-                            size,
-                            modified: mtime,
-                        }),
-                })
-            },
-        )
+        .query_row("SELECT previous FROM open_read WHERE id = 0", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
         .optional()?;
     Ok(read)
 }
 
-/// Record how far the open head has been read; see [`HeadRead`].
-fn mark(
-    connection: &Connection,
-    previous: Option<&str>,
-    bytes: u64,
-    stamp: Option<Stamp>,
-) -> Result<()> {
-    let bytes = i64::try_from(bytes).expect("an offset in a file fits in i64");
-    let size = stamp.map(|stamp| i64::try_from(stamp.size).expect("a file's size fits in i64"));
-    connection.execute(
-        "INSERT OR REPLACE INTO head_read (id, previous, bytes, size, mtime)
-         VALUES (0, ?1, ?2, ?3, ?4)",
-        params![
-            previous,
-            bytes,
-            size,
-            stamp.and_then(|stamp| stamp.modified)
-        ],
+/// Whether a bundle of the open segment was read into the index.
+fn has_bundle(connection: &Connection, digest: &str) -> Result<bool> {
+    let held = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM bundles WHERE digest = ?1)",
+        params![digest],
+        |row| row.get(0),
     )?;
-    Ok(())
+    Ok(held)
+}
+
+/// How many claims the index holds.
+fn count_claims(connection: &Connection) -> Result<usize> {
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM claims", [], |row| row.get(0))?;
+    Ok(usize::try_from(count).expect("a count is not negative"))
 }
 
 /// The place in log order of a segment the index holds, by its digest.
@@ -1986,7 +1982,8 @@ fn replay(
                 "INSERT INTO standing (subject, attribute, value, time, claim)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT (subject, attribute, value)
-                 DO UPDATE SET time = excluded.time, claim = excluded.claim",
+                 DO UPDATE SET time = excluded.time, claim = excluded.claim
+                 WHERE excluded.time >= standing.time",
             )?;
             put.execute(params![
                 subject,
@@ -2032,7 +2029,7 @@ fn restand(
             "SELECT id, time FROM claims
              WHERE subject = ?1 AND attribute = ?2 AND value = ?3
                AND retract = 0 AND retracted = 0
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY time DESC, id DESC LIMIT 1",
             params![subject, attribute, value],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -2327,9 +2324,6 @@ fn lacking(
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
-    use std::io::Write as _;
-
     use immure::Store;
     use serde_json::json;
     use tempfile::TempDir;
@@ -2342,7 +2336,7 @@ mod tests {
             .depth(1)
             .create()
             .unwrap();
-        Log::new(store, dir.path().join("head.jsonl"))
+        crate::log::test_log(store, dir.path())
     }
 
     fn index_in(dir: &TempDir) -> Index {
@@ -2486,53 +2480,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_line_still_being_written_is_read_once_it_is_complete() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        let mut index = index_in(&dir);
-        log.append(&tag("holiday", "2026-09-01T00:00:00Z")).unwrap();
-        let line = format!("{}\n", tag("beach", "2026-09-02T00:00:00Z").to_line());
-        let (front, back) = line.split_at(40);
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(log.head_path())
-            .unwrap();
-        file.write_all(front.as_bytes()).unwrap();
-
-        assert_eq!(index.fold(&log).unwrap().head, 1, "the half line waits");
-
-        file.write_all(back.as_bytes()).unwrap();
-        assert_eq!(index.fold(&log).unwrap().head, 1);
-        assert_eq!(tagged(&index, "beach"), [subject()]);
-        assert_eq!(rows(&index), 2);
-    }
-
     /// The head lost what the index had read: without the head written
     /// to disk at each append, a power failure did this, and the standing
     /// value pointed at a claim row that a later claim about another file
     /// took over.
-    #[test]
-    fn a_head_shorter_than_what_was_read_has_the_index_built_anew() {
-        let dir = TempDir::new().unwrap();
-        let log = log_in(&dir);
-        let mut index = index_in(&dir);
-        log.append(&tag("holiday", "2026-09-01T00:00:00Z")).unwrap();
-        let before = std::fs::read(log.head_path()).unwrap();
-        log.append(&tag("secret", "2026-09-02T00:00:00Z")).unwrap();
-        index.fold(&log).unwrap();
-        std::fs::write(log.head_path(), &before).unwrap();
-        let other = Subject::parse(&"0".repeat(64)).unwrap();
-        log.append(&tag_about(other, "n", "2026-09-03T00:00:00Z"))
-            .unwrap();
-
-        let folded = index.fold(&log).unwrap();
-
-        assert!(folded.rebuilt);
-        assert_eq!(tagged(&index, "secret"), [], "nothing of the lost claim");
-        assert_eq!(rows(&index), 2);
-    }
-
     #[test]
     fn an_index_without_a_record_of_the_head_is_built_anew() {
         let dir = TempDir::new().unwrap();
@@ -2542,7 +2493,7 @@ mod tests {
         index.fold(&log).unwrap();
         index
             .connection
-            .execute("DELETE FROM head_read", [])
+            .execute("DELETE FROM open_read", [])
             .unwrap();
         log.append(&tag("beach", "2026-09-02T00:00:00Z")).unwrap();
 
@@ -3087,10 +3038,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        // Three runs within one second, begun c, b, a — and a goes on
-        // past a seal, so its lowest position lies in a later segment.
-        let when = "2026-09-01T10:00:00Z";
-        for (letter, value) in [('c', "c"), ('b', "b"), ('a', "a")] {
+        // Three runs begun c, b, a, a second apart — and a goes on past
+        // a seal, so its lowest position lies in a later segment.
+        for (letter, value, when) in [
+            ('c', "c", "2026-09-01T10:00:00Z"),
+            ('b', "b", "2026-09-01T10:00:01Z"),
+            ('a', "a", "2026-09-01T10:00:02Z"),
+        ] {
             log.append(&said_in(
                 &subject(),
                 "user:tag",
@@ -3105,7 +3059,7 @@ mod tests {
             &subject(),
             "user:tag",
             json!("a again"),
-            when,
+            "2026-09-01T10:00:03Z",
             &run_x('a'),
         ))
         .unwrap();
@@ -3241,8 +3195,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        // Two runs within one second: a time cutoff cannot tell them apart.
+        // Two runs a second apart; within one second the record has no
+        // order, so a run's cutoff is its last claim's time.
         let when = "2026-09-01T10:00:00Z";
+        let later = "2026-09-01T10:00:01Z";
         log.append(&said_in(
             &subject(),
             "user:tag",
@@ -3255,7 +3211,7 @@ mod tests {
             &subject(),
             "user:tag",
             json!("second"),
-            when,
+            later,
             &run_x('b'),
         ))
         .unwrap();
@@ -3275,12 +3231,12 @@ mod tests {
         );
         assert_eq!(
             index
-                .as_of(when)
+                .as_of(later)
                 .unwrap()
                 .values(&subject(), &tag, Scope::Held)
                 .unwrap(),
             [json!("first"), json!("second")],
-            "the second holds both; only the run tells them apart"
+            "the later second holds both"
         );
         assert!(
             index.as_of_run(&run_x('c')).unwrap().is_none(),

@@ -296,15 +296,6 @@ impl Remote for Filebridge {
         Ok(Created::New)
     }
 
-    fn replace(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let full = self.full(path);
-        let temp = self.full(&temp_path(path));
-        self.runtime
-            .block_on(self.handle().write(&temp, bytes, None))
-            .map_err(|error| self.failed("writing", &temp, &error))?;
-        self.rename(&temp, &full)
-    }
-
     /// filebridge makes a directory only on the way to a file, so a file
     /// is written into the store's `tmp/` and removed again. The `tmp/`
     /// stays, where a store does not look.
@@ -317,6 +308,43 @@ impl Remote for Filebridge {
         self.runtime
             .block_on(location.delete(&marker))
             .map_err(|error| self.failed("making the folder", path, &error))
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<String>> {
+        let folder = format!("{}{path}", self.root);
+        let folder = folder.trim_end_matches('/');
+        let entries = self
+            .runtime
+            .block_on(self.handle().list((!folder.is_empty()).then_some(folder)))
+            .map_err(|error| self.failed("reading the folder", path, &error))?;
+        let mut names: Vec<String> = entries.into_iter().map(|entry| entry.name).collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Every file below `path` deleted, deepest first, then the folder
+    /// itself where the server lets a folder go; one that stays empty is
+    /// reported by the next run that finds it in the way.
+    fn remove_tree(&self, path: &str) -> Result<()> {
+        let full = self.full(path);
+        let location = self.handle();
+        let entries = match self.runtime.block_on(location.list(Some(&full))) {
+            Ok(entries) => entries,
+            Err(error) if status(&error) == Some(404) => return Ok(()),
+            Err(error) => return Err(self.failed("reading the folder", path, &error)),
+        };
+        for entry in entries {
+            let below = format!("{path}/{}", entry.name);
+            if entry.is_dir {
+                self.remove_tree(&below)?;
+            } else {
+                self.runtime
+                    .block_on(location.delete(&self.full(&below)))
+                    .map_err(|error| self.failed("removing", &below, &error))?;
+            }
+        }
+        self.runtime.block_on(location.delete(&full)).ok();
+        Ok(())
     }
 }
 

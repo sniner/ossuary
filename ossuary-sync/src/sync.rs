@@ -11,15 +11,13 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use ossuary_core::{Archive, Claim, Contents, Delta, Digest, Store};
+use ossuary_core::{Archive, Claim, Delta, Digest, Store};
 use serde_json::Value;
 
 use crate::remote::{Created, Remote};
 
-/// The archive's mark and open segment, by the names `docs/format.md`
-/// gives them.
+/// The archive's mark, by the name `docs/format.md` gives it.
 pub const MARK: &str = "FORMAT";
-pub const HEAD: &str = "head.jsonl";
 
 /// What the copy holds before the run.
 #[derive(Debug, PartialEq, Eq)]
@@ -52,26 +50,44 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
             first_line(&ours)
         ),
     };
-    let text = match remote.read(HEAD)? {
-        None => return Ok(Held { marked, seal: None }),
-        Some(bytes) if bytes.is_empty() => return Ok(Held { marked, seal: None }),
-        Some(bytes) => String::from_utf8(bytes).map_err(|_| {
-            anyhow::anyhow!("the target's open segment is not text; name another target")
-        })?,
-    };
-    let head = Contents::parse(&text, archive.log().store().algorithm()).map_err(|error| {
-        anyhow::anyhow!(
-            "the target's open segment cannot be read: {}; name another target",
-            error.spelled()
-        )
-    })?;
-    match head.previous() {
-        Some(seal) if head.claims().is_empty() => Ok(Held {
-            marked,
-            seal: Some(seal.clone()),
-        }),
+    let mut opens = Vec::new();
+    for name in remote.list("")? {
+        if name == "open" || name.starts_with("open-") {
+            opens.push(name);
+        } else if name.starts_with("sealing") || name.starts_with("sealed-") {
+            bail!(
+                "the target's open segment is being sealed ({name}), so something other than ossuary sync wrote to the target; name another target"
+            );
+        }
+    }
+    match opens.as_slice() {
+        [] => Ok(Held { marked, seal: None }),
+        [name] => {
+            if remote
+                .list(name)?
+                .iter()
+                .any(|entry| entry.ends_with(".jsonl"))
+            {
+                bail!(
+                    "the target's open segment holds claims, so something other than ossuary sync wrote to the target; name another target"
+                );
+            }
+            let Some((_, hex)) = name.split_once('-') else {
+                return Ok(Held { marked, seal: None });
+            };
+            let seal = Digest::parse(hex).map_err(|_| {
+                anyhow::anyhow!(
+                    "the target's open segment {name} names no segment; name another target"
+                )
+            })?;
+            Ok(Held {
+                marked,
+                seal: Some(seal),
+            })
+        }
         _ => bail!(
-            "the target's open segment holds claims or names no segment, so something other than ossuary sync wrote to the target; name another target"
+            "the target has {} open segments, so something other than ossuary sync wrote to the target; name another target",
+            opens.len()
         ),
     }
 }
@@ -340,14 +356,39 @@ pub fn copy_segments(archive: &Archive, remote: &dyn Remote, segments: &[Piece])
     Ok(())
 }
 
-/// Write the copy's open segment, naming `seal`. This is what makes the
-/// copy hold the seal, so it comes after everything the seal covers.
+/// Make the copy's open segment the one after `seal`: the directory
+/// `open-<seal>`, empty, in place of whatever open segment the copy had.
+/// This is what makes the copy hold the seal, so it comes after
+/// everything the seal covers. The old directory goes first: a run that
+/// stops in between leaves the copy without an open segment, and the
+/// next run holds nothing and copies what is already there, which costs
+/// time and nothing else.
 ///
 /// # Errors
 ///
 /// When the copy cannot be written.
 pub fn advance(remote: &dyn Remote, seal: &Digest) -> Result<()> {
-    remote.replace(HEAD, ossuary_core::head_after(seal).as_bytes())
+    let next = format!("open-{seal}");
+    let old: Vec<String> = remote
+        .list("")?
+        .into_iter()
+        .filter(|name| name != &next && (name == "open" || name.starts_with("open-")))
+        .collect();
+    for name in &old {
+        remote.remove_tree(name)?;
+    }
+    let left: Vec<String> = remote
+        .list("")?
+        .into_iter()
+        .filter(|name| old.contains(name))
+        .collect();
+    if !left.is_empty() {
+        bail!(
+            "the target keeps the old open segment {}; remove the folder by hand, then run the sync again",
+            left.join(", ")
+        );
+    }
+    remote.make_dir(&next)
 }
 
 /// Whether one file here matches its name: `Ok(false)` when it does not,
@@ -402,6 +443,14 @@ mod tests {
         .unwrap();
         archive.log().append(&claim).unwrap();
         entry.digest().clone()
+    }
+
+    /// The copy's open segment directory, by name; `None` without one.
+    fn open_name(copy: &std::path::Path) -> Option<String> {
+        fs::read_dir(copy)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .find(|name| name == "open" || name.starts_with("open-"))
     }
 
     /// One whole run, as `main` puts it together.
@@ -499,7 +548,7 @@ mod tests {
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let (path, target) = target(&dir);
         sync(&archive, &target).unwrap();
-        let before = fs::read(path.join(HEAD)).unwrap();
+        let before = open_name(&path);
         let second = take(&archive, b"second", "2026-09-02T00:00:00Z");
         take(&archive, b"third", "2026-09-02T00:00:01Z");
         let lost = archive.content().find(&second).unwrap().unwrap();
@@ -509,7 +558,7 @@ mod tests {
 
         assert_eq!(plan.gone, [second]);
         assert_eq!(copied.new, 1, "the other file is copied");
-        assert_eq!(fs::read(path.join(HEAD)).unwrap(), before);
+        assert_eq!(open_name(&path), before);
         let copy = Archive::open(&path).unwrap();
         assert_eq!(
             copy.log().store().entries().count(),
@@ -539,12 +588,16 @@ mod tests {
             self.inner.create(path, from, size)
         }
 
-        fn replace(&self, path: &str, bytes: &[u8]) -> Result<()> {
-            self.inner.replace(path, bytes)
-        }
-
         fn make_dir(&self, path: &str) -> Result<()> {
             self.inner.make_dir(path)
+        }
+
+        fn list(&self, path: &str) -> Result<Vec<String>> {
+            self.inner.list(path)
+        }
+
+        fn remove_tree(&self, path: &str) -> Result<()> {
+            self.inner.remove_tree(path)
         }
     }
 
@@ -566,12 +619,12 @@ mod tests {
         };
 
         assert!(sync(&archive, &failing).is_err());
-        assert!(!path.join(HEAD).exists(), "the copy holds no seal yet");
+        assert!(open_name(&path).is_none(), "the copy holds no seal yet");
 
         let (_, copied) = sync(&archive, &target).unwrap();
 
         assert_eq!((copied.new, copied.known), (1, 2));
-        assert!(path.join(HEAD).exists());
+        assert!(open_name(&path).is_some());
     }
 
     #[test]
@@ -693,6 +746,6 @@ mod tests {
 
         assert_eq!(copied.damaged, [first.as_str().to_string()]);
         assert_eq!(copied.new, 0);
-        assert!(!copy.join(HEAD).exists());
+        assert!(open_name(&copy).is_none());
     }
 }

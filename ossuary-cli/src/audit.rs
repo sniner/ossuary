@@ -187,10 +187,10 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
     {
         return Ok(false);
     }
-    if log.seal_interrupted
+    if log.seal_pending
         && !say(
             out,
-            "claims: the last seal stopped before the new open segment was in place; nothing is lost, and the next run that writes finishes it",
+            "claims: a seal stopped before the open segment was back in place; nothing is lost, and the next run that writes finishes it",
         )?
     {
         return Ok(false);
@@ -383,8 +383,8 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     if audit.log.head_lost {
         lines.push(json!({"finding": "head-lost"}));
     }
-    if audit.log.seal_interrupted {
-        lines.push(json!({"observation": "seal-interrupted"}));
+    if audit.log.seal_pending {
+        lines.push(json!({"observation": "seal-pending"}));
     }
     for segment in &audit.log.unreached {
         lines.push(json!({"finding": "unreached-segment", "segment": segment}));

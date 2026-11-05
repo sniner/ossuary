@@ -14,7 +14,8 @@ fn archive(dir: &TempDir) -> (Log, Index) {
         .compress(true)
         .create()
         .unwrap();
-    let log = Log::new(store, dir.path().join("head.jsonl"));
+    let log = Log::new(store, dir.path());
+    log.init().unwrap();
     let cache = dir.path().join("cache");
     std::fs::create_dir_all(&cache).unwrap();
     let index = Index::open(cache.join("index.sqlite")).unwrap();
@@ -95,7 +96,10 @@ fn the_skeleton_walks() {
     let answer = index.about(&photo()).unwrap();
     assert_eq!(answer.len(), 5, "everything ever said about the blob");
     assert_eq!(
-        answer[1].value(),
+        answer
+            .iter()
+            .find(|claim| claim.attribute().as_str() == "file:size")
+            .and_then(Claim::value),
         Some(&json!(4_194_304)),
         "a number came back as a number"
     );

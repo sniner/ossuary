@@ -210,6 +210,11 @@ impl State {
                 status(201)
             }
             "MOVE" => self.move_to(request, &file),
+            // A collection goes with everything in it, as RFC 4918 has it.
+            "DELETE" if file.is_dir() => {
+                fs::remove_dir_all(&file).unwrap();
+                status(204)
+            }
             "DELETE" if file.is_file() => {
                 fs::remove_file(&file).unwrap();
                 status(204)

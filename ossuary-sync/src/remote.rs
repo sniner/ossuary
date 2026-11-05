@@ -47,16 +47,6 @@ pub trait Remote: Send + Sync {
     /// When the file cannot be written. Nothing is left under `path`.
     fn create(&self, path: &str, from: &mut dyn Read, size: u64) -> Result<Created>;
 
-    /// Replace the file at `path` with `bytes`, or write it if there is
-    /// none. A reader sees the old file or the new one, never a mix; a
-    /// place may let it see no file in between. Only the open segment is
-    /// ever replaced.
-    ///
-    /// # Errors
-    ///
-    /// When the file cannot be written. The old file is left as it was.
-    fn replace(&self, path: &str, bytes: &[u8]) -> Result<()>;
-
     /// Make the directory at `path`, and the ones above it, if there is
     /// none. A copy needs every store directory an archive has, an empty
     /// one too: a reader that opens the copy as an archive reads each
@@ -66,6 +56,24 @@ pub trait Remote: Send + Sync {
     ///
     /// When the directory cannot be made.
     fn make_dir(&self, path: &str) -> Result<()>;
+
+    /// The names in the directory at `path`, files and directories, the
+    /// directory itself not among them; `""` is the root. What the copy's
+    /// open segment is found by, and looked into.
+    ///
+    /// # Errors
+    ///
+    /// When the directory cannot be listed, or is not there.
+    fn list(&self, path: &str) -> Result<Vec<String>>;
+
+    /// Remove the directory at `path` with everything in it; one that is
+    /// not there is nothing to do. Only the copy's open segment is ever
+    /// removed, when the next one takes its place.
+    ///
+    /// # Errors
+    ///
+    /// When the directory cannot be removed.
+    fn remove_tree(&self, path: &str) -> Result<()>;
 }
 
 /// The temporary file for `path`, for a place that writes a file under
@@ -98,7 +106,7 @@ mod tests {
             temp_path("content/80/0a/800a.zst"),
             "content/tmp/800a.zst.tmp"
         );
-        assert_eq!(temp_path("head.jsonl"), "head.jsonl.tmp");
+        assert_eq!(temp_path("FORMAT"), "FORMAT.tmp");
         assert_eq!(parent("content/tmp/800a.tmp"), "content/tmp");
         assert_eq!(parent("FORMAT"), "");
     }

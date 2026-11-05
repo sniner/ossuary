@@ -613,17 +613,80 @@ impl Remote for WebDav {
         }
     }
 
-    fn replace(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let temp = temp_path(path);
-        self.make(parent(&temp))?;
-        self.put(&temp, path, bytes, bytes.len() as u64)?;
-        self.move_to(&temp, path, true)?;
-        Ok(())
-    }
-
     fn make_dir(&self, path: &str) -> Result<()> {
         self.make(path)
     }
+
+    fn list(&self, path: &str) -> Result<Vec<String>> {
+        let mut response = self.call(
+            "PROPFIND",
+            path,
+            &[("depth", "1"), ("content-type", "application/xml")],
+            PROPFIND_BODY.as_bytes(),
+        )?;
+        let xml = match response.status().as_u16() {
+            207 => response
+                .body_mut()
+                .read_to_string()
+                .with_context(|| format!("{}: reading the listing", self.url(path)))?,
+            _ => return Err(self.refused("listing", path, &response)),
+        };
+        let mut prefix = root_path(&self.root);
+        if !path.is_empty() {
+            prefix.push_str(path.trim_matches('/'));
+            prefix.push('/');
+        }
+        let mut names = Vec::new();
+        for href in hrefs(&xml) {
+            let Some(below) = href.strip_prefix(&prefix) else {
+                continue;
+            };
+            let name = below.trim_matches('/');
+            if !name.is_empty() && !name.contains('/') {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    fn remove_tree(&self, path: &str) -> Result<()> {
+        let response = done(self.call("DELETE", path, &[], ())?);
+        match response.status().as_u16() {
+            200 | 204 | 404 => Ok(()),
+            _ => Err(self.refused("removing", path, &response)),
+        }
+    }
+}
+
+/// The path of the root URL, with its trailing slash: what every href
+/// of a listing begins with.
+fn root_path(root: &str) -> String {
+    let without_scheme = root.split_once("://").map_or(root, |(_, rest)| rest);
+    let path = without_scheme
+        .find('/')
+        .map_or("/", |at| &without_scheme[at..]);
+    let mut path = path.to_string();
+    if !path.ends_with('/') {
+        path.push('/');
+    }
+    path
+}
+
+/// The `href` texts of a multistatus, in order, whatever prefix the
+/// server gives the DAV namespace.
+fn hrefs(xml: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = xml;
+    while let Some(at) = rest.find("href>") {
+        rest = &rest[at + "href>".len()..];
+        let Some(end) = rest.find("</") else {
+            break;
+        };
+        found.push(rest[..end].trim().to_string());
+        rest = &rest[end..];
+    }
+    found
 }
 
 /// The error for a request that got no answer. A certificate rustls
@@ -773,27 +836,11 @@ mod tests {
     }
 
     #[test]
-    fn replacing_writes_over_the_old_file() {
-        let (dir, server) = served();
-        let place = WebDav::open(&server.url, None, Certificate::Check).unwrap();
-        place.replace("head.jsonl", b"old\n").unwrap();
-
-        place.replace("head.jsonl", b"new\n").unwrap();
-
-        assert_eq!(place.read("head.jsonl").unwrap().unwrap(), b"new\n");
-        let names: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|item| item.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["head.jsonl"]);
-    }
-
-    #[test]
     fn reading_a_file_that_is_not_there_answers_none() {
         let (_dir, server) = served();
         let place = WebDav::open(&server.url, None, Certificate::Check).unwrap();
 
-        assert!(place.read("head.jsonl").unwrap().is_none());
+        assert!(place.read("FORMAT").unwrap().is_none());
     }
 
     #[test]

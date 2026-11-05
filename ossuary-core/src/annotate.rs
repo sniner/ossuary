@@ -84,7 +84,7 @@ mod tests {
             .depth(1)
             .create()
             .unwrap();
-        Log::new(store, dir.path().join("head.jsonl"))
+        crate::log::test_log(store, dir.path())
     }
 
     fn subject(fill: char) -> Subject {

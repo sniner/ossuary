@@ -11,7 +11,7 @@
 //! its head.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write as _};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -111,19 +111,35 @@ impl Remote for Directory {
         Ok(Created::New)
     }
 
-    fn replace(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let dest = self.full(path);
-        let dir = dest.parent().unwrap_or(&self.root);
-        let mut temp = Temp::create_in(dir)?;
-        temp.file
-            .write_all(bytes)
-            .with_context(|| format!("{}: writing", temp.path.display()))?;
-        temp.persist(&dest, false)
-    }
-
     fn make_dir(&self, path: &str) -> Result<()> {
         let full = self.full(path);
         fs::create_dir_all(&full).with_context(|| format!("{}: creating", full.display()))
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<String>> {
+        let full = if path.is_empty() {
+            self.root.clone()
+        } else {
+            self.full(path)
+        };
+        let listing =
+            fs::read_dir(&full).with_context(|| format!("{}: listing", full.display()))?;
+        let mut names = Vec::new();
+        for entry in listing {
+            let entry = entry.with_context(|| format!("{}: listing", full.display()))?;
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    fn remove_tree(&self, path: &str) -> Result<()> {
+        let full = self.full(path);
+        match fs::remove_dir_all(&full) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("{}: removing", full.display())),
+        }
     }
 }
 
@@ -267,25 +283,9 @@ mod tests {
     }
 
     #[test]
-    fn replacing_writes_over_the_old_file() {
-        let dir = TempDir::new().unwrap();
-        let target = target(&dir);
-        target.replace("head.jsonl", b"old\n").unwrap();
-
-        target.replace("head.jsonl", b"new\n").unwrap();
-
-        assert_eq!(target.read("head.jsonl").unwrap().unwrap(), b"new\n");
-        let names: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|item| item.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["head.jsonl"]);
-    }
-
-    #[test]
     fn reading_a_file_that_is_not_there_answers_none() {
         let dir = TempDir::new().unwrap();
 
-        assert!(target(&dir).read("head.jsonl").unwrap().is_none());
+        assert!(target(&dir).read("FORMAT").unwrap().is_none());
     }
 }

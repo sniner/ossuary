@@ -148,8 +148,10 @@ impl Archive {
         )
         .create()?;
         let claims = claims_store(&root, algorithm, CLAIMS_DEPTH).create()?;
+        let log = log_in(claims, &root);
+        log.init()?;
         Ok(Archive {
-            log: log_in(claims, &root),
+            log,
             config,
             content,
             derived,
@@ -171,7 +173,22 @@ impl Archive {
     /// not read, and [`Error::Store`] when the mark names an algorithm
     /// this build does not know.
     pub fn open(root: impl Into<PathBuf>) -> Result<Archive> {
-        let root = root.into();
+        Archive::open_inner(root.into(), true)
+    }
+
+    /// Open the archive at `root` without refusing the form before 0.18:
+    /// for `ossuary-fix open`, which brings that form into the current
+    /// one and is the one program that reads it. Everything else refuses
+    /// it, because a run on it would begin a second record.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Archive::open).
+    pub fn open_unchecked(root: impl Into<PathBuf>) -> Result<Archive> {
+        Archive::open_inner(root.into(), false)
+    }
+
+    fn open_inner(root: PathBuf, refuse_old_form: bool) -> Result<Archive> {
         let text = match fs::read_to_string(root.join(MARK)) {
             Ok(text) => text,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -191,6 +208,11 @@ impl Archive {
             return Err(Error::ArchiveGeneration(generation.generation));
         }
         let mark: Mark = serde_json::from_str(line).map_err(|_| Error::BadMark(root.clone()))?;
+        // The form before 0.18 kept the open segment in one file; nothing
+        // here reads it, and a run on it would begin a second record.
+        if refuse_old_form && root.join(crate::log::OLD_HEAD).exists() {
+            return Err(Error::OldForm(root));
+        }
         let algorithm: Algorithm = mark.algorithm.parse()?;
         let config = Config::load(&root)?;
 
@@ -316,9 +338,9 @@ impl Archive {
     }
 }
 
-/// The archive's log: the claims store and the open head.
+/// The archive's log: the claims store and the open segment in the root.
 fn log_in(claims: Store, root: &Path) -> Log {
-    Log::new(claims, root.join("head.jsonl"))
+    Log::new(claims, root)
 }
 
 /// How generation 1 lays out the content and derived stores: entries named

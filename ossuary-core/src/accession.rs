@@ -367,7 +367,7 @@ mod tests {
             .depth(1)
             .create()
             .unwrap();
-        (content, Log::new(claims, dir.path().join("head.jsonl")))
+        (content, crate::log::test_log(claims, dir.path()))
     }
 
     fn source() -> Source {
@@ -447,6 +447,8 @@ mod tests {
             (3, 2),
             "the size once, on the first sighting"
         );
+        // The open segment reads in the order a seal gives it: by time,
+        // then by the line.
         let head = log.head().unwrap();
         let written: Vec<(&str, &str)> = head
             .iter()
@@ -455,11 +457,11 @@ mod tests {
         assert_eq!(
             written,
             vec![
-                ("mailbox:place", "2019-05-01T08:00:00Z"),
-                ("file:size", "2019-05-01T08:00:00Z"),
                 ("file:mime", "2019-05-01T08:00:00Z"),
-                ("mailbox:place", "2023-01-01T00:00:00Z"),
+                ("file:size", "2019-05-01T08:00:00Z"),
+                ("mailbox:place", "2019-05-01T08:00:00Z"),
                 ("file:mime", "2023-01-01T00:00:00Z"),
+                ("mailbox:place", "2023-01-01T00:00:00Z"),
             ]
         );
     }
@@ -498,11 +500,11 @@ mod tests {
         assert_eq!(
             spelled,
             vec![
-                ("mailbox:place", json!("example.org:INBOX")),
-                ("file:size", json!(28)),
                 ("file:mime", json!("message/rfc822")),
+                ("file:size", json!(28)),
+                ("mailbox:place", json!("example.org:INBOX")),
             ],
-            "the taker's facts first, then what any content has — the kind in the taker's words"
+            "the taker's facts and what any content has, the kind in the taker's words; one second, so the order is the lines'"
         );
         assert!(
             head.iter().all(|claim| claim.run() == Some(&RUN)),

@@ -191,7 +191,7 @@ fn an_archive_that_cannot_store_a_derived_file_stops_the_run_and_records_nothing
     use std::os::unix::fs::PermissionsExt as _;
 
     let (_dir, archive, bin) = archive_and_fake_extractor();
-    let head = std::fs::read(archive.join("head.jsonl")).unwrap();
+    let head = open_bundles(&archive);
     let derived = archive.join("derived");
     std::fs::set_permissions(&derived, std::fs::Permissions::from_mode(0o555)).unwrap();
 
@@ -209,18 +209,52 @@ fn an_archive_that_cannot_store_a_derived_file_stops_the_run_and_records_nothing
         "{stderr}"
     );
     assert_eq!(
-        std::fs::read(archive.join("head.jsonl")).unwrap(),
+        open_bundles(&archive),
         head,
         "no claim of the stopped examination went on the record"
     );
 }
 
-/// An archive whose last seal stopped between removing the old head
-/// and renaming the new one into place, as macOS over SMB can leave it.
+/// The directories of the open segment in the archive root, by name.
+fn open_dirs(archive: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(archive)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let name = path.file_name().unwrap().to_string_lossy();
+            name.starts_with("open") || name.starts_with("seal")
+        })
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// The bundles of the open segment, by name.
+fn open_bundles(archive: &Path) -> Vec<String> {
+    let dirs = open_dirs(archive);
+    assert_eq!(dirs.len(), 1, "one open segment: {dirs:?}");
+    let mut names: Vec<String> = std::fs::read_dir(&dirs[0])
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".jsonl"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// An archive whose last seal stopped right after it began: the open
+/// segment renamed to `sealing-`, nothing else done.
 fn archive_with_an_interrupted_seal() -> (TempDir, PathBuf) {
     let (dir, archive) = archive_with_a_file();
-    assert!(run(ossuary(&archive).arg("seal")).status.success());
-    std::fs::rename(archive.join("head.jsonl"), archive.join("head.jsonl.tmp")).unwrap();
+    let before = open_dirs(&archive);
+    assert_eq!(before.len(), 1);
+    let name = before[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let sealing = name.replacen("open", "sealing", 1);
+    std::fs::rename(&before[0], archive.join(sealing)).unwrap();
     (dir, archive)
 }
 
@@ -233,15 +267,20 @@ fn an_interrupted_seal_is_sound_and_named_by_the_audit() {
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains(
-            "the last seal stopped before the new open segment was in place; nothing is lost"
-        ),
+        stdout
+            .contains("a seal stopped before the open segment was back in place; nothing is lost"),
         "{stdout}"
     );
     assert!(stdout.contains("sound"), "{stdout}");
+    let dirs = open_dirs(&archive);
     assert!(
-        !archive.join("head.jsonl").exists(),
-        "the audit wrote nothing"
+        dirs.len() == 1
+            && dirs[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("sealing"),
+        "the audit wrote nothing: {dirs:?}"
     );
 }
 
@@ -257,9 +296,19 @@ fn the_next_run_that_writes_finishes_an_interrupted_seal_and_says_so() {
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("the last seal stopped before the new open segment was in place; finished it, nothing was lost"),
+        stderr.contains(
+            "a seal had stopped before the open segment was back; finished it, nothing was lost"
+        ),
         "said even under -q: {stderr}"
     );
-    assert!(archive.join("head.jsonl").exists());
-    assert!(!archive.join("head.jsonl.tmp").exists());
+    let dirs = open_dirs(&archive);
+    assert!(
+        dirs.len() == 1
+            && dirs[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("open-"),
+        "the seal was finished: {dirs:?}"
+    );
 }

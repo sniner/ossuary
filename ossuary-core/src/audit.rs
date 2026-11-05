@@ -194,7 +194,7 @@ pub struct LogAudit {
     /// head is missing, and the fresh head that vouches for it waits
     /// next to it. Nothing is lost, and the next run that writes moves
     /// it into place, so this is not a finding.
-    pub seal_interrupted: bool,
+    pub seal_pending: bool,
     /// The segments the walk back from the open head reached, in log
     /// order: the first segment first.
     pub chain: Vec<String>,
@@ -266,7 +266,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         broken: Vec::new(),
         head_broken: None,
         head_lost: false,
-        seal_interrupted: false,
+        seal_pending: false,
         chain: Vec::new(),
         ends: Ends::First,
         unreached: Vec::new(),
@@ -309,18 +309,25 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         }
     }
     report.head_lost = !held.is_empty() && log.head_lost()?;
-    report.seal_interrupted = !held.is_empty() && log.seal_interrupted()?;
-    let open = match log.head_contents() {
-        Ok(contents) => {
-            report.claims += contents.claims().len();
-            for claim in contents.claims() {
-                reference(claim, &mut report.referenced);
+    report.seal_pending = log.seal_pending()?;
+    let open = if report.seal_pending {
+        // The bundles are in a seal under way; the audit does not wait
+        // for it and reads the chain from the directory's name.
+        log.tip()?.as_ref().map(hex)
+    } else {
+        match log.head_contents() {
+            Ok(contents) => {
+                report.claims += contents.claims().len();
+                for claim in contents.claims() {
+                    reference(claim, &mut report.referenced);
+                }
+                contents.previous().map(hex)
             }
-            contents.previous().map(hex)
-        }
-        Err(error) => {
-            report.head_broken = Some(error.spelled());
-            None
+            Err(_) if report.head_lost => None,
+            Err(error) => {
+                report.head_broken = Some(error.spelled());
+                None
+            }
         }
     };
     if report.head_lost || report.head_broken.is_some() {
@@ -476,6 +483,20 @@ mod tests {
     use super::*;
     use crate::Archive;
     use crate::claim::{Attribute, Source, Timestamp};
+
+    /// The open segment's directory, whatever it is called right now.
+    fn open_dir(archive: &Archive) -> std::path::PathBuf {
+        std::fs::read_dir(archive.root())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("open")
+            })
+            .expect("an open segment")
+    }
 
     fn archive(dir: &TempDir) -> Archive {
         Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap()
@@ -668,7 +689,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"sealed");
         archive.log().seal().unwrap().unwrap();
-        std::fs::remove_file(archive.root().join("head.jsonl")).unwrap();
+        std::fs::remove_dir_all(open_dir(&archive)).unwrap();
 
         let audit = run(&archive);
 
@@ -684,14 +705,11 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"before the loss");
         let first = archive.log().seal().unwrap().unwrap();
-        // The head lost and begun anew naming nothing, which `append`
-        // refuses to do: the audit still has to read an archive in that
+        // The open segment lost and begun anew naming nothing, which no
+        // writer does: the audit still has to read an archive in that
         // state.
-        std::fs::write(
-            archive.root().join("head.jsonl"),
-            "{\"ossuary-segment\":1}\n",
-        )
-        .unwrap();
+        std::fs::remove_dir_all(open_dir(&archive)).unwrap();
+        archive.log().begin(None).unwrap();
         take(&archive, b"after the loss");
         let anew = archive.log().seal().unwrap().unwrap();
 
@@ -733,27 +751,30 @@ mod tests {
             .store()
             .add(b"{\"ossuary-segment\":1}\n")
             .unwrap();
-        std::fs::write(
-            archive.root().join("head.jsonl"),
-            format!(
-                "{{\"ossuary-segment\":1,\"previous\":[\"{}\"]}}\n",
-                entry.digest()
-            ),
-        )
-        .unwrap();
+        let (_, listed) = archive
+            .log()
+            .store()
+            .add(
+                format!(
+                    "{{\"ossuary-segment\":1,\"previous\":[\"{}\"]}}\n",
+                    entry.digest()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        std::fs::remove_dir_all(open_dir(&archive)).unwrap();
+        archive.log().begin(Some(listed.digest())).unwrap();
 
         let audit = run(&archive);
 
         assert!(
-            audit
-                .log
-                .head_broken
-                .as_deref()
-                .is_some_and(|reason| reason.contains("ossuary-fix list")),
+            audit.log.broken.iter().any(|(name, reason)| {
+                name == listed.digest().as_str() && reason.contains("ossuary-fix list")
+            }),
             "the reason names the way out: {:?}",
-            audit.log.head_broken
+            audit.log.broken
         );
-        assert_eq!(audit.log.ends, Ends::NoHead);
+        assert!(audit.findings() >= 1);
     }
 
     #[test]
@@ -886,8 +907,8 @@ mod tests {
         let archive = archive(&dir);
         let (_, entry) = archive.log().store().add(b"not a header\n").unwrap();
         std::fs::write(
-            archive.root().join("head.jsonl"),
-            "{\"ossuary-segment\":1}\nnot a claim\n",
+            open_dir(&archive).join(format!("{}.jsonl", "0".repeat(64))),
+            "not a claim\n",
         )
         .unwrap();
 

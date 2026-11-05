@@ -149,7 +149,28 @@ impl Rewrite {
             segments.insert(name.clone(), segment);
             texts.insert(name, (digest, text));
         }
-        let old_head = log.head_text()?;
+        // The open segment as a segment: the one it names, and its claims
+        // as lines in the order a seal would give them. None when it is
+        // lost.
+        let old_head = match log.head_lost()? {
+            true => None,
+            false => {
+                let contents = log.head_contents().context("the open segment")?;
+                let mut text = match contents.previous() {
+                    Some(previous) => {
+                        format!(
+                            "{{\"ossuary-segment\":{GENERATION},\"previous\":\"{previous}\"}}\n"
+                        )
+                    }
+                    None => format!("{{\"ossuary-segment\":{GENERATION}}}\n"),
+                };
+                for claim in contents.claims() {
+                    text.push_str(&claim.to_line());
+                    text.push('\n');
+                }
+                Some(text)
+            }
+        };
         let mut head = old_head
             .as_deref()
             .map(|text| parse(text).context("the open segment"))
@@ -261,7 +282,21 @@ impl Rewrite {
             }
         }
         if let Some(text) = &self.head {
-            log.replace_head(text)?;
+            // The open segment anew: its directory begun after the segment
+            // the text names, its claims as one bundle.
+            let segment = parse(text).context("the open segment")?;
+            let previous = segment
+                .previous
+                .first()
+                .map(|name| Digest::parse(name))
+                .transpose()?;
+            let mut claims = Vec::new();
+            for line in &segment.lines {
+                claims.push(ossuary_core::Claim::parse_line(line)?);
+            }
+            log.discard_open()?;
+            log.begin(previous.as_ref())?;
+            log.append_all(&claims)?;
         }
         for step in self.steps.iter().rev() {
             store.remove(&step.old)?;
@@ -490,15 +525,6 @@ mod tests {
         entry.digest().clone()
     }
 
-    fn old_head(archive: &Archive, previous: &Digest, claims: &[Claim]) {
-        let mut text = format!("{{\"ossuary-segment\":1,\"previous\":[\"{previous}\"]}}\n");
-        for claim in claims {
-            text.push_str(&claim.to_line());
-            text.push('\n');
-        }
-        fs::write(archive.log().head_path(), text).unwrap();
-    }
-
     const WORDS: Words = Words {
         done: "in the current form",
         nothing: "every segment is in the current form",
@@ -552,15 +578,13 @@ mod tests {
             &[&second],
             &[claim(&archive, b"third", "2026-09-03T00:00:00Z")],
         );
-        old_head(
-            &archive,
-            &third,
-            &[claim(&archive, b"open", "2026-09-04T00:00:00Z")],
-        );
-        assert!(
-            archive.log().head().is_err(),
-            "the current build refuses the old form"
-        );
+        {
+            let log = archive.log();
+            log.discard_open().unwrap();
+            log.begin(Some(&third)).unwrap();
+            log.append(&claim(&archive, b"open", "2026-09-04T00:00:00Z"))
+                .unwrap();
+        }
         let cache = archive.root().join("cache");
         fs::write(cache.join("index.sqlite"), b"stale").unwrap();
 
@@ -643,7 +667,7 @@ mod tests {
         log.append(&claim(&archive, b"first", "2026-09-01T00:00:00Z"))
             .unwrap();
         let first = log.seal().unwrap().unwrap().digest().clone();
-        fs::remove_file(log.head_path()).unwrap();
+        log.discard_open().unwrap();
 
         let plan = Rewrite::plan(&archive, WORDS, |_, head| {
             assert!(head.is_none(), "a missing head comes as none");
@@ -698,7 +722,8 @@ mod tests {
             claim(&archive, b"first", "2026-09-01T00:00:00Z").to_line()
         );
         let (_, first) = log.store().add(text.as_bytes()).unwrap();
-        fs::write(log.head_path(), ossuary_core::head_after(first.digest())).unwrap();
+        log.discard_open().unwrap();
+        log.begin(Some(first.digest())).unwrap();
         log.append(&claim(&archive, b"open", "2026-09-02T00:00:00Z"))
             .unwrap();
 

@@ -64,7 +64,8 @@ pub enum Sealing {
 ///
 /// Everything [`audit_log`], [`Log::writable`](crate::Log::writable) and
 /// [`Log::seal`](crate::Log::seal) can answer, and everything
-/// [`Log::head_text`](crate::Log::head_text) can answer for a dry run.
+/// [`Log::seal_preview`](crate::Log::seal_preview) can answer for a dry
+/// run.
 pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
     let log = archive.log();
     let report = audit_log(log)?;
@@ -84,11 +85,11 @@ pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
             None => return Ok(Sealing::Empty),
         }
     } else if dry_run {
-        // The head was read a moment ago and had something to seal.
-        let Some(text) = log.head_text()? else {
+        // The open segment was read a moment ago and had something to seal.
+        let Some(digest) = log.seal_preview()? else {
             return Ok(Sealing::Empty);
         };
-        log.store().digest(text.as_bytes())
+        digest
     } else {
         match log.seal()? {
             Some(segment) => segment.digest().clone(),
@@ -422,6 +423,20 @@ mod tests {
     use super::*;
     use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp};
 
+    /// The open segment's directory, whatever it is called right now.
+    fn open_dir(archive: &Archive) -> std::path::PathBuf {
+        fs::read_dir(archive.root())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("open")
+            })
+            .expect("an open segment")
+    }
+
     fn archive(dir: &TempDir) -> Archive {
         Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap()
     }
@@ -525,38 +540,18 @@ mod tests {
     }
 
     #[test]
-    fn a_dry_run_reads_the_head_an_interrupted_rewrite_left() {
-        let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
-        take(&archive, b"first", "2026-09-01T00:00:00Z");
-        archive.log().seal().unwrap().unwrap();
-        take(&archive, b"second", "2026-09-02T00:00:00Z");
-        // A head with claims that a replacement left as its only copy,
-        // as a rewrite of `ossuary-fix` can on macOS over SMB.
-        let head = archive.log().head_path().to_path_buf();
-        fs::rename(&head, head.with_file_name("head.jsonl.tmp")).unwrap();
-
-        let rehearsed = sealed(seal(&archive, true).unwrap());
-
-        assert!(rehearsed.sealed_now);
-        assert!(!head.exists(), "a dry run writes nothing");
-        let made = sealed(seal(&archive, false).unwrap());
-        assert_eq!(made.segment, rehearsed.segment);
-    }
-
-    #[test]
     fn a_lost_head_refuses_the_seal() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         archive.log().seal().unwrap().unwrap();
-        fs::remove_file(archive.log().head_path()).unwrap();
+        fs::remove_dir_all(open_dir(&archive)).unwrap();
 
         let Sealing::Refused(report) = seal(&archive, false).unwrap() else {
-            panic!("sealed over a lost head");
+            panic!("sealed over a lost open segment");
         };
         assert!(report.head_lost);
-        assert!(!archive.log().head_path().exists(), "nothing was written");
+        assert!(archive.log().head_lost().unwrap(), "nothing was written");
     }
 
     #[test]
@@ -730,12 +725,10 @@ mod tests {
         let first = archive.log().seal().unwrap().unwrap();
         take(&archive, b"second", "2026-09-02T00:00:00Z");
         let seal = sealed(seal(&archive, false).unwrap());
-        // The head rewritten by hand to name an earlier segment.
-        fs::write(
-            archive.log().head_path(),
-            crate::log::head_after(first.digest()),
-        )
-        .unwrap();
+        // The open segment replaced by hand with one naming an earlier
+        // segment.
+        fs::remove_dir_all(open_dir(&archive)).unwrap();
+        archive.log().begin(Some(first.digest())).unwrap();
 
         let checked = check(&archive, &seal.segment, true);
 
@@ -772,7 +765,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let seal = sealed(seal(&archive, false).unwrap());
-        fs::remove_file(archive.log().head_path()).unwrap();
+        fs::remove_dir_all(open_dir(&archive)).unwrap();
 
         let checked = check(&archive, &seal.segment, true);
 

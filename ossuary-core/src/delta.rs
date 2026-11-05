@@ -129,7 +129,6 @@ mod tests {
     use super::*;
     use crate::archive::Archive;
     use crate::claim::{Attribute, Run, Source, Subject, Timestamp};
-    use crate::log::head_after;
 
     fn archive(dir: &TempDir) -> Archive {
         Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap()
@@ -293,17 +292,16 @@ mod tests {
     }
 
     #[test]
-    fn the_head_after_a_seal_is_what_sealing_leaves() {
+    fn the_open_segment_after_a_seal_names_it_and_holds_nothing() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         take(&archive, b"first", "2026-09-01T00:00:00Z");
         let one = seal(&archive);
 
-        let head = std::fs::read_to_string(archive.log().head_path()).unwrap();
+        let open = archive.log().open().unwrap().unwrap();
 
-        assert_eq!(head, head_after(&one));
-        let contents = crate::log::Contents::parse(&head, immure::Algorithm::Sha256).unwrap();
-        assert_eq!(contents.previous(), Some(&one));
-        assert!(contents.claims().is_empty());
+        assert_eq!(open.previous(), Some(&one));
+        assert!(open.bundles().is_empty());
+        assert!(archive.log().head().unwrap().is_empty());
     }
 }

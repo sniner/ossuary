@@ -111,9 +111,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::fixes::testing::{
-        after, archive, first, head, listed, listed_head, segment, sound, times,
-    };
+    use crate::fixes::testing::{after, archive, first, head, listed, segment, sound, times};
 
     #[test]
     fn one_line_in_the_list_form_keeps_its_order() {
@@ -122,7 +120,7 @@ mod tests {
         let one = first(&archive, "2026-09-01T00:00:00Z");
         let two = listed(&archive, &[&one], "2026-09-02T00:00:00Z");
         let three = listed(&archive, &[&two], "2026-09-03T00:00:00Z");
-        listed_head(&archive, &[&three]);
+        head(&archive, &three);
 
         let (rewrite, found) = plan(&archive).unwrap();
         assert!(!found.loses_claims());
@@ -154,7 +152,7 @@ mod tests {
             &crate::fixes::testing::list_header(&[&ours_too, &theirs]),
             None,
         );
-        listed_head(&archive, &[&joint]);
+        head(&archive, &joint);
 
         let (rewrite, found) = plan(&archive).unwrap();
         assert!(!found.loses_claims());
@@ -190,7 +188,7 @@ mod tests {
             ),
             None,
         );
-        listed_head(&archive, &[&three, &mend]);
+        head(&archive, &three);
 
         let (rewrite, found) = plan(&archive).unwrap();
         assert!(
@@ -214,7 +212,7 @@ mod tests {
         let ours = first(&archive, "2026-09-05T00:00:00Z");
         let lost = Digest::parse(&"ab".repeat(32)).unwrap();
         let joined = listed(&archive, &[&ours, &lost], "2026-09-06T00:00:00Z");
-        listed_head(&archive, &[&joined]);
+        head(&archive, &joined);
 
         let (_, found) = plan(&archive).unwrap();
 

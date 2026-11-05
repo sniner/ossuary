@@ -851,7 +851,7 @@ mod tests {
             .depth(1)
             .create()
             .unwrap();
-        (content, Log::new(claims, dir.path().join("head.jsonl")))
+        (content, crate::log::test_log(claims, dir.path()))
     }
 
     fn hello_subject() -> String {

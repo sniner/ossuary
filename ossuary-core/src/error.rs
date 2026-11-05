@@ -129,32 +129,50 @@ pub enum Error {
     )]
     ChainBroken { segment: String, missing: String },
 
-    /// The open segment is missing or empty while sealed segments are
-    /// there. Every seal leaves an open segment behind, so this one was
+    /// No open segment stands in the archive root while sealed segments
+    /// are there. Every seal leaves the open segment behind, so it was
     /// lost, together with any claims recorded since the last seal. One
     /// begun anew would name no predecessor and start a second record
     /// beside the first.
     #[error(
-        "{}: the open segment is missing, and any claims recorded since the last seal are lost with it; `ossuary-fix chain` begins a new open segment after the last sealed one",
+        "{}: no open segment; the claims recorded since the last seal are lost with it; `ossuary-fix chain` begins a new open segment after the last sealed one, then repeat the runs since the last seal",
         .0.display()
     )]
     HeadLost(std::path::PathBuf),
 
-    /// A `head.jsonl.tmp` that a seal left next to the open segment can
-    /// be neither removed nor emptied. Left as it is, it would vouch for
-    /// a head the open segment has grown past, were the open segment to
-    /// go missing. `after` is the failure that left it, when there was
-    /// one in this run.
+    /// Two open segments stand in the archive root. Only one process
+    /// ever makes one, so something else put the second there; the record
+    /// cannot tell which is its end.
     #[error(
-        "{}{}: left over from a seal that did not finish, and it can be neither removed nor emptied ({cleanup}); remove it by hand before the next run",
-        .after.as_deref().map(|cause| format!("{}; ", cause.spelled())).unwrap_or_default(),
-        .path.display()
+        "{}: two open segments; one was put there by hand, and `ossuary-fix chain` decides which one continues the record",
+        .0.display()
     )]
-    LeftOver {
-        path: std::path::PathBuf,
-        cleanup: std::io::Error,
-        after: Option<Box<Error>>,
-    },
+    TwoOpen(std::path::PathBuf),
+
+    /// A seal is under way or stopped, and a reader waited for the open
+    /// segment longer than a seal takes.
+    #[error(
+        "{}: a seal is under way or stopped before the open segment was back; a command that writes finishes it, `ossuary seal` for one",
+        .0.display()
+    )]
+    SealPending(std::path::PathBuf),
+
+    /// A seal was decided, named by its directory, and the segment file
+    /// that holds its bytes is not there to store: the decision cannot be
+    /// carried out.
+    #[error(
+        "{}: a seal was decided but its segment file is missing; `ossuary-fix chain` begins the open segment anew from the bundles left there",
+        .0.display()
+    )]
+    SealUnfinished(std::path::PathBuf),
+
+    /// The archive still has `head.jsonl`, the open segment of the form
+    /// before 0.18. Nothing here reads it.
+    #[error(
+        "{}: the archive is in the form before 0.18 (head.jsonl); run `ossuary-fix open` once to bring it into the current form",
+        .0.display()
+    )]
+    OldForm(std::path::PathBuf),
 
     /// A segment is UTF-8 text by definition, and these bytes are not.
     #[error("segment is not UTF-8 text")]

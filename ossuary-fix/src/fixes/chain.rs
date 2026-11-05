@@ -194,13 +194,11 @@ fn relink(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use tempfile::TempDir;
 
     use super::*;
     use crate::fixes::testing::{
-        after, archive, first, head, listed, listed_head, lose, sound, times,
+        after, archive, first, head, listed, lose, lose_head, sound, times,
     };
 
     #[test]
@@ -260,7 +258,8 @@ mod tests {
         let log = archive.log();
         let one = first(&archive, "2026-09-01T00:00:00Z");
         let last = after(&archive, &one, "2026-09-02T00:00:00Z");
-        assert!(!log.head_path().exists());
+        lose_head(&archive);
+        assert!(log.head_lost().unwrap());
 
         let (rewrite, found) = plan(&archive).unwrap();
         assert!(found.head_lost);
@@ -319,7 +318,7 @@ mod tests {
         let archive = archive(&dir);
         let one = first(&archive, "2026-09-01T00:00:00Z");
         let two = listed(&archive, &[&one], "2026-09-02T00:00:00Z");
-        listed_head(&archive, &[&two]);
+        head(&archive, &two);
 
         let error = plan(&archive).unwrap_err();
 
@@ -337,7 +336,7 @@ mod tests {
         ))
         .unwrap();
         log.seal().unwrap().unwrap();
-        assert!(fs::metadata(log.head_path()).is_ok());
+        assert!(!log.head_lost().unwrap());
 
         let (rewrite, found) = plan(&archive).unwrap();
 
