@@ -117,6 +117,23 @@ enum Command {
         #[arg(long)]
         accept_loss: bool,
     },
+    /// Bring an archive of 0.17 or earlier into the current form
+    ///
+    /// Until 0.17 the open segment was one file, head.jsonl, and a
+    /// retraction carried the value it retracted. The open segment is now
+    /// a directory of bundles, and a retraction names the claims it
+    /// retracts by id. This fix moves the open segment into its
+    /// directory and rewrites every retraction to name the claims that
+    /// stood when it was written; a retraction that found nothing
+    /// standing is left out. Assertions are not changed. The current
+    /// version refuses an archive that still has head.jsonl, so this fix
+    /// runs once, before anything else.
+    ///
+    /// The segments from the first rewritten retraction on get new
+    /// names, so seal ids given out for them no longer check. The query
+    /// index in cache/ is removed and rebuilt by the next command. Make a
+    /// copy of the archive first.
+    Open,
     /// Close a broken chain of sealed segments
     ///
     /// For a sealed segment that is missing, and that no copy of the
@@ -179,7 +196,17 @@ fn main() -> ExitCode {
 /// The one path every fix takes: open, plan, write unless rehearsing,
 /// say.
 fn run(cli: &Cli) -> Result<ExitCode> {
-    let archive = open(&cli.archive)?;
+    let archive = match cli.command {
+        // The one fix that reads the form before 0.18.
+        Command::Open => Archive::open_unchecked(&cli.archive).map_err(|error| match error {
+            Error::NoArchive(path) => anyhow!(
+                "{}: not an ossuary archive; run this in an archive or name one with --archive",
+                path.display()
+            ),
+            other => other.into(),
+        })?,
+        _ => open(&cli.archive)?,
+    };
     let (sentence, seals) = match cli.command {
         Command::Origin => (
             claims(cli, &archive, &fixes::origin::plan(archive.log())?)?,
@@ -196,6 +223,15 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Chain { accept_loss } => {
             let (rewrite, found) = fixes::chain::plan(&archive)?;
             lossy(cli, &archive, &rewrite, &found, accept_loss)?
+        }
+        Command::Open => {
+            let (rewrite, converted) = fixes::open::plan(&archive)?;
+            let mut sentence = segments(cli, &archive, &rewrite)?;
+            if let Some(words) = converted.sentence(cli.dry_run) {
+                sentence.push_str("; ");
+                sentence.push_str(&words);
+            }
+            (sentence, rewrite.seals(cli.dry_run))
         }
         Command::Rehash {
             algorithm,

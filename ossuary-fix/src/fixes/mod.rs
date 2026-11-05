@@ -9,6 +9,7 @@
 pub mod chain;
 pub mod found;
 pub mod list;
+pub mod open;
 pub mod origin;
 pub mod packed;
 pub mod rehash;

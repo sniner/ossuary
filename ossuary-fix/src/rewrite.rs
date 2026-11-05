@@ -297,6 +297,19 @@ impl Rewrite {
             log.discard_open()?;
             log.begin(previous.as_ref())?;
             log.append_all(&claims)?;
+            // The open segment of the form before 0.18, when there was one.
+            match fs::remove_file(archive.root().join(ossuary_core::OLD_HEAD)) {
+                Ok(()) => {}
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(source).with_context(|| {
+                        format!(
+                            "{}: removing",
+                            archive.root().join(ossuary_core::OLD_HEAD).display()
+                        )
+                    });
+                }
+            }
         }
         for step in self.steps.iter().rev() {
             store.remove(&step.old)?;
@@ -425,7 +438,7 @@ fn render(segment: &Segment, names: &BTreeMap<&str, String>) -> Result<String> {
 /// members this build does not know, and the claim lines as they are.
 /// `previous` is read as a string or as the list of ossuary 0.14 and
 /// earlier; nothing else about the header is relaxed.
-fn parse(text: &str) -> Result<Segment> {
+pub(crate) fn parse(text: &str) -> Result<Segment> {
     let mut lines = text.lines();
     let first = lines.next().unwrap_or_default();
     let Value::Object(mut header) = serde_json::from_str::<Value>(first)
