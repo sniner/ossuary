@@ -1,19 +1,20 @@
 //! The log: where claims accumulate, and how segments come to be.
 //!
-//! Claims land in the open segment: a directory in the archive root that
-//! holds one file per append, a bundle of claim lines named by its own
-//! digest. A bundle is written once and never opened for writing again,
+//! Claims land in the open segment: a directory under `open/` in the
+//! archive root that holds one file per append, a bundle of claim lines
+//! named by its own digest. A bundle is written once and never opened for writing again,
 //! like everything else in the archive. Sealing closes the open segment:
 //! the bundles' lines go into one segment file in the claims store, sorted
 //! by time and then by the line itself, and the directory becomes the next
 //! open segment. A sealed segment is never compacted, combined or rewritten:
 //! superseded and retracted claims stay where they were written, which for
 //! an archive is not a limitation but the point. An append that finds
-//! [`SEAL_AT`] bundles or more seals first; sealing by hand remains for
-//! closing the segment on demand.
+//! [`SEAL_AT`] bundles or more, or that has itself appended
+//! [`SEAL_AT_BYTES`] since the last seal it saw, seals first; sealing by
+//! hand remains for closing the segment on demand.
 //!
-//! Segments hang together. The directory's name carries the segment sealed
-//! last, `open-<S>`, and the segment sealed from it names S in its header
+//! Segments hang together. The directory's name is the segment sealed
+//! last, `open/<S>`, and the segment sealed from it names S in its header
 //! as `previous`: every segment but the first names the one before it, and
 //! the open segment names the last. The segments form one chain, and the
 //! chain is the order of the record between segments. Within a segment the
@@ -28,26 +29,30 @@
 //! directory for the life of the archive; it is never created again, only
 //! renamed, and every rename is atomic and won by one process:
 //!
-//! 1. `open-<S>` becomes `sealing-<S>`. A writer whose directory was
+//! 1. `open/<S>` becomes `open/<S>.sealing`. A writer whose directory was
 //!    renamed away finds its root gone (the bundle store never creates
 //!    it) and looks for the open segment again. The set is not frozen by
-//!    this: a writer whose rename into `open-<S>/` had already resolved the
-//!    directory lands its bundle in `sealing-<S>` after the listing. Such
-//!    a late bundle is simply not part of this seal.
-//! 2. Whoever finds `sealing-<S>` lists it, reads every bundle it listed,
+//!    this: a writer whose rename into `open/<S>/` had already resolved
+//!    the directory lands its bundle in `<S>.sealing` after the listing.
+//!    Such a late bundle is simply not part of this seal.
+//! 2. Whoever finds `<S>.sealing` lists it, reads every bundle it listed,
 //!    builds the segment and writes its bytes into the directory under a
 //!    name of its own. Nothing is deleted yet.
-//! 3. `sealing-<S>` becomes `sealed-<S>-<S'>`, S' being the digest of the
+//! 3. `<S>.sealing` becomes `<S>.sealed-<S'>`, S' being the digest of the
 //!    segment the renaming process built. Only one rename wins, so one
 //!    segment is decided; a finisher that built another one loses the
 //!    rename and stops.
-//! 4. The winner stores its segment file. Whoever finds a `sealed-`
+//! 4. The winner stores its segment file. Whoever finds a `.sealed-`
 //!    directory whose segment is not in the store stores the segment file
 //!    with that digest from the directory; only after the store holds S'
 //!    is anything deleted.
 //! 5. The bundles whose lines are all in S' are deleted, every segment
 //!    file too, and what is in `tmp/`; the directory is renamed to
-//!    `open-<S'>`. A late bundle stays and goes into the next seal.
+//!    `open/<S'>`. A late bundle stays and goes into the next seal.
+//!
+//! Before the first seal the directory is `open/first`. `open/` itself is
+//! made once and never renamed; it holds the one directory of the open
+//! segment, whatever its name, and nothing else.
 //!
 //! `tmp/` stays, so that the directory is never empty: macOS over SMB
 //! replaces an existing empty directory instead of failing, and two
@@ -74,6 +79,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead as _, ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -101,6 +107,18 @@ pub const GENERATION: u32 = 1;
 /// on-demand grip.
 pub const SEAL_AT: usize = 1000;
 
+/// The open segment is sealed by an append once the appends of this
+/// process since the last seal it saw add up to this many bytes.
+///
+/// A count of bundles is blind to their size: a caller that passes
+/// thousands of claims to one append makes one large bundle, and a
+/// thousand of those would be an open segment every reader folds in
+/// whole. The size of the directory is not asked for, which would be a
+/// `stat` per bundle; each writer knows what it wrote itself, so each
+/// bounds its own share, and the open segment stays below writers times
+/// this plus the count above.
+pub const SEAL_AT_BYTES: u64 = 1 << 20;
+
 /// How long a writer or reader without an open segment waits for the seal
 /// under way to produce one, before a writer finishes the seal itself and
 /// a reader gives up.
@@ -117,15 +135,47 @@ const LISTING_DELAY: Duration = Duration::from_millis(100);
 const RENAME_TRIES: usize = 20;
 const RENAME_DELAY: Duration = Duration::from_millis(100);
 
-const OPEN: &str = "open";
-const SEALING: &str = "sealing";
-const SEALED: &str = "sealed";
+/// The directory in the archive root that holds the open segment's
+/// directory.
+const OPEN_DIR: &str = "open";
+/// The open segment before the first seal, which has no segment to be
+/// named after.
+const FIRST: &str = "first";
+const SEALING_SUFFIX: &str = ".sealing";
+const SEALED_INFIX: &str = ".sealed-";
 const BUNDLE_SUFFIX: &str = ".jsonl";
 const SEGMENT_FILE: &str = "segment-";
 const TMP: &str = "tmp";
 
 /// The open segment of the form before 0.18, in the archive root.
 pub const OLD_HEAD: &str = "head.jsonl";
+
+/// The directories of the form of 0.18 in the archive root, where the
+/// open segment lay as `open-<S>/` (`open/` before the first seal, with
+/// `tmp/` in it), `sealing-<S>/` or `sealed-<S>-<S'>/`. Nothing here
+/// reads them; `ossuary-fix open` moves them. Empty when the root cannot
+/// be listed.
+#[must_use]
+pub fn old_open_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(listing) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    for entry in listing.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let old = (name == OPEN_DIR && entry.path().join(TMP).is_dir())
+            || name.starts_with("open-")
+            || name == "sealing"
+            || name.starts_with("sealing-")
+            || name.starts_with("sealed-");
+        if old && entry.path().is_dir() {
+            dirs.push(entry.path());
+        }
+    }
+    dirs.sort();
+    dirs
+}
 
 static SEGMENT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
@@ -331,6 +381,16 @@ enum Found {
 pub struct Log {
     store: Store,
     root: PathBuf,
+    written: Mutex<Written>,
+}
+
+/// What this process appended to one open segment directory: the bytes
+/// behind [`SEAL_AT_BYTES`]. A different directory, after a seal, starts
+/// the count anew.
+#[derive(Debug, Default)]
+struct Written {
+    dir: PathBuf,
+    bytes: u64,
 }
 
 impl Log {
@@ -341,6 +401,7 @@ impl Log {
         Log {
             store,
             root: root.into(),
+            written: Mutex::default(),
         }
     }
 
@@ -350,6 +411,11 @@ impl Log {
         &self.root
     }
 
+    /// `open/`, the directory that holds the open segment's directory.
+    fn open_root(&self) -> PathBuf {
+        self.root.join(OPEN_DIR)
+    }
+
     /// The claims store itself: for the audit and for repair tools that
     /// read every sealed segment as the store holds it.
     #[must_use]
@@ -357,8 +423,9 @@ impl Log {
         &self.store
     }
 
-    /// Begin the open segment of a new archive: `open/`, with its `tmp/`.
-    /// The one place that creates it; from here on it is only renamed.
+    /// Begin the open segment of a new archive: `open/first/`, with its
+    /// `tmp/`. The one place that creates it; from here on it is only
+    /// renamed.
     ///
     /// # Errors
     ///
@@ -369,31 +436,43 @@ impl Log {
     }
 
     /// Begin an open segment after `previous`, for `ossuary-fix` when it
-    /// has rewritten the record: `open-<S>/` with its `tmp/`, made with
-    /// `mkdir`, so that a second one fails.
+    /// has rewritten the record: `open/<S>/` with its `tmp/`, made with
+    /// `mkdir`, so that a second one fails. `open/` itself is made when
+    /// it is missing.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] when the directory cannot be made, or already stands.
     pub fn begin(&self, previous: Option<&Digest>) -> Result<()> {
-        let dir = self.root.join(open_name(previous));
+        let parent = self.open_root();
+        match fs::create_dir(&parent) {
+            Ok(()) => sync_dir(&self.root),
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    context: format!("{}: making", parent.display()),
+                    source,
+                });
+            }
+        }
+        let dir = parent.join(open_name(previous));
         let io = |context: &str| {
             let context = format!("{}: {context}", dir.display());
             move |source| Error::Io { context, source }
         };
         fs::create_dir(&dir).map_err(io("beginning the open segment"))?;
         fs::create_dir(dir.join(TMP)).map_err(io("making tmp/"))?;
-        sync_dir(&self.root);
+        sync_dir(&parent);
         Ok(())
     }
 
     /// Remove every directory of the open segment, whatever state it is
     /// in: for `ossuary-fix` before it begins one anew. Bundles in them
-    /// go with them.
+    /// go with them; `open/` itself stays.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the root cannot be listed or a directory not
+    /// [`Error::Io`] when `open/` cannot be listed or a directory not
     /// removed.
     pub fn discard_open(&self) -> Result<()> {
         for dir in self.list()? {
@@ -420,7 +499,8 @@ impl Log {
     /// returns. Each call costs one file, so a caller with many claims
     /// passes them together.
     ///
-    /// An open segment at [`SEAL_AT`] bundles or more is sealed before
+    /// An open segment at [`SEAL_AT`] bundles or more, or one this
+    /// process has appended [`SEAL_AT_BYTES`] to, is sealed before
     /// anything is written, so no writer needs a sealing policy of its
     /// own. The order is what makes an error mean what it says: a seal
     /// that fails leaves the claims unwritten, and the caller can treat
@@ -449,16 +529,44 @@ impl Log {
                 Err(immure::Error::RootMissing(_)) => continue,
                 Err(error) => return Err(error.into()),
             };
-            if count >= SEAL_AT {
+            if count >= SEAL_AT || self.written_to(&dir) >= SEAL_AT_BYTES {
                 self.seal()?;
+                self.forget_written();
                 continue;
             }
             match bundles.add(text.as_bytes()) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.note_written(&dir, text.len() as u64);
+                    return Ok(());
+                }
                 Err(immure::Error::RootMissing(_)) => continue,
                 Err(error) => return Err(error.into()),
             }
         }
+    }
+
+    /// What this process has appended to `dir`; nothing, when its last
+    /// append went elsewhere.
+    fn written_to(&self, dir: &Path) -> u64 {
+        let written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if written.dir == dir { written.bytes } else { 0 }
+    }
+
+    fn note_written(&self, dir: &Path, bytes: u64) {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if written.dir != dir {
+            written.dir = dir.to_path_buf();
+            written.bytes = 0;
+        }
+        written.bytes += bytes;
+    }
+
+    /// After a seal this process asked for, whatever came of it: the
+    /// count starts anew, so a seal that was not needed is not asked for
+    /// again at once.
+    fn forget_written(&self) {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        *written = Written::default();
     }
 
     /// The claims of the open segment, in the order a seal would give
@@ -589,14 +697,14 @@ impl Log {
     }
 
     /// The last sealed segment as the open segment's directory names it,
-    /// whatever state the directory is in: S for `open-<S>` and
-    /// `sealing-<S>`, the decided S' for `sealed-<S>-<S'>`. `None` before
-    /// the first seal, and when no directory stands. For a reader that
-    /// must not wait for a seal, the audit.
+    /// whatever state the directory is in: S for `<S>` and `<S>.sealing`,
+    /// the decided S' for `<S>.sealed-<S'>`. `None` before the first
+    /// seal, and when no directory stands. For a reader that must not
+    /// wait for a seal, the audit.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the root cannot be listed, [`Error::TwoOpen`]
+    /// [`Error::Io`] when `open/` cannot be listed, [`Error::TwoOpen`]
     /// when two open segments stand.
     pub fn tip(&self) -> Result<Option<Digest>> {
         Ok(match self.find()? {
@@ -610,12 +718,12 @@ impl Log {
     }
 
     /// Whether a seal is under way or stopped: the open segment's
-    /// directory stands as `sealing-<S>` or `sealed-<S>-<S'>`. A run that
+    /// directory stands as `<S>.sealing` or `<S>.sealed-<S'>`. A run that
     /// writes finishes it.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the root cannot be listed.
+    /// [`Error::Io`] when `open/` cannot be listed.
     pub fn seal_pending(&self) -> Result<bool> {
         Ok(matches!(self.find()?, Found::Pending { .. }))
     }
@@ -679,7 +787,7 @@ impl Log {
             Err(error) => return Err(error.into()),
         }
         let previous = digest_in_name(&dir);
-        let sealing = self.root.join(sealing_name(previous.as_ref()));
+        let sealing = self.open_root().join(sealing_name(previous.as_ref()));
         if !rename_dir(&dir, &sealing)? {
             return Ok(None);
         }
@@ -739,7 +847,7 @@ impl Log {
         Ok(done)
     }
 
-    /// Steps 2 to 5 for a `sealing-<S>` directory; `None` when another
+    /// Steps 2 to 5 for a `<S>.sealing` directory; `None` when another
     /// process got there first or the directory is empty.
     fn finish_sealing(&self, sealing: &Path) -> Result<Option<Segment>> {
         let previous = digest_in_name(sealing);
@@ -765,7 +873,10 @@ impl Log {
         if names.is_empty() {
             // A threshold seen in a stale listing: nothing to seal, and
             // the directory is the open segment again.
-            rename_dir(sealing, &self.root.join(open_name(previous.as_ref())))?;
+            rename_dir(
+                sealing,
+                &self.open_root().join(open_name(previous.as_ref())),
+            )?;
             return Ok(None);
         }
         let text = segment_text(previous.as_ref(), lines);
@@ -773,7 +884,9 @@ impl Log {
         if !write_segment_file(sealing, &text)? {
             return Ok(None);
         }
-        let sealed = self.root.join(sealed_name(previous.as_ref(), &digest));
+        let sealed = self
+            .open_root()
+            .join(sealed_name(previous.as_ref(), &digest));
         if !rename_dir(sealing, &sealed)? {
             // Another finisher won and stores its segment; the segment
             // file written here goes with step 5.
@@ -785,7 +898,7 @@ impl Log {
         Ok(Some(Segment { digest }))
     }
 
-    /// Steps 4 and 5 for a `sealed-<S>-<S'>` directory. `listed` is the
+    /// Steps 4 and 5 for a `<S>.sealed-<S'>` directory. `listed` is the
     /// set of bundles the segment was built from, when this process built
     /// it; a helper works it out from the segment.
     fn finish_sealed(&self, sealed: &Path, listed: Option<&BTreeSet<Digest>>) -> Result<()> {
@@ -847,11 +960,11 @@ impl Log {
                 }
             }
         }
-        rename_dir(sealed, &self.root.join(open_name(Some(&digest))))?;
+        rename_dir(sealed, &self.open_root().join(open_name(Some(&digest))))?;
         Ok(())
     }
 
-    /// The winner of the rename to `sealed-` stopped before storing: store
+    /// The winner of the rename to `.sealed-` stopped before storing: store
     /// the segment file with the decided digest from the directory. False
     /// when the directory is gone; an error when it holds no such file.
     fn store_segment_file(&self, sealed: &Path, digest: &Digest) -> Result<bool> {
@@ -986,27 +1099,27 @@ impl Log {
             .expect("a bundle store of depth 0 builds")
     }
 
-    /// Every directory of the open segment in the root, whatever its
-    /// name.
+    /// Every directory of the open segment in `open/`, whatever its name;
+    /// none when `open/` is missing.
     fn list(&self) -> Result<Vec<PathBuf>> {
-        let listing = fs::read_dir(&self.root).map_err(|source| Error::Io {
-            context: format!("{}: listing", self.root.display()),
-            source,
-        })?;
+        let parent = self.open_root();
+        let listing = match fs::read_dir(&parent) {
+            Ok(listing) => listing,
+            Err(source) if source.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(Error::Io {
+                    context: format!("{}: listing", parent.display()),
+                    source,
+                });
+            }
+        };
         let mut dirs = Vec::new();
         for entry in listing {
             let entry = entry.map_err(|source| Error::Io {
-                context: format!("{}: listing", self.root.display()),
+                context: format!("{}: listing", parent.display()),
                 source,
             })?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name == OPEN
-                || name.starts_with("open-")
-                || name == SEALING
-                || name.starts_with("sealing-")
-                || name.starts_with("sealed-")
-            {
+            if State::of(&entry.file_name().to_string_lossy()).is_some() {
                 dirs.push(entry.path());
             }
         }
@@ -1014,23 +1127,18 @@ impl Log {
         Ok(dirs)
     }
 
-    /// What the root shows of the open segment, from one listing.
+    /// What `open/` shows of the open segment, from one listing.
     fn find(&self) -> Result<Found> {
         let mut opens = Vec::new();
         let mut sealing = Vec::new();
         let mut sealed = Vec::new();
         for dir in self.list()? {
-            let name = dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            if name == OPEN || name.starts_with("open-") {
-                opens.push(dir);
-            } else if name.starts_with("sealed-") {
-                sealed.push(dir);
-            } else {
-                sealing.push(dir);
+            let name = dir.file_name().unwrap_or_default().to_string_lossy();
+            match State::of(&name) {
+                Some(State::Open) => opens.push(dir),
+                Some(State::Sealed) => sealed.push(dir),
+                Some(State::Sealing) => sealing.push(dir),
+                None => {}
             }
         }
         if opens.len() > 1 {
@@ -1045,7 +1153,7 @@ impl Log {
         Ok(Found::Pending { sealing, sealed })
     }
 
-    /// The listing repeated, for a root that showed none of the names:
+    /// The listing repeated, for an `open/` that showed none of the names:
     /// `readdir` is not atomic, and a rename can fall into it.
     fn find_again(&self) -> Result<Found> {
         for _ in 1..LISTING_TRIES {
@@ -1128,37 +1236,58 @@ impl PathOf for Store {
     }
 }
 
+/// The state a directory name in `open/` says: `<S>` or `first` open,
+/// `<S>.sealing`, `<S>.sealed-<S'>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Open,
+    Sealing,
+    Sealed,
+}
+
+impl State {
+    /// `None` for a name that is none of the three, which `open/` holds
+    /// nothing of.
+    fn of(name: &str) -> Option<State> {
+        if let Some(stem) = name.strip_suffix(SEALING_SUFFIX) {
+            return is_open_name(stem).then_some(State::Sealing);
+        }
+        if let Some((stem, decided)) = name.split_once(SEALED_INFIX) {
+            return (is_open_name(stem) && Digest::parse(decided).is_ok()).then_some(State::Sealed);
+        }
+        is_open_name(name).then_some(State::Open)
+    }
+}
+
+fn is_open_name(name: &str) -> bool {
+    name == FIRST || Digest::parse(name).is_ok()
+}
+
 fn open_name(previous: Option<&Digest>) -> String {
     match previous {
-        None => OPEN.to_string(),
-        Some(digest) => format!("{OPEN}-{digest}"),
+        None => FIRST.to_string(),
+        Some(digest) => digest.to_string(),
     }
 }
 
 fn sealing_name(previous: Option<&Digest>) -> String {
-    match previous {
-        None => SEALING.to_string(),
-        Some(digest) => format!("{SEALING}-{digest}"),
-    }
+    format!("{}{SEALING_SUFFIX}", open_name(previous))
 }
 
 fn sealed_name(previous: Option<&Digest>, digest: &Digest) -> String {
-    match previous {
-        None => format!("{SEALED}-{digest}"),
-        Some(previous) => format!("{SEALED}-{previous}-{digest}"),
-    }
+    format!("{}{SEALED_INFIX}{digest}", open_name(previous))
 }
 
-/// The segment a directory's name ends in: the predecessor of an open or
+/// The segment a directory's name carries: the predecessor of an open or
 /// sealing directory, the decided segment of a sealed one. `None` for the
 /// first open segment, and for a name that carries no digest.
 fn digest_in_name(dir: &Path) -> Option<Digest> {
     let name = dir.file_name()?.to_str()?;
-    let last = name.rsplit('-').next()?;
-    if last == name {
-        return None;
-    }
-    Digest::parse(last).ok()
+    let carried = match name.split_once(SEALED_INFIX) {
+        Some((_, decided)) => decided,
+        None => name.strip_suffix(SEALING_SUFFIX).unwrap_or(name),
+    };
+    Digest::parse(carried).ok()
 }
 
 /// Rename a directory; `false` when it is gone or the name is taken.
@@ -1357,14 +1486,19 @@ mod tests {
         .unwrap()
     }
 
+    /// What `open/` holds, by name.
     fn names(dir: &TempDir) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir.path())
+        let mut names: Vec<String> = fs::read_dir(dir.path().join("open"))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "claims")
             .collect();
         names.sort();
         names
+    }
+
+    /// `open/<name>`.
+    fn under_open(dir: &TempDir, name: &str) -> PathBuf {
+        dir.path().join("open").join(name)
     }
 
     fn lines_of(claims: &[Claim]) -> Vec<(String, String)> {
@@ -1378,7 +1512,17 @@ mod tests {
     fn the_open_segment_is_a_directory_of_bundles() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
-        assert_eq!(names(&dir), ["open"]);
+        assert_eq!(names(&dir), ["first"]);
+        let mut root: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        root.sort();
+        assert_eq!(
+            root,
+            ["claims", "open"],
+            "the root holds open/, nothing more"
+        );
         assert!(log.head().unwrap().is_empty());
 
         log.append_all(&[
@@ -1397,7 +1541,7 @@ mod tests {
             claims.iter().all(|claim| claim.id().is_some()),
             "read with ids"
         );
-        let files: Vec<String> = fs::read_dir(dir.path().join("open"))
+        let files: Vec<String> = fs::read_dir(under_open(&dir, "first"))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -1440,7 +1584,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["early", "late"]
         );
-        assert_eq!(names(&dir), [format!("open-{}", segment.digest())]);
+        assert_eq!(names(&dir), [segment.digest().to_string()]);
         let open = log.open().unwrap().unwrap();
         assert_eq!(open.previous(), Some(segment.digest()));
         assert!(open.bundles().is_empty());
@@ -1501,6 +1645,35 @@ mod tests {
     }
 
     #[test]
+    fn an_append_that_has_itself_written_a_mebibyte_seals_first() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        // One bundle of about half the bytes, twice: the count stays far
+        // below SEAL_AT, the bytes of this process do not.
+        let half = |prefix: &str| -> Vec<Claim> {
+            (0..2000)
+                .map(|n| claim(&format!("{prefix}{n:0>160}"), "2026-09-05T12:00:00Z"))
+                .collect()
+        };
+        log.append_all(&half("a")).unwrap();
+        log.append_all(&half("b")).unwrap();
+        assert_eq!(log.segments().unwrap().len(), 0, "written, not sealed");
+        assert!(log.written_to(&log.open().unwrap().unwrap().dir) >= SEAL_AT_BYTES);
+
+        log.append(&claim("one more", "2026-09-05T12:00:01Z"))
+            .unwrap();
+
+        let segments = log.segments().unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(log.read(segments[0].digest()).unwrap().len(), 4000);
+        assert_eq!(log.open().unwrap().unwrap().bundles().len(), 1);
+
+        // Another Log on the same archive knows nothing of those bytes.
+        let other = Log::new(store_in(&dir), dir.path());
+        assert_eq!(other.written_to(&other.open().unwrap().unwrap().dir), 0);
+    }
+
+    #[test]
     fn a_late_bundle_survives_the_seal_and_goes_into_the_next() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
@@ -1508,8 +1681,8 @@ mod tests {
         log.append(&first).unwrap();
         // The seal has listed and renamed; a writer whose path had
         // resolved before lands its bundle in the sealing directory.
-        fs::rename(dir.path().join("open"), dir.path().join("sealing")).unwrap();
-        let sealing = dir.path().join("sealing");
+        let sealing = under_open(&dir, "first.sealing");
+        fs::rename(under_open(&dir, "first"), &sealing).unwrap();
         let late_line = format!("{}\n", claim("late", "2026-09-05T12:00:01Z").to_line());
         log.bundle_store(&sealing)
             .add(late_line.as_bytes())
@@ -1521,7 +1694,7 @@ mod tests {
         let text = segment_text(None, lines_of(&[first]));
         let digest = log.store.digest(text.as_bytes());
         write_segment_file(&sealing, &text).unwrap();
-        let sealed = dir.path().join(format!("sealed-{digest}"));
+        let sealed = under_open(&dir, &format!("first.sealed-{digest}"));
         fs::rename(&sealing, &sealed).unwrap();
         log.store.add(text.as_bytes()).unwrap();
         log.finish_sealed(&sealed, Some(&BTreeSet::from([listed])))
@@ -1542,7 +1715,7 @@ mod tests {
         let log = log_in(&dir);
         log.append(&claim("first", "2026-09-05T12:00:00Z")).unwrap();
         // Stopped right after step 1.
-        fs::rename(dir.path().join("open"), dir.path().join("sealing")).unwrap();
+        fs::rename(under_open(&dir, "first"), under_open(&dir, "first.sealing")).unwrap();
         assert!(log.seal_pending().unwrap());
         assert!(!log.head_lost().unwrap());
 
@@ -1564,12 +1737,12 @@ mod tests {
             .unwrap();
         let text = segment_text(None, lines_of(&log.head().unwrap()));
         let digest = log.store.digest(text.as_bytes());
-        fs::rename(dir.path().join("open"), dir.path().join("sealing")).unwrap();
-        write_segment_file(&dir.path().join("sealing"), &text).unwrap();
+        fs::rename(under_open(&dir, "first"), under_open(&dir, "first.sealing")).unwrap();
+        write_segment_file(&under_open(&dir, "first.sealing"), &text).unwrap();
         // Stopped right after step 3: decided, not stored.
         fs::rename(
-            dir.path().join("sealing"),
-            dir.path().join(format!("sealed-{digest}")),
+            under_open(&dir, "first.sealing"),
+            under_open(&dir, &format!("first.sealed-{digest}")),
         )
         .unwrap();
         assert!(!log.store.contains(&digest).unwrap());
@@ -1584,7 +1757,7 @@ mod tests {
         );
         assert!(log.store.contains(&digest).unwrap());
         assert_eq!(log.read(&digest).unwrap().len(), 2);
-        assert_eq!(names(&dir), [format!("open-{digest}")]);
+        assert_eq!(names(&dir), [digest.to_string()]);
         assert!(
             log.head().unwrap().is_empty(),
             "both bundles were in the segment and went"
@@ -1598,8 +1771,8 @@ mod tests {
         log.append(&claim("first", "2026-09-05T12:00:00Z")).unwrap();
         let digest = log.store.digest(b"not what was decided");
         fs::rename(
-            dir.path().join("open"),
-            dir.path().join(format!("sealed-{digest}")),
+            under_open(&dir, "first"),
+            under_open(&dir, &format!("first.sealed-{digest}")),
         )
         .unwrap();
 
@@ -1619,7 +1792,7 @@ mod tests {
         let log = log_in(&dir);
         log.append(&claim("one", "2026-09-05T12:00:00Z")).unwrap();
         let segment = log.seal().unwrap().unwrap();
-        fs::remove_dir_all(dir.path().join(format!("open-{}", segment.digest()))).unwrap();
+        fs::remove_dir_all(under_open(&dir, segment.digest().as_ref())).unwrap();
 
         assert!(log.head_lost().unwrap());
         assert!(matches!(
@@ -1644,7 +1817,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let other = log.store.digest(b"other");
-        fs::create_dir(dir.path().join(format!("open-{other}"))).unwrap();
+        fs::create_dir(under_open(&dir, other.as_ref())).unwrap();
         assert!(matches!(log.open(), Err(Error::TwoOpen(_))));
         assert!(matches!(
             log.append(&claim("x", "2026-09-05T12:00:00Z")),
@@ -1704,11 +1877,25 @@ mod tests {
         let other =
             Digest::parse("1f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e")
                 .unwrap();
-        assert_eq!(digest_in_name(Path::new("/a/open")), None);
+        assert_eq!(digest_in_name(Path::new("/a/open/first")), None);
+        assert_eq!(digest_in_name(Path::new("/a/open/first.sealing")), None);
         assert_eq!(
-            digest_in_name(Path::new(&format!("/a/open-{digest}"))),
+            digest_in_name(Path::new(&format!("/a/open/{digest}"))),
             Some(digest.clone())
         );
+        assert_eq!(
+            digest_in_name(Path::new(&format!("/a/open/{digest}.sealing"))),
+            Some(digest.clone())
+        );
+        assert_eq!(State::of("first"), Some(State::Open));
+        assert_eq!(State::of(digest.as_ref()), Some(State::Open));
+        assert_eq!(State::of("first.sealing"), Some(State::Sealing));
+        assert_eq!(
+            State::of(&sealed_name(Some(&digest), &other)),
+            Some(State::Sealed)
+        );
+        assert_eq!(State::of("tmp"), None);
+        assert_eq!(State::of("open-abc"), None);
         assert_eq!(
             digest_in_name(Path::new(&sealed_name(Some(&digest), &other))),
             Some(other.clone())

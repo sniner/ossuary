@@ -425,15 +425,10 @@ mod tests {
 
     /// The open segment's directory, whatever it is called right now.
     fn open_dir(archive: &Archive) -> std::path::PathBuf {
-        fs::read_dir(archive.root())
+        std::fs::read_dir(archive.root().join("open"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .find(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("open")
-            })
+            .find(|path| path.is_dir())
             .expect("an open segment")
     }
 

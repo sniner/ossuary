@@ -51,20 +51,19 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
         ),
     };
     let mut opens = Vec::new();
-    for name in remote.list("")? {
-        if name == "open" || name.starts_with("open-") {
-            opens.push(name);
-        } else if name.starts_with("sealing") || name.starts_with("sealed-") {
+    for name in open_entries(remote)? {
+        if name.ends_with(".sealing") || name.contains(".sealed-") {
             bail!(
-                "the target's open segment is being sealed ({name}), so something other than ossuary sync wrote to the target; name another target"
+                "the target's open segment is being sealed (open/{name}), so something other than ossuary sync wrote to the target; name another target"
             );
         }
+        opens.push(name);
     }
     match opens.as_slice() {
         [] => Ok(Held { marked, seal: None }),
         [name] => {
             if remote
-                .list(name)?
+                .list(&format!("{OPEN_DIR}/{name}"))?
                 .iter()
                 .any(|entry| entry.ends_with(".jsonl"))
             {
@@ -72,12 +71,12 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
                     "the target's open segment holds claims, so something other than ossuary sync wrote to the target; name another target"
                 );
             }
-            let Some((_, hex)) = name.split_once('-') else {
+            if name == "first" {
                 return Ok(Held { marked, seal: None });
-            };
-            let seal = Digest::parse(hex).map_err(|_| {
+            }
+            let seal = Digest::parse(name).map_err(|_| {
                 anyhow::anyhow!(
-                    "the target's open segment {name} names no segment; name another target"
+                    "the target's open segment open/{name} names no segment; name another target"
                 )
             })?;
             Ok(Held {
@@ -357,7 +356,7 @@ pub fn copy_segments(archive: &Archive, remote: &dyn Remote, segments: &[Piece])
 }
 
 /// Make the copy's open segment the one after `seal`: the directory
-/// `open-<seal>`, empty, in place of whatever open segment the copy had.
+/// `open/<seal>`, empty, in place of whatever open segment the copy had.
 /// This is what makes the copy hold the seal, so it comes after
 /// everything the seal covers. The old directory goes first: a run that
 /// stops in between leaves the copy without an open segment, and the
@@ -368,32 +367,73 @@ pub fn copy_segments(archive: &Archive, remote: &dyn Remote, segments: &[Piece])
 ///
 /// When the copy cannot be written.
 pub fn advance(remote: &dyn Remote, seal: &Digest) -> Result<()> {
-    let next = format!("open-{seal}");
-    // The open segment of a copy made by 0.17 or earlier is one file,
-    // which held nothing but the seal's name: it goes the same way.
-    let old: Vec<String> = remote
-        .list("")?
+    let next = seal.to_string();
+    let mut old: Vec<String> = open_entries(remote)?
         .into_iter()
-        .filter(|name| {
-            name != &next
-                && (name == "open" || name.starts_with("open-") || name == ossuary_core::OLD_HEAD)
-        })
+        .filter(|name| name != &next)
+        .map(|name| format!("{OPEN_DIR}/{name}"))
         .collect();
+    // The open segment of a copy made by 0.18 lay in the root, by 0.17
+    // or earlier it was one file; both held nothing but the seal's name
+    // and go the same way.
+    old.extend(old_root_entries(remote)?);
     for name in &old {
         remote.remove_tree(name)?;
     }
-    let left: Vec<String> = remote
-        .list("")?
+    let mut left: Vec<String> = open_entries(remote)?
         .into_iter()
+        .map(|name| format!("{OPEN_DIR}/{name}"))
+        .chain(old_root_entries(remote)?)
         .filter(|name| old.contains(name))
         .collect();
+    left.sort();
     if !left.is_empty() {
         bail!(
-            "the target keeps the old open segment {}; remove the folder by hand, then run the sync again",
+            "the target keeps the old open segment {}; remove it by hand, then run the sync again",
             left.join(", ")
         );
     }
-    remote.make_dir(&next)
+    remote.make_dir(&format!("{OPEN_DIR}/{next}"))
+}
+
+/// The directory in the copy's root that holds its open segment.
+const OPEN_DIR: &str = "open";
+
+/// What the copy's `open/` holds; nothing when there is no `open/`, or
+/// when `open/` is the open segment a copy made by 0.18 had before its
+/// first seal, which [`old_root_entries`] names.
+fn open_entries(remote: &dyn Remote) -> Result<Vec<String>> {
+    if !remote.list("")?.iter().any(|name| name == OPEN_DIR) {
+        return Ok(Vec::new());
+    }
+    let entries = remote.list(OPEN_DIR)?;
+    if is_old_open(&entries) {
+        return Ok(Vec::new());
+    }
+    Ok(entries)
+}
+
+/// Whether a listing of `open/` is that of a 0.18 open segment: a
+/// directory of bundles with `tmp/`, not one of directories.
+fn is_old_open(entries: &[String]) -> bool {
+    entries
+        .iter()
+        .any(|name| name == "tmp" || name.ends_with(".jsonl"))
+}
+
+/// The open segment of 0.18 or earlier in the copy's root, by path:
+/// `head.jsonl`, `open-<S>`, or `open` when it holds bundles.
+fn old_root_entries(remote: &dyn Remote) -> Result<Vec<String>> {
+    let mut old = Vec::new();
+    for name in remote.list("")? {
+        let is_old = name == ossuary_core::OLD_HEAD
+            || name.starts_with("open-")
+            || (name == OPEN_DIR && is_old_open(&remote.list(OPEN_DIR)?));
+        if is_old {
+            old.push(name);
+        }
+    }
+    Ok(old)
 }
 
 /// Whether one file here matches its name: `Ok(false)` when it does not,
@@ -450,12 +490,13 @@ mod tests {
         entry.digest().clone()
     }
 
-    /// The copy's open segment directory, by name; `None` without one.
+    /// The copy's open segment directory in `open/`, by name; `None`
+    /// without one.
     fn open_name(copy: &std::path::Path) -> Option<String> {
-        fs::read_dir(copy)
-            .unwrap()
+        fs::read_dir(copy.join("open"))
+            .ok()?
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .find(|name| name == "open" || name.starts_with("open-"))
+            .next()
     }
 
     /// One whole run, as `main` puts it together.

@@ -6,9 +6,8 @@
 //! place, and the directory synced after the rename. The temporary file
 //! lies in the store of its destination, so the rename stays within one
 //! filesystem, and its name is one that `Store::prune_temp_files`
-//! recognises after an interrupted run. A file in the root (`FORMAT`,
-//! `head.jsonl`) has its temporary file beside it, as the log does for
-//! its head.
+//! recognises after an interrupted run. A file in the root (`FORMAT`)
+//! has its temporary file beside it.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};

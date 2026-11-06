@@ -1,6 +1,7 @@
-//! An archive of 0.17 or earlier brought into the current form: the open
-//! segment moved from `head.jsonl` into its directory, and every
-//! retraction rewritten to name the claims it retracts by id.
+//! An archive of 0.18 or earlier brought into the current form: the open
+//! segment moved from `head.jsonl` (0.17 and earlier) or from a directory
+//! in the archive root (0.18) into `open/`, and every retraction
+//! rewritten to name the claims it retracts by id.
 //!
 //! Until 0.17 a retraction carried `retract: true` and the value it
 //! retracted, or no value for the whole attribute, and meant "what stands
@@ -14,10 +15,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
-use immure::Algorithm;
-use ossuary_core::{Archive, Claim, ClaimId, OLD_HEAD};
+use immure::{Algorithm, Digest};
+use ossuary_core::{Archive, Claim, ClaimId, OLD_HEAD, old_open_dirs};
 use serde_json::Value;
 
 use crate::rewrite::{Rewrite, Segment, Words, parse};
@@ -57,17 +59,21 @@ impl Converted {
 ///
 /// # Errors
 ///
-/// Whatever [`Rewrite::plan`] can answer; `head.jsonl` that does not
-/// read as a segment; an archive in the form of ossuary 0.14 or earlier,
-/// which `ossuary-fix list` of 0.17 brings into the chain form first; and
-/// an old retraction whose line does not read.
+/// Whatever [`Rewrite::plan`] can answer; `head.jsonl` or a bundle of
+/// 0.18 that does not read; a seal of 0.18 under way or stopped, which
+/// a 0.18 run that writes finishes first; an archive in the form of
+/// ossuary 0.14 or earlier, which `ossuary-fix list` of 0.17 brings into
+/// the chain form first; and an old retraction whose line does not read.
 pub fn plan(archive: &Archive) -> Result<(Rewrite, Converted)> {
     let old = archive.root().join(OLD_HEAD);
-    let head_text = match fs::read_to_string(&old) {
+    let mut head_text = match fs::read_to_string(&old) {
         Ok(text) => Some(text),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
         Err(source) => return Err(source).with_context(|| format!("{}: reading", old.display())),
     };
+    if head_text.is_none() {
+        head_text = old_dir_text(archive.root())?;
+    }
     let algorithm = archive.log().store().algorithm();
     let mut converted = Converted::default();
     let rewrite = Rewrite::plan(
@@ -84,6 +90,60 @@ pub fn plan(archive: &Archive) -> Result<(Rewrite, Converted)> {
         },
     )?;
     Ok((rewrite, converted))
+}
+
+/// The open segment of 0.18, which lay in the archive root as
+/// `open-<S>/` (`open/` before the first seal), as the text of a segment:
+/// the header naming S, then the lines of its bundles in the order a
+/// seal gives them. `None` when there is no such directory.
+fn old_dir_text(root: &Path) -> Result<Option<String>> {
+    let dirs = old_open_dirs(root);
+    let [dir] = dirs.as_slice() else {
+        if dirs.is_empty() {
+            return Ok(None);
+        }
+        bail!(
+            "the archive has {} directories of the open segment of 0.18 in its root; a seal was under way or stopped there, and a run of ossuary 0.18 that writes finishes it; nothing was written",
+            dirs.len()
+        );
+    };
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    if !(name == "open" || name.starts_with("open-")) {
+        bail!(
+            "{}: a seal of 0.18 was under way or stopped; a run of ossuary 0.18 that writes finishes it; nothing was written",
+            dir.display()
+        );
+    }
+    let previous = match name.strip_prefix("open-") {
+        Some(hex) if hex != "first" => Some(
+            Digest::parse(hex).with_context(|| format!("{}: names no segment", dir.display()))?,
+        ),
+        _ => None,
+    };
+    let mut lines = Vec::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("{}: listing", dir.display()))? {
+        let entry = entry.with_context(|| format!("{}: listing", dir.display()))?;
+        if !entry.file_name().to_string_lossy().ends_with(".jsonl") {
+            continue;
+        }
+        let text = fs::read_to_string(entry.path())
+            .with_context(|| format!("{}: reading", entry.path().display()))?;
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            let claim = Claim::parse_line(line)
+                .with_context(|| format!("{}: a line does not read", entry.path().display()))?;
+            lines.push((claim.time().as_str().to_string(), line.to_string()));
+        }
+    }
+    lines.sort();
+    let mut text = match &previous {
+        None => "{\"ossuary-segment\":1}\n".to_string(),
+        Some(previous) => format!("{{\"ossuary-segment\":1,\"previous\":\"{previous}\"}}\n"),
+    };
+    for (_, line) in lines {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    Ok(Some(text))
 }
 
 /// Every old retraction in `segments` and `head` rewritten, in the order
@@ -292,11 +352,32 @@ mod tests {
         }
     }
 
+    /// An archive in the form of 0.18: the open segment moved from
+    /// `open/<name>` into the root as 0.18 named it.
+    fn as_of_0_18(archive: &Archive) {
+        let root = archive.root();
+        let dirs: Vec<_> = fs::read_dir(root.join("open"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(dirs.len(), 1);
+        let name = dirs[0].file_name().unwrap().to_string_lossy().into_owned();
+        let old = if name == "first" {
+            "open".to_string()
+        } else {
+            format!("open-{name}")
+        };
+        fs::rename(&dirs[0], root.join("open.moving")).unwrap();
+        fs::remove_dir(root.join("open")).unwrap();
+        fs::rename(root.join("open.moving"), root.join(old)).unwrap();
+    }
+
     /// An archive in the form before 0.18: sealed segments as given, the
     /// open segment as `head.jsonl` with `lines`.
     fn old_archive(dir: &TempDir, segments: &[&[String]], head: &[String]) -> Archive {
         let archive = archive(dir);
         archive.log().discard_open().unwrap();
+        fs::remove_dir(archive.root().join("open")).unwrap();
         let mut previous: Option<String> = None;
         for lines in segments {
             let mut text = match &previous {
@@ -332,6 +413,95 @@ mod tests {
                 Scope::Held,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn an_open_segment_of_0_18_moves_into_open_before_the_first_seal() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let log = archive.log();
+        log.append(&Claim::parse_line(&assertion("holiday", "2026-09-01T10:00:01Z")).unwrap())
+            .unwrap();
+        log.append(&Claim::parse_line(&assertion("beach", "2026-09-01T10:00:00Z")).unwrap())
+            .unwrap();
+        as_of_0_18(&archive);
+        assert!(archive.root().join("open").join("tmp").is_dir());
+        assert!(
+            Archive::open(archive.root()).is_err(),
+            "0.18's layout is refused"
+        );
+
+        let (rewrite, converted) = plan(&archive).unwrap();
+        assert_eq!(converted, Converted::default());
+        assert!(rewrite.changes());
+        assert!(rewrite.sentence(true).contains("the open segment"));
+        rewrite.apply(&archive).unwrap();
+
+        assert!(old_open_dirs(archive.root()).is_empty());
+        let archive = Archive::open(archive.root()).unwrap();
+        assert!(sound(&archive));
+        assert!(
+            archive
+                .root()
+                .join("open")
+                .join("first")
+                .join("tmp")
+                .is_dir()
+        );
+        let claims = archive.log().head().unwrap();
+        assert_eq!(claims.len(), 2);
+        assert_eq!(claims[0].value().unwrap(), "beach", "sorted by time");
+        assert_eq!(archive.log().open().unwrap().unwrap().bundles().len(), 1);
+    }
+
+    #[test]
+    fn an_open_segment_of_0_18_moves_into_open_after_a_seal() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let log = archive.log();
+        log.append(&Claim::parse_line(&assertion("holiday", "2026-09-01T10:00:00Z")).unwrap())
+            .unwrap();
+        let sealed = log.seal().unwrap().unwrap();
+        log.append(&Claim::parse_line(&assertion("beach", "2026-09-02T10:00:00Z")).unwrap())
+            .unwrap();
+        as_of_0_18(&archive);
+        assert!(
+            archive
+                .root()
+                .join(format!("open-{}", sealed.digest()))
+                .is_dir()
+        );
+
+        let (rewrite, _) = plan(&archive).unwrap();
+        rewrite.apply(&archive).unwrap();
+
+        assert!(old_open_dirs(archive.root()).is_empty());
+        let archive = Archive::open(archive.root()).unwrap();
+        assert!(sound(&archive));
+        let open = archive.log().open().unwrap().unwrap();
+        assert_eq!(open.previous(), Some(sealed.digest()));
+        assert_eq!(archive.log().head().unwrap().len(), 1);
+        assert_eq!(archive.log().segments().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_seal_of_0_18_under_way_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        archive
+            .log()
+            .append(&Claim::parse_line(&assertion("holiday", "2026-09-01T10:00:00Z")).unwrap())
+            .unwrap();
+        as_of_0_18(&archive);
+        fs::rename(archive.root().join("open"), archive.root().join("sealing")).unwrap();
+
+        let error = plan(&archive).unwrap_err();
+
+        assert!(error.to_string().contains("0.18"), "{error}");
+        assert!(
+            archive.root().join("sealing").is_dir(),
+            "nothing was written"
+        );
     }
 
     #[test]

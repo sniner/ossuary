@@ -215,15 +215,12 @@ fn an_archive_that_cannot_store_a_derived_file_stops_the_run_and_records_nothing
     );
 }
 
-/// The directories of the open segment in the archive root, by name.
+/// The directories of the open segment in the archive's `open/`, by name.
 fn open_dirs(archive: &Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(archive)
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(archive.join("open"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            let name = path.file_name().unwrap().to_string_lossy();
-            name.starts_with("open") || name.starts_with("seal")
-        })
+        .filter(|path| path.is_dir())
         .collect();
     dirs.sort();
     dirs
@@ -243,7 +240,7 @@ fn open_bundles(archive: &Path) -> Vec<String> {
 }
 
 /// An archive whose last seal stopped right after it began: the open
-/// segment renamed to `sealing-`, nothing else done.
+/// segment renamed to `.sealing`, nothing else done.
 fn archive_with_an_interrupted_seal() -> (TempDir, PathBuf) {
     let (dir, archive) = archive_with_a_file();
     let before = open_dirs(&archive);
@@ -253,8 +250,11 @@ fn archive_with_an_interrupted_seal() -> (TempDir, PathBuf) {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    let sealing = name.replacen("open", "sealing", 1);
-    std::fs::rename(&before[0], archive.join(sealing)).unwrap();
+    std::fs::rename(
+        &before[0],
+        archive.join("open").join(format!("{name}.sealing")),
+    )
+    .unwrap();
     (dir, archive)
 }
 
@@ -279,7 +279,7 @@ fn an_interrupted_seal_is_sound_and_named_by_the_audit() {
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with("sealing"),
+                .ends_with(".sealing"),
         "the audit wrote nothing: {dirs:?}"
     );
 }
@@ -303,12 +303,7 @@ fn the_next_run_that_writes_finishes_an_interrupted_seal_and_says_so() {
     );
     let dirs = open_dirs(&archive);
     assert!(
-        dirs.len() == 1
-            && dirs[0]
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("open-"),
-        "the seal was finished: {dirs:?}"
+        dirs.len() == 1 && dirs[0].file_name().unwrap().to_string_lossy().len() == 64,
+        "the seal was finished, the directory is named after the segment: {dirs:?}"
     );
 }

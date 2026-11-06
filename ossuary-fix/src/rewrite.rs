@@ -294,9 +294,23 @@ impl Rewrite {
             for line in &segment.lines {
                 claims.push(ossuary_core::Claim::parse_line(line)?);
             }
+            // The open segment of 0.18 lay in the root; the one before the
+            // first seal under the name `open/` now has. Out of the way
+            // first, under a name the fix still knows when it is run
+            // again after a stop.
+            let root_open = archive.root().join("open");
+            if root_open.join("tmp").is_dir() {
+                let aside = archive.root().join("open-first");
+                fs::rename(&root_open, &aside).with_context(|| {
+                    format!("{}: renaming to {}", root_open.display(), aside.display())
+                })?;
+            }
             log.discard_open()?;
             log.begin(previous.as_ref())?;
             log.append_all(&claims)?;
+            for dir in ossuary_core::old_open_dirs(archive.root()) {
+                fs::remove_dir_all(&dir).with_context(|| format!("{}: removing", dir.display()))?;
+            }
             // The open segment of the form before 0.18, when there was one.
             match fs::remove_file(archive.root().join(ossuary_core::OLD_HEAD)) {
                 Ok(()) => {}

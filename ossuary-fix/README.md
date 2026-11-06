@@ -42,15 +42,16 @@ they come after everything recorded before the fix.
 ## The fixes
 
 - `open`: until 0.17 the open segment was one file, `head.jsonl`, and a
-  retraction carried the value it retracted. The open segment is now a
-  directory with one file per append, and a retraction names the claims
-  it retracts by id. The fix moves the open segment into its directory
-  and rewrites every retraction to name the claims that stood when it
-  was written; a retraction that found nothing standing is left out.
-  Assertions are not changed. ossuary refuses an archive that still has
-  `head.jsonl`, so this fix runs once, before anything else; an archive
-  written by 0.14 or earlier needs `ossuary-fix list` of ossuary 0.17
-  before it
+  retraction carried the value it retracted; 0.18 kept the open segment
+  as a directory in the archive root. The open segment is now a
+  directory under `open/` with one file per append, and a retraction
+  names the claims it retracts by id. The fix moves the open segment
+  into `open/`, rewrites every retraction to name the claims that stood
+  when it was written, a retraction that found nothing standing left
+  out, and seals. Assertions are not changed. ossuary refuses an archive
+  in an older form, so this fix runs once, before anything else; an
+  archive written by 0.14 or earlier needs `ossuary-fix list` of ossuary
+  0.17 before it
 - `origin`: until 0.6.3 the origin of a derived file was recorded as
   `derive:derived-from`; it is now `prov:origin`. A derived file whose
   origin is recorded only under the old attribute is still in the

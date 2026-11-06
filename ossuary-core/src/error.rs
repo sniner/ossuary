@@ -166,10 +166,11 @@ pub enum Error {
     )]
     SealUnfinished(std::path::PathBuf),
 
-    /// The archive still has `head.jsonl`, the open segment of the form
-    /// before 0.18. Nothing here reads it.
+    /// The archive still has its open segment where 0.18 or an earlier
+    /// version kept it: `head.jsonl`, or a directory in the root.
+    /// Nothing here reads it.
     #[error(
-        "{}: the archive is in the form before 0.18 (head.jsonl); run `ossuary-fix open` once to bring it into the current form",
+        "{}: the archive is in the form of 0.18 or earlier; run `ossuary-fix open` once to bring it into the current form",
         .0.display()
     )]
     OldForm(std::path::PathBuf),

@@ -29,7 +29,7 @@ archive/
     content/        immure store: the ingested files
     derived/        immure store: files produced by extractors
     claims/         immure store: sealed claim segments only
-    open-<S>/       the open segment: one file per append, see below
+    open/<S>/       the open segment: one file per append, see below
     cache/          rebuildable, safe to delete at any time
 ```
 
@@ -229,40 +229,42 @@ absent from a first segment. A reader skips header members it does not
 know: generation 1 may gain members that add information to a header,
 and none of them changes how the claims after it are read.
 
-The open segment is a directory in the archive root, `open-<S>/`, where
-`S` is the digest of the segment sealed last; before the first seal it
-is `open/`. It holds one file per append, a *bundle*: the claim lines
-of that append, line-delimited JSON without a header, named by the
-digest of its bytes with the suffix `.jsonl`, and written once. The
-directory also holds `tmp/`, where bundles are written before they are
-renamed into place; what lies in it is not part of the record. Every
-bundle in the directory is unsealed, whatever its name.
+The open segment is a directory under `open/` in the archive root,
+`open/<S>/`, where `S` is the digest of the segment sealed last; before
+the first seal it is `open/first/`. `open/` holds that one directory and
+nothing else. The directory holds one file per append, a *bundle*: the
+claim lines of that append, line-delimited JSON without a header, named
+by the digest of its bytes with the suffix `.jsonl`, and written once.
+It also holds `tmp/`, where bundles are written before they are renamed
+into place; what lies in it is not part of the record. Every bundle in
+the directory is unsealed, whatever its name.
 
 Sealing turns the bundles into one sealed segment and the directory into
 the next open segment. It is done by renames, each atomic, so that
 several writers, on several machines, can seal without a lock:
 
-1. `open-<S>/` is renamed to `sealing-<S>/`. A bundle that still lands
-   in it after the rename is not part of this seal and stays for the
-   next.
-2. The segment is built from the bundles found in `sealing-<S>/`: the
+1. `open/<S>/` is renamed to `open/<S>.sealing/`. A bundle that still
+   lands in it after the rename is not part of this seal and stays for
+   the next.
+2. The segment is built from the bundles found in `<S>.sealing/`: the
    header line naming `S` as `previous`, then every line of every bundle,
    sorted by `time` and then by the line itself. Its bytes are written
    into the directory as `segment-<pid>-<n>.seg`.
-3. `sealing-<S>/` is renamed to `sealed-<S>-<S'>/`, `S'` being the
+3. `<S>.sealing/` is renamed to `<S>.sealed-<S'>/`, `S'` being the
    digest of that segment. Only one rename wins, so one segment is
    decided.
 4. The segment is stored in `claims/` under `S'`.
 5. The bundles whose lines are all in the segment are deleted, the
    `segment-*.seg` files too, and the directory is renamed to
-   `open-<S'>/`.
+   `open/<S'>/`.
 
-A directory named `sealing-` or `sealed-` with no `open-` beside it is a
-seal under way or stopped. A reader takes its bundles as unsealed; a
-writer finishes the seal from the step it stopped at, which is what the
-names say: a `sealed-<S>-<S'>/` whose `S'` is not yet in `claims/` holds
-the segment's bytes in a `segment-*.seg` file. When to seal is up to the
-software; a reader must not assume anything about a segment's size.
+A directory named `.sealing` or `.sealed-…` with no open one beside it
+is a seal under way or stopped. A reader takes its bundles as unsealed;
+a writer finishes the seal from the step it stopped at, which is what
+the names say: a `<S>.sealed-<S'>/` whose `S'` is not yet in `claims/`
+holds the segment's bytes in a `segment-*.seg` file. When to seal is up
+to the software; a reader must not assume anything about a segment's
+size.
 
 A sealed segment is immutable like everything else in a store, and the
 format adds its own rule: **segments are never compacted, combined or
@@ -294,7 +296,7 @@ archive closes that gap (see [the seal](#the-seal) below).
 rule: every segment in the claims store can be reached by walking back
 from the open segment over `previous`. The open segment therefore names
 the segment sealed last. No open segment while sealed segments exist,
-and no `sealing-` or `sealed-` directory either, is a lost open
+and no `.sealing` or `.sealed-…` directory either, is a lost open
 segment, and no new one is begun in its place by a writer. A segment
 the walk does not reach is a finding. A chain broken by a lost segment
 or a lost open segment can only be repaired by rewriting the segments
@@ -348,8 +350,8 @@ are sealed, the key:
 2. Walk `claims/`, unseal each entry if it is sealed, decompress it
    (`zstd -dc`), and check that the first line has `ossuary-segment`.
    Starting from the segment the open segment's directory is named
-   after (`open-<S>/`; a `sealing-` or `sealed-` directory stands in for
-   it, see [Segments](#segments)), walk back over `previous` to the
+   after (`open/<S>/`; a `.sealing` or `.sealed-…` directory stands in
+   for it, see [Segments](#segments)), walk back over `previous` to the
    first segment: that is the order of the segments. A name the walk
    finds no segment for is a missing segment, and a segment the walk
    does not reach does not belong to the record.

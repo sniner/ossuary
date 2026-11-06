@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Breaking changes
+
+- **Run `ossuary-fix open` once on every archive, also one that 0.18 wrote.** The open segment's
+  directory now lies under `open/` in the archive root, named after the segment sealed last
+  (`open/<segment>`, `open/first` before the first seal), so the root holds nothing but the stores,
+  `open/`, `cache/` and the two files. Every command refuses an archive in the form of 0.18 or
+  earlier and names the fix; the fix moves the open segment, seals it, and does for an archive of
+  0.17 or earlier what it did in 0.18. Make a copy of the archive first
+
+### Changed
+
+- **The open segment is sealed by size as well as by count**: an append that has itself written a
+  mebibyte since the last seal seals first, so one large append after another no longer grows the
+  open segment to a thousand of them
+- **`ossuary-fix open` seals the moved open segment** instead of leaving it as one large bundle
+- **`ossuary-sync` keeps the copy's open segment under `open/`** as well; a copy made by 0.18 or
+  earlier is brought into the current form by the next sync
+
 ## [0.18.0] - 2026-11-06
 
 ### Breaking changes

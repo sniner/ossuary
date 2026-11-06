@@ -43,7 +43,7 @@ $ find . -type f -not -path './cache/*' | sort
 ./content/93/03/9303125ef2413d42a1083e036accd9a3aeb323d2f90828fdf361273b0c8cfad5
 ./content/da/d5/dad58b5df9916f9338240587a484fd02aafd319e2cccff10537f31979da289ea
 ./FORMAT
-./open-880387cd1af17fcaa6b19182eabe63d2d851d5647b3be472ce211ca3dfd59af0/5be0c3e1e6d3b2d0d4f0f1c2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6.jsonl
+./open/880387cd1af17fcaa6b19182eabe63d2d851d5647b3be472ce211ca3dfd59af0/5be0c3e1e6d3b2d0d4f0f1c2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6.jsonl
 ```
 
 - `content/` holds the files that were added to the archive. Each file is
@@ -53,10 +53,10 @@ $ find . -type f -not -path './cache/*' | sort
 - `derived/` holds files that extractors produced from the files in
   `content/`, such as attachments unpacked from a mail. It is read the
   same way as `content/`.
-- `claims/` and the `open-…/` directory hold the claim log: everything
-  recorded about the files, such as their original paths, dates and tags.
-  `claims/` holds the sealed segments; the directory is the open segment,
-  one file per append, and its name carries the segment sealed last. A
+- `claims/` and `open/` hold the claim log: everything recorded about
+  the files, such as their original paths, dates and tags. `claims/`
+  holds the sealed segments; the one directory in `open/` is the open
+  segment, one file per append, named after the segment sealed last. A
   stored file has no name other than its checksum; its original name is
   in the log.
 - `config.toml` holds settings for adding files. Reading does not need it.
@@ -172,21 +172,24 @@ read_entry() {
 
 The complete log is the claims of every sealed segment in the order of
 the chain, followed by those in the open segment's directory. The chain
-is read backwards: the directory's name, `open-<segment>`, names the
-last sealed segment, the first line of every segment names the one
-before it, and the first segment names none. Before the first seal the
-directory is `open`. A directory named `sealing-…` or `sealed-…` instead
-is a seal that stopped (see [the archive format](format.md#segments)):
-treat it like the open segment, the last name in it being the segment
-sealed last. This writes the log to `~/recovery/log.jsonl`:
+is read backwards: the directory's name, `open/<segment>`, is the last
+sealed segment, the first line of every segment names the one before
+it, and the first segment names none. Before the first seal the
+directory is `open/first`. A directory named `<segment>.sealing` or
+`<segment>.sealed-<next>` instead is a seal that stopped (see [the
+archive format](format.md#segments)): treat it like the open segment,
+the last name in it being the segment sealed last. This writes the log
+to `~/recovery/log.jsonl`:
 
 ```bash
 out=~/recovery
 mkdir -p "$out"
-open=$(echo open* sealing* sealed*)
+open=$(echo open/*)
+segment=${open##*/}
+segment=${segment##*-}
+segment=${segment%.sealing}
+[ "$segment" = first ] && segment=
 order=
-segment=${open##*-}
-[ "$segment" = "$open" ] && segment=
 while [ -n "$segment" ]; do
     order="$segment $order"
     segment=$(read_entry "claims/${segment:0:2}/$segment.seg.zst" | head -n 1 | jq -r '.previous // empty')

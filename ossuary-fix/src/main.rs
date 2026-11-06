@@ -117,17 +117,18 @@ enum Command {
         #[arg(long)]
         accept_loss: bool,
     },
-    /// Bring an archive of 0.17 or earlier into the current form
+    /// Bring an archive of 0.18 or earlier into the current form
     ///
     /// Until 0.17 the open segment was one file, head.jsonl, and a
-    /// retraction carried the value it retracted. The open segment is now
-    /// a directory of bundles, and a retraction names the claims it
-    /// retracts by id. This fix moves the open segment into its
-    /// directory and rewrites every retraction to name the claims that
-    /// stood when it was written; a retraction that found nothing
-    /// standing is left out. Assertions are not changed. The current
-    /// version refuses an archive that still has head.jsonl, so this fix
-    /// runs once, before anything else.
+    /// retraction carried the value it retracted; 0.18 kept the open
+    /// segment as a directory in the archive root. The open segment is
+    /// now a directory under open/, and a retraction names the claims it
+    /// retracts by id. This fix moves the open segment into open/,
+    /// rewrites every retraction to name the claims that stood when it
+    /// was written, a retraction that found nothing standing left out,
+    /// and seals. Assertions are not changed. The current version refuses
+    /// an archive in an older form, so this fix runs once, before
+    /// anything else.
     ///
     /// The segments from the first rewritten retraction on get new
     /// names, so seal ids given out for them no longer check. The query
@@ -230,6 +231,16 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             if let Some(words) = converted.sentence(cli.dry_run) {
                 sentence.push_str("; ");
                 sentence.push_str(&words);
+            }
+            // The moved open segment is one bundle of everything it held,
+            // which is a segment's worth: sealed here rather than left for
+            // the next writer.
+            if rewrite.changes() {
+                if cli.dry_run {
+                    sentence.push_str("; the open segment would be sealed");
+                } else if archive.log().seal()?.is_some() {
+                    sentence.push_str("; the open segment sealed");
+                }
             }
             (sentence, rewrite.seals(cli.dry_run))
         }

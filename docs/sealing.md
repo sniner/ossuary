@@ -147,7 +147,7 @@ out:
 |---|---|
 | A sealed segment is damaged or cannot be read | Copy it back from a copy of the archive and seal again |
 | A sealed segment is missing | Copy it back from a copy of the archive and seal again. If no copy has it, `ossuary-fix chain --accept-loss` closes the chain over it; its claims are lost. Seal again after that |
-| The open segment, the `open-…` directory, is missing | `ossuary-fix chain --accept-loss` begins a new one after the last sealed segment; record the lost claims again if possible, then seal again |
+| The open segment, the directory in `open/`, is missing | `ossuary-fix chain --accept-loss` begins a new one after the last sealed segment; record the lost claims again if possible, then seal again |
 | A sealed segment that the chain does not reach | `ossuary-fix chain` takes it into the chain; seal again after that |
 
 ```console

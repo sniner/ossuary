@@ -8,7 +8,7 @@
 //! rename is not part of the trait.
 //!
 //! Paths are relative to the archive root and separated by `/`, as the
-//! files lie in the archive: `FORMAT`, `head.jsonl`,
+//! files lie in the archive: `FORMAT`, `open/<S>`,
 //! `content/80/0a/800a…`, `claims/1b/1bbb….seg.zst`. Making the
 //! directories a path needs is the backend's business.
 

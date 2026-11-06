@@ -29,7 +29,7 @@ stores: the hash algorithm and the shard depths. The directory contains:
 |---|---|
 | `content/` | the ingested files, unchanged, each named by the hash of its content |
 | `derived/` | files produced by extractors (unpacked attachments, extracted text), stored separately from the originals |
-| `claims/`, `open-…/` | the log: every claim ever written, in sealed segments (`claims/`) and the open segment, a directory with one file per append |
+| `claims/`, `open/` | the log: every claim ever written, in sealed segments (`claims/`) and the open segment, a directory under `open/` with one file per append |
 | `config.toml` | settings for writing: which paths ingest excludes, whether new entries are compressed, which extractors `extract` runs when none is named. Not needed for reading |
 | `cache/` | the query index and the list of files ingest has already seen. Can be deleted; it is rebuilt, and the next query and ingest take longer |
 

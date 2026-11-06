@@ -208,9 +208,13 @@ impl Archive {
             return Err(Error::ArchiveGeneration(generation.generation));
         }
         let mark: Mark = serde_json::from_str(line).map_err(|_| Error::BadMark(root.clone()))?;
-        // The form before 0.18 kept the open segment in one file; nothing
-        // here reads it, and a run on it would begin a second record.
-        if refuse_old_form && root.join(crate::log::OLD_HEAD).exists() {
+        // The form before 0.18 kept the open segment in one file, 0.18 in
+        // a directory of the root; nothing here reads either, and a run
+        // on it would begin a second record.
+        if refuse_old_form
+            && (root.join(crate::log::OLD_HEAD).exists()
+                || !crate::log::old_open_dirs(&root).is_empty())
+        {
             return Err(Error::OldForm(root));
         }
         let algorithm: Algorithm = mark.algorithm.parse()?;
