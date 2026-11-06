@@ -721,11 +721,14 @@ impl Index {
         self.replay_until("c.time <= ?1", &[Sql::Text(cutoff.to_string())])
     }
 
-    /// The archive's knowledge as of the end of one run: every claim up
-    /// to and including the run's last, in log order — a
-    /// [`as_of`](Index::as_of) that cuts at a claim instead of a second,
-    /// so two runs within one second still come apart. `None` when no
-    /// claim carries the run.
+    /// The archive's knowledge as of the end of one run: every claim in
+    /// the segments before the run's last claim, every claim before its
+    /// last second in that segment, and the run's own claims from that
+    /// second. `None` when no claim carries the run.
+    ///
+    /// Within a segment claims are ordered by time and then by their
+    /// line, so another run's claims from the run's last second stand
+    /// in no order to it; the last second is taken as the run's own.
     ///
     /// # Errors
     ///
@@ -733,14 +736,14 @@ impl Index {
     pub fn as_of_run(&self, run: &Run) -> Result<Option<Index>> {
         use rusqlite::types::Value as Sql;
         // The record's order: the chain between segments, time within
-        // one, and the row where times are equal.
+        // one.
         let last = self
             .connection
             .query_row(
-                "SELECT s.seq, c.time, c.position
+                "SELECT s.seq, c.time, c.run
                  FROM claims c JOIN segments s ON s.id = c.segment
                  WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
-                 ORDER BY s.seq DESC, c.time DESC, c.position DESC
+                 ORDER BY s.seq DESC, c.time DESC
                  LIMIT 1",
                 params![run.as_str()],
                 |row| {
@@ -752,12 +755,12 @@ impl Index {
                 },
             )
             .optional()?;
-        let Some((seq, time, position)) = last else {
+        let Some((seq, time, run_id)) = last else {
             return Ok(None);
         };
         let replayed = self.replay_until(
-            "s.seq < ?1 OR (s.seq = ?1 AND (c.time < ?2 OR (c.time = ?2 AND c.position <= ?3)))",
-            &[Sql::Integer(seq), Sql::Text(time), Sql::Integer(position)],
+            "s.seq < ?1 OR (s.seq = ?1 AND (c.time < ?2 OR (c.time = ?2 AND c.run = ?3)))",
+            &[Sql::Integer(seq), Sql::Text(time), Sql::Integer(run_id)],
         )?;
         Ok(Some(replayed))
     }
@@ -3195,8 +3198,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
-        // Two runs a second apart; within one second the record has no
-        // order, so a run's cutoff is its last claim's time.
+        // Two runs a second apart, and a third within a's last second:
+        // within one second the record has no order, so a run's last
+        // second is taken as its own.
         let when = "2026-09-01T10:00:00Z";
         let later = "2026-09-01T10:00:01Z";
         log.append(&said_in(
@@ -3215,6 +3219,14 @@ mod tests {
             &run_x('b'),
         ))
         .unwrap();
+        log.append(&said_in(
+            &subject(),
+            "user:tag",
+            json!("alongside"),
+            when,
+            &run_x('d'),
+        ))
+        .unwrap();
         index.fold(&log).unwrap();
 
         let tag = Attribute::parse("user:tag").unwrap();
@@ -3227,7 +3239,13 @@ mod tests {
         let after_b = index.as_of_run(&run_x('b')).unwrap().unwrap();
         assert_eq!(
             after_b.values(&subject(), &tag, Scope::Held).unwrap(),
-            [json!("first"), json!("second")]
+            [json!("alongside"), json!("first"), json!("second")]
+        );
+        let after_d = index.as_of_run(&run_x('d')).unwrap().unwrap();
+        assert_eq!(
+            after_d.values(&subject(), &tag, Scope::Held).unwrap(),
+            [json!("alongside")],
+            "the last second of a run is its own: a's claim from it is not in d's view, and the other way round"
         );
         assert_eq!(
             index
@@ -3235,8 +3253,8 @@ mod tests {
                 .unwrap()
                 .values(&subject(), &tag, Scope::Held)
                 .unwrap(),
-            [json!("first"), json!("second")],
-            "the later second holds both"
+            [json!("alongside"), json!("first"), json!("second")],
+            "the later second holds all three"
         );
         assert!(
             index.as_of_run(&run_x('c')).unwrap().is_none(),
@@ -3253,7 +3271,7 @@ mod tests {
         let (view, closed) = index.at("2026-09-01").unwrap().unwrap();
         assert_eq!(
             view.values(&subject(), &tag, Scope::Held).unwrap(),
-            [json!("first"), json!("second")]
+            [json!("alongside"), json!("first"), json!("second")]
         );
         assert_eq!(
             closed.as_str(),
