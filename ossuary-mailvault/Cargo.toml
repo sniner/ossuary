@@ -17,7 +17,7 @@ anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 imap = { version = "=3.0.0-alpha.15", default-features = false }
 imap-proto = "0.16.7"
-ossuary-core = { path = "../ossuary-core", version = "0.17.1" }
+ossuary-core = { path = "../ossuary-core", version = "0.18.0" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
