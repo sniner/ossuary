@@ -16,7 +16,9 @@ changed. Retracting a claim adds one more claim; nothing is deleted.
 It is an archive, not a backup tool. It does not mirror a disk or
 restore the state of a given day. It keeps what you decide to keep and
 lets you query it for decades, independent of file formats, software
-versions and the programs that wrote the files. Typical uses:
+versions and the programs that wrote the files. Several programs can
+add to the same archive at the same time, also over a network share
+(see [Design](#design)). Typical uses:
 
 * **Keeping what must not get lost.** Photos, documents, saved mail,
   finished projects, added from wherever they are. Duplicates are
@@ -571,6 +573,16 @@ separate store, apart from the originals. Everything else (the query
 index, what `ingest` remembers of earlier runs) is a cache in `cache/` that is
 rebuilt from the log whenever needed; deleting it makes the next query
 slow, but loses no data.
+
+Several programs can write to one archive at once, on one machine or on
+several, with the archive on a NAS or any other shared folder: a fetch
+from cron, an ingest started by hand, an extractor running in the
+background. Nothing is locked. Each append is a file that is written
+once and never changed, and sealing is decided by one atomic rename, so
+two runs that happen to meet cannot damage the archive or lose a claim.
+The one thing they can damage is the query index in `cache/`, which is
+then rebuilt by the next command; that takes a moment on a large
+archive and loses nothing.
 
 The format is documented so that an archive can be read without this
 software:
