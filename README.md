@@ -584,6 +584,17 @@ The one thing they can damage is the query index in `cache/`, which is
 then rebuilt by the next command; that takes a moment on a large
 archive and loses nothing.
 
+Each append is written to the disk before the program goes on. On a
+share, that is a round trip to the server for every append, so a run
+that records many claims is slow there: an import, the first `ossuary
+extract` of a large archive, the first fetch of a mailbox. Build such an
+archive on a local disk and copy it to the share after the last of these
+runs. Copy the whole archive directory, `cache/` included, for example
+with `rsync -rlt archive/ /mnt/nas/archive/`. Without `cache/`, the next
+command rebuilds the query index, and on a share that takes long as
+well. Later runs record a few claims at a time and work well on the
+share.
+
 The format is documented so that an archive can be read without this
 software:
 

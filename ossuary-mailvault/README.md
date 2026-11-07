@@ -418,6 +418,12 @@ every message of every folder. To download only what the import did not
 bring in, run `ossuary extract mail` and then `ossuary mailvault fetch
 --compare` (see [Fetching what is missing](#fetching-what-is-missing)).
 
+If the archive is to live on a share, run the import, `ossuary extract
+mail` and the first fetch on a local disk, and copy the archive to the
+share afterwards (see [Design](../README.md#design)). Each of these runs
+records many claims, and every append to an archive on a share costs a
+round trip to the server.
+
 ## Exit codes
 
 `0` when everything was fetched or imported. `1` when anything failed,
