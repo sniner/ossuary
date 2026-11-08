@@ -102,7 +102,13 @@ impl Archive {
     /// — has no failure mode, and the panic stands in for the arm that
     /// cannot be reached.
     pub fn create(root: impl Into<PathBuf>, algorithm: Algorithm) -> Result<Archive> {
-        let root = root.into();
+        let given = root.into();
+        // Created first so that the path resolves.
+        fs::create_dir_all(&given).map_err(|source| Error::Io {
+            context: format!("{}: creating the archive directory", given.display()),
+            source,
+        })?;
+        let root = resolved(given);
         let path = root.join(MARK);
         if path.exists() {
             return Err(Error::AlreadyArchive(root));
@@ -111,7 +117,6 @@ impl Archive {
             let context = format!("{}: {context}", root.display());
             move |source| Error::Io { context, source }
         };
-        fs::create_dir_all(&root).map_err(io("creating the archive directory"))?;
         fs::create_dir_all(root.join("cache")).map_err(io("creating cache/"))?;
         let mark = Mark {
             generation: GENERATION,
@@ -189,6 +194,7 @@ impl Archive {
     }
 
     fn open_inner(root: PathBuf, refuse_old_form: bool) -> Result<Archive> {
+        let root = resolved(root);
         let text = match fs::read_to_string(root.join(MARK)) {
             Ok(text) => text,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -273,7 +279,7 @@ impl Archive {
         Ok(true)
     }
 
-    /// Where the archive stands.
+    /// The archive directory as an absolute path with symlinks resolved.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
@@ -342,6 +348,14 @@ impl Archive {
     }
 }
 
+/// `root` as an absolute path, so that every message names the same
+/// directory however it was given (`.`, a relative path, a symlink). A path
+/// that does not resolve, such as a directory that does not exist, is
+/// returned as given; opening it then fails with that path in the error.
+fn resolved(root: PathBuf) -> PathBuf {
+    fs::canonicalize(&root).unwrap_or(root)
+}
+
 /// The archive's log: the claims store and the open segment in the root.
 fn log_in(claims: Store, root: &Path) -> Log {
     Log::new(claims, root)
@@ -398,7 +412,7 @@ mod tests {
         assert!(root.join("derived").is_dir());
         assert!(root.join("claims").is_dir());
         assert!(root.join("cache").is_dir());
-        assert_eq!(archive.root(), root);
+        assert_eq!(archive.root(), fs::canonicalize(&root).unwrap());
     }
 
     #[test]
@@ -517,6 +531,23 @@ mod tests {
             Algorithm::Blake3,
             "the mark remembered what immure deliberately does not"
         );
+    }
+
+    #[test]
+    fn the_root_is_the_resolved_path() {
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("archive");
+        let link = dir.path().join("link");
+
+        let created =
+            Archive::create(dir.path().join(".").join("archive"), Algorithm::Sha256).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let opened = Archive::open(&link).unwrap();
+
+        let expected = fs::canonicalize(&real).unwrap();
+        assert!(expected.is_absolute());
+        assert_eq!(created.root(), expected);
+        assert_eq!(opened.root(), expected);
     }
 
     #[test]

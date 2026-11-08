@@ -307,3 +307,21 @@ fn the_next_run_that_writes_finishes_an_interrupted_seal_and_says_so() {
         "the seal was finished, the directory is named after the segment: {dirs:?}"
     );
 }
+
+#[test]
+fn a_run_inside_the_archive_names_it_by_its_absolute_path() {
+    let (_dir, archive) = archive_with_a_file();
+
+    let output = run(Command::new(env!("CARGO_BIN_EXE_ossuary"))
+        .env_remove("OSSUARY_ARCHIVE")
+        .current_dir(&archive)
+        .arg("audit"));
+
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let expected = format!(
+        "archive {}",
+        std::fs::canonicalize(&archive).unwrap().display()
+    );
+    assert_eq!(stderr.lines().next(), Some(expected.as_str()), "{stderr}");
+}

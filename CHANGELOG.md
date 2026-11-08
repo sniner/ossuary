@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Every command shows the archive as an absolute path** with symbolic links resolved, also when
+  it runs inside the archive or is given a relative path. `ossuary extract` and the other commands
+  of `ossuary` itself showed `archive .`, while `ossuary mailvault` showed the full path
+
 ## [0.19.0] - 2026-11-06
 
 ### Breaking changes
