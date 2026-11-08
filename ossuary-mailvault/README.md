@@ -67,8 +67,9 @@ password = "bridge-password"
 |---|---|
 | `name` | the account name used in every `mailbox:place` claim. After a rename, new claims use the new name and existing claims keep the old one. Resume points are stored by name, so the first fetch after a rename fetches every folder in full |
 | `host`, `port`, `tls` | the server; port `993` with TLS by default. `tls = false` is allowed only for a bridge on localhost and is rejected for any other host |
-| `user`, `password` | the login. Any key can be given as `KEY_cmd` instead, most often `password_cmd`: a command that prints the value on its first line, for example from a password manager. A command runs only when its account is fetched; its prompts and error messages appear on the terminal. If both `KEY` and `KEY_cmd` are set, the command's value is used. `name`, `backend` and `folders` cannot be given as commands |
+| `user`, `password` | the login. Any key can be given as `KEY_cmd` instead, most often `password_cmd`: a command that prints the value on its first line, for example from a password manager. A command runs only when its account is fetched; its prompts and error messages appear on the terminal. If both `KEY` and `KEY_cmd` are set, the command's value is used. `name`, `backend`, `folders` and `skip` cannot be given as commands |
 | `folders` | the folders to fetch; all folders when omitted. Folder names differ between accounts: Gmail's `[Gmail]/All Mail` is `[Google Mail]/Alle Nachrichten` on a German account. `ossuary mailvault folders` lists the names the server uses |
+| `skip` | the folders not to fetch when `folders` is omitted, such as `skip = ["Junk"]` for the spam folder of iCloud Mail. A message that is fetched stays in the archive, so leave out the folders whose messages you do not want archived. The names are compared exactly, as `ossuary mailvault folders` lists them; a name the mailbox does not have is an error, and that account is not fetched. `folders` and `skip` cannot both be given |
 
 A Microsoft 365 mailbox is fetched over Microsoft's MS Graph API instead of
 IMAP, set with `backend = "msgraph"`. Such an account has no host and no
@@ -94,7 +95,7 @@ The tenant and client ids can also come from a command, as
 | `tenant_id`, `client_id` | the application registered in Azure, with the `Mail.Read` application permission granted by an administrator. That permission covers every mailbox in the tenant; an administrator can restrict it to this mailbox with an application access policy |
 | `client_secret` | the application's secret. Keep it in a password manager and use `client_secret_cmd` |
 | `user` | the address of the mailbox to read. It is not a login |
-| `folders` | as above; the folder names Outlook shows, in the mailbox's language, with a subfolder written as `Inbox/Projects` |
+| `folders`, `skip` | as above; the folder names Outlook shows, in the mailbox's language, with a subfolder written as `Inbox/Projects` |
 
 IMAP keys on an `msgraph` account are rejected, and `msgraph` keys on an
 IMAP account.

@@ -251,6 +251,21 @@ pub fn run(
     Ok(tally)
 }
 
+/// The line that opens an account: how many folders it fetches, and
+/// which ones its `skip` list leaves out.
+fn opening(account: &Account, fetched: usize) -> String {
+    let count = counted(fetched, "folder", "folders");
+    if account.skip.is_empty() {
+        format!("{}: {count}", account.name)
+    } else {
+        format!(
+            "{}: {count}, skipped: {}",
+            account.name,
+            account.skip.join(", ")
+        )
+    }
+}
+
 /// The index in `cache/`, caught up to the log — and, when that was
 /// real work, said so.
 fn caught_up(archive: &Archive, say: Say) -> Result<Index> {
@@ -501,16 +516,16 @@ impl Fetch<'_> {
         };
         let folders = match &account.folders {
             Some(folders) => folders.clone(),
-            None => match remote.folders() {
+            None => match remote
+                .folders()
+                .and_then(|offered| account.unskipped(offered))
+            {
                 Ok(folders) => folders,
                 Err(error) => return Ok(Err(error.context(account.name.clone()))),
             },
         };
-        self.say.line(format_args!(
-            "{}: {}",
-            account.name,
-            counted(folders.len(), "folder", "folders")
-        ));
+        self.say
+            .line(format_args!("{}", opening(account, folders.len())));
         self.imap_folders(account, &mut remote, &folders, tally)?;
         remote.logout();
         Ok(Ok(()))
@@ -1244,13 +1259,13 @@ impl Fetch<'_> {
         };
         let folders = match &account.folders {
             Some(folders) => folders.clone(),
-            None => client.folders(),
+            None => match account.unskipped(client.folders()) {
+                Ok(folders) => folders,
+                Err(error) => return Ok(Err(error.context(account.name.clone()))),
+            },
         };
-        self.say.line(format_args!(
-            "{}: {}",
-            account.name,
-            counted(folders.len(), "folder", "folders")
-        ));
+        self.say
+            .line(format_args!("{}", opening(account, folders.len())));
         for folder in &folders {
             self.graph_folder(account, &mut client, folder, tally)?;
         }

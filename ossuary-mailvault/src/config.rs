@@ -144,13 +144,13 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # The examples below are commented out: remove the "# " in front of the
 # lines of one and fill it in. Keys not shown here are rejected.
 #
-# Any key except name, backend and folders can be given as KEY_cmd
+# Any key except name, backend, folders and skip can be given as KEY_cmd
 # instead: a command that prints the value on its first line, most
 # often password_cmd. The commands run as you, so keep this file where
 # nobody else can write, or keep it elsewhere and name it with
 # `ossuary mailvault fetch --accounts FILE`.
 
-# An IMAP mailbox with all keys.
+# An IMAP mailbox with all keys except skip (see iCloud below).
 #
 # [[account]]
 # name = "example.org"         # letters, digits, '.', '_' and '-'
@@ -161,6 +161,18 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # user = "john@example.org"
 # password_cmd = "pass show mail/example.org"   # or password = "..."
 # folders = ["INBOX", "Sent"]  # all folders if omitted
+
+# iCloud Mail, every folder except the spam folder. Without a folders
+# list, skip names the folders not to fetch, as `ossuary mailvault
+# folders` lists them; a name the mailbox does not have is an error.
+# The password is an app-specific password.
+#
+# [[account]]
+# name = "icloud.com"
+# host = "imap.mail.me.com"
+# user = "john.doe@icloud.com"
+# password_cmd = "pass show mail/icloud"
+# skip = ["Junk"]
 
 # Gmail. All Mail contains every message, and each message's labels are
 # recorded as tags; each label folder would fetch the same messages again.
@@ -221,6 +233,8 @@ pub struct Account {
     pub name: String,
     /// The folders to fetch; every folder the server offers when absent.
     pub folders: Option<Vec<String>>,
+    /// The folders not to fetch, when there is no `folders` list.
+    pub skip: Vec<String>,
     backend: Backend,
     /// The keys given outright.
     given: toml::Table,
@@ -310,6 +324,16 @@ impl<'de> Deserialize<'de> for Account {
             .map(toml::Value::try_into::<Vec<String>>)
             .transpose()
             .map_err(|error| D::Error::custom(format!("{name}: folders: {error}")))?;
+        let skip = table
+            .remove("skip")
+            .map(toml::Value::try_into::<Vec<String>>)
+            .transpose()
+            .map_err(|error| D::Error::custom(format!("{name}: skip: {error}")))?;
+        if folders.is_some() && skip.is_some() {
+            return Err(D::Error::custom(format!(
+                "{name}: folders and skip cannot both be given; keep folders to fetch only the folders it names, or skip to fetch all folders but those"
+            )));
+        }
         let backend = match table.remove("backend") {
             None => Backend::Imap,
             Some(toml::Value::String(backend)) => match backend.as_str() {
@@ -335,7 +359,7 @@ impl<'de> Deserialize<'de> for Account {
             .collect();
         for key in commanded {
             let target = key[..key.len() - CMD.len()].to_string();
-            if matches!(target.as_str(), "name" | "backend" | "folders") {
+            if matches!(target.as_str(), "name" | "backend" | "folders" | "skip") {
                 return Err(D::Error::custom(format!(
                     "{name}: {key} is not supported; set {target} directly"
                 )));
@@ -354,6 +378,7 @@ impl<'de> Deserialize<'de> for Account {
         let account = Self {
             name,
             folders,
+            skip: skip.unwrap_or_default(),
             backend,
             given: table,
             commands,
@@ -417,6 +442,27 @@ impl Account {
     #[must_use]
     pub fn over_graph(&self) -> bool {
         matches!(self.backend, Backend::Graph)
+    }
+
+    /// The folders to fetch of all those the mailbox has, for an
+    /// account without a `folders` list: every one `skip` does not name.
+    ///
+    /// # Errors
+    ///
+    /// A name in `skip` that is not one of `offered`. A misspelt name
+    /// would otherwise fetch the folder it was meant to leave out, and
+    /// what is fetched stays in the archive.
+    pub fn unskipped(&self, offered: Vec<String>) -> Result<Vec<String>> {
+        if let Some(missing) = self.skip.iter().find(|name| !offered.contains(name)) {
+            bail!(
+                "skip names {missing:?}, which this mailbox does not have, so the account was not fetched; `ossuary mailvault folders {}` lists its folders",
+                self.name
+            );
+        }
+        Ok(offered
+            .into_iter()
+            .filter(|folder| !self.skip.contains(folder))
+            .collect())
     }
 
     /// Whether the mailbox is at Gmail, Google Workspace included: an
@@ -595,7 +641,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["example.org", "gmail.com", "proton.me", "m365"],
+            [
+                "example.org",
+                "icloud.com",
+                "gmail.com",
+                "proton.me",
+                "m365"
+            ],
             "every example is an account this build reads, every key one it knows"
         );
     }
@@ -749,7 +801,7 @@ mod tests {
 
     #[test]
     fn the_keys_that_shape_the_account_take_no_command() {
-        for key in ["name", "backend", "folders"] {
+        for key in ["name", "backend", "folders", "skip"] {
             let refused = load(&format!(
                 "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n{key}_cmd = \"echo x\"\n"
             ))
@@ -768,6 +820,55 @@ mod tests {
         assert!(
             format!("{refused:#}").contains("nonsense"),
             "a command for a key the account does not have is refused at load: {refused:#}"
+        );
+    }
+
+    #[test]
+    fn skip_leaves_folders_out_and_names_a_folder_the_mailbox_has() {
+        let config = load(
+            "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n\
+             skip = [\"Junk\", \"Deleted Messages\"]\n",
+        )
+        .unwrap();
+        let account = &config.accounts[0];
+        let offered = ["INBOX", "Junk", "Sent", "Deleted Messages"].map(String::from);
+        assert_eq!(
+            account.unskipped(offered.to_vec()).unwrap(),
+            ["INBOX", "Sent"]
+        );
+
+        let refused = account
+            .unskipped(
+                ["INBOX", "junk", "Deleted Messages"]
+                    .map(String::from)
+                    .to_vec(),
+            )
+            .err()
+            .unwrap();
+        assert!(
+            refused.to_string().contains("skip names \"Junk\""),
+            "a name is matched as written, and one that matches nothing stops the account: {refused:#}"
+        );
+
+        let config = load("[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n").unwrap();
+        assert_eq!(
+            config.accounts[0]
+                .unskipped(offered.to_vec())
+                .unwrap()
+                .len(),
+            4,
+            "without skip every folder is fetched"
+        );
+
+        let refused = load(
+            "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n\
+             folders = [\"INBOX\"]\nskip = [\"Junk\"]\n",
+        )
+        .err()
+        .unwrap();
+        assert!(
+            format!("{refused:#}").contains("folders and skip cannot both be given"),
+            "{refused:#}"
         );
     }
 

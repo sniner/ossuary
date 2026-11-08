@@ -104,7 +104,7 @@ enum Command {
     /// List the folders of the accounts in mailvault.toml
     ///
     /// One line per folder, as ACCOUNT:FOLDER. The part after the colon is
-    /// the name to use in the account's folders list.
+    /// the name to use in the account's folders or skip list.
     Folders {
         /// List only these accounts, by their name in mailvault.toml; all
         /// when none is given

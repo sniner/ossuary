@@ -5,6 +5,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`skip` in `mailvault.toml`** names folders that a fetch leaves out of an account without a
+  `folders` list, such as `skip = ["Junk"]` for the spam folder. A name the mailbox does not have
+  is an error, and that account is not fetched. The file `ossuary mailvault init` writes has an
+  iCloud Mail example with it
+
 ### Fixed
 
 - **Every command shows the archive as an absolute path** with symbolic links resolved, also when
