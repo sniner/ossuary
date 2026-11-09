@@ -27,7 +27,7 @@ example.org:Sent: resuming above UID 310, 0 messages to fetch
 ```
 
 `ossuary mailvault` runs this program as an
-[outside verb](../ossuary-cli/README.md#outside-verbs): `ossuary` finds it
+[outside verb](../ossuary-cli/README.md#external-commands): `ossuary` finds it
 on the PATH as `ossuary-mailvault`, and it can also be called directly
 under that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every
 ossuary command, and `--accounts FILE` to read the accounts from a file

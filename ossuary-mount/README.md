@@ -14,7 +14,7 @@ $ open ~/view/home/john/photos/DSC_1042.jpg
 ```
 
 `ossuary mount` runs this program as an
-[outside verb](../ossuary-cli/README.md#outside-verbs): `ossuary` finds it
+[outside verb](../ossuary-cli/README.md#external-commands): `ossuary` finds it
 on the PATH as `ossuary-mount`, and it can also be called directly under
 that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every ossuary
 command.
