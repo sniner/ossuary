@@ -20,3 +20,7 @@ rust-version = "1.88"
 authors = ["Stefan Schönberger <stefan@sniner.dev>"]
 license = "Apache-2.0"
 repository = "https://github.com/sniner/ossuary"
+
+# CI runs clippy with -D warnings, so a pedantic warning fails CI.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

@@ -26,3 +26,6 @@ nfsserve = "0.11.0"
 # The Linux door: a FUSE filesystem mounted through fusermount3, no root.
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = "0.18.0"
+
+[lints]
+workspace = true
