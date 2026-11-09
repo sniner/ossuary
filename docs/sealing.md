@@ -11,6 +11,12 @@ prints an id for it. Whoever keeps that id can later check the archive
 against it. Either everything the archive held then is still there and
 unchanged, or the check names what is missing or different.
 
+A seal is only of use when its id is kept outside the archive, and when
+someone may later ask you to show that the archive is unchanged. An
+archive nobody has to account for needs no seal: each seal after new
+claims writes a segment file to `claims/` that is never removed (see
+[Sealing the archive](#sealing-the-archive)).
+
 * [What a seal is for](#what-a-seal-is-for)
 * [What a seal proves, and what it does not](#what-a-seal-proves-and-what-it-does-not)
 * [Sealing the archive](#sealing-the-archive)
@@ -113,8 +119,11 @@ segment, but none of the files, and is quick. Checking a seal reads the
 files as well.
 
 **Run it again** when nothing was recorded since, and it prints the same
-id. Nothing is stored for a seal apart from the segment it names, so
-sealing after every run piles nothing up.
+id. Otherwise each seal closes the open segment, the directory in
+`open/`, into a new segment file in `claims/`, and segment files are
+never combined. Without seals, the archive does this on its own once
+the open segment holds about a thousand files. Seal as often as you
+need an id, not after every run out of habit.
 
 **Before the first seal**, run `ossuary audit`. A seal records the
 archive as it is, damage included, and a file that was already damaged
@@ -178,10 +187,10 @@ That place is also what proves **when** the seal was made. A seal whose
 last claim is later than the date on the printout, or than the mail it
 was sent in, is a finding in itself.
 
-### Sealing after every run
+### Sealing on a schedule
 
-The simplest routine is a seal after every run that adds to the archive,
-in the same scheduled job:
+Where the ids are needed, the simplest routine is a seal after the
+nightly run that adds to the archive, in the same scheduled job:
 
 ```console
 $ crontab -l
@@ -191,7 +200,10 @@ $ crontab -l
 With `&&` the archive is sealed only after a run without errors; with
 `;` it is sealed either way. If cron mails the output of its jobs to
 someone, that mail carries every night's id out of the archive. A night
-without new mail produces no new seal, only the same id again.
+without new mail produces no new seal, only the same id again. A night
+with new mail adds one segment file, a few hundred in a year. A job that
+runs every hour should not seal every hour; seal once a day in a job of
+its own.
 
 
 ## Checking a seal

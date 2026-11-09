@@ -432,10 +432,14 @@ the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 holds:
 ```
 
 Unlike `audit`, this also finds a change that leaves the archive in
-order, such as the newest part of the record removed. Sealing after
-every run is fine: when nothing new was recorded, it prints the same id
-again. `--fast` checks only that every file is there, not that it is
-unchanged.
+order, such as the newest part of the record removed. `--fast` checks
+only that every file is there, not that it is unchanged.
+
+Seal only when the id goes somewhere outside the archive and someone may
+ask for the proof, as with a business's records. A seal after new claims
+writes a new segment file to `claims/`, and segment files are never
+combined. When nothing was recorded since the last seal, `seal` prints
+the same id again and writes nothing.
 
 What a seal proves and what it does not, where to keep the id, what to
 do when a seal does not hold, and how to have the id timestamped:
@@ -460,6 +464,11 @@ Nothing in the copy is deleted. A run that is interrupted leaves the
 copy at the seal it had, and the next run completes it. `cache/`,
 `config.toml` and `mailvault.toml` are not copied. What a run does and
 what it refuses: [ossuary-sync](ossuary-sync/README.md).
+
+`sync` is for a second copy in another place. An archive on a disk that
+your backup already covers needs none. Each run seals the archive first,
+so a run after new claims writes a new segment file to `claims/`, as
+`seal` does.
 
 ## Another hash algorithm
 
