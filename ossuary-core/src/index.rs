@@ -47,7 +47,7 @@
 //! without a seal is not found; its claims stay in the index until it is
 //! folded anew.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
@@ -647,8 +647,9 @@ impl Index {
         // far as the open segment has one.
         let mut unread = Vec::new();
         let mut claims = Vec::new();
+        let read = read_bundles(&self.connection)?;
         for bundle in open.bundles() {
-            if has_bundle(&self.connection, bundle.as_str())? {
+            if read.contains(bundle.as_str()) {
                 continue;
             }
             // A bundle sealed since the listing has its segment read
@@ -1903,14 +1904,19 @@ fn open_read(connection: &Connection) -> Result<OpenRead> {
     Ok(read.map_or(OpenRead::Never, OpenRead::Followed))
 }
 
-/// Whether a bundle of the open segment was read into the index.
-fn has_bundle(connection: &Connection, digest: &str) -> Result<bool> {
-    let held = connection.query_row(
-        "SELECT EXISTS (SELECT 1 FROM bundles WHERE digest = ?1)",
-        params![digest],
-        |row| row.get(0),
-    )?;
-    Ok(held)
+/// The bundles of the open segment that were read into the index.
+///
+/// One query instead of one per bundle: outside a transaction each
+/// statement takes and releases the file lock, and with the index on an
+/// SMB share that is about 3 ms per statement.
+fn read_bundles(connection: &Connection) -> Result<HashSet<String>> {
+    let mut statement = connection.prepare("SELECT digest FROM bundles")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut read = HashSet::new();
+    for row in rows {
+        read.insert(row?);
+    }
+    Ok(read)
 }
 
 /// How many claims the index holds.

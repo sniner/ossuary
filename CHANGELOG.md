@@ -10,6 +10,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary mailvault fetch` reads Proton Mail label folders faster.** With the archive on an SMB
   share, each message a label folder tagged took about a second; the tags of a folder are now
   written together, and the folder takes that second once
+- **Commands that read the index wait less with the archive on an SMB share.** Bringing the index
+  in `cache/` up to date took up to about 3 seconds there, also when nothing new had to be read,
+  and `ossuary mailvault fetch` does it before every Proton Mail folder. It now takes about a
+  tenth of a second
 
 ## [0.20.1] - 2026-11-09
 
