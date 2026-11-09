@@ -421,9 +421,10 @@ bring in, run `ossuary extract mail` and then `ossuary mailvault fetch
 
 If the archive is to live on a share, run the import, `ossuary extract
 mail` and the first fetch on a local disk, and copy the archive to the
-share afterwards (see [Design](../README.md#design)). Each of these runs
-records many claims, and every append to an archive on a share costs a
-round trip to the server.
+share afterwards (see [An archive on a network
+share](../docs/deep-dive.md#an-archive-on-a-network-share)). Each of
+these runs records many claims, and every append to an archive on a
+share costs a round trip to the server.
 
 ## Exit codes
 

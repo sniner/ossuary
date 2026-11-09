@@ -18,7 +18,7 @@ restore the state of a given day. It keeps what you decide to keep and
 lets you query it for decades, independent of file formats, software
 versions and the programs that wrote the files. Several programs can
 add to the same archive at the same time, also over a network share
-(see [Design](#design)). Typical uses:
+(see [How it works](#how-it-works)). Typical uses:
 
 * **Keeping what must not get lost.** Photos, documents, saved mail,
   finished projects, added from wherever they are. Duplicates are
@@ -70,27 +70,8 @@ $ cargo install --locked \
     ossuary-extract-packed ossuary-extract-pdf
 ```
 
-To upgrade, run the same command again; cargo rebuilds each program
-that has a newer release. The package
-[cargo-update](https://crates.io/crates/cargo-update) upgrades all
-programs installed with cargo at once:
-
-```console
-$ cargo install cargo-update
-$ cargo install-update --all
-```
-
-`ossuary-fix` is not on crates.io. If you need it, install it from the
-repository:
-
-```console
-$ cargo install --locked --git https://github.com/sniner/ossuary ossuary-fix
-```
-
-In a clone of the repository, `make install` builds and installs all
-programs from the clone. `make install-crates.io` and `make install-git`
-install them from crates.io or from GitHub instead, and `make uninstall`
-removes them.
+To upgrade, run the same command again. [Other ways to install](docs/deep-dive.md#other-ways-to-install) covers
+cargo-update, a clone of the repository, and `ossuary-fix`.
 
 All programs have to be on the `PATH`: `ossuary` finds the extractors
 and outside verbs like `mount` there, they are not built in. Each
@@ -131,9 +112,9 @@ if it is set, otherwise the current directory. The examples below set
 Two settings are best decided before the first file is added. The hash
 algorithm that names the files is set by `init --algorithm` (default
 sha256) and cannot be changed later without copying the archive (see
-[Another hash algorithm](#another-hash-algorithm)). Compression is set
-by `compress` in `config.toml`. A change applies only to files added
-after it; files already in the archive stay as they are.
+[Another hash algorithm](docs/deep-dive.md#another-hash-algorithm)).
+Compression is set by `compress` in `config.toml`. A change applies only
+to files added after it; files already in the archive stay as they are.
 
 Leave compression off, which is the default. Then every file in the
 archive is the original: any program can read it where it is (`ossuary
@@ -172,28 +153,12 @@ $ ossuary ingest photos mail docs
 `ossuary id FILE` shows the name a file would get, and whether the
 archive already contains it, without adding anything.
 
-A run also detects files that are gone. Delete two of the files and run
-again:
-
-```console
-$ ossuary ingest photos mail docs
-0 file(s) stored, 3 unchanged since the last run, 2 path(s) no longer found, retracted; 2 claim(s) written, run 9c1d0f3e-…
-```
-
-The two files stay in the archive with everything recorded about them,
-and `--as-of` with a time before that run still shows them at their old
-paths. Only their paths were retracted, with one more claim each, so
-queries about the present no longer return them.
-
-Some cases are not treated as deletions, and the run reports them: a
-directory that could not be opened, a path excluded in `config.toml`,
-and a directory in which the walk finds no file at all while paths are
-recorded under it (an empty mount point looks like that). If you did
-empty such a directory on purpose, `ingest --emptied DIR` retracts every
-path under it, also when the directory no longer exists. For a
-directory you empty after every run, such as an inbox whose files are
-meant to stay in the archive, use `ingest --collect`: it retracts
-nothing.
+A file deleted from a directory that `ingest` walked before has its
+path retracted on the next run. The file stays in the archive with
+everything recorded about it, and `--as-of` with an earlier time still
+shows it at its old path. For an inbox that is emptied after every run,
+`ingest --collect` retracts nothing. [Files that are
+gone](docs/deep-dive.md#files-that-are-gone) has the details.
 
 ## Extracting metadata
 
@@ -280,48 +245,10 @@ either end open (`file:modified=2026-01-01..` means "changed since New
 Year"). `--missing exif:` inverts the question: which photos have no
 EXIF data recorded.
 
-By default, `find` only returns files that still exist somewhere: files
-with a current path, and files extracted from a file with a current
-path. A file that is gone from every path it was seen at is still
-stored. `--as-of` with a time when it was there finds it, and so does
-`--all`, which searches every claim ever written, retractions included.
-The attachment from the mail above is found like any other file, and
-`prov:origin` names the mail it came from:
-
-```console
-$ ossuary find 'file:name=*.pdf' prov:origin
-b5743276
-  prov:origin=e9ed6104c0bea9889000f408b6d855216f6743fa85586281c764c8c69d25a738
-1 file(s)
-```
-
-In the other direction, from a file to everything extracted from it, use
-`--with-derived`. Each match is shown with its derived files as a tree
-below it, drawn like `tree` draws a directory, as deep as they go. Each
-derived file shows its type before the requested attributes. With
-`--id` the names are listed flat, ready for `export`; with `--json` they
-are nested under `derived`:
-
-```console
-$ ossuary find 'file:name=*.eml' --with-derived
-e9ed6104
-│   file:name=2026-03-10-quarterly.eml
-└── b5743276
-    │   file:mime=application/pdf
-    │   file:name=report.pdf
-    └── 3f0c91aa
-            file:mime=text/plain
-1 file(s), 2 derived
-```
-
-`--with-origin` goes from a file up to where it came from. It draws the
-same tree from the other end, with the most distant origin at the top and the
-match at the bottom, so a mail and its attachment appear in the same
-tree whichever of them matched. A file extracted from two others (the
-same attachment in two mails) appears once per origin chain, each in a
-tree of its own. Together with `--with-derived`, the whole chain is
-shown in one tree. With `--id` the names are listed flat, origin first,
-in the order `export` expects:
+By default, `find` returns only files that still exist somewhere. `--all`
+searches every claim ever written, and `--as-of` the archive as it was
+at a given time. A file extracted from another one is found like any
+other file, and `--with-origin` shows where it came from:
 
 ```console
 $ ossuary find 'file:name=*.pdf' --with-origin
@@ -333,82 +260,12 @@ e9ed6104
 1 file(s), 1 origin(s)
 ```
 
-A name without a colon is a field of the claim itself (`run`, `source`,
-`time`, `retract`). It filters on the claim behind a value: what a run
-recorded, what you tagged yourself, what was written since a date, which
-files have a retraction recorded:
-
-```console
-$ ossuary find run=315e360b-020e-48be-8f2d-f2002a2ea9b4 file:name
-719aac93
-  file:name=notes.txt
-bd84e795
-  file:name=DSC_1042.jpg
-…
-5 file(s)
-$ ossuary find --all retract=true file:path
-6ca81e7a
-  file:path=/home/john/photos/DSC_1043.jpg
-1 file(s)
-```
-
-The last query lists the files that had something retracted, with every
-path ever recorded for them, which is where a deleted file turns up:
-`ingest` retracts the path it no longer finds. A retraction carries no
-value of its own, it names the claims it retracts, so a field term
-`retract=true` matches no `attribute=value` term; a bare attribute next
-to it shows that attribute's values of the files found. Which values a
-retraction took back is what `about` shows. A field term shows nothing
-by itself, but a bare field name does, so `find run=… run` lists the
-runs a file was written in.
-
-`attributes` lists every attribute that has current claims, sorted. A
-namespace narrows the list:
-
-```console
-$ ossuary attributes mail:
-mail:date
-mail:from
-mail:message-id
-mail:subject
-mail:to
-5 attribute(s) in 1 namespace(s)
-```
-
-The output is one name per line, so `ossuary find $(ossuary attributes
-mail:)` shows everything recorded about mail. `--count` shows on how
-many files each attribute is set.
-
-For scripts: `find --id` prints only full names, ready to pipe.
-`standing SUBJECT ATTRIBUTE` prints one attribute's current values,
-strings without quotes; without an attribute, it prints all current
-values of the file, while `about` shows the full history including
-retractions. `--json` on `about`, `standing`, `find`, `attributes` and
-`ls` prints JSON for `jq`, and `-q` turns off progress output
-everywhere. All verbs and flags are documented in
-[`ossuary-cli`](ossuary-cli/README.md).
-
-## History of the archive
-
-`history` lists the runs: one line per call that wrote something (an
-ingest, an extract, a fetch, your tags and comments, a retraction), with
-the time it finished, its id, what it wrote and its source:
-
-```console
-$ ossuary history
-2026-09-06T15:23:40Z  315e360b-020e-48be-8f2d-f2002a2ea9b4  5 file(s), 30 claim(s)  [ingest]
-2026-09-06T15:25:02Z  c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31  3 file(s), 18 claim(s)  [extractor:mail/1]
-2026-09-06T15:26:11Z  8d2f6b1c-4a7e-4c93-b5d0-1e9a3f7c2b64  1 file(s), 3 claim(s)  [extractor:packed-list/1]
-2026-09-07T09:02:55Z  9c1d0f3e-6b2a-4d81-a7f4-3e5c8d1b0a26  2 file(s), 2 claim(s), 2 of them retractions  [ingest]
-4 run(s)
-```
-
-The time is printed in the format `--as-of` takes. `--as-of` also
-accepts a run id; the view then ends after that run's last claim.
-`ossuary ls --as-of 315e360b-020e-48be-8f2d-f2002a2ea9b4` shows the
-archive as it was when the first ingest finished, even if two runs
-finished in the same second. `export` and `extract` also take a run id
-for all files of a run, and `find run=ID` shows what a run wrote.
+`--with-derived` draws the tree from the other end, from a file to
+everything extracted from it. A term can also filter on the claim
+itself, such as the run that wrote it (`find run=ID`), and `history`
+lists the runs. `--id` and `--json` print output for scripts. [Finding
+files in detail](docs/deep-dive.md#finding-files-in-detail) shows all of
+it.
 
 ## Proving that nothing was changed
 
@@ -447,11 +304,12 @@ do when a seal does not hold, and how to have the id timestamped:
 
 ## Copying the archive to a second place
 
-`sync TARGET` copies the archive to another directory, such as a backup
-disk or a share mounted from a NAS, to a folder on a filebridge server
-or a WebDAV server, and keeps the copy up to date. Each run seals the
-archive and copies only what the copy lacks; the last line is the seal
-id the copy now holds:
+`sync TARGET` copies the archive to a second place, such as a backup
+disk, a share mounted from a NAS, a folder on a filebridge server or a
+WebDAV server, and keeps the copy up to date. An archive on a disk that
+your backup already covers needs no `sync`. Each run seals the archive,
+as `seal` does, and copies only what the copy lacks. The last line is
+the seal id the copy now holds:
 
 ```console
 $ mkdir /mnt/backup/archive
@@ -465,26 +323,7 @@ copy at the seal it had, and the next run completes it. `cache/`,
 `config.toml` and `mailvault.toml` are not copied. What a run does and
 what it refuses: [ossuary-sync](ossuary-sync/README.md).
 
-`sync` is for a second copy in another place. An archive on a disk that
-your backup already covers needs none. Each run seals the archive first,
-so a run after new claims writes a new segment file to `claims/`, as
-`seal` does.
-
-## Another hash algorithm
-
-The hash algorithm is chosen when an archive is created
-(`init --algorithm`), and every file and segment is named by it. To
-move an archive to another algorithm, `ossuary-fix rehash` copies it
-into a new archive: every file is hashed anew, and every claim is
-written there with the new names, with its time, source and run
-unchanged. `config.toml` and `mailvault.toml` are copied along. The
-archive itself is only read.
-
-```console
-$ ossuary-fix --archive ~/archive rehash --algorithm blake3 ~/archive-blake3
-```
-
-## Browsing
+## Browsing and mounting
 
 `ls` shows one directory level of the recorded paths, `tree` shows
 everything below a path:
@@ -503,19 +342,14 @@ $ ossuary tree /home/john
 3 folder(s), 5 file(s) under /home/john
 ```
 
-The tree comes from the record, not from a disk: every current path a
-file was seen at is shown, the paths of all machines in one tree, and a
-disk's paths can still be browsed after the disk is gone. Next to each
-file is its name in the archive, for use with `about`, `get` and
-`export`; `ls` puts the name first, like `export --dry-run`. The mail's
-attachment is not listed, because a derived file has no path of its
-own. `find` finds it, as shown above.
+The tree comes from the record, not from a disk: the paths of all
+machines are in one tree, and a disk's paths can still be browsed after
+the disk is gone. Next to each file is its name in the archive, for use
+with `about`, `get` and `export`. A file extracted from another one has
+no path of its own and is not listed; `find` finds it.
 
-## Mounting the archive
-
-`mount` shows the same tree as a read-only directory. Any program can
-read the archive's files there, and a file manager can browse them,
-previews included:
+`mount` shows the same tree as a read-only directory, for any program
+and any file manager:
 
 ```console
 $ ossuary mount ~/view
@@ -523,17 +357,9 @@ mounted read-only at /home/john/view: 5 file(s) in 5 folder(s); press Ctrl-C to 
 $ open ~/view/home/john/photos/DSC_1042.jpg
 ```
 
-The command stays in the foreground. Ctrl-C unmounts the directory, and
-so does a plain `umount`. Writes fail with the operating system's
-read-only error. Where the record holds more than a filesystem can
-show, the view is reduced: if several files have the same path, the
-newest one is shown. `--as-of TIME` shows the record as it was at that
-moment (UTC): files retracted since then are back, files added since
-are missing, and a path whose file changed shows the old content. You
-can mount today and last year side by side and compare them. The mount
-uses NFS on macOS and FUSE on Linux; neither needs root, and nothing is
-installed in the kernel. [`ossuary-mount`](ossuary-mount/README.md) has
-the details.
+Ctrl-C or `umount` unmounts it. `--as-of TIME` shows the archive as it
+was at that moment, so today and last year can be mounted side by side.
+[`ossuary-mount`](ossuary-mount/README.md) has the details.
 
 ## Tags and comments
 
@@ -554,8 +380,7 @@ $ ossuary find --id 'file:name=*.jpg' | xargs ossuary annotate --tag holiday
 `retract` retracts a value: it is no longer current, and the record
 keeps the full history, because the retraction is one more claim, not
 an edit. An `attribute=value` pair from `find`'s output can be pasted
-as is, and `attribute=..` retracts every current value of an attribute
-at once:
+as is:
 
 ```console
 $ ossuary retract e9ed6104 user:tag=taxes
@@ -565,9 +390,8 @@ $ ossuary about e9ed6104 user:tag
 2026-03-14T18:40:51Z  retracted: user:tag, 1 claim(s)  [user]
 ```
 
-Any claim can be retracted, including those written by `ingest` and the
-extractors. A later `extract --full` may record it again, and `--as-of`
-still shows the state before the retraction.
+Any claim can be retracted, also those written by `ingest` and the
+extractors (see [Retracting](docs/deep-dive.md#retracting)).
 
 ## Getting files back out
 
@@ -597,41 +421,24 @@ left out. Existing files at the destination are never overwritten: a
 file with the same content counts as done, a file with different
 content is reported as a failure and left untouched.
 
-## Design
+## How it works
 
-The archive consists of content and claims: immutable blobs stored
-under their content hash (via [immure](https://github.com/sniner/immure)),
-and an append-only claim log sealed into the same kind of store. What
-tools derived (extracted text, unpacked attachments) is kept in a
-separate store, apart from the originals. Everything else (the query
-index, what `ingest` remembers of earlier runs) is a cache in `cache/` that is
-rebuilt from the log whenever needed; deleting it makes the next query
-slow, but loses no data.
+The files are stored in `content/` under the hash of their content, and
+what the extractors produce in `derived/`, apart from the originals.
+The claims go into a record that is only ever added to, in `open/` and
+`claims/`. The query index in `cache/` is rebuilt from the record when needed; deleting
+it loses nothing. Several programs can write to one archive at once,
+also from several machines over a network share, and nothing is locked.
+[ossuary in detail](docs/deep-dive.md#what-is-stored-where) describes
+this, and why a large first import belongs on a local disk.
 
-Several programs can write to one archive at once, on one machine or on
-several, with the archive on a NAS or any other shared folder: a fetch
-from cron, an ingest started by hand, an extractor running in the
-background. Nothing is locked. Each append is a file that is written
-once and never changed, and sealing is decided by one atomic rename, so
-two runs that happen to meet cannot damage the archive or lose a claim.
-The one thing they can damage is the query index in `cache/`, which is
-then rebuilt by the next command; that takes a moment on a large
-archive and loses nothing.
+## Further reading
 
-Each append is written to the disk before the program goes on. On a
-share, that is a round trip to the server for every append, so a run
-that records many claims is slow there: an import, the first `ossuary
-extract` of a large archive, the first fetch of a mailbox. Build such an
-archive on a local disk and copy it to the share after the last of these
-runs. Copy the whole archive directory, `cache/` included, for example
-with `rsync -rlt archive/ /mnt/nas/archive/`. Without `cache/`, the next
-command rebuilds the query index, and on a share that takes long as
-well. Later runs record a few claims at a time and work well on the
-share.
-
-The format is documented so that an archive can be read without this
-software:
-
+* [Use cases](docs/usecases.md): worked examples, such as finding a
+  document by a phrase in it
+* [ossuary in detail](docs/deep-dive.md): what this README leaves out,
+  from the cases `ingest` treats specially to an archive on a share
+* [`ossuary-cli`](ossuary-cli/README.md): every verb and flag
 * [The archive format](docs/format.md): layout, claims, segments, and
   how to recover an archive with nothing but a shell
 * [Reading an archive without ossuary](docs/recovery.md): getting files
