@@ -923,22 +923,7 @@ impl Fetch<'_> {
         if !resumed {
             self.memo.clear_pending(place.account, place.folder)?;
         }
-        let value = json!(label);
-        {
-            let borrowed = self.record.borrow();
-            let index = borrowed
-                .as_ref()
-                .expect("a Proton folder catches the record up");
-            let record = proton::Record {
-                index,
-                id: &self.id,
-                place: &self.place,
-            };
-            for (_, holders) in &sorted.known {
-                let receivers = record.receivers(holders, &self.tag, &value)?;
-                self.assert_on(&receivers, &self.tag, &value, tally)?;
-            }
-        }
+        self.tag_labelled(&sorted.known, label, tally)?;
         if let Some(in_folder) = &in_folder {
             self.retract_label(name, label, in_folder, tally)?;
         }
@@ -958,6 +943,36 @@ impl Fetch<'_> {
             place: &self.place,
         };
         proton::sort(asked, listed, |id| record.holders(id))
+    }
+
+    /// Tag the files of the UIDs found in the record with `label`, those
+    /// that do not have it yet.
+    fn tag_labelled(
+        &self,
+        known: &[(u32, Vec<Subject>)],
+        label: &str,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let value = json!(label);
+        let borrowed = self.record.borrow();
+        let index = borrowed
+            .as_ref()
+            .expect("a Proton folder catches the record up");
+        let record = proton::Record {
+            index,
+            id: &self.id,
+            place: &self.place,
+        };
+        // One append for the whole folder: each append lists the open
+        // segment first, and over SMB that listing takes up to a second
+        // once the previous append has changed the directory.
+        let mut receivers = Vec::new();
+        for (_, holders) in known {
+            receivers.extend(record.receivers(holders, &self.tag, &value)?);
+        }
+        receivers.sort();
+        receivers.dedup();
+        self.assert_on(&receivers, &self.tag, &value, tally)
     }
 
     /// Under `--full`: retract the label from the files that the label
@@ -2988,6 +3003,34 @@ mod tests {
             assert_eq!(held(&bench, bytes, "mailbox:tag"), ["Sales"]);
         }
         assert_eq!(sales(&bench), (vec![], Some(at(9, 4))));
+    }
+
+    #[test]
+    fn a_label_folder_writes_its_tags_in_one_bundle() {
+        let bench = bench();
+        let messages = [built(1, "a"), built(2, "a"), built(3, "a")];
+        let all: Vec<(u32, &[u8])> = (1..).zip(messages.iter().map(Vec::as_slice)).collect();
+        with_label(
+            &bench,
+            &mut proton(7, &all),
+            &mut proton(9, &[]),
+            &options(false, false),
+        );
+        let bundles = || {
+            let open = bench.archive.log().open().unwrap().unwrap();
+            open.bundles().len()
+        };
+        let before = bundles();
+        with_label(
+            &bench,
+            &mut proton(7, &all),
+            &mut proton(9, &all),
+            &options(false, false),
+        );
+        assert_eq!(bundles(), before + 1);
+        for bytes in &messages {
+            assert_eq!(held(&bench, bytes, "mailbox:tag"), ["Sales"]);
+        }
     }
 
     #[test]
