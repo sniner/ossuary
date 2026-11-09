@@ -545,7 +545,9 @@ still shows the state before the retraction.
 ## Getting files back out
 
 `get` writes one file's content to stdout or to `--output FILE`,
-exactly as it was added. `export` writes whole batches: given a run id,
+exactly as it was added. `get --path` prints the path of the stored
+file in the archive instead, for a program that reads the file where it
+is, without a copy. `export` writes whole batches: given a run id,
 it writes every file that run recorded under the path the run saw,
 relative to the target directory, so files that were next to each
 other end up next to each other again:

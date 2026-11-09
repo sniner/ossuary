@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{
-    Algorithm, Archive, Attribute, Error, Field, Index, Scope, Subject, Sweep, Term, Value,
+    Algorithm, Archive, Attribute, Digest, Error, Field, Index, Scope, Subject, Sweep, Term, Value,
 };
 
 use crate::output::{errln, outln, say};
@@ -524,7 +524,10 @@ enum Command {
     /// Write a file's content to stdout
     ///
     /// The content is written unchanged; --output writes it to a file
-    /// instead.
+    /// instead. --path prints the path of the stored file in the archive
+    /// and writes no content, for programs that read the file where it
+    /// is. The stored file is read-only, and in an archive with `compress
+    /// = true` in config.toml it may be compressed with zstd.
     Get {
         /// The file's hex name, or a unique prefix of it
         #[arg(value_name = "SUBJECT")]
@@ -533,6 +536,10 @@ enum Command {
         /// Write to FILE instead of stdout
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
+
+        /// Print the path of the stored file instead of its content
+        #[arg(long, conflicts_with = "output")]
+        path: bool,
     },
     /// Copy files out of the archive under their recorded paths
     ///
@@ -753,7 +760,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
             browse::tree(&cli.archive, place.as_deref(), as_of.as_deref(), quiet)
         }
         Command::Id { path } => id(&cli.archive, &path, quiet),
-        Command::Get { subject, output } => get(&cli.archive, &subject, output.as_deref(), quiet),
+        Command::Get {
+            subject,
+            output,
+            path,
+        } => {
+            if path {
+                stored_path(&cli.archive, &subject)
+            } else {
+                get(&cli.archive, &subject, output.as_deref(), quiet)
+            }
+        }
         Command::Export {
             destination,
             ids,
@@ -2096,9 +2113,65 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
     let archive = open(root)?;
     let content = archive.content();
     let derived = archive.derived();
+    let digest = stored_digest(&archive, subject)?;
+    let mut reader = match content.reader(&digest)? {
+        Some(reader) => reader,
+        None => derived
+            .reader(&digest)?
+            .ok_or_else(|| anyhow!("{digest}: no longer present in content/ or derived/"))?,
+    };
+
+    if let Some(path) = output {
+        let mut file =
+            std::fs::File::create(path).with_context(|| format!("{}: writing", path.display()))?;
+        let bytes = std::io::copy(&mut reader, &mut file)
+            .with_context(|| format!("{}: writing", path.display()))?;
+        outln!("{}: {} byte(s) of {digest}", path.display(), bytes)?;
+    } else {
+        // A beginning was given; say what it named, where the bytes
+        // will not drown it out.
+        if subject.len() < digest.as_str().len() && !quiet {
+            errln!("{digest}");
+        }
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        if let Err(error) = std::io::copy(&mut reader, &mut lock) {
+            // The reader closed the pipe: it has all it wanted. That is
+            // its business going well, not this run going badly.
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(ExitCode::SUCCESS);
+            }
+            return Err(anyhow::Error::new(error).context("writing to stdout"));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `get --path`: the stored file itself, in whatever form it is stored.
+/// The path names the full digest, so a prefix needs no echo on stderr.
+fn stored_path(root: &Path, subject: &str) -> Result<ExitCode> {
+    let archive = open(root)?;
+    let digest = stored_digest(&archive, subject)?;
+    // The same order as `get` reads in: content/ before derived/.
+    let path = match archive.content().find(&digest)? {
+        Some(path) => path,
+        None => archive
+            .derived()
+            .find(&digest)?
+            .ok_or_else(|| anyhow!("{digest}: no longer present in content/ or derived/"))?,
+    };
+    outln!("{}", path.display())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The digest a hex name or a beginning of one names in content/ or
+/// derived/.
+fn stored_digest(archive: &Archive, subject: &str) -> Result<Digest> {
+    let content = archive.content();
+    let derived = archive.derived();
 
     // The stores resolve a beginning by a shard listing, the way `about`'s
-    // index resolves one by a range scan — this is the content-facing
+    // index resolves one by a range scan. This is the content-facing
     // door, so the stores' own answer is the one that counts. content/
     // and derived/ share one name space: the same bytes may sit in both,
     // so a beginning must be unique across their union, not in each.
@@ -2120,47 +2193,14 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
             candidates.push(extra);
         }
     }
-    let digest = match candidates.as_slice() {
-        [] => return Err(anyhow!("no subject begins with {bare:?}")),
-        [one] => one.clone(),
-        many => {
-            return Err(anyhow!(
-                "{bare:?} matches {} subjects; give a longer prefix",
-                many.len()
-            ));
-        }
-    };
-    let mut reader = match content.reader(&digest)? {
-        Some(reader) => reader,
-        None => derived
-            .reader(&digest)?
-            .ok_or_else(|| anyhow!("{digest}: no longer present in content/ or derived/"))?,
-    };
-
-    if let Some(path) = output {
-        let mut file =
-            std::fs::File::create(path).with_context(|| format!("{}: writing", path.display()))?;
-        let bytes = std::io::copy(&mut reader, &mut file)
-            .with_context(|| format!("{}: writing", path.display()))?;
-        outln!("{}: {} byte(s) of {digest}", path.display(), bytes)?;
-    } else {
-        // A beginning was given; say what it named, where the bytes
-        // will not drown it out.
-        if bare.len() < digest.as_str().len() && !quiet {
-            errln!("{digest}");
-        }
-        let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        if let Err(error) = std::io::copy(&mut reader, &mut lock) {
-            // The reader closed the pipe: it has all it wanted. That is
-            // its business going well, not this run going badly.
-            if error.kind() == std::io::ErrorKind::BrokenPipe {
-                return Ok(ExitCode::SUCCESS);
-            }
-            return Err(anyhow::Error::new(error).context("writing to stdout"));
-        }
+    match candidates.as_slice() {
+        [] => Err(anyhow!("no subject begins with {bare:?}")),
+        [one] => Ok(one.clone()),
+        many => Err(anyhow!(
+            "{bare:?} matches {} subjects; give a longer prefix",
+            many.len()
+        )),
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **`ossuary get --path`** prints the path of the stored file in the archive instead of its
+  content, for programs that read the file there without a copy. The file is read-only, and in an
+  archive with `compress = true` it may be compressed with zstd
+
 ## [0.20.0] - 2026-11-08
 
 ### Added

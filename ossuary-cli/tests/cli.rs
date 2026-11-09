@@ -325,3 +325,65 @@ fn a_run_inside_the_archive_names_it_by_its_absolute_path() {
     );
     assert_eq!(stderr.lines().next(), Some(expected.as_str()), "{stderr}");
 }
+
+/// The full name of note.txt in an archive made by `archive_with_a_file`.
+fn name_of_the_note(archive: &Path) -> String {
+    let found = run(ossuary(archive).args(["find", "--id", "file:name=note.txt"]));
+    String::from_utf8(found.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn get_path_prints_the_stored_file_and_nothing_else() {
+    let (_dir, archive) = archive_with_a_file();
+    let name = name_of_the_note(&archive);
+
+    let output = run(ossuary(&archive).args(["get", "--path", &name[..8]]));
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let path = PathBuf::from(stdout.trim_end());
+    assert!(path.is_absolute(), "{stdout}");
+    assert!(
+        path.starts_with(std::fs::canonicalize(&archive).unwrap().join("content")),
+        "{stdout}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"a note");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}
+
+#[test]
+fn get_path_prints_a_compressed_file_as_it_is_stored() {
+    let (_dir, files, archive) = files_and_archive();
+    assert!(run(ossuary(&archive).arg("init")).status.success());
+    std::fs::write(archive.join("config.toml"), "[store]\ncompress = true\n").unwrap();
+    assert!(
+        run(ossuary(&archive).arg("ingest").arg(&files))
+            .status
+            .success()
+    );
+    let name = name_of_the_note(&archive);
+
+    let output = run(ossuary(&archive).args(["get", "--path", &name]));
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.trim_end().ends_with(&format!("{name}.zst")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn get_refuses_path_and_output_together() {
+    let (dir, archive) = archive_with_a_file();
+    let name = name_of_the_note(&archive);
+    let target = dir.path().join("out");
+
+    let output = run(ossuary(&archive)
+        .args(["get", "--path", "--output"])
+        .arg(&target)
+        .arg(&name));
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(!target.exists());
+}
