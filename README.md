@@ -37,6 +37,8 @@ add to the same archive at the same time, also over a network share
 * **Getting files back out.** One file by its name, or a whole batch in
   the directory layout it arrived in.
 
+[Use cases](docs/usecases.md) shows worked examples.
+
 ## Installing
 
 On macOS, one Homebrew command installs all programs:
