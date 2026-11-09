@@ -581,13 +581,12 @@ enum Command {
     },
     /// Verify file hashes, claims and the chain of sealed segments
     ///
-    /// Reads the whole archive, without using the cache. Three checks:
-    /// every file in content/ and derived/ is re-hashed and compared
-    /// with its name; every sealed segment and the open segment in
-    /// claims/ must be readable claim by claim, and every segment named
-    /// as a predecessor must be present; every file the claims refer
-    /// to, as subject or as origin of a derived file, must be present in
-    /// content/ or derived/.
+    /// Reads the whole archive. Three checks: every file in content/
+    /// and derived/ is re-hashed and compared with its name; every
+    /// sealed segment and the open segment in claims/ must be readable
+    /// claim by claim, and every segment named as a predecessor must be
+    /// present; every file the claims refer to, as subject or as origin
+    /// of a derived file, must be present in content/ or derived/.
     ///
     /// The sealed segments form one chain, from the open segment back to
     /// the first. A segment the chain cannot follow, a lost open segment
