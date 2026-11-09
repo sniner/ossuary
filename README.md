@@ -85,6 +85,11 @@ repository:
 $ cargo install --locked --git https://github.com/sniner/ossuary ossuary-fix
 ```
 
+In a clone of the repository, `make install` builds and installs all
+programs from the clone. `make install-crates.io` and `make install-git`
+install them from crates.io or from GitHub instead, and `make uninstall`
+removes them.
+
 All programs have to be on the `PATH`: `ossuary` finds the extractors
 and outside verbs like `mount` there, they are not built in. Each
 crate's README describes what it does and what it needs:
