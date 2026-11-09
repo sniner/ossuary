@@ -363,12 +363,12 @@ mod tests {
 
     /// A retraction from the user, later than everything before it: of
     /// every standing claim of `value`, looked up the way the CLI does.
-    fn retract(archive: &Archive, subject: &Subject, attribute: &str, value: Value) {
+    fn retract(archive: &Archive, subject: &Subject, attribute: &str, value: &Value) {
         let attribute = Attribute::parse(attribute).unwrap();
         let mut index = archive.index().unwrap();
         index.fold(archive.log()).unwrap();
         let ids = index
-            .standing_ids(subject, &attribute, Some(&value))
+            .standing_ids(subject, &attribute, Some(value))
             .unwrap();
         archive
             .log()
@@ -402,7 +402,7 @@ mod tests {
             &archive,
             &jpeg,
             "file:mime",
-            serde_json::json!("image/jpeg"),
+            &serde_json::json!("image/jpeg"),
         );
         index.fold(archive.log()).unwrap();
 
@@ -433,7 +433,7 @@ mod tests {
             &archive,
             &jpeg,
             EXAMINED,
-            serde_json::json!(source().as_str()),
+            &serde_json::json!(source().as_str()),
         );
         index.fold(archive.log()).unwrap();
 

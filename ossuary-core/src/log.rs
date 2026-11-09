@@ -79,8 +79,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead as _, ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use immure::{Algorithm, Digest, Store};
@@ -539,7 +539,9 @@ impl Log {
                     self.note_written(&dir, text.len() as u64);
                     return Ok(());
                 }
-                Err(immure::Error::RootMissing(_)) => continue,
+                // Sealed since the count; the next round writes to the
+                // new open segment.
+                Err(immure::Error::RootMissing(_)) => {}
                 Err(error) => return Err(error.into()),
             }
         }
@@ -548,12 +550,12 @@ impl Log {
     /// What this process has appended to `dir`; nothing, when its last
     /// append went elsewhere.
     fn written_to(&self, dir: &Path) -> u64 {
-        let written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         if written.dir == dir { written.bytes } else { 0 }
     }
 
     fn note_written(&self, dir: &Path, bytes: u64) {
-        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         if written.dir != dir {
             written.dir = dir.to_path_buf();
             written.bytes = 0;
@@ -565,7 +567,7 @@ impl Log {
     /// count starts anew, so a seal that was not needed is not asked for
     /// again at once.
     fn forget_written(&self) {
-        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         *written = Written::default();
     }
 
@@ -915,29 +917,26 @@ impl Log {
             Err(error) => return Err(error.into()),
         };
         let mut sealed_bundles: Vec<Digest> = Vec::new();
-        match listed {
-            Some(listed) => {
-                sealed_bundles.extend(names.iter().filter(|n| listed.contains(n)).cloned());
-            }
-            None => {
-                let held: BTreeSet<ClaimId> = self
-                    .contents(&digest)?
-                    .into_claims()
-                    .into_iter()
-                    .filter_map(|claim| claim.id().cloned())
-                    .collect();
-                for name in &names {
-                    let Ok(Some(bytes)) = bundles.read(name) else {
-                        continue;
-                    };
-                    let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
-                    let claims = parse_bundle(&text, self.store.algorithm())?;
-                    if claims
-                        .iter()
-                        .all(|claim| claim.id().is_some_and(|id| held.contains(id)))
-                    {
-                        sealed_bundles.push(name.clone());
-                    }
+        if let Some(listed) = listed {
+            sealed_bundles.extend(names.iter().filter(|n| listed.contains(n)).cloned());
+        } else {
+            let held: BTreeSet<ClaimId> = self
+                .contents(&digest)?
+                .into_claims()
+                .into_iter()
+                .filter_map(|claim| claim.id().cloned())
+                .collect();
+            for name in &names {
+                let Ok(Some(bytes)) = bundles.read(name) else {
+                    continue;
+                };
+                let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
+                let claims = parse_bundle(&text, self.store.algorithm())?;
+                if claims
+                    .iter()
+                    .all(|claim| claim.id().is_some_and(|id| held.contains(id)))
+                {
+                    sealed_bundles.push(name.clone());
                 }
             }
         }
@@ -1547,7 +1546,12 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 3, "two bundles and tmp/");
         assert_eq!(
-            files.iter().filter(|name| name.ends_with(".jsonl")).count(),
+            files
+                .iter()
+                .filter(|name| Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext == "jsonl"))
+                .count(),
             2
         );
     }

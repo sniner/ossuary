@@ -1,5 +1,7 @@
 //! What one run came to.
 
+use std::fmt::Write as _;
+
 use crate::output::counted;
 
 /// The count of a run — a fetch or a takeover, the verdict reads the
@@ -104,7 +106,7 @@ impl Tally {
         let (count, how) = found.next()?;
         let mut text = format!("{count} found in the archive {how}");
         for (count, how) in found {
-            text.push_str(&format!(", {count} {how}"));
+            write!(text, ", {count} {how}").expect("writing to a String");
         }
         Some(text)
     }

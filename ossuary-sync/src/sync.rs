@@ -65,7 +65,7 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
             if remote
                 .list(&format!("{OPEN_DIR}/{name}"))?
                 .iter()
-                .any(|entry| entry.ends_with(".jsonl"))
+                .any(|entry| is_bundle(entry))
             {
                 bail!(
                     "the target's open segment holds claims, so something other than ossuary sync wrote to the target; name another target"
@@ -416,9 +416,15 @@ fn open_entries(remote: &dyn Remote) -> Result<Vec<String>> {
 /// Whether a listing of `open/` is that of a 0.18 open segment: a
 /// directory of bundles with `tmp/`, not one of directories.
 fn is_old_open(entries: &[String]) -> bool {
-    entries
-        .iter()
-        .any(|name| name == "tmp" || name.ends_with(".jsonl"))
+    entries.iter().any(|name| name == "tmp" || is_bundle(name))
+}
+
+/// Whether a name in an open segment's directory is a bundle of claims.
+/// The suffix is the format's, lowercase as written.
+fn is_bundle(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext == "jsonl")
 }
 
 /// The open segment of 0.18 or earlier in the copy's root, by path:

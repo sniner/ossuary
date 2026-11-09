@@ -156,11 +156,11 @@ impl Archive {
         let log = log_in(claims, &root);
         log.init()?;
         Ok(Archive {
-            log,
+            root,
             config,
             content,
             derived,
-            root,
+            log,
         })
     }
 

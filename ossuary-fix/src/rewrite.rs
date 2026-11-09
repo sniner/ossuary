@@ -32,7 +32,7 @@ use std::fs;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use immure::Digest;
-use ossuary_core::{Archive, GENERATION};
+use ossuary_core::{Archive, GENERATION, Log};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -149,28 +149,7 @@ impl Rewrite {
             segments.insert(name.clone(), segment);
             texts.insert(name, (digest, text));
         }
-        // The open segment as a segment: the one it names, and its claims
-        // as lines in the order a seal would give them. None when it is
-        // lost.
-        let old_head = match log.head_lost()? {
-            true => None,
-            false => {
-                let contents = log.head_contents().context("the open segment")?;
-                let mut text = match contents.previous() {
-                    Some(previous) => {
-                        format!(
-                            "{{\"ossuary-segment\":{GENERATION},\"previous\":\"{previous}\"}}\n"
-                        )
-                    }
-                    None => format!("{{\"ossuary-segment\":{GENERATION}}}\n"),
-                };
-                for claim in contents.claims() {
-                    text.push_str(&claim.to_line());
-                    text.push('\n');
-                }
-                Some(text)
-            }
-        };
+        let old_head = head_text(log)?;
         let mut head = old_head
             .as_deref()
             .map(|text| parse(text).context("the open segment"))
@@ -408,6 +387,27 @@ impl Rewrite {
         }
         sentence
     }
+}
+
+/// The open segment as the text of a segment: the header naming the
+/// segment it follows, then its claims as lines in the order a seal
+/// would give them. `None` when the open segment is lost.
+fn head_text(log: &Log) -> Result<Option<String>> {
+    if log.head_lost()? {
+        return Ok(None);
+    }
+    let contents = log.head_contents().context("the open segment")?;
+    let mut text = match contents.previous() {
+        Some(previous) => {
+            format!("{{\"ossuary-segment\":{GENERATION},\"previous\":\"{previous}\"}}\n")
+        }
+        None => format!("{{\"ossuary-segment\":{GENERATION}}}\n"),
+    };
+    for claim in contents.claims() {
+        text.push_str(&claim.to_line());
+        text.push('\n');
+    }
+    Ok(Some(text))
 }
 
 /// The `time` of a segment's first claim, read from the line as it

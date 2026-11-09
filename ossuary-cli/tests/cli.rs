@@ -233,7 +233,11 @@ fn open_bundles(archive: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(&dirs[0])
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".jsonl"))
+        .filter(|name| {
+            Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext == "jsonl")
+        })
         .collect();
     names.sort();
     names

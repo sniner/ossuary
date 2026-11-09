@@ -876,18 +876,7 @@ impl Fetch<'_> {
                 }
             }
         };
-        let sorted = {
-            let borrowed = self.record.borrow();
-            let index = borrowed
-                .as_ref()
-                .expect("a Proton folder catches the record up");
-            let record = proton::Record {
-                index,
-                id: &self.id,
-                place: &self.place,
-            };
-            proton::sort(&asked, &listed, |id| record.holders(id))?
-        };
+        let sorted = self.sort_labelled(&asked, &listed)?;
         // A UID the server no longer lists, or one without an id, can
         // never be found; only an id not on record yet stays open.
         let still_open: Vec<u32> = sorted
@@ -951,47 +940,90 @@ impl Fetch<'_> {
             }
         }
         if let Some(in_folder) = &in_folder {
-            let gone = self.label_removed(label, in_folder)?;
-            let time = Timestamp::now();
-            let mut claims = Vec::new();
-            let borrowed = self.record.borrow();
-            let index = borrowed
-                .as_ref()
-                .expect("a Proton folder catches the record up");
-            for subject in &gone {
-                let mut ids = index.standing_ids(subject, &self.tag, Some(&value))?;
-                if let Some(said) = self
-                    .said
-                    .borrow()
-                    .get(&(subject.as_str().to_string(), value.to_string()))
-                {
-                    ids.extend(said.iter().cloned());
-                }
-                ids.sort();
-                ids.dedup();
-                if ids.is_empty() {
-                    continue;
-                }
-                claims.push(Claim::retract(
-                    subject.clone(),
-                    self.tag.clone(),
-                    ids,
-                    time.clone(),
-                    self.source.clone(),
-                    tally.run.clone(),
-                )?);
-            }
-            self.archive.log().append_all(&claims)?;
-            tally.claims += claims.len();
-            tally.taken += claims.len();
-            if !gone.is_empty() {
-                self.say.line(format_args!(
-                    "{name}: the label retracted from {} no longer in the folder",
-                    counted(gone.len(), "message", "messages")
-                ));
-            }
+            self.retract_label(name, label, in_folder, tally)?;
         }
-        for uid in &open {
+        let top = uids.iter().copied().max().unwrap_or(above).max(above);
+        self.settle_label_folder(place, &open, &still_open, top, uidvalidity)
+    }
+
+    /// `asked` sorted by what the record holds of each UID's Proton id.
+    fn sort_labelled(&self, asked: &[u32], listed: &[(u32, String)]) -> Result<proton::Sorted> {
+        let borrowed = self.record.borrow();
+        let index = borrowed
+            .as_ref()
+            .expect("a Proton folder catches the record up");
+        let record = proton::Record {
+            index,
+            id: &self.id,
+            place: &self.place,
+        };
+        proton::sort(asked, listed, |id| record.holders(id))
+    }
+
+    /// Under `--full`: retract the label from the files that the label
+    /// folder no longer lists (see [`label_removed`](Self::label_removed)).
+    fn retract_label(
+        &self,
+        name: &str,
+        label: &str,
+        in_folder: &HashSet<String>,
+        tally: &mut Tally,
+    ) -> Result<()> {
+        let value = json!(label);
+        let gone = self.label_removed(label, in_folder)?;
+        let time = Timestamp::now();
+        let mut claims = Vec::new();
+        let borrowed = self.record.borrow();
+        let index = borrowed
+            .as_ref()
+            .expect("a Proton folder catches the record up");
+        for subject in &gone {
+            let mut ids = index.standing_ids(subject, &self.tag, Some(&value))?;
+            if let Some(said) = self
+                .said
+                .borrow()
+                .get(&(subject.as_str().to_string(), value.to_string()))
+            {
+                ids.extend(said.iter().cloned());
+            }
+            ids.sort();
+            ids.dedup();
+            if ids.is_empty() {
+                continue;
+            }
+            claims.push(Claim::retract(
+                subject.clone(),
+                self.tag.clone(),
+                ids,
+                time.clone(),
+                self.source.clone(),
+                tally.run.clone(),
+            )?);
+        }
+        self.archive.log().append_all(&claims)?;
+        tally.claims += claims.len();
+        tally.taken += claims.len();
+        if !gone.is_empty() {
+            self.say.line(format_args!(
+                "{name}: the label retracted from {} no longer in the folder",
+                counted(gone.len(), "message", "messages")
+            ));
+        }
+        Ok(())
+    }
+
+    /// The end of a label folder's run: the open UIDs that were found
+    /// leave the pending list, the ones still open are added to it, the
+    /// resume point moves to `top`, and the transaction is committed.
+    fn settle_label_folder(
+        &self,
+        place: &Place<'_>,
+        open: &[u32],
+        still_open: &[u32],
+        top: u32,
+        uidvalidity: u32,
+    ) -> Result<()> {
+        for uid in open {
             if !still_open.contains(uid) {
                 self.memo
                     .remove_pending(place.account, place.folder, &uid.to_string())?;
@@ -1003,7 +1035,6 @@ impl Fetch<'_> {
             place.folder,
             ids.iter().map(|id| (id.as_str(), ())),
         )?;
-        let top = uids.iter().copied().max().unwrap_or(above).max(above);
         self.memo.advance_imap(
             place.account,
             place.folder,
@@ -1544,14 +1575,7 @@ impl Fetch<'_> {
             counted(round.offered.len(), "message", "messages")
         ));
         if self.options.dry_run {
-            // A message listed again while still pending is one fetch.
-            let pending: HashSet<&str> = left.iter().map(|message| message.id.as_str()).collect();
-            let new = round
-                .offered
-                .iter()
-                .filter(|message| !pending.contains(message.id.as_str()))
-                .count();
-            tally.would += left.len() + new;
+            tally.would += would_fetch(&left, &round);
             return Ok(());
         }
 
@@ -1862,6 +1886,19 @@ impl Fetch<'_> {
         tally.matched += kept.len();
         self.forget_settled(place, &comparison, &kept, id)
     }
+}
+
+/// How many messages a Graph fetch would download: those pending from
+/// the last run and those the round lists. A message listed again while
+/// still pending is one fetch.
+fn would_fetch(left: &[Pending<Vec<String>>], round: &Round) -> usize {
+    let pending: HashSet<&str> = left.iter().map(|message| message.id.as_str()).collect();
+    let new = round
+        .offered
+        .iter()
+        .filter(|message| !pending.contains(message.id.as_str()))
+        .count();
+    left.len() + new
 }
 
 /// Where a folder's fetch carries on from, and how to say so: above

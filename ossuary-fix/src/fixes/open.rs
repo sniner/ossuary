@@ -14,6 +14,7 @@
 //! first changed line on get new names.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -46,10 +47,12 @@ impl Converted {
             self.retractions
         );
         if self.dropped > 0 {
-            sentence.push_str(&format!(
+            write!(
+                sentence,
                 "; {} retraction(s) of nothing standing {would}left out",
                 self.dropped
-            ));
+            )
+            .expect("writing to a String");
         }
         Some(sentence)
     }
@@ -213,28 +216,25 @@ impl Standing {
     /// attribute; they stand no more.
     fn take(&mut self, subject: &str, attribute: &str, value: Option<&Value>) -> Vec<ClaimId> {
         let mut taken = Vec::new();
-        match value {
-            Some(value) => {
-                let key = (
-                    subject.to_string(),
-                    attribute.to_string(),
-                    value.to_string(),
-                );
+        if let Some(value) = value {
+            let key = (
+                subject.to_string(),
+                attribute.to_string(),
+                value.to_string(),
+            );
+            if let Some(ids) = self.0.remove(&key) {
+                taken.extend(ids);
+            }
+        } else {
+            let keys: Vec<_> = self
+                .0
+                .keys()
+                .filter(|(s, a, _)| s == subject && a == attribute)
+                .cloned()
+                .collect();
+            for key in keys {
                 if let Some(ids) = self.0.remove(&key) {
                     taken.extend(ids);
-                }
-            }
-            None => {
-                let keys: Vec<_> = self
-                    .0
-                    .keys()
-                    .filter(|(s, a, _)| s == subject && a == attribute)
-                    .cloned()
-                    .collect();
-                for key in keys {
-                    if let Some(ids) = self.0.remove(&key) {
-                        taken.extend(ids);
-                    }
                 }
             }
         }
@@ -296,7 +296,8 @@ fn convert_lines(
             serde_json::to_string(source)?,
         );
         if let Some(run) = run {
-            rewritten.push_str(&format!(",\"run\":{}", serde_json::to_string(run)?));
+            write!(rewritten, ",\"run\":{}", serde_json::to_string(run)?)
+                .expect("writing to a String");
         }
         rewritten.push('}');
         // The bytes must be what the current form writes, so that the

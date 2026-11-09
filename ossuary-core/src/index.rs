@@ -56,7 +56,7 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::export::Placement;
-use crate::log::{Log, sort_as_sealed};
+use crate::log::{Log, Open, sort_as_sealed};
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
@@ -565,11 +565,11 @@ impl Index {
             // No open segment, so nothing sealed either.
             return Ok((!holds_claims(&self.connection)?).then(Folded::default));
         };
-        if read.is_none() && holds_claims(&self.connection)? {
+        if read == OpenRead::Never && holds_claims(&self.connection)? {
             // Claims without a record of what was read: not this build's.
             return Ok(None);
         }
-        let followed = read.flatten();
+        let followed = read.followed();
 
         // Back from the open segment to the segment the index followed.
         // Every segment passed on the way is new.
@@ -607,7 +607,7 @@ impl Index {
             // A segment that another process folded since the walk is
             // passed over.
             if known(&transaction, &digest)?.is_none() {
-                if open_read(&transaction)?.flatten() != before {
+                if open_read(&transaction)?.followed() != before {
                     return Ok(None);
                 }
                 let had = count_claims(&transaction)?;
@@ -632,6 +632,14 @@ impl Index {
             before = Some(digest);
         }
 
+        folded.head += self.follow_open(log, &open)?;
+        Ok(Some(folded))
+    }
+
+    /// Fold in the bundles of the open segment that the index has not
+    /// read, and record which segment the open segment follows. Returns
+    /// how many claims went in.
+    fn follow_open(&mut self, log: &Log, open: &Open) -> Result<usize> {
         // The bundles not read yet, their claims in the order the seal
         // will give them, so that the rows follow the record's order as
         // far as the open segment has one.
@@ -643,7 +651,7 @@ impl Index {
             }
             // A bundle sealed since the listing has its segment read
             // next time.
-            if let Some(read) = log.bundle(&open, bundle)? {
+            if let Some(read) = log.bundle(open, bundle)? {
                 claims.extend(read);
                 unread.push(bundle.as_str());
             }
@@ -653,10 +661,10 @@ impl Index {
             let transaction = self
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if open_read(&transaction)?.flatten().as_deref() != open.previous().map(Digest::as_str)
+            if open_read(&transaction)?.followed().as_deref() != open.previous().map(Digest::as_str)
             {
                 // Another process folded a seal made after the listing.
-                return Ok(Some(folded));
+                return Ok(0);
             }
             let position = head_rows(&transaction)?;
             insert(&transaction, &mut self.ids, HEAD, &claims, position)?;
@@ -671,13 +679,12 @@ impl Index {
                 params![open.previous().map(Digest::as_str)],
             )?;
             transaction.commit()?;
-            folded.head += claims.len();
         }
-        if open_read(&self.connection)?.is_none() {
+        if open_read(&self.connection)? == OpenRead::Never {
             let transaction = self
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if open_read(&transaction)?.is_none() {
+            if open_read(&transaction)? == OpenRead::Never {
                 transaction.execute(
                     "INSERT INTO open_read (id, previous) VALUES (0, ?1)",
                     params![open.previous().map(Digest::as_str)],
@@ -685,7 +692,7 @@ impl Index {
             }
             transaction.commit()?;
         }
-        Ok(Some(folded))
+        Ok(claims.len())
     }
 
     /// Empty the index of everything the log put in it. The names stay,
@@ -1209,35 +1216,48 @@ impl Index {
     /// row-to-value errors cannot happen for rows a fold wrote, but are
     /// propagated rather than sworn away.
     pub fn standing_as_of(&self, attribute: &str, cutoff: Option<&str>) -> Result<Vec<Standing>> {
+        match cutoff {
+            None => self.standing_now(attribute),
+            Some(cutoff) => self.standing_replayed(attribute, cutoff),
+        }
+    }
+
+    /// [`standing_as_of`](Index::standing_as_of) without a cutoff: the
+    /// standing set as it is.
+    fn standing_now(&self, attribute: &str) -> Result<Vec<Standing>> {
+        let mut statement = self.connection.prepare(
+            "SELECT su.digest, st.value, st.time, st.claim
+             FROM standing st JOIN subjects su ON su.id = st.subject
+             WHERE st.attribute = (SELECT id FROM attributes WHERE name = ?1)
+             ORDER BY su.digest, st.value",
+        )?;
+        let rows = statement.query_map(params![attribute], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut standing = Vec::new();
+        for row in rows {
+            let (subject, value, asserted, claim) = row?;
+            standing.push(Standing {
+                subject: Subject::parse(&subject)?,
+                value: serde_json::from_str(&value)?,
+                asserted,
+                order: order_of(claim),
+            });
+        }
+        Ok(standing)
+    }
+
+    /// [`standing_as_of`](Index::standing_as_of) with a cutoff: the
+    /// claims up to it, replayed in log order.
+    fn standing_replayed(&self, attribute: &str, cutoff: &str) -> Result<Vec<Standing>> {
         use std::collections::BTreeMap;
 
-        let Some(cutoff) = cutoff else {
-            let mut statement = self.connection.prepare(
-                "SELECT su.digest, st.value, st.time, st.claim
-                 FROM standing st JOIN subjects su ON su.id = st.subject
-                 WHERE st.attribute = (SELECT id FROM attributes WHERE name = ?1)
-                 ORDER BY su.digest, st.value",
-            )?;
-            let rows = statement.query_map(params![attribute], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })?;
-            let mut standing = Vec::new();
-            for row in rows {
-                let (subject, value, asserted, claim) = row?;
-                standing.push(Standing {
-                    subject: Subject::parse(&subject)?,
-                    value: serde_json::from_str(&value)?,
-                    asserted,
-                    order: order_of(claim),
-                });
-            }
-            return Ok(standing);
-        };
+        type Held = BTreeMap<String, BTreeMap<String, BTreeMap<String, (String, u64)>>>;
 
         let mut statement = self.connection.prepare(
             "SELECT su.digest, c.value, c.time, c.id, c.cid,
@@ -1264,35 +1284,31 @@ impl Index {
         // a retraction can take one of several assertions of a value away
         // and the others keep it standing. Retractions apply whichever
         // side of their target they stand on.
-        type Held = BTreeMap<String, BTreeMap<String, BTreeMap<String, (String, u64)>>>;
         let mut held: Held = BTreeMap::new();
         let mut where_is: HashMap<String, (String, String)> = HashMap::new();
         let mut retracted: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
             let (subject, value, time, claim, cid, targets) = row?;
-            match value {
-                Some(value) => {
-                    if retracted.contains(&cid) {
-                        continue;
-                    }
-                    where_is.insert(cid.clone(), (subject.clone(), value.clone()));
-                    held.entry(subject)
-                        .or_default()
-                        .entry(value)
-                        .or_default()
-                        .insert(cid, (time, order_of(claim)));
+            if let Some(value) = value {
+                if retracted.contains(&cid) {
+                    continue;
                 }
-                None => {
-                    let targets: Vec<String> = serde_json::from_str(&targets)?;
-                    for target in targets {
-                        if let Some((subject, value)) = where_is.remove(&target)
-                            && let Some(values) = held.get_mut(&subject)
-                            && let Some(claims) = values.get_mut(&value)
-                        {
-                            claims.remove(&target);
-                        }
-                        retracted.insert(target);
+                where_is.insert(cid.clone(), (subject.clone(), value.clone()));
+                held.entry(subject)
+                    .or_default()
+                    .entry(value)
+                    .or_default()
+                    .insert(cid, (time, order_of(claim)));
+            } else {
+                let targets: Vec<String> = serde_json::from_str(&targets)?;
+                for target in targets {
+                    if let Some((subject, value)) = where_is.remove(&target)
+                        && let Some(values) = held.get_mut(&subject)
+                        && let Some(claims) = values.get_mut(&value)
+                    {
+                        claims.remove(&target);
                     }
+                    retracted.insert(target);
                 }
             }
         }
@@ -1855,16 +1871,34 @@ fn insert(
     Ok(())
 }
 
-/// The segment the open segment followed when the index last read it:
-/// the row of `open_read`. `None` for an index that has not read one yet,
-/// `Some(None)` before the first seal.
-fn open_read(connection: &Connection) -> Result<Option<Option<String>>> {
+/// The row of `open_read`: the segment the open segment followed when
+/// the index last read it.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenRead {
+    /// No row: the index has not read an open segment yet.
+    Never,
+    /// The segment followed; `None` before the first seal.
+    Followed(Option<String>),
+}
+
+impl OpenRead {
+    /// The segment followed; `None` before the first seal and also for an
+    /// index that has not read an open segment yet.
+    fn followed(self) -> Option<String> {
+        match self {
+            OpenRead::Never => None,
+            OpenRead::Followed(previous) => previous,
+        }
+    }
+}
+
+fn open_read(connection: &Connection) -> Result<OpenRead> {
     let read = connection
         .query_row("SELECT previous FROM open_read WHERE id = 0", [], |row| {
             row.get::<_, Option<String>>(0)
         })
         .optional()?;
-    Ok(read)
+    Ok(read.map_or(OpenRead::Never, OpenRead::Followed))
 }
 
 /// Whether a bundle of the open segment was read into the index.
@@ -2512,7 +2546,7 @@ mod tests {
             log,
             &subject(),
             "user:tag",
-            Some(json!(tag)),
+            Some(&json!(tag)),
             time,
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -2526,7 +2560,7 @@ mod tests {
         log: &Log,
         subject: &Subject,
         attribute: &str,
-        value: Option<serde_json::Value>,
+        value: Option<&serde_json::Value>,
         time: &str,
         source: &str,
         run: Run,
@@ -2537,7 +2571,7 @@ mod tests {
         }
         claims.extend(log.head().unwrap());
         let attribute = Attribute::parse(attribute).unwrap();
-        let ids = crate::claim::standing_ids_in(&claims, subject, &attribute, value.as_ref());
+        let ids = crate::claim::standing_ids_in(&claims, subject, &attribute, value);
         Claim::retract(
             subject.clone(),
             attribute,
@@ -2672,7 +2706,7 @@ mod tests {
             &log,
             &subject(),
             "user:tag",
-            Some(json!("holiday")),
+            Some(&json!("holiday")),
             "2030-04-01T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -2968,7 +3002,7 @@ mod tests {
             &log,
             &subject(),
             "file:path",
-            Some(json!("/home/s/a.txt")),
+            Some(&json!("/home/s/a.txt")),
             "2026-09-03T10:00:00Z",
             "ingest",
             run_x('c'),
@@ -3122,7 +3156,7 @@ mod tests {
             &log,
             &other(),
             "file:name",
-            Some(json!("b.txt")),
+            Some(&json!("b.txt")),
             "2026-09-02T10:00:00Z",
             "ingest",
             run_x('b'),
@@ -3319,7 +3353,7 @@ mod tests {
             &log,
             &subject(),
             "user:tag",
-            Some(json!("holiday")),
+            Some(&json!("holiday")),
             "2026-09-02T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -3382,7 +3416,7 @@ mod tests {
             &log,
             &subject(),
             "user:tag",
-            Some(json!("holiday")),
+            Some(&json!("holiday")),
             "2026-09-02T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -3413,7 +3447,7 @@ mod tests {
             &log,
             &subject(),
             "user:tag",
-            Some(json!("holiday")),
+            Some(&json!("holiday")),
             "2026-09-03T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -3604,7 +3638,7 @@ mod tests {
             &log,
             &subject(),
             "user:tag",
-            Some(json!("holiday")),
+            Some(&json!("holiday")),
             "2026-09-03T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -3658,7 +3692,7 @@ mod tests {
             &log,
             &subject(),
             "user:tag",
-            Some(json!("holiday")),
+            Some(&json!("holiday")),
             "2026-09-02T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -3830,7 +3864,7 @@ mod tests {
             &log,
             &other.clone(),
             "exif:make",
-            Some(json!("Google")),
+            Some(&json!("Google")),
             "2026-09-02T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -4184,7 +4218,7 @@ mod tests {
             &log,
             &subject(),
             "file:path",
-            Some(json!("/home/john/a.txt")),
+            Some(&json!("/home/john/a.txt")),
             "2026-09-02T10:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -4216,7 +4250,7 @@ mod tests {
             &log,
             &subject(),
             "file:path",
-            Some(place.clone()),
+            Some(&place),
             "2026-02-01T00:00:00Z",
             "user",
             Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
@@ -4374,7 +4408,7 @@ mod tests {
             &log,
             &subject(),
             "file:path",
-            Some(json!("/home/s/a.txt")),
+            Some(&json!("/home/s/a.txt")),
             "2026-09-03T10:00:00Z",
             "ingest",
             run.clone(),
@@ -4507,10 +4541,16 @@ mod tests {
         .unwrap()
     }
 
-    fn taken_back(log: &Log, subject: Subject, attribute: &str, value: Value, time: &str) -> Claim {
+    fn taken_back(
+        log: &Log,
+        subject: &Subject,
+        attribute: &str,
+        value: &Value,
+        time: &str,
+    ) -> Claim {
         unsay(
             log,
-            &subject,
+            subject,
             attribute,
             Some(value),
             time,
@@ -4564,9 +4604,9 @@ mod tests {
 
         log.append(&taken_back(
             &log,
-            placed.clone(),
+            &placed,
             "file:path",
-            json!("/x/a"),
+            &json!("/x/a"),
             "2026-09-02T10:00:00Z",
         ))
         .unwrap();
@@ -4632,9 +4672,9 @@ mod tests {
 
         log.append(&taken_back(
             &log,
-            image.clone(),
+            &image,
             "prov:origin",
-            json!(mail.as_str()),
+            &json!(mail.as_str()),
             "2026-09-02T10:00:00Z",
         ))
         .unwrap();
@@ -4701,9 +4741,9 @@ mod tests {
 
         log.append(&taken_back(
             &log,
-            pdf.clone(),
+            &pdf,
             "prov:origin",
-            json!(other_mail.as_str()),
+            &json!(other_mail.as_str()),
             "2026-09-02T10:00:00Z",
         ))
         .unwrap();
@@ -4758,9 +4798,9 @@ mod tests {
 
         log.append(&taken_back(
             &log,
-            origin,
+            &origin,
             "file:path",
-            json!("/x/mail.eml"),
+            &json!("/x/mail.eml"),
             "2026-09-02T10:00:00Z",
         ))
         .unwrap();
@@ -4821,9 +4861,9 @@ mod tests {
 
         log.append(&taken_back(
             &log,
-            archive,
+            &archive,
             "file:path",
-            json!("/x/bundle.zip"),
+            &json!("/x/bundle.zip"),
             "2026-09-02T10:00:00Z",
         ))
         .unwrap();
