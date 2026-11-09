@@ -126,6 +126,22 @@ Every command takes `--archive`. Without it, `OSSUARY_ARCHIVE` is used
 if it is set, otherwise the current directory. The examples below set
 `OSSUARY_ARCHIVE` once for the shell session.
 
+Two settings are best decided before the first file is added. The hash
+algorithm that names the files is set by `init --algorithm` (default
+sha256) and cannot be changed later without copying the archive (see
+[Another hash algorithm](#another-hash-algorithm)). Compression is set
+by `compress` in `config.toml`. A change applies only to files added
+after it; files already in the archive stay as they are.
+
+Leave compression off, which is the default. Then every file in the
+archive is the original: any program can read it where it is (`ossuary
+get --path` prints the path), `grep` searches text files and the text
+extracted from PDFs, and `cp` gets a file back without ossuary or zstd.
+Photos, videos, PDFs, office documents and zip files are compressed
+already, so zstd saves little on them. If disk space matters, turn on
+compression in the filesystem, for example ZFS or btrfs: programs do
+not see it, and the archive stays uncompressed.
+
 ## Adding files
 
 `ingest` adds directory trees and single files, in any mix. Everything
