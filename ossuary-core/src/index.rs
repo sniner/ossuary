@@ -9,17 +9,17 @@
 //! The fold is incremental, and the log's own shape is what makes that
 //! cheap: a sealed segment never changes, so a segment folded once is
 //! folded forever, and a new one only ever joins the chain at its end.
-//! The head only grows until it is sealed, so the index keeps how far it
-//! read it: the segment the head follows, the offset after the last line
-//! read, and the head file's size and modification time at that read.
-//! While the size and time are the same, nothing was appended or sealed,
-//! and a fold reads nothing. When the head still follows the same
-//! segment, only the lines after the offset are read. When it follows
-//! another, the fold walks back to the segment it knows: the first new
-//! segment is the old head as it was sealed, so the head's rows are moved
-//! to it and only the claims after them are read; later segments are read
-//! whole, and then the new head. The order of the fold is the order of
-//! the log, and claim times play no part in it.
+//! The head only grows until it is sealed: it is a directory of bundles,
+//! each written once. The index keeps the sealed segment the head
+//! followed when the index last read it (`open_read`), and the bundles it
+//! has read (`bundles`). A fold lists the head and reads only the bundles
+//! it has not read; when there are none and no seal was made since, it
+//! reads and writes nothing. When the head follows another segment, the
+//! fold walks back to the one it knows and folds the segments passed on
+//! the way, oldest first. A claim of theirs that the index already holds,
+//! read from the head before the seal, only gets its new segment and
+//! position. Then the bundles of the new head are read. The order of the
+//! fold is the order of the log, and claim times play no part in it.
 //!
 //! The fold keeps two tables of substance and four of names. `claims` is
 //! the history, verbatim: every claim a row, retractions included, in
@@ -39,11 +39,13 @@
 //! prefers is query-time policy, and the sets carry them all.
 //!
 //! Standing follows the log forward, the only direction a log moves. A
-//! log changed in any other way is found where it shows: a head shorter
-//! than what was read, a sealed head with fewer claims than the index
-//! holds for it, a chain that does not lead back to where the index
-//! stopped. The index is then emptied and folded anew, which is what
-//! deleting the cache does.
+//! log changed in any other way is found where it shows: claims in the
+//! index but no head in the log, claims but no record of what was read
+//! of the head, a chain that does not lead back to the segment the index
+//! followed. The index is then emptied and folded anew, which is what
+//! deleting the cache does. A bundle that disappears from the head
+//! without a seal is not found; its claims stay in the index until it is
+//! folded anew.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -513,12 +515,12 @@ impl Index {
     /// Fold the log in: new segments once, and of the open head what was
     /// appended since the last fold.
     ///
-    /// Safe to call as often as wanted. While the head file's size and
-    /// modification time are what the last fold saw, nothing is read and
-    /// nothing is written. A segment already folded is recognised by its
-    /// digest and skipped, and each segment lands in one transaction, so
-    /// an interrupted fold left nothing half-indexed. An index that does
-    /// not match the log is emptied and folded anew, and
+    /// Safe to call as often as wanted. When every bundle in the head was
+    /// read before and nothing was sealed since, the head is listed and
+    /// nothing is read or written. A segment already folded is recognised
+    /// by its digest and skipped, and each segment lands in one
+    /// transaction, so an interrupted fold left nothing half-indexed. An
+    /// index that does not match the log is emptied and folded anew, and
     /// [`Folded::rebuilt`] says so.
     ///
     /// # Errors
@@ -2517,10 +2519,8 @@ mod tests {
         );
     }
 
-    /// The head lost what the index had read: without the head written
-    /// to disk at each append, a power failure did this, and the standing
-    /// value pointed at a claim row that a later claim about another file
-    /// took over.
+    /// Claims in the index but no record of what it read of the head, as
+    /// in an index that another build wrote: it is built anew.
     #[test]
     fn an_index_without_a_record_of_the_head_is_built_anew() {
         let dir = TempDir::new().unwrap();
