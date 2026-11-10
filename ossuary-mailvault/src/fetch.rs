@@ -652,7 +652,13 @@ impl Fetch<'_> {
         if self.options.compare && !proton {
             return self.imap_compare(place, mailbox, opened.uidvalidity, tally);
         }
-        let whole = self.options.full || self.options.compare;
+        let whole = if self.options.full {
+            Some("--full")
+        } else if self.options.compare {
+            Some("--compare")
+        } else {
+            None
+        };
         let resume = self.memo.imap_resume(place.account, place.folder)?;
         // The pending list holds UIDs of the promise the point was saved
         // under, and is valid as long as that promise is. A fetch of the
@@ -660,10 +666,7 @@ impl Fetch<'_> {
         // when the fetch stops short, the list is all that names the
         // UIDs below the point that are still missing.
         let pending_valid = resume.is_some_and(|point| point.uidvalidity == opened.uidvalidity);
-        let (above, mut how) = carry_on(resume, opened.uidvalidity, whole);
-        if self.options.compare && !self.options.full {
-            how = "full fetch (--compare)".to_string();
-        }
+        let (above, how) = carry_on(resume, opened.uidvalidity, whole);
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
             Err(error) => {
@@ -847,7 +850,7 @@ impl Fetch<'_> {
         let resume = self.memo.imap_resume(place.account, place.folder)?;
         let resumed =
             !self.options.full && resume.is_some_and(|point| point.uidvalidity == uidvalidity);
-        let (above, how) = carry_on(resume, uidvalidity, self.options.full);
+        let (above, how) = carry_on(resume, uidvalidity, self.options.full.then_some("--full"));
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
             Err(error) => {
@@ -1930,15 +1933,15 @@ fn would_fetch(left: &[Pending<Vec<String>>], round: &Round) -> usize {
 
 /// Where a folder's fetch carries on from, and how to say so: above
 /// the last UID when the server's promise still holds, from the start
-/// otherwise — or when `full` asks for everything.
-fn carry_on(resume: Option<ImapResume>, uidvalidity: u32, full: bool) -> (u32, String) {
-    match resume {
-        _ if full => (0, "full fetch (--full)".to_string()),
-        Some(point) if point.uidvalidity == uidvalidity => {
+/// otherwise, or when the option named in `whole` asks for everything.
+fn carry_on(resume: Option<ImapResume>, uidvalidity: u32, whole: Option<&str>) -> (u32, String) {
+    match (whole, resume) {
+        (Some(option), _) => (0, format!("full fetch ({option})")),
+        (None, Some(point)) if point.uidvalidity == uidvalidity => {
             (point.uid, format!("resuming above UID {}", point.uid))
         }
-        Some(_) => (0, "full fetch (UIDVALIDITY changed)".to_string()),
-        None => (0, "first fetch".to_string()),
+        (None, Some(_)) => (0, "full fetch (UIDVALIDITY changed)".to_string()),
+        (None, None) => (0, "first fetch".to_string()),
     }
 }
 
@@ -1959,23 +1962,23 @@ mod tests {
 
     #[test]
     fn where_to_carry_on_from() {
-        assert_eq!(carry_on(None, 7, false).0, 0, "first fetch: whole");
+        assert_eq!(carry_on(None, 7, None).0, 0, "first fetch: whole");
         assert_eq!(
-            carry_on(Some(at(7, 40)), 7, false).0,
+            carry_on(Some(at(7, 40)), 7, None).0,
             40,
             "the promise holds: above the point"
         );
+        assert_eq!(carry_on(Some(at(7, 40)), 8, None).0, 0, "renumbered: whole");
         assert_eq!(
-            carry_on(Some(at(7, 40)), 8, false).0,
-            0,
-            "renumbered: whole"
-        );
-        assert_eq!(
-            carry_on(Some(at(7, 40)), 7, true).0,
-            0,
+            carry_on(Some(at(7, 40)), 7, Some("--full")),
+            (0, "full fetch (--full)".to_string()),
             "--full: whole, whatever the point"
         );
-        assert!(carry_on(Some(at(7, 40)), 7, false).1.contains("40"));
+        assert_eq!(
+            carry_on(Some(at(7, 40)), 7, Some("--compare")).1,
+            "full fetch (--compare)"
+        );
+        assert!(carry_on(Some(at(7, 40)), 7, None).1.contains("40"));
     }
 
     /// A mailbox answering from memory: one folder, its messages by UID,
