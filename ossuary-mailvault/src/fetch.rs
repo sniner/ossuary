@@ -166,7 +166,7 @@ struct Walk<'a> {
     /// UIDs handled so far, of `total`.
     done: usize,
     total: usize,
-    refused_in_a_row: usize,
+    refusals: Refusals,
     gone: usize,
     /// Under `--compare`, the messages the pass stored.
     stored: Stored,
@@ -206,6 +206,24 @@ const GIVE_UP_AFTER: u32 = 3;
 /// How many messages in a row the server may refuse before the rest
 /// of the folder is left for the next run.
 const STOP_AFTER: usize = 10;
+
+/// The messages the server refused in a row.
+#[derive(Default)]
+struct Refusals(usize);
+
+impl Refusals {
+    /// One more. Answers whether that makes [`STOP_AFTER`], and the
+    /// rest of the folder is to be left for the next run.
+    fn one_more(&mut self) -> bool {
+        self.0 += 1;
+        self.0 >= STOP_AFTER
+    }
+
+    /// The server handed a message over, or said it is gone.
+    fn ended(&mut self) {
+        self.0 = 0;
+    }
+}
 
 /// Fetch the accounts into the archive.
 ///
@@ -1173,7 +1191,7 @@ impl Fetch<'_> {
             frontier: 0,
             identified,
             done: 0,
-            refused_in_a_row: 0,
+            refusals: Refusals::default(),
             gone: 0,
             stored: Stored::new(),
             progress: self.say.progress(),
@@ -1232,10 +1250,7 @@ impl Fetch<'_> {
                 self.memo.advance_imap(place.account, place.folder, point)?;
             }
             state.tally.identified += 1;
-            if (settled + 1).is_multiple_of(COMMIT_EVERY) {
-                self.memo.commit_for(self.archive)?;
-                self.memo.begin()?;
-            }
+            self.commit_every(settled + 1)?;
         }
         let each: &mut Each<'_> = &mut |uid, got| self.imap_got(place, uid, got, walk, state);
         let mut outcome = mailbox.fetch(&retry, each);
@@ -1289,6 +1304,7 @@ impl Fetch<'_> {
         let id = uid.to_string();
         // Some for a UID the last run left on the pending list.
         let attempts = walk.pending.get(&uid).copied();
+        let mut stop = false;
         match got {
             Got::Message(bytes, labels) => {
                 let proton_id = walk.identified.ids.get(&uid).cloned();
@@ -1296,75 +1312,89 @@ impl Fetch<'_> {
                     self.land(place, bytes, labels.as_deref(), proton_id.as_deref(), state)?;
                 let compared = compare::imap_id(walk.uidvalidity, uid);
                 self.note(place, &compared, &subject, &mut walk.stored)?;
-                walk.refused_in_a_row = 0;
+                walk.refusals.ended();
                 if attempts.is_some() {
                     self.memo.remove_pending(place.account, place.folder, &id)?;
                 }
             }
             Got::Gone => {
                 walk.gone += 1;
-                walk.refused_in_a_row = 0;
+                walk.refusals.ended();
                 if attempts.is_some() {
                     self.memo.remove_pending(place.account, place.folder, &id)?;
                 }
             }
             Got::Refused(error) => {
-                walk.refused_in_a_row += 1;
-                self.imap_refused(place, &id, attempts, &error, &mut state.tally)?;
+                // A UID above the point is not on the list yet.
+                if attempts.is_none() {
+                    self.memo
+                        .add_pending(place.account, place.folder, [(id.as_str(), ())])?;
+                }
+                let attempts = attempts.unwrap_or(0);
+                self.refused(place, &id, attempts, &error, &mut state.tally)?;
+                stop = walk.refusals.one_more();
             }
         }
         if let Some(point) = walk.pass(uid) {
             self.memo.advance_imap(place.account, place.folder, point)?;
         }
         walk.done += 1;
-        // Committed in batches: a run that dies repeats at most a
-        // batch, and the bytes dedup.
-        if walk.done.is_multiple_of(COMMIT_EVERY) {
-            self.memo.commit_for(self.archive)?;
-            self.memo.begin()?;
-        }
+        self.commit_every(walk.done)?;
         walk.progress.update(
             walk.done,
             &format!("{name}: {} of {} fetched", walk.done, walk.total),
         );
-        if walk.refused_in_a_row >= STOP_AFTER {
-            state.tally.failed.push(format!(
-                "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
-                counted(walk.total - walk.done, "message", "messages")
-            ));
+        if stop {
+            Self::stopped(place, walk.total - walk.done, &mut state.tally);
             return Ok(ControlFlow::Break(()));
         }
         Ok(ControlFlow::Continue(()))
     }
 
-    /// A UID the server refused: onto the pending list with one failed
-    /// run, one more failed run on it, or given up after
-    /// [`GIVE_UP_AFTER`].
-    fn imap_refused(
+    /// A message on the folder's pending list that the server refused
+    /// again, after `attempts` runs that failed before this one: one
+    /// more failed run on the list, or, after [`GIVE_UP_AFTER`], given
+    /// up and taken off it. Named in the tally either way. Answers
+    /// whether it stays on the list.
+    fn refused(
         &self,
         place: &Place<'_>,
         id: &str,
-        attempts: Option<u32>,
+        attempts: u32,
         error: &anyhow::Error,
         tally: &mut Tally,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let name = &place.name;
-        let attempts = if let Some(attempts) = attempts {
-            attempts
-        } else {
-            self.memo
-                .add_pending(place.account, place.folder, [(id, ())])?;
-            0
-        };
         if attempts + 1 >= GIVE_UP_AFTER {
             self.memo.remove_pending(place.account, place.folder, id)?;
             tally.failed.push(format!(
                 "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full fetches it again"
             ));
             tally.given_up += 1;
-        } else {
-            self.memo.fail_pending(place.account, place.folder, id)?;
-            tally.failed.push(format!("{name}: {error:#}"));
+            return Ok(false);
+        }
+        self.memo.fail_pending(place.account, place.folder, id)?;
+        tally.failed.push(format!("{name}: {error:#}"));
+        Ok(true)
+    }
+
+    /// The server refused [`STOP_AFTER`] messages in a row: name that in
+    /// the tally, with the `rest` of the folder the fetch leaves.
+    fn stopped(place: &Place<'_>, rest: usize, tally: &mut Tally) {
+        tally.failed.push(format!(
+            "{}: {STOP_AFTER} messages in a row refused; {} left for the next run",
+            place.name,
+            counted(rest, "message", "messages")
+        ));
+    }
+
+    /// Commit the memo after every [`COMMIT_EVERY`]th message and open
+    /// the next batch: a run that dies repeats at most a batch, and the
+    /// bytes dedup.
+    fn commit_every(&self, done: usize) -> Result<()> {
+        if done.is_multiple_of(COMMIT_EVERY) {
+            self.memo.commit_for(self.archive)?;
+            self.memo.begin()?;
         }
         Ok(())
     }
@@ -1507,7 +1537,7 @@ impl Fetch<'_> {
         let name = &place.name;
         let mut progress = self.say.progress();
         let mut landed = Landed::default();
-        let mut refused_in_a_row = 0;
+        let mut refusals = Refusals::default();
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
                 Ok(bytes) => {
@@ -1515,36 +1545,23 @@ impl Fetch<'_> {
                     self.note(place, &message.id, &subject, &mut landed.stored)?;
                     self.memo
                         .remove_pending(place.account, place.folder, &message.id)?;
-                    refused_in_a_row = 0;
+                    refusals.ended();
                 }
                 Err(Miss::Gone) => {
                     landed.gone += 1;
                     self.memo
                         .remove_pending(place.account, place.folder, &message.id)?;
-                    refused_in_a_row = 0;
+                    refusals.ended();
                 }
                 Err(Miss::Refused(error)) => {
-                    refused_in_a_row += 1;
-                    if message.attempts + 1 >= GIVE_UP_AFTER {
-                        self.memo
-                            .remove_pending(place.account, place.folder, &message.id)?;
-                        state.tally.failed.push(format!(
-                            "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full lists it again"
-                        ));
-                        state.tally.given_up += 1;
-                    } else {
-                        self.memo
-                            .fail_pending(place.account, place.folder, &message.id)?;
-                        state.tally.failed.push(format!("{name}: {error:#}"));
+                    let tally = &mut state.tally;
+                    if self.refused(place, &message.id, message.attempts, &error, tally)? {
                         landed.left += 1;
                     }
-                    if refused_in_a_row >= STOP_AFTER {
+                    if refusals.one_more() {
                         let rest = pending.len() - done - 1;
                         landed.left += rest;
-                        state.tally.failed.push(format!(
-                            "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
-                            counted(rest, "message", "messages")
-                        ));
+                        Self::stopped(place, rest, tally);
                         break;
                     }
                 }
@@ -1558,12 +1575,7 @@ impl Fetch<'_> {
                     break;
                 }
             }
-            // Committed in batches: a run that dies repeats at most a
-            // batch, and the bytes dedup.
-            if (done + 1) % COMMIT_EVERY == 0 {
-                self.memo.commit_for(self.archive)?;
-                self.memo.begin()?;
-            }
+            self.commit_every(done + 1)?;
             progress.update(
                 done + 1,
                 &format!("{name}: {} of {} fetched", done + 1, pending.len()),
@@ -3956,7 +3968,7 @@ mod tests {
             assert_eq!(
                 third.failed,
                 [
-                    "m365:Inbox: message M2: HTTP 403 ErrorAccessDenied: denied; given up after 3 runs, --full lists it again"
+                    "m365:Inbox: message M2: HTTP 403 ErrorAccessDenied: denied; given up after 3 runs, --full fetches it again"
                 ]
             );
 
