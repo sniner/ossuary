@@ -1285,6 +1285,7 @@ impl Fetch<'_> {
             tally.failed.push(format!(
                 "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full fetches it again"
             ));
+            tally.given_up += 1;
         } else {
             self.memo.fail_pending(place.account, place.folder, id)?;
             tally.failed.push(format!("{name}: {error:#}"));
@@ -1454,6 +1455,7 @@ impl Fetch<'_> {
                         tally.failed.push(format!(
                             "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full lists it again"
                         ));
+                        tally.given_up += 1;
                     } else {
                         self.memo
                             .fail_pending(place.account, place.folder, &message.id)?;

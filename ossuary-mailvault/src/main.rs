@@ -450,15 +450,27 @@ fn finish(tally: &Tally, dry_run: bool) -> ExitCode {
     for failure in &tally.failed {
         eprintln!("{failure}");
     }
-    if dry_run {
-        eprintln!("{} failed, listed above", tally.failed.len());
-    } else {
-        eprintln!(
-            "{} failed, listed above; everything else was recorded, and the next run tries the failed ones again",
-            tally.failed.len()
-        );
-    }
+    eprintln!("{}", closing(tally, dry_run));
     ExitCode::FAILURE
+}
+
+/// The line under the list of failures: how many, and what becomes of
+/// them. The next run tries a failure again, except a message given up.
+fn closing(tally: &Tally, dry_run: bool) -> String {
+    let failed = tally.failed.len();
+    if dry_run {
+        return format!("{failed} failed, listed above");
+    }
+    let recorded = format!("{failed} failed, listed above; everything else was recorded");
+    match tally.given_up {
+        0 => format!("{recorded}, and the next run tries the failed ones again"),
+        given_up if given_up == failed => {
+            format!("{recorded}; what failed was given up, and only --full fetches it again")
+        }
+        given_up => format!(
+            "{recorded}; the next run tries what failed again, except {given_up} given up, which only --full fetches again"
+        ),
+    }
 }
 
 /// The archive, or the way to one — `ossuary`'s own wording.
@@ -544,6 +556,27 @@ mod tests {
             "{refused:#}"
         );
         assert!(!dir.path().join(config::FILE_NAME).exists());
+    }
+
+    #[test]
+    fn the_closing_line_does_not_promise_another_try_for_what_was_given_up() {
+        let mut tally = Tally::new("fetch");
+        tally.failed = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            closing(&tally, false),
+            "2 failed, listed above; everything else was recorded, and the next run tries the failed ones again"
+        );
+        tally.given_up = 1;
+        assert_eq!(
+            closing(&tally, false),
+            "2 failed, listed above; everything else was recorded; the next run tries what failed again, except 1 given up, which only --full fetches again"
+        );
+        tally.given_up = 2;
+        assert_eq!(
+            closing(&tally, false),
+            "2 failed, listed above; everything else was recorded; what failed was given up, and only --full fetches it again"
+        );
+        assert_eq!(closing(&tally, true), "2 failed, listed above");
     }
 
     #[test]

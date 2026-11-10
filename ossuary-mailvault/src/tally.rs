@@ -40,6 +40,9 @@ pub struct Tally {
     /// folder that would not open, a message whose bytes are damaged.
     /// The rest of the run went on.
     pub failed: Vec<String>,
+    /// How many of `failed` are messages given up: no later run asks for
+    /// them, except one with `--full`.
+    pub given_up: usize,
 }
 
 impl Tally {
@@ -57,6 +60,7 @@ impl Tally {
             taken: 0,
             would: 0,
             failed: Vec::new(),
+            given_up: 0,
         }
     }
 

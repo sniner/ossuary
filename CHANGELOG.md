@@ -26,6 +26,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary mailvault init` and `folders` with `--accounts FILE` needed an archive**, though they
   only write or read FILE, and stopped with "not an ossuary archive" outside one. They now run
   anywhere. Without `--accounts` they work on `mailvault.toml` in the archive, as before
+- **The last line of a fetch that failed in part** said "the next run tries the failed ones again"
+  also for messages the same report listed as given up. It now says how many were given up and
+  that only `--full` fetches those again
 
 ## [0.21.0] - 2026-11-10
 
