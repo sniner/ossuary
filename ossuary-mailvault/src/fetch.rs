@@ -304,10 +304,10 @@ struct Fetch<'a> {
     /// server id as the memo has it, with their subjects: what decides
     /// whether another round is needed.
     landed: RefCell<Vec<(String, String)>>,
-    /// The tag assertions this run wrote, by subject and value, with the
-    /// ids they got: what a retraction later in the run has to name as
-    /// well, since the record only catches up between folders.
-    said: RefCell<HashMap<(String, String), Vec<ClaimId>>>,
+    /// The tag assertions this run wrote: by subject, each tag with the
+    /// ids its claims got. A retraction later in the run has to name
+    /// them as well, since the record only catches up between folders.
+    said: RefCell<HashMap<String, BTreeMap<String, Vec<ClaimId>>>>,
     /// Under `--full`, the Proton ids the current account's configured
     /// folders listed: the messages still in the mailbox. The full
     /// listing makes them at no extra cost; a label is taken back only
@@ -373,10 +373,12 @@ impl Fetch<'_> {
                 if claim.attribute() != &self.tag {
                     continue;
                 }
-                let Some((value, id)) = claim.value().zip(claim.id()) else {
+                let Some((Value::String(tag), id)) = claim.value().zip(claim.id()) else {
                     continue;
                 };
-                said.entry((claim.subject().as_str().to_string(), value.to_string()))
+                said.entry(claim.subject().as_str().to_string())
+                    .or_default()
+                    .entry(tag.clone())
                     .or_default()
                     .push(id.clone());
             }
@@ -454,15 +456,13 @@ impl Fetch<'_> {
                 }
             }
         }
-        for ((said_subject, value), ids) in self.said.borrow().iter() {
-            if said_subject != subject.as_str() {
-                continue;
-            }
-            let Ok(Value::String(tag)) = serde_json::from_str::<Value>(value) else {
-                continue;
-            };
-            if !current.contains(&tag) {
-                gone.entry(tag).or_default().extend(ids.iter().cloned());
+        if let Some(said) = self.said.borrow().get(subject.as_str()) {
+            for (tag, ids) in said {
+                if !current.contains(tag) {
+                    gone.entry(tag.clone())
+                        .or_default()
+                        .extend(ids.iter().cloned());
+                }
             }
         }
         let time = Timestamp::now();
@@ -999,7 +999,8 @@ impl Fetch<'_> {
             if let Some(said) = self
                 .said
                 .borrow()
-                .get(&(subject.as_str().to_string(), value.to_string()))
+                .get(subject.as_str())
+                .and_then(|tags| tags.get(label))
             {
                 ids.extend(said.iter().cloned());
             }
