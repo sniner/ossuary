@@ -67,6 +67,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as the way out, and that command stopped with the same message. It now says what to do: move
   the directory that does not belong out of `open/`. An open segment next to the directory of an
   interrupted seal is refused the same way; a command that had to seal there never returned
+- **A retraction only retracts claims of its own file and attribute.** A retraction names claims by
+  id and also carries a file and an attribute of its own. When the two disagreed, the id decided:
+  a retraction recorded for one file could retract a claim of another, and `ossuary about` did
+  not show it at the file that lost the claim. Such a retraction now retracts nothing.
+  `docs/format.md` says so. ossuary never wrote one
 - **A seal is safer against a power failure.** The file with the sealed segment is now flushed with
   its directory entry before the seal is decided. Without that, a power failure at that moment
   could leave a seal that no command finishes, to be repaired with `ossuary-fix chain`

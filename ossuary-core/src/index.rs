@@ -1348,11 +1348,14 @@ impl Index {
         // side of their target they stand on.
         let mut held: Held = BTreeMap::new();
         let mut where_is: HashMap<String, (String, String)> = HashMap::new();
-        let mut retracted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Retracted ids, each with the subject of the retraction: it
+        // retracts only a claim of that subject. The attribute is the
+        // one asked for on both sides.
+        let mut retracted: HashSet<(String, String)> = HashSet::new();
         for row in rows {
             let (subject, value, time, cid, targets) = row?;
             if let Some(value) = value {
-                if retracted.contains(&cid) {
+                if retracted.contains(&(cid.clone(), subject.clone())) {
                     continue;
                 }
                 where_is.insert(cid.clone(), (subject.clone(), value.clone()));
@@ -1364,13 +1367,19 @@ impl Index {
             } else {
                 let targets: Vec<String> = serde_json::from_str(&targets)?;
                 for target in targets {
-                    if let Some((subject, value)) = where_is.remove(&target)
-                        && let Some(values) = held.get_mut(&subject)
+                    if where_is
+                        .get(&target)
+                        .is_some_and(|(owner, _)| owner != &subject)
+                    {
+                        continue;
+                    }
+                    if let Some((owner, value)) = where_is.remove(&target)
+                        && let Some(values) = held.get_mut(&owner)
                         && let Some(claims) = values.get_mut(&value)
                     {
                         claims.remove(&target);
                     }
-                    retracted.insert(target);
+                    retracted.insert((target, subject.clone()));
                 }
             }
         }
@@ -2009,7 +2018,7 @@ fn holds_claims(connection: &Connection) -> Result<bool> {
 }
 
 /// One claim into the tables: into the history as it is, onto the
-/// standing what it asserts or takes away.
+/// standing what it asserts or retracts.
 ///
 /// A claim is known by its id, so one that is already in the tables, read
 /// from the open segment before it was sealed, only gets its segment and
@@ -2036,9 +2045,13 @@ fn replay(
         None => None,
     };
     let value = claim.value().map(Value::to_string);
+    // A retraction retracts the claims it names that have its subject
+    // and attribute. One that names a claim of another subject or
+    // attribute is a line that contradicts itself, and retracts nothing.
     let retracted: bool = transaction.query_row(
-        "SELECT EXISTS (SELECT 1 FROM retractions WHERE target = ?1)",
-        params![cid],
+        "SELECT EXISTS (SELECT 1 FROM retractions rt JOIN claims r ON r.id = rt.claim
+                        WHERE rt.target = ?1 AND r.subject = ?2 AND r.attribute = ?3)",
+        params![cid, subject, attribute],
         |row| row.get(0),
     )?;
     let mut history = transaction.prepare_cached(
@@ -2103,13 +2116,14 @@ fn replay(
     let mut name =
         transaction.prepare_cached("INSERT INTO retractions (target, claim) VALUES (?1, ?2)")?;
     let mut mark = transaction.prepare_cached(
-        "UPDATE claims SET retracted = 1 WHERE cid = ?1 AND retract = 0 AND retracted = 0
+        "UPDATE claims SET retracted = 1
+         WHERE cid = ?1 AND subject = ?2 AND attribute = ?3 AND retract = 0 AND retracted = 0
          RETURNING subject, attribute, value",
     )?;
     for target in claim.retracts() {
         name.execute(params![target.as_str(), id])?;
         let taken: Option<(i64, i64, Option<String>)> = mark
-            .query_row(params![target.as_str()], |row| {
+            .query_row(params![target.as_str(), subject, attribute], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .optional()?;
@@ -3181,6 +3195,54 @@ mod tests {
                 largest,
                 "and in a replay"
             );
+        }
+    }
+
+    #[test]
+    fn a_retraction_with_another_subject_or_attribute_retracts_nothing() {
+        let later = "2026-09-03T00:00:00Z";
+        let assertion =
+            tag("holiday", "2026-09-01T00:00:00Z").identified(immure::Algorithm::Sha256);
+        let naming = |subject: Subject, attribute: &str| {
+            Claim::retract(
+                subject,
+                Attribute::parse(attribute).unwrap(),
+                vec![assertion.id().unwrap().clone()],
+                Timestamp::parse("2026-09-02T00:00:00Z").unwrap(),
+                Source::parse("user").unwrap(),
+                Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+            )
+            .unwrap()
+        };
+        let strangers = [naming(other(), "user:tag"), naming(subject(), "file:name")];
+        // The index may read a retraction before or after the claim it
+        // names; it retracts nothing either way.
+        for retractions_first in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let log = log_in(&dir);
+            let mut index = index_in(&dir);
+            if retractions_first {
+                log.append_all(&strangers).unwrap();
+                index.fold(&log).unwrap();
+                log.append(&assertion).unwrap();
+            } else {
+                log.append(&assertion).unwrap();
+                index.fold(&log).unwrap();
+                log.append_all(&strangers).unwrap();
+            }
+            index.fold(&log).unwrap();
+
+            assert_eq!(tagged(&index, "holiday"), [subject()]);
+            assert_eq!(
+                index.standing_as_of("user:tag", Some(later)).unwrap().len(),
+                1,
+                "in a replay too"
+            );
+
+            log.append(&naming(subject(), "user:tag")).unwrap();
+            index.fold(&log).unwrap();
+            assert_eq!(tagged(&index, "holiday"), [], "its own retraction does");
+            assert_eq!(index.standing_as_of("user:tag", Some(later)).unwrap(), []);
         }
     }
 

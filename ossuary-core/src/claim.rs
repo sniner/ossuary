@@ -892,6 +892,10 @@ impl TryFrom<RawClaim> for Claim {
 /// that no retraction among them names: of `value` when one is given,
 /// every one otherwise. What a retraction written against these claims
 /// names. Only claims with ids count, as those read from the log have.
+///
+/// A retraction counts when it has the same subject and attribute; one
+/// that names such a claim from another subject or attribute retracts
+/// nothing (`docs/format.md`).
 #[must_use]
 pub fn standing_ids_in<'a>(
     claims: impl IntoIterator<Item = &'a Claim> + Clone,
@@ -902,6 +906,7 @@ pub fn standing_ids_in<'a>(
     let retracted: std::collections::HashSet<&ClaimId> = claims
         .clone()
         .into_iter()
+        .filter(|claim| claim.subject() == subject && claim.attribute() == attribute)
         .flat_map(|claim| claim.retracts().iter())
         .collect();
     claims

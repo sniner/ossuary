@@ -192,7 +192,8 @@ by id, and carries no `value`; `retracts` is never empty. The id of a
 claim is the digest of its line under the archive's hash algorithm, the
 one `FORMAT` names: the bytes of the line as they stand in the file,
 without the LF that ends it. A retraction keeps the subject and
-attribute of the claims it names. A claim stands while no
+attribute of the claims it names; one that names a claim with another
+subject or attribute does not retract that claim. A claim stands while no
 retraction in the log names it, wherever the two stand in the log: a
 retraction that comes first in the record, from a writer on another
 machine, say, retracts the same. A writer that retracts a value names
