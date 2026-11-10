@@ -11,6 +11,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name contained the process id, and the next program with the same process id stopped with
   `File exists`. In a container the process id is the same on every start, so the archive stayed
   blocked until the file was removed by hand. The file now has a random name
+- **Sealing copies every claim line unchanged.** It used to write each line again in ossuary's own
+  JSON spelling. A line that another program had written differently (other spacing, other order
+  of the fields) got a new id that way, and a retraction written before the seal no longer applied
+  to it: the retracted value was back after the seal. Lines written by ossuary were not affected
 
 ## [0.20.3] - 2026-11-10
 

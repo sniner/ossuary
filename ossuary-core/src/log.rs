@@ -810,7 +810,7 @@ impl Log {
         for digest in &open.bundles {
             if let Some(bundle) = self.bundle(&open, digest)? {
                 for claim in bundle {
-                    lines.push((claim.time().as_str().to_string(), claim.to_line()));
+                    lines.push((claim.time().as_str().to_string(), claim.line().into_owned()));
                 }
             }
         }
@@ -865,8 +865,10 @@ impl Log {
                 Err(error) => return Err(error.into()),
             };
             let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
+            // The lines as they stand in the bundle, not as this build
+            // would write them: a claim's id is the digest of its line.
             for claim in parse_bundle(&text, self.store.algorithm())? {
-                lines.push((claim.time().as_str().to_string(), claim.to_line()));
+                lines.push((claim.time().as_str().to_string(), claim.line().into_owned()));
             }
         }
         if names.is_empty() {
@@ -1329,7 +1331,8 @@ fn rename_dir(from: &Path, to: &Path) -> Result<bool> {
 
 /// Claims in the order a seal gives them: by time, then by the line.
 pub fn sort_as_sealed(claims: &mut [Claim]) {
-    claims.sort_by_cached_key(|claim| (claim.time().as_str().to_string(), claim.to_line()));
+    claims
+        .sort_by_cached_key(|claim| (claim.time().as_str().to_string(), claim.line().into_owned()));
 }
 
 /// The segment's bytes from its lines: the header, then the lines sorted
@@ -1767,6 +1770,68 @@ mod tests {
             log.head().unwrap().is_empty(),
             "both bundles were in the segment and went"
         );
+    }
+
+    /// One claim as another program may write it: the same JSON with a
+    /// space after every colon and comma.
+    fn spaced(tag: &str, time: &str) -> String {
+        claim(tag, time)
+            .to_line()
+            .replace("\":", "\": ")
+            .replace(",\"", ", \"")
+    }
+
+    #[test]
+    fn a_seal_copies_each_line_as_it_stands_so_the_id_stays() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let line = spaced("foreign", "2026-09-05T12:00:00Z");
+        assert_ne!(line, claim("foreign", "2026-09-05T12:00:00Z").to_line());
+        log.bundle_store(&under_open(&dir, "first"))
+            .add(format!("{line}\n").as_bytes())
+            .unwrap();
+        let before = log.head().unwrap();
+        let id = before[0].id().unwrap().clone();
+
+        let segment = log.seal().unwrap().unwrap();
+
+        let sealed = log.read(segment.digest()).unwrap();
+        assert_eq!(sealed.len(), 1);
+        assert_eq!(
+            sealed[0].id(),
+            Some(&id),
+            "a retraction written before the seal still names it"
+        );
+        let bytes = log.store.read(segment.digest()).unwrap().unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert_eq!(text.lines().nth(1), Some(line.as_str()));
+    }
+
+    #[test]
+    fn a_helper_finds_a_bundle_of_such_lines_in_the_segment() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let line = spaced("foreign", "2026-09-05T12:00:00Z");
+        log.bundle_store(&under_open(&dir, "first"))
+            .add(format!("{line}\n").as_bytes())
+            .unwrap();
+        let text = segment_text(None, vec![("2026-09-05T12:00:00Z".to_string(), line)]);
+        let digest = log.store.digest(text.as_bytes());
+        let sealing = under_open(&dir, "first.sealing");
+        fs::rename(under_open(&dir, "first"), &sealing).unwrap();
+        write_segment_file(&sealing, &text).unwrap();
+        // Stopped right after step 3; the helper has no list of bundles
+        // and goes by the claims' ids.
+        fs::rename(
+            &sealing,
+            under_open(&dir, &format!("first.sealed-{digest}")),
+        )
+        .unwrap();
+
+        log.finish_pending().unwrap();
+
+        assert!(log.head().unwrap().is_empty(), "the bundle went");
+        assert_eq!(log.read(&digest).unwrap().len(), 1);
     }
 
     #[test]

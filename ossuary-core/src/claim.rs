@@ -590,6 +590,11 @@ pub struct Claim {
     /// built here and not yet written.
     #[serde(skip)]
     id: Option<ClaimId>,
+    /// The line this claim was read from, byte for byte; `None` on a claim
+    /// that was not read from the log. The id is the digest of these
+    /// bytes, so whatever copies the claim within the log copies them.
+    #[serde(skip)]
+    line: Option<String>,
 }
 
 /// Two claims are equal when their lines are: the id is derived from the
@@ -632,6 +637,7 @@ impl Claim {
             source,
             run: Some(run),
             id: None,
+            line: None,
         })
     }
 
@@ -667,6 +673,7 @@ impl Claim {
             source,
             run: Some(run),
             id: None,
+            line: None,
         })
     }
 
@@ -731,6 +738,7 @@ impl Claim {
     pub fn read_line(line: &str, algorithm: Algorithm) -> Result<Self> {
         let mut claim = Claim::parse_line(line)?;
         claim.id = Some(ClaimId::of(line, algorithm));
+        claim.line = Some(line.to_string());
         Ok(claim)
     }
 
@@ -756,6 +764,18 @@ impl Claim {
     #[must_use]
     pub fn to_line(&self) -> String {
         serde_json::to_string(self).expect("a claim serialises")
+    }
+
+    /// The claim's line as the log holds it: the bytes it was read from
+    /// for a claim out of the log, [`to_line`](Claim::to_line) for any
+    /// other. The two differ for a line that another program wrote in
+    /// another spelling of the same JSON, and the id belongs to the bytes
+    /// read. A seal copies this, never `to_line`.
+    pub(crate) fn line(&self) -> std::borrow::Cow<'_, str> {
+        match &self.line {
+            Some(line) => std::borrow::Cow::Borrowed(line),
+            None => std::borrow::Cow::Owned(self.to_line()),
+        }
     }
 
     /// What the claim is about.
@@ -862,6 +882,7 @@ impl TryFrom<RawClaim> for Claim {
                 source: raw.source,
                 run: raw.run,
                 id: None,
+                line: None,
             }),
         }
     }
