@@ -436,7 +436,10 @@ added when it is first needed.
   has the name Gmail gives it, with a slash in place of the backslash
   that begins one of Gmail's own over IMAP: `\Inbox` is `/Inbox`. Gmail
   lists a message's labels without the label of the folder being read,
-  which is recorded as the place instead. Gmail labels are seen only
+  which is recorded as the place instead. A fetch therefore never
+  retracts the tag of the folder it reads, and retracts nothing when it
+  reads one of Gmail's own folders other than INBOX and All Mail, where
+  it cannot tell which label the folder stands for. Gmail labels are seen only
   when a message is fetched, which over IMAP is when it is new to the
   folder or the fetch is run with `--full`. An import of an archive of
   the Python tool mailvault records the labels that archive recorded as

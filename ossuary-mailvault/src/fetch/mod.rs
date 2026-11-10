@@ -72,6 +72,7 @@ use crate::memo::Memo;
 use crate::output::{Say, counted};
 use crate::place;
 use crate::proton;
+use crate::remote::Labels;
 use crate::tally::Tally;
 
 mod bridge;
@@ -231,6 +232,14 @@ struct Fetch<'a> {
     /// The id a mailbox gives a message, where it gives one that lasts.
     id: Attribute,
     say: Say,
+}
+
+/// The marks a mailbox lists for a message: Outlook's categories, or
+/// the labels of Gmail.
+struct Marks<'a> {
+    tags: &'a [String],
+    /// How far the list goes.
+    listed: &'a Labels,
 }
 
 /// What changes while a fetch runs: the count, and what the run knows of
@@ -395,13 +404,13 @@ impl Fetch<'_> {
         &self,
         place: &Place<'_>,
         bytes: &[u8],
-        tags: Option<&[String]>,
+        marks: Option<&Marks<'_>>,
         id: Option<&str>,
         state: &mut State,
     ) -> Result<Subject> {
         let admitted = admit(self.archive.content(), bytes)?;
         let mut facts = vec![(self.place.clone(), json!(place.name))];
-        for tag in tags.unwrap_or_default() {
+        for tag in marks.map(|marks| marks.tags).unwrap_or_default() {
             facts.push((self.tag.clone(), json!(tag)));
         }
         if let Some(id) = id {
@@ -426,8 +435,8 @@ impl Fetch<'_> {
         } else {
             state.tally.known += 1;
         }
-        if let Some(tags) = tags {
-            self.take_back(admitted.subject(), tags, &state.standing, &mut state.tally)?;
+        if let Some(marks) = marks {
+            self.take_back(admitted.subject(), marks, &state.standing, &mut state.tally)?;
         }
         Ok(admitted.subject().clone())
     }
@@ -476,18 +485,29 @@ impl Fetch<'_> {
         Ok(())
     }
 
-    /// The marks that stood on the message and are not among `tags`
-    /// any more are taken back, one retraction each — under this
+    /// The marks that stood on the message and are not among those
+    /// listed any more are taken back, one retraction each, under this
     /// fetcher's source, in this run. What stood is what the record
     /// held when the folder was reached.
+    ///
+    /// A list that leaves out the folder's own label does not show that
+    /// label gone: it stays. Where the label left out is not known,
+    /// nothing is taken back, since any one of the tags may be it.
     fn take_back(
         &self,
         subject: &Subject,
-        tags: &[String],
+        marks: &Marks<'_>,
         standing: &Standing,
         tally: &mut Tally,
     ) -> Result<()> {
-        let current: BTreeSet<String> = tags.iter().cloned().collect();
+        let mut current: BTreeSet<String> = marks.tags.iter().cloned().collect();
+        match marks.listed {
+            Labels::Whole => {}
+            Labels::Without(own) => {
+                current.insert(own.clone());
+            }
+            Labels::WithoutOne => return Ok(()),
+        }
         let time = Timestamp::now();
         let mut claims = Vec::new();
         // A retraction names the claims that put the tag there.

@@ -22,9 +22,11 @@ pub const ATTRIBUTE: &str = "mailbox:place";
 /// categories and the labels of Gmail and Proton Mail, by name. Not in
 /// the message's bytes, and not a place: state as of the last sighting.
 /// Each fetch of a message records them anew and retracts those no
-/// longer there, except a Proton label: only its folder shows it, so
-/// only a fetch that lists the folders whole, `--full`, sees one
-/// removed.
+/// longer there, with two exceptions. Gmail lists a message's labels
+/// without the label of the folder read, so that one is never retracted
+/// from there (see [`crate::remote::Labels`]). A Proton label is shown
+/// only by its folder, so only a fetch that lists the folders whole,
+/// `--full`, sees one removed.
 pub const TAG: &str = "mailbox:tag";
 
 /// A folder of an account.

@@ -38,6 +38,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The last line of a fetch that failed in part** said "the next run tries the failed ones again"
   also for messages the same report listed as given up. It now says how many were given up and
   that only `--full` fetches those again
+- **A Gmail message fetched from several folders lost a label it still had.** Gmail lists a
+  message's labels without the label of the folder being read, and the fetch retracted every tag
+  missing from that list. A message under `Work` and in the inbox ended up with the tags of the
+  folder fetched last. A fetch no longer retracts the tag of the folder it reads. From Sent,
+  Starred, Drafts, Important, Spam and Trash it retracts nothing, because Gmail does not tell
+  which of its own labels such a folder stands for; a fetch of All Mail retracts as before
 - **A second `ossuary mailvault` on the same archive stopped with `database is locked`** when
   another was fetching or importing: a run kept `cache/mailvault.sqlite` locked while it downloaded
   or read messages. A run now locks the file only for the moment it writes to it

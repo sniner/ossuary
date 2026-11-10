@@ -22,9 +22,25 @@ use rustls::{ClientConnection, RootCertStore, StreamOwned};
 use crate::config::Imap;
 use crate::{place, utf7};
 
-/// A folder opened: what the server promised about its UIDs.
+/// A folder opened: what the server promised about its UIDs, and how
+/// far the labels go that it lists for a message of the folder.
 pub struct Folder {
     pub uidvalidity: u32,
+    pub labels: Labels,
+}
+
+/// How far the labels go that a server lists for a message of one
+/// folder. A fetch retracts a tag the list no longer has, so it has to
+/// know what the list leaves out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Labels {
+    /// All of the message's labels. Also from a server without labels.
+    Whole,
+    /// All but this one, the label the folder itself stands for.
+    Without(String),
+    /// All but the label the folder itself stands for, and the folder
+    /// list does not tell which one that is.
+    WithoutOne,
 }
 
 /// What became of one UID a fetch asked for.
@@ -234,6 +250,39 @@ fn server_name(answer: &[u8]) -> Option<String> {
     None
 }
 
+/// The label Gmail gives a message in the inbox.
+const GMAIL_INBOX: &str = "\\Inbox";
+
+/// How far Gmail's labels go for a message of a folder with these
+/// attributes in the folder list, other than `INBOX`.
+///
+/// All Mail (`\All`) is no label, so nothing is left out. A folder
+/// without a special use is a label of the user's, under the folder's
+/// name. A folder with any other special use, such as Sent or Starred,
+/// stands for one of Gmail's own labels, and the folder list names the
+/// use (`\Flagged`), not the label (`\Starred`).
+fn labels_of(attributes: &[NameAttribute<'_>], folder: &str) -> Labels {
+    if attributes.contains(&NameAttribute::All) {
+        return Labels::Whole;
+    }
+    let plain = attributes.iter().all(|attribute| match attribute {
+        NameAttribute::NoInferiors
+        | NameAttribute::NoSelect
+        | NameAttribute::Marked
+        | NameAttribute::Unmarked => true,
+        NameAttribute::Extension(name) => {
+            name.eq_ignore_ascii_case("\\HasChildren")
+                || name.eq_ignore_ascii_case("\\HasNoChildren")
+        }
+        _ => false,
+    });
+    if plain {
+        Labels::Without(folder.to_string())
+    } else {
+        Labels::WithoutOne
+    }
+}
+
 /// A label as the tag has it (see [`place::gmail_label`]). Gmail names
 /// labels in the same encoding as folders; a name that does not decode
 /// is kept as the server sent it, since the message matters more than
@@ -366,7 +415,15 @@ impl Mailbox for Remote {
             bail!("{folder}: the server sent no UIDVALIDITY");
         };
         self.exists = mailbox.exists;
-        Ok(Folder { uidvalidity })
+        let labels = if self.flavour == Flavour::Gmail {
+            self.listed_labels(folder, &wire)?
+        } else {
+            Labels::Whole
+        };
+        Ok(Folder {
+            uidvalidity,
+            labels,
+        })
     }
 
     fn flavour(&self) -> Flavour {
@@ -441,6 +498,29 @@ impl Mailbox for Remote {
 }
 
 impl Remote {
+    /// How far Gmail's labels go for a message of `folder`: Gmail lists
+    /// them without the label of the folder being read.
+    fn listed_labels(&mut self, folder: &str, wire: &str) -> Result<Labels> {
+        if folder.eq_ignore_ascii_case("INBOX") {
+            return Ok(Labels::Without(place::gmail_label(GMAIL_INBOX)));
+        }
+        // `list` sends the pattern as it is given.
+        let quoted = format!("\"{}\"", wire.replace('\\', "\\\\").replace('"', "\\\""));
+        let names = match self.session.list(Some(""), Some(&quoted)) {
+            Ok(names) => names,
+            Err(imap::Error::No(_) | imap::Error::Bad(_)) => return Ok(Labels::WithoutOne),
+            Err(error) => {
+                return Err(error).with_context(|| format!("{folder}: the server did not list it"));
+            }
+        };
+        Ok(names
+            .iter()
+            .find(|name| name.name() == wire)
+            .map_or(Labels::WithoutOne, |name| {
+                labels_of(name.attributes(), folder)
+            }))
+    }
+
     /// One FETCH for `batch`. PEEK keeps it from marking anything read
     /// even where EXAMINE would not. A NO or BAD refuses this command
     /// only; any other error means the connection is of no further use.
@@ -602,6 +682,31 @@ mod tests {
         assert_eq!(server_name(b"* ID NIL\r\n"), None, "no fields");
         assert_eq!(server_name(b"* ID (\"vendor\" \"x\")\r\n"), None, "no name");
         assert_eq!(server_name(b"garbage\r\n"), None);
+    }
+
+    #[test]
+    fn the_folder_list_tells_how_far_gmails_labels_go() {
+        let children = || NameAttribute::Extension("\\HasNoChildren".into());
+        assert_eq!(
+            labels_of(&[NameAttribute::All, children()], "[Gmail]/All Mail"),
+            Labels::Whole
+        );
+        assert_eq!(
+            labels_of(&[children()], "Work/Invoices"),
+            Labels::Without("Work/Invoices".to_string())
+        );
+        assert_eq!(labels_of(&[], "Work"), Labels::Without("Work".to_string()));
+        assert_eq!(
+            labels_of(&[children(), NameAttribute::Sent], "[Gmail]/Sent Mail"),
+            Labels::WithoutOne
+        );
+        assert_eq!(
+            labels_of(
+                &[NameAttribute::Extension("\\Important".into())],
+                "[Gmail]/Important"
+            ),
+            Labels::WithoutOne
+        );
     }
 
     #[test]

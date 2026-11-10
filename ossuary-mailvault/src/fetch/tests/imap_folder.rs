@@ -360,6 +360,84 @@ fn gmail_labels_are_recorded_and_those_gone_taken_back_when_the_message_comes_ag
     assert_eq!(held(&bench, &one, "mailbox:tag"), ["Pers\u{f6}nlich"]);
 }
 
+/// One message under the labels `/Inbox` and `Work`, as Gmail hands it
+/// over from each of the two folders: without the folder's own label.
+fn in_two_folders(one: &[u8]) -> (Fake, Fake) {
+    let mut work = labeled(7, &[(1, one, &["/Inbox"])]);
+    work.listed = Labels::Without("Work".to_string());
+    let mut inbox = labeled(9, &[(1, one, &["Work"])]);
+    inbox.listed = Labels::Without("/Inbox".to_string());
+    (work, inbox)
+}
+
+#[test]
+fn a_gmail_message_fetched_from_two_folders_keeps_the_label_of_each() {
+    let bench = bench();
+    let one = mail(1, "<one@example.org>");
+    let (mut work, mut inbox) = in_two_folders(&one);
+
+    let tally = run_folders(
+        &bench,
+        &mut [("Work", &mut work), ("INBOX", &mut inbox)],
+        &options(false, false),
+    );
+
+    assert_eq!(tally.taken, 0, "INBOX does not list Work's own label gone");
+    assert_eq!(held(&bench, &one, "mailbox:tag"), ["/Inbox", "Work"]);
+}
+
+#[test]
+fn a_gmail_folder_still_takes_back_a_label_that_is_not_its_own() {
+    let bench = bench();
+    let one = mail(1, "<one@example.org>");
+    let (mut work, mut inbox) = in_two_folders(&one);
+    run_folders(
+        &bench,
+        &mut [("Work", &mut work), ("INBOX", &mut inbox)],
+        &options(false, false),
+    );
+
+    // The label Work was removed from the message.
+    inbox.labels.insert(1, Vec::new());
+    let again = run_folders(&bench, &mut [("INBOX", &mut inbox)], &options(true, false));
+
+    assert_eq!(again.taken, 1);
+    assert_eq!(held(&bench, &one, "mailbox:tag"), ["/Inbox"]);
+}
+
+#[test]
+fn a_gmail_folder_whose_own_label_is_not_known_takes_nothing_back() {
+    let bench = bench();
+    let one = mail(1, "<one@example.org>");
+    let mut all = labeled(7, &[(1, &one, &["/Sent", "Work"])]);
+    // Read from the Sent folder the list lacks /Sent, and the folder
+    // list names the folder's use, not its label.
+    let mut sent = labeled(9, &[(1, &one, &["Work"])]);
+    sent.listed = Labels::WithoutOne;
+    run_folders(
+        &bench,
+        &mut [
+            ("[Gmail]/All Mail", &mut all),
+            ("[Gmail]/Sent Mail", &mut sent),
+        ],
+        &options(false, false),
+    );
+    assert_eq!(held(&bench, &one, "mailbox:tag"), ["/Sent", "Work"]);
+
+    sent.labels.insert(1, Vec::new());
+    let again = run_folders(
+        &bench,
+        &mut [("[Gmail]/Sent Mail", &mut sent)],
+        &options(true, false),
+    );
+
+    assert_eq!(
+        again.taken, 0,
+        "Work may be gone, but so may /Sent seem to be"
+    );
+    assert_eq!(held(&bench, &one, "mailbox:tag"), ["/Sent", "Work"]);
+}
+
 #[test]
 fn a_server_without_labels_records_no_tags() {
     let bench = bench();

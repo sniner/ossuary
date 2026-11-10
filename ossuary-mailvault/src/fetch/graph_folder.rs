@@ -5,11 +5,12 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-use super::{Fetch, Place, Refusals, State, Stored, opening};
+use super::{Fetch, Marks, Place, Refusals, State, Stored, opening};
 use crate::config::{self, Account};
 use crate::graph::{Graph, Halt, Miss, Round};
 use crate::memo::Pending;
 use crate::output::counted;
+use crate::remote::Labels;
 
 /// What a pass over a folder's pending list came to.
 #[derive(Default)]
@@ -178,7 +179,12 @@ impl Fetch<'_> {
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
                 Ok(bytes) => {
-                    let subject = self.land(place, &bytes, Some(&message.detail), None, state)?;
+                    // Graph lists every category of a message.
+                    let marks = Marks {
+                        tags: &message.detail,
+                        listed: &Labels::Whole,
+                    };
+                    let subject = self.land(place, &bytes, Some(&marks), None, state)?;
                     self.note(place, &message.id, &subject, &mut landed.stored)?;
                     self.memo
                         .remove_pending(place.account, place.folder, &message.id)?;

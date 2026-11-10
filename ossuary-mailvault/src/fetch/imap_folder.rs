@@ -8,12 +8,12 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::bridge::{Identified, InMailbox};
-use super::{Fetch, Place, Refusals, State, Stored, opening};
+use super::{Fetch, Marks, Place, Refusals, State, Stored, opening};
 use crate::compare;
 use crate::config::{self, Account};
 use crate::memo::{ImapResume, Pending};
 use crate::output::{Progress, counted};
-use crate::remote::{Each, Flavour, Folder, Got, Mailbox, Remote, Stop};
+use crate::remote::{Each, Flavour, Folder, Got, Labels, Mailbox, Remote, Stop};
 
 /// One pass over an IMAP folder: what it asks for, and how far the
 /// resume point may move.
@@ -21,6 +21,8 @@ struct Walk<'a> {
     /// The UIDs above the point, ascending.
     uids: &'a [u32],
     uidvalidity: u32,
+    /// How far the labels go that come with a message of the folder.
+    labels: &'a Labels,
     /// The pending list the last run left: failed runs, by UID.
     pending: HashMap<u32, u32>,
     /// UIDs the next run need not ask for above the point: landed,
@@ -196,7 +198,7 @@ impl Fetch<'_> {
         // whose id is on record.
         let proton = mailbox.flavour() == Flavour::Proton;
         if self.options.compare && !proton {
-            return self.imap_compare(place, mailbox, opened.uidvalidity, state);
+            return self.imap_compare(place, mailbox, &opened, state);
         }
         let whole = if self.options.full {
             Some("--full")
@@ -281,7 +283,7 @@ impl Fetch<'_> {
             place,
             mailbox,
             &uids,
-            opened.uidvalidity,
+            &opened,
             pending_valid,
             above,
             attempts,
@@ -305,7 +307,7 @@ impl Fetch<'_> {
         place: &Place<'_>,
         mailbox: &mut impl Mailbox,
         uids: &[u32],
-        uidvalidity: u32,
+        folder: &Folder,
         pending_valid: bool,
         above: u32,
         attempts: HashMap<u32, u32>,
@@ -319,7 +321,8 @@ impl Fetch<'_> {
             .count();
         let mut walk = Walk {
             uids,
-            uidvalidity,
+            uidvalidity: folder.uidvalidity,
+            labels: &folder.labels,
             total: fresh + attempts.len(),
             pending: attempts,
             passed: HashSet::new(),
@@ -443,8 +446,12 @@ impl Fetch<'_> {
         match got {
             Got::Message(bytes, labels) => {
                 let proton_id = walk.identified.ids.get(&uid).cloned();
+                let marks = labels.as_deref().map(|tags| Marks {
+                    tags,
+                    listed: walk.labels,
+                });
                 let subject =
-                    self.land(place, bytes, labels.as_deref(), proton_id.as_deref(), state)?;
+                    self.land(place, bytes, marks.as_ref(), proton_id.as_deref(), state)?;
                 let compared = compare::imap_id(walk.uidvalidity, uid);
                 self.note(place, &compared, &subject, &mut walk.stored)?;
                 walk.refusals.ended();

@@ -20,7 +20,7 @@ use crate::compare::{self, Archived, Comparison, Split};
 use crate::graph::{Graph, Halt, Offered, Round};
 use crate::memo::ImapResume;
 use crate::output::counted;
-use crate::remote::Mailbox;
+use crate::remote::{Folder, Mailbox};
 
 impl Fetch<'_> {
     /// The archive's side of the folder and what earlier `--compare`
@@ -107,10 +107,11 @@ impl Fetch<'_> {
         &self,
         place: &Place<'_>,
         mailbox: &mut impl Mailbox,
-        uidvalidity: u32,
+        folder: &Folder,
         state: &mut State,
     ) -> Result<()> {
         let name = &place.name;
+        let uidvalidity = folder.uidvalidity;
         let mut comparison = self.comparison(place, &state.standing)?;
         let listed = match mailbox
             .uids_above(0)
@@ -177,7 +178,7 @@ impl Fetch<'_> {
                 place,
                 mailbox,
                 &[],
-                uidvalidity,
+                folder,
                 true,
                 top,
                 attempts,

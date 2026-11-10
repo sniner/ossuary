@@ -178,8 +178,9 @@ begin with a backslash over IMAP (`\Inbox`, `\Important`); the tag begins
 with a slash instead (`/Inbox`, `/Important`), which needs no escaping in
 the shell or in a pattern. The label of the folder being read is not among
 them, because that folder is recorded as the place: a message fetched from
-INBOX gets no `/Inbox` tag. A message fetched from two folders in one run
-gets the tags of the folder fetched last.
+INBOX gets no `/Inbox` tag. A message fetched from several folders gets the
+tags each of them lists: fetched from INBOX and from `Work`, it has `Work`
+and `/Inbox`.
 
 ```console
 $ ossuary find 'mailbox:tag=Work' mail:subject
@@ -189,7 +190,12 @@ The labels are read when a message is fetched. A fetch asks only for the
 messages that arrived since the last run, so a label added to or removed
 from a message fetched earlier is not seen until the message is fetched
 again, for example with `--full`. That fetch records the labels the message
-has then and retracts the tags it no longer has.
+has then and retracts the tags it no longer has. The tag of the folder's
+own label is kept, since Gmail never lists it there. A fetch from Sent,
+Starred, Drafts, Important, Spam or Trash retracts nothing: Gmail does not
+tell which of its own labels such a folder stands for, so any tag missing
+from the list may be that one. Fetch All Mail to have removed labels
+retracted.
 
 The Gmail API is not used. It takes only OAuth 2.0: a Google Cloud project
 of your own and a consent given in the browser, which Google lets lapse

@@ -18,7 +18,7 @@ use crate::memo::{ImapResume, Memo, Pending};
 use crate::output::Say;
 use crate::place;
 use crate::proton;
-use crate::remote::{Each, Flavour, Folder, Got, Mailbox, Stop};
+use crate::remote::{Each, Flavour, Folder, Got, Labels, Mailbox, Stop};
 use crate::tally::Tally;
 
 mod bridge;
@@ -46,6 +46,8 @@ struct Fake {
     flavour: Flavour,
     /// The labels of each message, handed over on Gmail.
     labels: BTreeMap<u32, Vec<String>>,
+    /// How far those labels go, as the folder says when it is opened.
+    listed: Labels,
     /// The UIDs whole messages were asked for, in order.
     fetched: Vec<u32>,
     /// The UIDs a header field was asked for, in order.
@@ -70,6 +72,7 @@ impl Mailbox for Fake {
         }
         Ok(Folder {
             uidvalidity: self.uidvalidity,
+            labels: self.listed.clone(),
         })
     }
 
@@ -144,6 +147,7 @@ fn mailbox(uidvalidity: u32, uids: &[u32]) -> Fake {
         listed_as: BTreeMap::new(),
         flavour: Flavour::Standard,
         labels: BTreeMap::new(),
+        listed: Labels::Whole,
         fetched: Vec::new(),
         headed: Vec::new(),
         folders: Vec::new(),
