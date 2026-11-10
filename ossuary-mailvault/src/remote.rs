@@ -639,6 +639,166 @@ impl Remote {
 }
 
 #[cfg(test)]
+pub mod stub {
+    //! An IMAP server answering from a script on loopback, so that
+    //! [`Remote`](super::Remote) is tried whole: commands as sent,
+    //! answers as read.
+
+    use std::collections::{HashMap, VecDeque};
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    /// What the stub answers to one command.
+    #[derive(Clone)]
+    pub struct Reply {
+        /// The untagged responses, each with its line end.
+        untagged: Vec<u8>,
+        /// How the command ends: `OK`, `NO` or `BAD`.
+        status: &'static str,
+        /// Close the connection instead of answering.
+        hang_up: bool,
+    }
+
+    impl Reply {
+        /// These untagged responses, then `OK`.
+        pub fn ok(untagged: &[u8]) -> Self {
+            Self {
+                untagged: untagged.to_vec(),
+                status: "OK",
+                hang_up: false,
+            }
+        }
+
+        /// `NO`: the server refuses the command.
+        pub fn no() -> Self {
+            Self {
+                untagged: Vec::new(),
+                status: "NO",
+                hang_up: false,
+            }
+        }
+
+        /// No answer: the connection is closed.
+        pub fn hang_up() -> Self {
+            Self {
+                untagged: Vec::new(),
+                status: "OK",
+                hang_up: true,
+            }
+        }
+    }
+
+    type Script = HashMap<String, VecDeque<Reply>>;
+
+    pub struct Stub {
+        port: u16,
+        script: Arc<Mutex<Script>>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Stub {
+        pub fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let script: Arc<Mutex<Script>> = Arc::default();
+            let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+            let (script_, seen_) = (Arc::clone(&script), Arc::clone(&seen));
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let (script, seen) = (Arc::clone(&script_), Arc::clone(&seen_));
+                    thread::spawn(move || serve(stream, &script, &seen));
+                }
+            });
+            Self { port, script, seen }
+        }
+
+        pub fn port(&self) -> u16 {
+            self.port
+        }
+
+        /// Answer `command`, as the client sends it without its tag,
+        /// with these replies in turn; the last one stands for every
+        /// time after.
+        pub fn script(&self, command: &str, replies: Vec<Reply>) {
+            self.script
+                .lock()
+                .unwrap()
+                .insert(command.to_string(), replies.into());
+        }
+
+        /// The commands received so far, without their tags.
+        pub fn seen(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    /// One message as a FETCH response hands it over.
+    pub fn message(sequence: u32, uid: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "* {sequence} FETCH (UID {uid} BODY[] {{{}}}\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out.extend_from_slice(b")\r\n");
+        out
+    }
+
+    /// What a command gets that the test did not script: a login is
+    /// accepted, the capabilities are those of a plain server, and
+    /// anything else is an error of the test.
+    fn unscripted(command: &str) -> Reply {
+        if command.starts_with("LOGIN ") {
+            Reply::ok(b"")
+        } else if command == "CAPABILITY" {
+            Reply::ok(b"* CAPABILITY IMAP4rev1\r\n")
+        } else if command == "LOGOUT" {
+            Reply::ok(b"* BYE\r\n")
+        } else {
+            Reply {
+                status: "BAD",
+                ..Reply::ok(b"")
+            }
+        }
+    }
+
+    fn serve(mut stream: TcpStream, script: &Mutex<Script>, seen: &Mutex<Vec<String>>) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        stream.write_all(b"* OK ready\r\n").unwrap();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            let Some((tag, command)) = line.trim_end().split_once(' ') else {
+                return;
+            };
+            seen.lock().unwrap().push(command.to_string());
+            let reply = {
+                let mut script = script.lock().unwrap();
+                match script.get_mut(command) {
+                    Some(replies) if replies.len() > 1 => replies.pop_front(),
+                    Some(replies) => replies.front().cloned(),
+                    None => None,
+                }
+            }
+            .unwrap_or_else(|| unscripted(command));
+            if reply.hang_up {
+                return;
+            }
+            let mut out = reply.untagged;
+            out.extend_from_slice(format!("{tag} {} done\r\n", reply.status).as_bytes());
+            if stream.write_all(&out).is_err() || command == "LOGOUT" {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -720,5 +880,386 @@ mod tests {
             "quoted: \"\\\\Important\""
         );
         assert_eq!(label("say \\\"hi\\\""), "say \"hi\"");
+    }
+
+    use stub::{Reply, Stub, message};
+
+    fn account(stub: &Stub) -> Imap {
+        Imap {
+            host: "127.0.0.1".to_string(),
+            port: stub.port(),
+            tls: false,
+            user: "john".to_string(),
+            password: None,
+        }
+    }
+
+    fn connected(stub: &Stub) -> Remote {
+        Remote::connect("example.org", &account(stub), "s3cret").unwrap()
+    }
+
+    /// A stub whose capabilities are these, besides IMAP itself.
+    fn serving(capabilities: &str) -> Stub {
+        let stub = Stub::start();
+        stub.script(
+            "CAPABILITY",
+            vec![Reply::ok(
+                format!("* CAPABILITY IMAP4rev1 {capabilities}\r\n").as_bytes(),
+            )],
+        );
+        stub
+    }
+
+    /// The folder opens with this many messages under UIDVALIDITY 7.
+    fn holding(stub: &Stub, folder: &str, exists: u32) {
+        stub.script(
+            &format!("EXAMINE \"{folder}\""),
+            vec![Reply::ok(
+                format!("* {exists} EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n").as_bytes(),
+            )],
+        );
+    }
+
+    /// A connection with INBOX open, three messages in it.
+    fn in_inbox(stub: &Stub) -> Remote {
+        holding(stub, "INBOX", 3);
+        let mut remote = connected(stub);
+        remote.examine("INBOX").unwrap();
+        remote
+    }
+
+    /// What a fetch of `uids` handed over, in order, and how it ended.
+    fn fetched(remote: &mut Remote, uids: &[u32]) -> (Vec<(u32, String)>, String) {
+        let mut got = Vec::new();
+        let outcome = remote.fetch(uids, &mut |uid, what| {
+            let what = match what {
+                Got::Message(bytes, labels) => format!(
+                    "message {} {labels:?}",
+                    String::from_utf8_lossy(bytes).trim_end()
+                ),
+                Got::Refused(error) => format!("refused: {error:#}"),
+                Got::Gone => "gone".to_string(),
+            };
+            got.push((uid, what));
+            Ok(ControlFlow::Continue(()))
+        });
+        let ended = match outcome {
+            Ok(_) => "done".to_string(),
+            Err(Stop::Server(error)) => format!("server: {error:#}"),
+            Err(Stop::Caller(error)) => format!("caller: {error:#}"),
+        };
+        (got, ended)
+    }
+
+    const WHOLE: &str = "(UID BODY.PEEK[])";
+
+    #[test]
+    fn a_login_is_followed_by_the_question_what_the_server_is() {
+        let stub = Stub::start();
+        let remote = connected(&stub);
+        assert_eq!(remote.flavour(), Flavour::Standard);
+        assert_eq!(stub.seen(), ["LOGIN \"john\" \"s3cret\"", "CAPABILITY"]);
+    }
+
+    #[test]
+    fn a_login_the_server_refuses_is_named_with_the_way_out() {
+        let stub = Stub::start();
+        stub.script("LOGIN \"john\" \"s3cret\"", vec![Reply::no()]);
+        let refused = Remote::connect("example.org", &account(&stub), "s3cret")
+            .err()
+            .unwrap();
+        assert!(
+            format!("{refused:#}").contains("rejected the login for john"),
+            "{refused:#}"
+        );
+    }
+
+    #[test]
+    fn gmail_is_known_by_a_capability_and_proton_mail_bridge_by_its_id() {
+        assert_eq!(
+            connected(&serving("X-GM-EXT-1 ID")).flavour(),
+            Flavour::Gmail
+        );
+
+        let bridge = serving("ID");
+        bridge.script(
+            "ID NIL",
+            vec![Reply::ok(
+                b"* ID (\"name\" \"Proton Mail Bridge\" \"version\" \"3.21.2\")\r\n",
+            )],
+        );
+        assert_eq!(connected(&bridge).flavour(), Flavour::Proton);
+
+        let other = serving("ID");
+        other.script(
+            "ID NIL",
+            vec![Reply::ok(b"* ID (\"name\" \"Dovecot\")\r\n")],
+        );
+        assert_eq!(connected(&other).flavour(), Flavour::Standard);
+
+        let silent = serving("ID");
+        silent.script("ID NIL", vec![Reply::no()]);
+        assert_eq!(connected(&silent).flavour(), Flavour::Standard);
+    }
+
+    #[test]
+    fn folders_are_listed_decoded_and_without_those_that_hold_no_messages() {
+        let stub = Stub::start();
+        stub.script(
+            "LIST \"\" *",
+            vec![Reply::ok(
+                b"* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n\
+                  * LIST (\\HasChildren \\Noselect) \"/\" \"[Gmail]\"\r\n\
+                  * LIST (\\HasNoChildren) \"/\" \"Entw&APw-rfe\"\r\n",
+            )],
+        );
+        let mut remote = connected(&stub);
+        assert_eq!(remote.folders().unwrap(), ["INBOX", "Entw\u{fc}rfe"]);
+    }
+
+    #[test]
+    fn a_folder_is_opened_read_only_under_its_name_on_the_wire() {
+        let stub = Stub::start();
+        holding(&stub, "Entw&APw-rfe", 3);
+        let mut remote = connected(&stub);
+
+        let folder = remote.examine("Entw\u{fc}rfe").unwrap();
+
+        assert_eq!(folder.uidvalidity, 7);
+        assert_eq!(folder.labels, Labels::Whole);
+        assert_eq!(stub.seen().last().unwrap(), "EXAMINE \"Entw&APw-rfe\"");
+    }
+
+    #[test]
+    fn a_folder_without_a_uidvalidity_is_not_opened() {
+        let stub = Stub::start();
+        stub.script("EXAMINE \"INBOX\"", vec![Reply::ok(b"* 3 EXISTS\r\n")]);
+        let refused = connected(&stub).examine("INBOX").err().unwrap();
+        assert!(
+            format!("{refused:#}").contains("no UIDVALIDITY"),
+            "{refused:#}"
+        );
+    }
+
+    #[test]
+    fn a_gmail_folder_says_how_far_its_labels_go() {
+        let stub = serving("X-GM-EXT-1");
+        let lists = |folder: &str, attributes: &str| {
+            holding(&stub, folder, 3);
+            stub.script(
+                &format!("LIST \"\" \"{folder}\""),
+                vec![Reply::ok(
+                    format!("* LIST ({attributes}) \"/\" \"{folder}\"\r\n").as_bytes(),
+                )],
+            );
+        };
+        holding(&stub, "INBOX", 3);
+        lists("[Gmail]/All Mail", "\\All \\HasNoChildren");
+        lists("Work", "\\HasNoChildren");
+        lists("[Gmail]/Sent Mail", "\\HasNoChildren \\Sent");
+        holding(&stub, "Refused", 3);
+        stub.script("LIST \"\" \"Refused\"", vec![Reply::no()]);
+        let mut remote = connected(&stub);
+        let mut labels = |folder: &str| remote.examine(folder).unwrap().labels;
+
+        assert_eq!(labels("INBOX"), Labels::Without("/Inbox".to_string()));
+        assert_eq!(labels("[Gmail]/All Mail"), Labels::Whole);
+        assert_eq!(labels("Work"), Labels::Without("Work".to_string()));
+        assert_eq!(labels("[Gmail]/Sent Mail"), Labels::WithoutOne);
+        assert_eq!(labels("Refused"), Labels::WithoutOne);
+        assert!(
+            !stub.seen().contains(&"LIST \"\" \"INBOX\"".to_string()),
+            "INBOX needs no look at the folder list"
+        );
+    }
+
+    #[test]
+    fn the_uids_above_a_point_are_asked_for_and_those_below_it_dropped() {
+        let stub = Stub::start();
+        // The range `5:*` always has the newest message in it.
+        stub.script("UID SEARCH UID 5:*", vec![Reply::ok(b"* SEARCH 9 4 7\r\n")]);
+        let mut remote = in_inbox(&stub);
+        assert_eq!(remote.uids_above(4).unwrap(), [7, 9]);
+    }
+
+    #[test]
+    fn an_empty_folder_is_not_searched() {
+        let stub = Stub::start();
+        holding(&stub, "INBOX", 0);
+        let mut remote = connected(&stub);
+        remote.examine("INBOX").unwrap();
+
+        assert!(remote.uids_above(0).unwrap().is_empty());
+        assert!(
+            !stub
+                .seen()
+                .iter()
+                .any(|line| line.starts_with("UID SEARCH"))
+        );
+    }
+
+    #[test]
+    fn a_batch_hands_every_message_over_and_passes_by_what_nobody_asked_for() {
+        let stub = Stub::start();
+        let mut answer = message(1, 3, b"three");
+        answer.extend_from_slice(b"* 7 FETCH (UID 99 FLAGS (\\Seen))\r\n");
+        answer.extend(message(2, 5, b"five"));
+        stub.script(&format!("UID FETCH 3,5 {WHOLE}"), vec![Reply::ok(&answer)]);
+        let mut remote = in_inbox(&stub);
+
+        let (got, ended) = fetched(&mut remote, &[3, 5]);
+
+        assert_eq!(
+            got,
+            [
+                (3, "message three None".to_string()),
+                (5, "message five None".to_string())
+            ]
+        );
+        assert_eq!(ended, "done");
+    }
+
+    #[test]
+    fn a_refused_batch_is_asked_for_again_one_message_at_a_time() {
+        let stub = Stub::start();
+        stub.script(&format!("UID FETCH 3,5,9 {WHOLE}"), vec![Reply::no()]);
+        stub.script(
+            &format!("UID FETCH 3 {WHOLE}"),
+            vec![Reply::ok(&message(1, 3, b"three"))],
+        );
+        stub.script(&format!("UID FETCH 5 {WHOLE}"), vec![Reply::no()]);
+        stub.script(
+            &format!("UID FETCH 9 {WHOLE}"),
+            vec![Reply::ok(&message(3, 9, b"nine"))],
+        );
+        let mut remote = in_inbox(&stub);
+
+        let (got, ended) = fetched(&mut remote, &[3, 5, 9]);
+
+        assert_eq!(got[0], (3, "message three None".to_string()));
+        assert!(
+            got[1]
+                .1
+                .starts_with("refused: UID 5: the server refused the fetch"),
+            "{:?}",
+            got[1]
+        );
+        assert_eq!(got[2], (9, "message nine None".to_string()));
+        assert_eq!(ended, "done");
+    }
+
+    #[test]
+    fn a_uid_the_answer_leaves_out_is_gone_only_when_the_folder_no_longer_holds_it() {
+        let stub = Stub::start();
+        stub.script(
+            &format!("UID FETCH 3,5,9 {WHOLE}"),
+            vec![Reply::ok(&message(1, 3, b"three"))],
+        );
+        stub.script("UID SEARCH UID 5,9", vec![Reply::ok(b"* SEARCH 9\r\n")]);
+        let mut remote = in_inbox(&stub);
+
+        let (got, _) = fetched(&mut remote, &[3, 5, 9]);
+
+        assert_eq!(got[1], (5, "gone".to_string()));
+        assert_eq!(
+            got[2],
+            (
+                9,
+                "refused: UID 9: the server sent nothing for a message the folder holds"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_uid_left_out_counts_as_held_when_the_server_refuses_to_say() {
+        let stub = Stub::start();
+        stub.script(&format!("UID FETCH 5 {WHOLE}"), vec![Reply::ok(b"")]);
+        stub.script("UID SEARCH UID 5", vec![Reply::no()]);
+        let mut remote = in_inbox(&stub);
+
+        let (got, _) = fetched(&mut remote, &[5]);
+
+        assert!(got[0].1.starts_with("refused:"), "{:?}", got[0]);
+    }
+
+    #[test]
+    fn an_answer_without_the_message_is_a_refusal() {
+        let stub = Stub::start();
+        stub.script(
+            &format!("UID FETCH 3 {WHOLE}"),
+            vec![Reply::ok(b"* 1 FETCH (UID 3 FLAGS (\\Seen))\r\n")],
+        );
+        let mut remote = in_inbox(&stub);
+
+        let (got, ended) = fetched(&mut remote, &[3]);
+
+        assert_eq!(
+            got,
+            [(
+                3,
+                "refused: UID 3: the server sent no message body".to_string()
+            )]
+        );
+        assert_eq!(ended, "done");
+    }
+
+    #[test]
+    fn a_connection_that_drops_ends_the_fetch_as_the_servers_trouble() {
+        let stub = Stub::start();
+        stub.script(&format!("UID FETCH 3,5 {WHOLE}"), vec![Reply::hang_up()]);
+        let mut remote = in_inbox(&stub);
+
+        let (got, ended) = fetched(&mut remote, &[3, 5]);
+
+        assert!(got.is_empty());
+        assert!(
+            ended.starts_with("server: fetching the messages failed"),
+            "{ended}"
+        );
+    }
+
+    #[test]
+    fn gmail_hands_a_message_over_with_its_labels() {
+        let stub = serving("X-GM-EXT-1");
+        stub.script(
+            "UID FETCH 3 (UID BODY.PEEK[] X-GM-LABELS)",
+            vec![Reply::ok(
+                b"* 1 FETCH (UID 3 X-GM-LABELS (\"\\\\Inbox\" \"Pers&APY-nlich\" Work) \
+                  BODY[] {5}\r\nthree)\r\n",
+            )],
+        );
+        let mut remote = in_inbox(&stub);
+
+        let (got, _) = fetched(&mut remote, &[3]);
+
+        assert_eq!(
+            got,
+            [(
+                3,
+                "message three Some([\"/Inbox\", \"Pers\u{f6}nlich\", \"Work\"])".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_header_field_is_listed_by_uid_and_a_uid_left_out_is_left_out() {
+        let stub = Stub::start();
+        stub.script(
+            "UID FETCH 3,5,9 (UID BODY.PEEK[HEADER.FIELDS (Message-ID)])",
+            vec![Reply::ok(
+                b"* 1 FETCH (UID 3 BODY[HEADER.FIELDS (Message-ID)] {31}\r\n\
+                  Message-ID: <a@example.org>\r\n\r\n)\r\n\
+                  * 2 FETCH (UID 5 BODY[HEADER.FIELDS (Message-ID)] {2}\r\n\r\n)\r\n",
+            )],
+        );
+        let mut remote = in_inbox(&stub);
+
+        let listed = remote.header(&[3, 5, 9], "Message-ID").unwrap();
+
+        assert_eq!(
+            listed,
+            [(3, "<a@example.org>".to_string()), (5, String::new())]
+        );
     }
 }
