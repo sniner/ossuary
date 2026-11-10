@@ -309,10 +309,8 @@ fn hashed(path: &Path, algorithm: Algorithm) -> std::io::Result<String> {
 /// content first, the way `get` reads. `Ok(false)` when no store does,
 /// and no file is begun.
 fn write_out(archive: &Archive, subject: &Subject, dest: &Path) -> Result<bool> {
+    let digest = ossuary_core::Digest::parse(subject.as_str())?;
     for store in [archive.content(), archive.derived()] {
-        let Some(digest) = store.matching(subject.as_str())?.into_iter().next() else {
-            continue;
-        };
         let Some(mut reader) = store.reader(&digest)? else {
             continue;
         };

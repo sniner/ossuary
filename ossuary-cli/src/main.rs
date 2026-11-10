@@ -2140,8 +2140,7 @@ fn id(location: &Location, path: &Path, quiet: bool) -> Result<ExitCode> {
     // archive holds the bytes is the run talking. Held means held —
     // taken in or derived, either store counts.
     if !quiet {
-        let held = !archive.content().matching(digest.as_str())?.is_empty()
-            || !archive.derived().matching(digest.as_str())?.is_empty();
+        let held = archive.content().contains(&digest)? || archive.derived().contains(&digest)?;
         if held {
             errln!("already in the archive; `ossuary about` shows its claims");
         } else {

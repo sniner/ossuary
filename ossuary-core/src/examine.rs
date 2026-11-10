@@ -970,16 +970,15 @@ fn try_one(
     let content = archive.content();
     // The examinee may be an original or itself derived — the PDF out of
     // a mail: content/ is asked first, derived/ second.
-    let (store, digest) = match content.matching(subject.as_str())?.as_slice() {
-        [one] => (content, one.clone()),
-        _ => match archive.derived().matching(subject.as_str())?.as_slice() {
-            [one] => (archive.derived(), one.clone()),
-            _ => {
-                return Err(Failure::Skip(Error::Extract(
-                    "recorded, but neither content/ nor derived/ contains it".to_string(),
-                )));
-            }
-        },
+    let digest = immure::Digest::parse(subject.as_str())?;
+    let store = if content.contains(&digest)? {
+        content
+    } else if archive.derived().contains(&digest)? {
+        archive.derived()
+    } else {
+        return Err(Failure::Skip(Error::Extract(
+            "recorded, but neither content/ nor derived/ contains it".to_string(),
+        )));
     };
     // One file that will not open is that file's trouble; `ossuary audit`
     // is what finds out why.

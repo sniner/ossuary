@@ -187,7 +187,7 @@ fn take(
     // second-class copy, the claims below stand either way. This asks
     // the store itself, truth asking truth; the index has no say here.
     let mut new = false;
-    if content.matching(digest.as_str())?.is_empty() {
+    if !content.contains(&digest)? {
         let (status, entry) = derived.add_reader(fs::File::open(&derivation.path).map_err(io)?)?;
         if entry.digest().as_str() != digest.as_str() {
             return Err(Error::Extract(format!(
