@@ -189,7 +189,9 @@ added when it is first needed.
   `derived/` first and in `content/` later get the claim twice, and the
   set has one value
 - value: number
-- written by: ingest; `ossuary mailvault`
+- written by: ingest; `ossuary mailvault`; `ossuary maintain describe`,
+  with the source `maintain`, for a file that an interrupted run stored
+  and did not record
 
 ### file:mime
 
@@ -209,7 +211,8 @@ added when it is first needed.
   `ossuary mailvault`, which records `message/rfc822` on every sighting
   because it knows the file is a message. That knowledge does not come
   from the bytes, and detection from the bytes may have got exactly
-  this wrong
+  this wrong; `ossuary maintain describe`, with the source `maintain`,
+  which detects the type as ingest does for a file that has none
 
 ### file:modified
 

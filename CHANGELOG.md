@@ -5,6 +5,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary maintain describe`** records the size and type of files that have neither. The two
+  are recorded when a file is new to the archive. A run that was interrupted after it stored a
+  file and before it recorded it left the file without them for good: the next run found the file
+  stored and recorded only its path. Such a file was never offered to an extractor, and nothing
+  reported it. `--dry-run` lists the files and writes nothing
+- **`ossuary audit` lists files recorded without size or type**, with the command above as the way
+  to fix them. This is not a finding and does not change the exit code. `--json` prints them as
+  `{"observation":"undescribed"}` with the missing attributes in `lacks`
+
 ### Fixed
 
 - **A seal that was interrupted could block every later write.** The seal left a file behind whose

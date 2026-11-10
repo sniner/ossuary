@@ -243,15 +243,15 @@ pub(crate) const SNIFF: usize = 8192;
 /// the sniff, a running UTF-8 check for the text fallback, the length.
 /// Everything [`mime`](Observed::mime) will need, observed in passing —
 /// which is what lets a file stream in without standing whole in memory.
-struct Observed<R> {
+pub(crate) struct Observed<R> {
     inner: R,
     head: Vec<u8>,
     text: Utf8Watch,
-    length: u64,
+    pub(crate) length: u64,
 }
 
 impl<R: Read> Observed<R> {
-    fn over(inner: R) -> Observed<R> {
+    pub(crate) fn over(inner: R) -> Observed<R> {
         Observed {
             inner,
             head: Vec::with_capacity(SNIFF),
@@ -263,7 +263,7 @@ impl<R: Read> Observed<R> {
     /// What the bytes say they are: magic bytes first, a UTF-8 look for
     /// plain text second, and the honest shrug when nothing answers. The
     /// sniff reads the head, the UTF-8 look judged the whole stream.
-    fn mime(&self) -> String {
+    pub(crate) fn mime(&self) -> String {
         infer::get(&self.head)
             .map(|kind| kind.mime_type().to_string())
             .or_else(|| (self.length > 0 && self.text.holds()).then(|| "text/plain".to_string()))

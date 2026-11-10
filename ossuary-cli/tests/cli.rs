@@ -313,6 +313,45 @@ fn the_next_run_that_writes_finishes_an_interrupted_seal_and_says_so() {
 }
 
 #[test]
+fn a_file_stored_before_it_was_recorded_gets_its_size_and_type_from_describe() {
+    let (_dir, files, archive) = files_and_archive();
+    assert!(run(ossuary(&archive).arg("init")).status.success());
+    let id = run(ossuary(&archive).arg("id").arg(files.join("note.txt")));
+    let id = String::from_utf8(id.stdout).unwrap().trim().to_string();
+    // What a run leaves that stopped after it stored the file: the
+    // bytes in content/, and no claim.
+    let shard = archive.join("content").join(&id[..2]).join(&id[2..4]);
+    std::fs::create_dir_all(&shard).unwrap();
+    std::fs::copy(files.join("note.txt"), shard.join(&id)).unwrap();
+    assert!(
+        run(ossuary(&archive).arg("ingest").arg(&files))
+            .status
+            .success()
+    );
+    let size = |archive: &Path| run(ossuary(archive).args(["standing", &id, "file:size"]));
+    assert!(!size(&archive).status.success(), "no size was recorded");
+
+    let audit = run(ossuary(&archive).args(["audit", "--fast"]));
+    let report = String::from_utf8_lossy(&audit.stdout);
+    assert!(audit.status.success(), "an observation, not a finding");
+    assert!(
+        report.contains("1 file(s) recorded without size or type"),
+        "{report}"
+    );
+
+    let described = run(ossuary(&archive).args(["maintain", "describe"]));
+    let verdict = String::from_utf8_lossy(&described.stdout);
+    assert!(described.status.success());
+    assert!(
+        verdict.contains("1 file(s) described, 2 claim(s) written"),
+        "{verdict}"
+    );
+    assert_eq!(String::from_utf8_lossy(&size(&archive).stdout), "6\n");
+    let again = run(ossuary(&archive).args(["maintain", "describe"]));
+    assert!(String::from_utf8_lossy(&again.stdout).contains("nothing to describe"));
+}
+
+#[test]
 fn a_run_inside_the_archive_names_it_by_its_absolute_path() {
     let (_dir, archive) = archive_with_a_file();
 

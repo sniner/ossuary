@@ -18,6 +18,16 @@
 //! does not reach: it is not part of the record's chain, whatever it
 //! holds, and that is a finding.
 //!
+//! A file that was stored and recorded in two runs is an observation as
+//! well. Size and detected type are recorded when bytes are new to a
+//! store. A run that stops after storing a file and before recording it
+//! leaves the bytes without claims, and the next run that meets the same
+//! file finds the bytes there and records only where it met them. The
+//! file then has claims and neither `file:size` nor `file:mime`, no
+//! extractor is offered it, and nothing else shows it. The audit lists
+//! such files (an [`Undescribed`] each), and `describe` records what
+//! they lack.
+//!
 //! Bytes held by both stores are an observation of their own: a file
 //! that was won as a derived file first and taken in as an original
 //! later stands in `derived/` and `content/` alike, under the same name,
@@ -229,6 +239,12 @@ pub struct LogAudit {
     /// retractions included — a retraction withdraws a statement, never
     /// bytes.
     referenced: BTreeSet<String>,
+    /// Every subject a readable claim is about.
+    subjects: BTreeSet<String>,
+    /// The subjects with a `file:size` assertion anywhere in the history.
+    sized: BTreeSet<String>,
+    /// The subjects with a `file:mime` assertion anywhere in the history.
+    typed: BTreeSet<String>,
 }
 
 /// Where the walk back from the open head ended.
@@ -250,6 +266,29 @@ pub enum Ends {
 }
 
 impl LogAudit {
+    /// Count the claims of one segment and note what they refer to and
+    /// which subjects they give a size or a type.
+    fn read(&mut self, claims: &[Claim]) {
+        self.claims += claims.len();
+        for claim in claims {
+            reference(claim, &mut self.referenced);
+            let subject = claim.subject().as_str();
+            self.subjects.insert(subject.to_string());
+            if claim.is_retraction() {
+                continue;
+            }
+            match claim.attribute().as_str() {
+                "file:size" => {
+                    self.sized.insert(subject.to_string());
+                }
+                "file:mime" => {
+                    self.typed.insert(subject.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// How many findings the log alone stands for: damage, segments
     /// that will not read, a lost head, a lost segment, segments outside
     /// the chain.
@@ -291,6 +330,9 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         ends: Ends::First,
         unreached: Vec::new(),
         referenced: BTreeSet::new(),
+        subjects: BTreeSet::new(),
+        sized: BTreeSet::new(),
+        typed: BTreeSet::new(),
     };
     // Every name the store holds, damaged or not: a walk that meets a
     // held name it cannot read is blocked there, not told the segment
@@ -319,10 +361,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         }
         match log.contents(entry.digest()) {
             Ok(contents) => {
-                report.claims += contents.claims().len();
-                for claim in contents.claims() {
-                    reference(claim, &mut report.referenced);
-                }
+                report.read(contents.claims());
                 previous.insert(name, contents.previous().map(hex));
             }
             Err(error) => report.broken.push((name, error.spelled())),
@@ -337,10 +376,7 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
     // held.
     let open = match log.head_contents() {
         Ok(contents) => {
-            report.claims += contents.claims().len();
-            for claim in contents.claims() {
-                reference(claim, &mut report.referenced);
-            }
+            report.read(contents.claims());
             contents.previous().map(hex)
         }
         Err(_) if report.head_lost => None,
@@ -406,6 +442,19 @@ pub(crate) fn reference(claim: &Claim, referenced: &mut BTreeSet<String>) {
     }
 }
 
+/// A file that a store holds and claims are about, without the size or
+/// the type that are recorded when bytes are new to a store. See the
+/// module notes for how a file gets there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Undescribed {
+    /// The file.
+    pub digest: Digest,
+    /// Whether no claim in the history gives it a `file:size`.
+    pub lacks_size: bool,
+    /// Whether no claim in the history gives it a `file:mime`.
+    pub lacks_mime: bool,
+}
+
 /// The whole audit: both stores, the log, and the two held against each
 /// other.
 #[derive(Debug)]
@@ -429,6 +478,10 @@ pub struct Audit {
     /// An observation, not a finding: what is wrong with either copy
     /// already stands as one on its store.
     pub twins: Vec<Twin>,
+    /// Files that are held and recorded, without a size or a type on
+    /// the record. An observation, not a finding: nothing is lost, and
+    /// the bytes can say both.
+    pub undescribed: Vec<Undescribed>,
 }
 
 impl Audit {
@@ -470,11 +523,26 @@ impl Audit {
                 derived: fixity(&derived, &derived_troubles, name),
             })
             .collect();
+        let undescribed = log
+            .subjects
+            .iter()
+            .filter_map(|name| {
+                let digest = content.held.get(name).or_else(|| derived.held.get(name))?;
+                let lacks_size = !log.sized.contains(name);
+                let lacks_mime = !log.typed.contains(name);
+                (lacks_size || lacks_mime).then(|| Undescribed {
+                    digest: digest.clone(),
+                    lacks_size,
+                    lacks_mime,
+                })
+            })
+            .collect();
         Audit {
             missing,
             unrecorded_content: unrecorded(&content),
             unrecorded_derived: unrecorded(&derived),
             twins,
+            undescribed,
             content,
             derived,
             log,
@@ -957,6 +1025,38 @@ mod tests {
             audit.unrecorded_content,
             vec![stray.digest().as_str().to_string()]
         );
+    }
+
+    #[test]
+    fn a_file_recorded_without_size_or_type_is_noted_not_found() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let whole = take(&archive, b"stored and recorded in one run");
+        record(&archive, &whole, "file:mime", json!("text/plain"));
+        // Stored by a run that stopped, recorded by the next one.
+        let (_, entry) = archive.content().add(b"stored, then met again").unwrap();
+        let later = Subject::parse(entry.digest().as_str()).unwrap();
+        record(&archive, &later, "file:path", json!("/home/john/a.txt"));
+        // A derived file always has its type from the extractor.
+        let (_, entry) = archive.derived().add(b"derived, size missing").unwrap();
+        let derived = Subject::parse(entry.digest().as_str()).unwrap();
+        record(&archive, &derived, "file:mime", json!("text/plain"));
+
+        let audit = run(&archive);
+
+        let mut noted: Vec<(&str, bool, bool)> = audit
+            .undescribed
+            .iter()
+            .map(|file| (file.digest.as_str(), file.lacks_size, file.lacks_mime))
+            .collect();
+        noted.sort_unstable();
+        let mut expected = vec![
+            (later.as_str(), true, true),
+            (derived.as_str(), true, false),
+        ];
+        expected.sort_unstable();
+        assert_eq!(noted, expected);
+        assert!(audit.is_sound(), "nothing is lost");
     }
 
     #[test]

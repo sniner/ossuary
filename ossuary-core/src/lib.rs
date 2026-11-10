@@ -28,6 +28,7 @@ mod audit;
 mod claim;
 mod config;
 mod delta;
+mod describe;
 mod error;
 mod examine;
 mod export;
@@ -43,13 +44,15 @@ pub use accession::{Admitted, Sighting, admit, record};
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
 pub use audit::{
-    Audit, Ends, Fixity, HEAD, LINKS, LogAudit, StoreAudit, Twin, audit_log, audit_store,
+    Audit, Ends, Fixity, HEAD, LINKS, LogAudit, StoreAudit, Twin, Undescribed, audit_log,
+    audit_store,
 };
 pub use claim::{
     Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value, Written, standing_ids_in,
 };
 pub use config::{Config, Excludes};
 pub use delta::{Delta, delta};
+pub use describe::{Described, Undescribing, describe, undescribed};
 pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
 pub use export::{Placed, Placement, lay_out};

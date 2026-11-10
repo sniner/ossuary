@@ -1,19 +1,35 @@
-//! `ossuary maintain`: the one taking-out that loses nothing.
+//! `ossuary maintain`: `weed` removes copies in `derived/` that
+//! `content/` also has, `describe` records size and type of files that
+//! have neither.
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use ossuary_core::{Fixity, Twin, Weeded};
+use ossuary_core::{Fixity, Twin, Undescribing, Weeded};
 
-use crate::open;
+use crate::audit::listing;
 use crate::output::{errln, say};
+use crate::{finish_interrupted_seal, open};
 
-/// The maintenance commands. `weed` removes copies in `derived/` of
-/// files that `content/` also contains.
+/// The maintenance commands.
 #[derive(Subcommand)]
 pub(crate) enum Maintenance {
+    /// Record the size and type of files that have neither
+    ///
+    /// The size and type of a file are recorded when the file is new to
+    /// the archive. A run that is interrupted after it stored a file and
+    /// before it recorded it leaves the file without both: the next run
+    /// that meets the file finds it stored and records only where it met
+    /// it. Such a file is left out of `ossuary extract`. describe reads
+    /// each of these files in the archive and records what is missing.
+    /// `ossuary audit` lists them.
+    Describe {
+        /// Show which files would be described, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove files from derived/ that are also in content/
     ///
     /// A file first extracted as a derived file (an attachment from a
@@ -43,7 +59,88 @@ pub(crate) enum Maintenance {
 /// Run one maintenance task.
 pub(crate) fn run(root: &Path, task: &Maintenance, verbose: bool, quiet: bool) -> Result<ExitCode> {
     match task {
+        Maintenance::Describe { dry_run } => describe(root, *dry_run, verbose, quiet),
         Maintenance::Weed { dry_run, repair } => weed(root, *dry_run, *repair, verbose, quiet),
+    }
+}
+
+/// `maintain describe`: find the files recorded without size or type,
+/// read each one and record what it lacks.
+fn describe(root: &Path, dry_run: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
+    let archive = open(root)?;
+    if !quiet {
+        errln!("archive {}", archive.root().display());
+    }
+    if !dry_run {
+        finish_interrupted_seal(&archive)?;
+    }
+    if !quiet {
+        errln!(
+            "step 1 of 2: reading every claim and listing content/ and derived/, to find files without size or type"
+        );
+    }
+    let files = match ossuary_core::undescribed(&archive)? {
+        Undescribing::Found(files) => files,
+        Undescribing::Refused(log) => {
+            errln!(
+                "not looked for: {} finding(s) in the claims, and a claim that cannot be read may be the one that records a size; `ossuary audit` lists the findings",
+                log.findings()
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    if files.is_empty() {
+        say(
+            &mut out,
+            "every recorded file has its size and type; nothing to describe",
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let names: Vec<String> = files
+        .iter()
+        .map(|file| file.digest.as_str().to_string())
+        .collect();
+    if dry_run {
+        let heading = format!(
+            "{} file(s) would get their size or type recorded; --dry-run, nothing written",
+            files.len()
+        );
+        listing(&mut out, &heading, &names, verbose)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !quiet {
+        errln!(
+            "step 2 of 2: reading {} file(s) in the archive",
+            files.len()
+        );
+    }
+    let described = ossuary_core::describe(&archive, &files)?;
+    if !described.gone.is_empty() {
+        let heading = format!(
+            "{} file(s) were no longer in content/ or derived/ when they were to be read; `ossuary audit` shows what is missing",
+            described.gone.len()
+        );
+        if !listing(&mut out, &heading, &described.gone, true)? {
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    if described.claims == 0 {
+        say(&mut out, "0 file(s) described, nothing written")?;
+    } else {
+        say(
+            &mut out,
+            &format!(
+                "{} file(s) described, {} claim(s) written, run {}; `ossuary extract` now offers them to the extractors",
+                described.files, described.claims, described.run
+            ),
+        )?;
+    }
+    if described.gone.is_empty() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
     }
 }
 

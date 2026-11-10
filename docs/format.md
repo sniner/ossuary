@@ -171,8 +171,8 @@ time and then by the line itself, so a claim's place in a segment says
 nothing beyond its time; between segments the chain is the order (see
 [Segments](#segments)).
 
-**Source** is `ingest`, `user`, or `kind:name/version` for tools, such
-as `extractor:exif-rs/0.7`. The grammar is flat so that a fold can
+**Source** is `ingest`, `user`, `maintain`, or `kind:name/version` for
+tools, such as `extractor:exif-rs/0.7`. The grammar is flat so that a fold can
 supersede claims by prefix: "everything from `extractor:exif-rs/` older
 than 2.0".
 

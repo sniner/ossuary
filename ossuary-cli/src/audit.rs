@@ -113,10 +113,24 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
             continue;
         }
         let heading = format!(
-            "{} file(s) in {place} without claims; adding the same file again records them",
+            "{} file(s) in {place} without claims; adding the same file again records where it is, and `ossuary maintain describe` then records its size and type",
             unrecorded.len()
         );
         if !listing(out, &heading, unrecorded, verbose)? {
+            return Ok(());
+        }
+    }
+    if !audit.undescribed.is_empty() {
+        let heading = format!(
+            "{} file(s) recorded without size or type, which leaves them out of `ossuary extract`; `ossuary maintain describe` records both",
+            audit.undescribed.len()
+        );
+        let names: Vec<String> = audit
+            .undescribed
+            .iter()
+            .map(|file| file.digest.as_str().to_string())
+            .collect();
+        if !listing(out, &heading, &names, verbose)? {
             return Ok(());
         }
     }
@@ -436,6 +450,20 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
         for subject in unrecorded {
             lines.push(json!({"observation": "unrecorded", "store": place, "subject": subject}));
         }
+    }
+    for file in &audit.undescribed {
+        let mut lacks = Vec::new();
+        if file.lacks_size {
+            lacks.push("file:size");
+        }
+        if file.lacks_mime {
+            lacks.push("file:mime");
+        }
+        lines.push(json!({
+            "observation": "undescribed",
+            "subject": file.digest.as_str(),
+            "lacks": lacks,
+        }));
     }
     for twin in &audit.twins {
         lines.push(json!({
