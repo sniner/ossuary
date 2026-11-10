@@ -42,14 +42,21 @@
 //!
 //! Server-side numbering like a UID belongs here and nowhere on a
 //! message's record: it means nothing once the UIDVALIDITY changes.
+//!
+//! A run writes in batches: between [`Memo::begin`] and [`Memo::commit`]
+//! the writes are kept in memory, and the commit applies them in one
+//! transaction. The file is locked only for that moment and not while
+//! the run downloads, so a second run on the same archive is not kept
+//! from its own commits.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result};
-use rusqlite::{Connection, OptionalExtension as _, params};
+use anyhow::{Context as _, Result, bail};
+use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -134,10 +141,54 @@ fn now() -> i64 {
         })
 }
 
+/// The folder a write is about.
+struct At {
+    account: String,
+    folder: String,
+}
+
+impl At {
+    fn new(account: &str, folder: &str) -> Self {
+        Self {
+            account: account.to_string(),
+            folder: folder.to_string(),
+        }
+    }
+}
+
+/// One write to the memo: what a public method of [`Memo`] asks for,
+/// kept so that a batch can apply it later.
+enum Write {
+    /// Move an IMAP folder's point up to this one, or start over under
+    /// a new UIDVALIDITY.
+    AdvanceImap(At, ImapResume),
+    SetResume(At, Resume),
+    /// Ids for the folder's pending list, each with its detail as JSON.
+    AddPending(At, Vec<(String, String)>),
+    FailPending(At, String),
+    RemovePending(At, String),
+    ClearPending(At),
+    AddCompared {
+        at: At,
+        id: String,
+        subject: String,
+    },
+    RemoveCompared(At, Vec<String>),
+    MarkImported {
+        store_id: String,
+        places: Vec<String>,
+    },
+    /// The sealed segment that shows which archive the memo belongs to.
+    Proof(String),
+}
+
 pub struct Memo {
     connection: Connection,
     /// Whether the file had an older layout and was emptied on open.
     reset: bool,
+    /// The writes of the batch that is open, in the order they were
+    /// asked for; `None` when no batch is open.
+    batch: RefCell<Option<Vec<Write>>>,
 }
 
 impl Memo {
@@ -213,7 +264,11 @@ impl Memo {
                  segment TEXT NOT NULL
              );",
         )?;
-        Ok(Self { connection, reset })
+        Ok(Self {
+            connection,
+            reset,
+            batch: RefCell::new(None),
+        })
     }
 
     /// The sealed segment the memo recorded when it was last committed:
@@ -233,7 +288,8 @@ impl Memo {
     }
 
     /// Empty the memo: every folder is fetched in full again, and an
-    /// import starts over. Returns whether it held anything.
+    /// import starts over. Returns whether it held anything. Applied at
+    /// once, not as part of a batch.
     ///
     /// # Errors
     ///
@@ -268,18 +324,16 @@ impl Memo {
         Ok(true)
     }
 
-    /// Commit, and with it the proof that the memo belongs to `archive`
-    /// when it is kept outside it: the segment sealed last.
+    /// [`commit`](Self::commit), and with it the proof that the memo
+    /// belongs to `archive` when it is kept outside it: the segment
+    /// sealed last.
     ///
     /// # Errors
     ///
-    /// `SQLite` refusing, or the archive's open segment not answering.
+    /// As `commit`, or the archive's open segment not answering.
     pub fn commit_for(&self, archive: &ossuary_core::Archive) -> Result<()> {
         if let Some(sealed) = archive.cache_proof()? {
-            self.connection.execute(
-                "INSERT OR REPLACE INTO archive (id, segment) VALUES (0, ?1)",
-                rusqlite::params![sealed.as_str()],
-            )?;
+            self.write(Write::Proof(sealed.as_str().to_string()))?;
         }
         self.commit()
     }
@@ -291,29 +345,142 @@ impl Memo {
         self.reset
     }
 
-    /// Begin a transaction: many small writes, one sync.
+    /// Begin a batch of writes. Until [`commit`](Self::commit) every
+    /// write is kept in memory and the file is not touched, so a read
+    /// does not see the writes of the open batch. Without a batch a
+    /// write is applied at once.
     ///
     /// # Errors
     ///
-    /// `SQLite` refusing.
+    /// A batch that is already open.
     pub fn begin(&self) -> Result<()> {
-        self.connection.execute_batch("BEGIN IMMEDIATE")?;
+        let mut batch = self.batch.borrow_mut();
+        if batch.is_some() {
+            bail!("cache/{FILE_NAME}: a batch of writes is already open");
+        }
+        *batch = Some(Vec::new());
         Ok(())
     }
 
+    /// Apply the writes of the open batch in one transaction, in the
+    /// order they were asked for, and close the batch. When a write
+    /// fails, none of them is applied.
+    ///
     /// # Errors
     ///
-    /// `SQLite` refusing.
+    /// No batch open, or `SQLite` refusing: the file locked by another
+    /// program for longer than the connection waits, most often.
     pub fn commit(&self) -> Result<()> {
-        self.connection.execute_batch("COMMIT")?;
+        let Some(batch) = self.batch.borrow_mut().take() else {
+            bail!("cache/{FILE_NAME}: no batch of writes is open");
+        };
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        for write in &batch {
+            self.apply(write)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Keep the write for the open batch, or apply it at once when there
+    /// is none.
+    fn write(&self, write: Write) -> Result<()> {
+        if let Some(batch) = self.batch.borrow_mut().as_mut() {
+            batch.push(write);
+            return Ok(());
+        }
+        self.apply(&write)
+    }
+
+    /// Carry out one write on the file.
+    fn apply(&self, write: &Write) -> Result<()> {
+        let connection = &self.connection;
+        match write {
+            Write::AdvanceImap(at, resume) => {
+                let next = match self.imap_resume(&at.account, &at.folder)? {
+                    Some(current) if current.uidvalidity == resume.uidvalidity => ImapResume {
+                        uid: current.uid.max(resume.uid),
+                        ..*resume
+                    },
+                    _ => *resume,
+                };
+                self.set_resume(at, &Resume::Imap(next))?;
+            }
+            Write::SetResume(at, resume) => self.set_resume(at, resume)?,
+            Write::AddPending(at, listed) => {
+                let mut statement = connection.prepare_cached(
+                    "INSERT INTO pending (account, folder, id, detail) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT (account, folder, id) DO UPDATE SET detail = excluded.detail",
+                )?;
+                for (id, detail) in listed {
+                    statement.execute(params![at.account, at.folder, id, detail])?;
+                }
+            }
+            Write::FailPending(at, id) => {
+                connection
+                    .prepare_cached(
+                        "UPDATE pending SET attempts = attempts + 1
+                         WHERE account = ?1 AND folder = ?2 AND id = ?3",
+                    )?
+                    .execute(params![at.account, at.folder, id])?;
+            }
+            Write::RemovePending(at, id) => {
+                connection
+                    .prepare_cached(
+                        "DELETE FROM pending WHERE account = ?1 AND folder = ?2 AND id = ?3",
+                    )?
+                    .execute(params![at.account, at.folder, id])?;
+            }
+            Write::ClearPending(at) => {
+                connection
+                    .prepare_cached("DELETE FROM pending WHERE account = ?1 AND folder = ?2")?
+                    .execute(params![at.account, at.folder])?;
+            }
+            Write::AddCompared { at, id, subject } => {
+                connection
+                    .prepare_cached(
+                        "INSERT INTO compared (account, folder, id, subject)
+                         VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT (account, folder, id)
+                         DO UPDATE SET subject = excluded.subject",
+                    )?
+                    .execute(params![at.account, at.folder, id, subject])?;
+            }
+            Write::RemoveCompared(at, ids) => {
+                let mut statement = connection.prepare_cached(
+                    "DELETE FROM compared WHERE account = ?1 AND folder = ?2 AND id = ?3",
+                )?;
+                for id in ids {
+                    statement.execute(params![at.account, at.folder, id])?;
+                }
+            }
+            Write::MarkImported { store_id, places } => {
+                let mut statement = connection.prepare_cached(
+                    "INSERT OR IGNORE INTO imported (store_id, place) VALUES (?1, ?2)",
+                )?;
+                if places.is_empty() {
+                    statement.execute(params![store_id, ""])?;
+                }
+                for place in places {
+                    statement.execute(params![store_id, place])?;
+                }
+            }
+            Write::Proof(segment) => {
+                connection.execute(
+                    "INSERT OR REPLACE INTO archive (id, segment) VALUES (0, ?1)",
+                    params![segment],
+                )?;
+            }
+        }
         Ok(())
     }
 
     /// Give the space of deleted rows back to the file system, when
     /// there is [`COMPACT_FROM`] or more of it. The pending list of a
     /// large folder is written and deleted again within one run, and
-    /// the file would otherwise keep that size. Not inside a
-    /// transaction. Returns whether the file was rewritten.
+    /// the file would otherwise keep that size. Applied at once, not
+    /// as part of a batch. Returns whether the file was rewritten.
     ///
     /// # Errors
     ///
@@ -355,12 +522,16 @@ impl Memo {
             .transpose()
     }
 
-    fn set_resume(&self, account: &str, folder: &str, state: &Resume) -> Result<()> {
+    fn set_resume(&self, at: &At, state: &Resume) -> Result<()> {
         let mut statement = self.connection.prepare_cached(
             "INSERT INTO resume (account, folder, state) VALUES (?1, ?2, ?3)
              ON CONFLICT (account, folder) DO UPDATE SET state = excluded.state",
         )?;
-        statement.execute(params![account, folder, serde_json::to_string(state)?])?;
+        statement.execute(params![
+            at.account,
+            at.folder,
+            serde_json::to_string(state)?
+        ])?;
         Ok(())
     }
 
@@ -383,21 +554,15 @@ impl Memo {
     /// highest UID seen is the one to carry on from. A new UIDVALIDITY
     /// starts over.
     ///
-    /// A read and a write, two statements: call it inside a
-    /// transaction, as the fetch does.
+    /// The point it is compared with is read when the write is applied:
+    /// in a batch that is at the commit, after the batch's earlier
+    /// writes.
     ///
     /// # Errors
     ///
     /// `SQLite` refusing.
     pub fn advance_imap(&self, account: &str, folder: &str, resume: ImapResume) -> Result<()> {
-        let next = match self.imap_resume(account, folder)? {
-            Some(current) if current.uidvalidity == resume.uidvalidity => ImapResume {
-                uid: current.uid.max(resume.uid),
-                ..resume
-            },
-            _ => resume,
-        };
-        self.set_resume(account, folder, &Resume::Imap(next))
+        self.write(Write::AdvanceImap(At::new(account, folder), resume))
     }
 
     /// Where an MS Graph folder's listings carry on: `None` for a
@@ -426,7 +591,10 @@ impl Memo {
             link: link.to_string(),
             issued: now(),
         };
-        self.set_resume(account, folder, &Resume::Graph(resume))
+        self.write(Write::SetResume(
+            At::new(account, folder),
+            Resume::Graph(resume),
+        ))
     }
 
     /// The messages of the folder an earlier listing reported that are
@@ -483,19 +651,11 @@ impl Memo {
         folder: &str,
         listed: impl IntoIterator<Item = (&'a str, T)>,
     ) -> Result<()> {
-        let mut statement = self.connection.prepare_cached(
-            "INSERT INTO pending (account, folder, id, detail) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (account, folder, id) DO UPDATE SET detail = excluded.detail",
-        )?;
-        for (id, detail) in listed {
-            statement.execute(params![
-                account,
-                folder,
-                id,
-                serde_json::to_string(&detail)?
-            ])?;
-        }
-        Ok(())
+        let listed = listed
+            .into_iter()
+            .map(|(id, detail)| Ok((id.to_string(), serde_json::to_string(&detail)?)))
+            .collect::<Result<Vec<_>>>()?;
+        self.write(Write::AddPending(At::new(account, folder), listed))
     }
 
     /// One more run failed to fetch the message.
@@ -504,12 +664,7 @@ impl Memo {
     ///
     /// `SQLite` refusing.
     pub fn fail_pending(&self, account: &str, folder: &str, id: &str) -> Result<()> {
-        let mut statement = self.connection.prepare_cached(
-            "UPDATE pending SET attempts = attempts + 1
-             WHERE account = ?1 AND folder = ?2 AND id = ?3",
-        )?;
-        statement.execute(params![account, folder, id])?;
-        Ok(())
+        self.write(Write::FailPending(At::new(account, folder), id.to_string()))
     }
 
     /// The message is stored, the server no longer has it, or it is
@@ -519,11 +674,10 @@ impl Memo {
     ///
     /// `SQLite` refusing.
     pub fn remove_pending(&self, account: &str, folder: &str, id: &str) -> Result<()> {
-        let mut statement = self
-            .connection
-            .prepare_cached("DELETE FROM pending WHERE account = ?1 AND folder = ?2 AND id = ?3")?;
-        statement.execute(params![account, folder, id])?;
-        Ok(())
+        self.write(Write::RemovePending(
+            At::new(account, folder),
+            id.to_string(),
+        ))
     }
 
     /// Empty the folder's pending list: a listing from scratch reports
@@ -533,11 +687,7 @@ impl Memo {
     ///
     /// `SQLite` refusing.
     pub fn clear_pending(&self, account: &str, folder: &str) -> Result<()> {
-        let mut statement = self
-            .connection
-            .prepare_cached("DELETE FROM pending WHERE account = ?1 AND folder = ?2")?;
-        statement.execute(params![account, folder])?;
-        Ok(())
+        self.write(Write::ClearPending(At::new(account, folder)))
     }
 
     /// The messages `fetch --compare` fetched from the folder: the
@@ -563,12 +713,11 @@ impl Memo {
     ///
     /// `SQLite` refusing.
     pub fn add_compared(&self, account: &str, folder: &str, id: &str, subject: &str) -> Result<()> {
-        let mut statement = self.connection.prepare_cached(
-            "INSERT INTO compared (account, folder, id, subject) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (account, folder, id) DO UPDATE SET subject = excluded.subject",
-        )?;
-        statement.execute(params![account, folder, id, subject])?;
-        Ok(())
+        self.write(Write::AddCompared {
+            at: At::new(account, folder),
+            id: id.to_string(),
+            subject: subject.to_string(),
+        })
     }
 
     /// Forget these messages of the folder.
@@ -582,13 +731,8 @@ impl Memo {
         folder: &str,
         ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<()> {
-        let mut statement = self.connection.prepare_cached(
-            "DELETE FROM compared WHERE account = ?1 AND folder = ?2 AND id = ?3",
-        )?;
-        for id in ids {
-            statement.execute(params![account, folder, id])?;
-        }
-        Ok(())
+        let ids = ids.into_iter().map(ToString::to_string).collect();
+        self.write(Write::RemoveCompared(At::new(account, folder), ids))
     }
 
     /// The places of a vault's message that are on the record: `None`
@@ -623,16 +767,10 @@ impl Memo {
     ///
     /// `SQLite` refusing.
     pub fn mark_imported(&self, store_id: &str, places: &[&String]) -> Result<()> {
-        let mut statement = self
-            .connection
-            .prepare_cached("INSERT OR IGNORE INTO imported (store_id, place) VALUES (?1, ?2)")?;
-        if places.is_empty() {
-            statement.execute(params![store_id, ""])?;
-        }
-        for place in places {
-            statement.execute(params![store_id, place])?;
-        }
-        Ok(())
+        self.write(Write::MarkImported {
+            store_id: store_id.to_string(),
+            places: places.iter().map(|place| (*place).clone()).collect(),
+        })
     }
 }
 
@@ -695,6 +833,63 @@ mod tests {
         assert_eq!(memo.proof().unwrap(), None);
         assert!(memo.is_empty().unwrap());
         assert!(!memo.clear().unwrap(), "and holds nothing now");
+    }
+
+    #[test]
+    fn a_batch_is_applied_at_the_commit_in_the_order_of_its_writes() {
+        let (_dir, memo) = memo();
+        memo.begin().unwrap();
+        memo.advance_imap("john", "INBOX", at(1, 5)).unwrap();
+        memo.advance_imap("john", "INBOX", at(1, 9)).unwrap();
+        memo.advance_imap("john", "INBOX", at(1, 3)).unwrap();
+        memo.add_pending("john", "INBOX", [("4", ()), ("6", ())])
+            .unwrap();
+        memo.fail_pending("john", "INBOX", "4").unwrap();
+        memo.remove_pending("john", "INBOX", "6").unwrap();
+        assert_eq!(
+            memo.imap_resume("john", "INBOX").unwrap(),
+            None,
+            "a read does not see the open batch"
+        );
+
+        memo.commit().unwrap();
+
+        assert_eq!(memo.imap_resume("john", "INBOX").unwrap(), Some(at(1, 9)));
+        let pending: Vec<(String, u32)> = memo
+            .pending::<()>("john", "INBOX")
+            .unwrap()
+            .into_iter()
+            .map(|message| (message.id, message.attempts))
+            .collect();
+        assert_eq!(pending, [("4".to_string(), 1)]);
+    }
+
+    #[test]
+    fn a_second_memo_on_the_file_commits_while_a_batch_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let one = Memo::open(&path).unwrap();
+        let two = Memo::open(&path).unwrap();
+        one.begin().unwrap();
+        one.advance_imap("john", "INBOX", at(1, 7)).unwrap();
+
+        two.begin().unwrap();
+        two.advance_imap("john", "Sent", at(2, 3)).unwrap();
+        two.commit().unwrap();
+        one.commit().unwrap();
+
+        assert_eq!(two.imap_resume("john", "INBOX").unwrap(), Some(at(1, 7)));
+        assert_eq!(one.imap_resume("john", "Sent").unwrap(), Some(at(2, 3)));
+    }
+
+    #[test]
+    fn a_batch_is_opened_once_and_committed_once() {
+        let (_dir, memo) = memo();
+        assert!(memo.commit().is_err(), "no batch is open");
+        memo.begin().unwrap();
+        assert!(memo.begin().is_err(), "one is open already");
+        memo.commit().unwrap();
+        assert!(memo.commit().is_err());
     }
 
     #[test]

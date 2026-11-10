@@ -1035,7 +1035,7 @@ impl Fetch<'_> {
 
     /// The end of a label folder's run: the open UIDs that were found
     /// leave the pending list, the ones still open are added to it, the
-    /// resume point moves to `top`, and the transaction is committed.
+    /// resume point moves to `top`, and the batch is committed.
     fn settle_label_folder(
         &self,
         place: &Place<'_>,
@@ -1423,7 +1423,7 @@ impl Fetch<'_> {
     }
 
     /// The loop of [`graph_land`](Self::graph_land), inside the
-    /// transaction it opened.
+    /// batch of memo writes it opened.
     fn graph_each(
         &self,
         place: &Place<'_>,

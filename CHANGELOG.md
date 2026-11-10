@@ -35,6 +35,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The last line of a fetch that failed in part** said "the next run tries the failed ones again"
   also for messages the same report listed as given up. It now says how many were given up and
   that only `--full` fetches those again
+- **A second `ossuary mailvault` on the same archive stopped with `database is locked`** when
+  another was fetching or importing: a run kept `cache/mailvault.sqlite` locked while it downloaded
+  or read messages. A run now locks the file only for the moment it writes to it
 
 ## [0.21.0] - 2026-11-10
 
