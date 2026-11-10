@@ -490,23 +490,17 @@ mod tests {
     }
 
     #[test]
-    fn a_seal_that_never_happens_is_an_error_and_not_an_empty_archive() {
+    fn a_second_directory_under_open_is_an_error_and_not_an_empty_archive() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         take(&archive, b"one", "2026-10-26T12:00:00Z");
-        // Stands in for a writer that seals first on every try: a
-        // directory under the name the rename of step 1 wants, so that
-        // Log::seal answers that it sealed nothing while the open
-        // segment still holds the claim.
+        // Under the name the rename of step 1 wants: no seal can happen.
         let taken = archive.root().join("open").join("first.sealing");
         fs::create_dir_all(taken.join("tmp")).unwrap();
 
-        let outcome = seal(&archive, false);
+        assert!(matches!(seal(&archive, false), Err(Error::TwoOpen(_))));
 
-        assert!(matches!(
-            outcome,
-            Err(Error::SealContended { tries: 10, .. })
-        ));
+        fs::remove_dir_all(taken).unwrap();
         assert_eq!(archive.log().head().unwrap().len(), 1, "nothing was lost");
     }
 

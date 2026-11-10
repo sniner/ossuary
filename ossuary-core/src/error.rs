@@ -140,11 +140,13 @@ pub enum Error {
     )]
     HeadLost(std::path::PathBuf),
 
-    /// Two open segments stand in the archive root. Only one process
-    /// ever makes one, so something else put the second there; the record
-    /// cannot tell which is its end.
+    /// More than one directory stands under `open/`: two open segments,
+    /// or an open segment beside the directory of a seal. The open
+    /// segment is one directory that is only ever renamed, so something
+    /// else put the second there, and the record cannot tell which is
+    /// its end.
     #[error(
-        "{}: two open segments; one was put there by hand, and `ossuary-fix chain` decides which one continues the record",
+        "{}: more than one directory under open/, where the open segment is the only one; one of them was put there by hand. Move the one that does not belong out of open/",
         .0.display()
     )]
     TwoOpen(std::path::PathBuf),

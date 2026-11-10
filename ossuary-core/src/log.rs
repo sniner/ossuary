@@ -1223,8 +1223,31 @@ impl Log {
         Ok(dirs)
     }
 
-    /// What `open/` shows of the open segment, from one listing.
+    /// What `open/` shows of the open segment.
+    ///
+    /// The open segment is one directory under one of its three names. A
+    /// listing that shows an open segment and the directory of a seal
+    /// beside it has seen one rename from both sides, which the next
+    /// listing no longer shows, or there are two directories. Two are
+    /// refused like two open segments: a seal of the one needs the name
+    /// the other has, so an append that is due to seal would never get
+    /// past it, and nothing here can tell which of the two continues the
+    /// record.
     fn find(&self) -> Result<Found> {
+        for attempt in 1..=LISTING_TRIES {
+            if let Some(found) = self.find_once()? {
+                return Ok(found);
+            }
+            if attempt < LISTING_TRIES {
+                std::thread::sleep(LISTING_DELAY);
+            }
+        }
+        Err(Error::TwoOpen(self.root.clone()))
+    }
+
+    /// One listing of `open/`. `None` when it shows an open segment and
+    /// the directory of a seal beside it.
+    fn find_once(&self) -> Result<Option<Found>> {
         let mut opens = Vec::new();
         let mut sealing = Vec::new();
         let mut sealed = Vec::new();
@@ -1240,13 +1263,13 @@ impl Log {
         if opens.len() > 1 {
             return Err(Error::TwoOpen(self.root.clone()));
         }
-        if let Some(dir) = opens.pop() {
-            return Ok(Found::Open(dir));
-        }
-        if sealing.is_empty() && sealed.is_empty() {
-            return Ok(Found::Nothing);
-        }
-        Ok(Found::Pending { sealing, sealed })
+        let pending = !(sealing.is_empty() && sealed.is_empty());
+        Ok(match opens.pop() {
+            Some(_) if pending => None,
+            Some(dir) => Some(Found::Open(dir)),
+            None if pending => Some(Found::Pending { sealing, sealed }),
+            None => Some(Found::Nothing),
+        })
     }
 
     /// The listing repeated, for an `open/` that showed none of the names:
@@ -2142,6 +2165,23 @@ mod tests {
         let other = log.store.digest(b"other");
         fs::create_dir(under_open(&dir, other.as_ref())).unwrap();
         assert!(matches!(log.open(), Err(Error::TwoOpen(_))));
+        assert!(matches!(
+            log.append(&claim("x", "2026-09-05T12:00:00Z")),
+            Err(Error::TwoOpen(_))
+        ));
+    }
+
+    #[test]
+    fn an_open_segment_beside_the_directory_of_a_seal_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("first", "2026-09-05T12:00:00Z")).unwrap();
+        // Copied back by hand, say. A seal of open/first would rename
+        // it to this name and cannot.
+        fs::create_dir_all(under_open(&dir, "first.sealing").join("tmp")).unwrap();
+
+        assert!(matches!(log.open(), Err(Error::TwoOpen(_))));
+        assert!(matches!(log.seal(), Err(Error::TwoOpen(_))));
         assert!(matches!(
             log.append(&claim("x", "2026-09-05T12:00:00Z")),
             Err(Error::TwoOpen(_))
