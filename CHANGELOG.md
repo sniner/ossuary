@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A seal that was interrupted could block every later write.** The seal left a file behind whose
+  name contained the process id, and the next program with the same process id stopped with
+  `File exists`. In a container the process id is the same on every start, so the archive stayed
+  blocked until the file was removed by hand. The file now has a random name
+
 ## [0.20.3] - 2026-11-10
 
 ### Added

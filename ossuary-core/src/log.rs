@@ -79,7 +79,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead as _, ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -176,8 +175,6 @@ pub fn old_open_dirs(root: &Path) -> Vec<PathBuf> {
     dirs.sort();
     dirs
 }
-
-static SEGMENT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// The first line of every sealed segment: a segment names its own format
 /// before anything else, so that a stray file found alone in fifty years
@@ -1348,11 +1345,15 @@ fn segment_text(previous: Option<&Digest>, mut lines: Vec<(String, String)>) -> 
     text
 }
 
-/// Write the segment's bytes into `dir` under a name of this process's
-/// own, flushed; `false` when the directory is gone.
+/// Write the segment's bytes into `dir` under a name of this call's own,
+/// flushed; `false` when the directory is gone.
+///
+/// The name is random. A seal that stopped after this step leaves its file
+/// behind until step 5, and a name built from the process id would be
+/// taken for the next process with that id: the same host after a restart,
+/// or another container, where the id is the same small number every time.
 fn write_segment_file(dir: &Path, text: &str) -> Result<bool> {
-    let serial = SEGMENT_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("{SEGMENT_FILE}{}-{serial}.seg", std::process::id()));
+    let path = dir.join(format!("{SEGMENT_FILE}{}.seg", uuid::Uuid::new_v4()));
     match fs::File::create_new(&path) {
         Ok(mut file) => {
             let io = |source| Error::Io {
@@ -1766,6 +1767,28 @@ mod tests {
             log.head().unwrap().is_empty(),
             "both bundles were in the segment and went"
         );
+    }
+
+    #[test]
+    fn a_segment_file_left_by_a_stopped_seal_is_not_in_the_way() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        log.append(&claim("first", "2026-09-05T12:00:00Z")).unwrap();
+        let sealing = under_open(&dir, "first.sealing");
+        fs::rename(under_open(&dir, "first"), &sealing).unwrap();
+        // Stopped after step 2, twice: each try left its file.
+        assert!(write_segment_file(&sealing, "left behind\n").unwrap());
+        assert!(write_segment_file(&sealing, "left behind\n").unwrap());
+
+        assert_eq!(log.writable().unwrap(), Writable::SealFinished);
+
+        let segments = log.segments().unwrap();
+        assert_eq!(segments.len(), 1);
+        let left: Vec<String> = fs::read_dir(under_open(&dir, segments[0].digest().as_str()))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["tmp"], "the segment files went with step 5");
     }
 
     #[test]

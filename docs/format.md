@@ -252,7 +252,7 @@ several writers, on several machines, can seal without a lock:
 2. The segment is built from the bundles found in `<S>.sealing/`: the
    header line naming `S` as `previous`, then every line of every bundle,
    sorted by `time` and then by the line itself. Its bytes are written
-   into the directory as `segment-<pid>-<n>.seg`.
+   into the directory as `segment-<id>.seg`, with a random id.
 3. `<S>.sealing/` is renamed to `<S>.sealed-<S'>/`, `S'` being the
    digest of that segment. Only one rename wins, so one segment is
    decided.
