@@ -23,6 +23,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   seal had stopped before its segment was stored, the audit named that segment as missing and
   pointed to `ossuary-fix chain`, although nothing was lost and the next command that writes
   finishes the seal. The audit also skipped the claims of that open segment; it reads them now
+- **`ossuary seal` and `ossuary sync` next to another program that writes.** Every program that
+  writes seals the open segment when it is full. When one did so at the moment `ossuary seal` was
+  about to, the command said there was nothing to seal and printed no id, and `ossuary sync`
+  stopped with "the archive holds no claims yet". Both now take the seal the other program made,
+  or seal what was written after it
 
 ## [0.20.3] - 2026-11-10
 

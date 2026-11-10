@@ -149,6 +149,18 @@ pub enum Error {
     )]
     TwoOpen(std::path::PathBuf),
 
+    /// The open segment still held claims after every try to seal it:
+    /// each time another writer had sealed first and more was appended,
+    /// or the directory could not be renamed.
+    #[error(
+        "{}: the open segment was not sealed in {tries} tries, because other programs sealed it first each time; run the command again",
+        .root.display()
+    )]
+    SealContended {
+        root: std::path::PathBuf,
+        tries: usize,
+    },
+
     /// A seal was decided, named by its directory, and the segment file
     /// that holds its bytes is not there to store: the decision cannot be
     /// carried out.

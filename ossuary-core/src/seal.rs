@@ -32,9 +32,11 @@ pub struct Seal {
     /// no claims and named this segment alone: nothing was recorded
     /// since it was sealed, and the seal is the same as then.
     pub sealed_now: bool,
-    /// Sealed segments the seal covers, itself included.
+    /// Sealed segments the seal covers, itself included, as the log was
+    /// read before the seal. What another program wrote in between is
+    /// covered and not counted.
     pub segments: usize,
-    /// Claims in those segments.
+    /// Claims in those segments, counted at the same moment.
     pub claims: usize,
 }
 
@@ -52,20 +54,32 @@ pub enum Sealing {
     Refused(Box<LogAudit>),
 }
 
+/// How often [`seal`] reads the open segment again after another writer
+/// sealed it first, before it gives up. One round is the ordinary case,
+/// and a second writer costs one more.
+const SEAL_TRIES: usize = 10;
+
 /// Seal the archive: read the log whole, refuse if it is not whole, seal
 /// the open head when it holds claims, and name the segment that covers
 /// the record.
 ///
 /// With `dry_run` nothing is written, and the seal is the one the call
-/// would make: the open head's bytes go into the store verbatim when it
-/// is sealed, so its digest is known beforehand.
+/// would make: a segment is built from the bundles of the open segment
+/// in one way only, so its digest is known beforehand.
+///
+/// Other programs may write to the archive meanwhile, and every writer
+/// seals the open segment when it is full. When one of them seals
+/// between the reading here and the seal, this call seals nothing and
+/// reads the open segment again: the seal is then the segment the other
+/// writer made, or the one made here from what was appended after it.
 ///
 /// # Errors
 ///
 /// Everything [`audit_log`], [`Log::writable`](crate::Log::writable) and
-/// [`Log::seal`](crate::Log::seal) can answer, and everything
+/// [`Log::seal`](crate::Log::seal) can answer, everything
 /// [`Log::seal_preview`](crate::Log::seal_preview) can answer for a dry
-/// run.
+/// run, and [`Error::SealContended`] when the open segment still holds
+/// claims after ten tries to seal it.
 pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
     let log = archive.log();
     let report = audit_log(log)?;
@@ -77,25 +91,30 @@ pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
         // this one; a caller that wants to say so asks `writable` first.
         let _ = log.writable()?;
     }
-    let head = log.head_contents()?;
-    let sealed_now = !head.claims().is_empty();
-    let segment = if !sealed_now {
-        match head.previous() {
-            Some(last) => last.clone(),
-            None => return Ok(Sealing::Empty),
+    let mut tries = 0;
+    let (segment, sealed_now) = loop {
+        let head = log.head_contents()?;
+        if head.claims().is_empty() {
+            match head.previous() {
+                Some(last) => break (last.clone(), false),
+                None => return Ok(Sealing::Empty),
+            }
         }
-    } else if dry_run {
-        // The open segment was read a moment ago and had something to seal.
-        let Some(digest) = log.seal_preview()? else {
-            return Ok(Sealing::Empty);
-        };
-        digest
-    } else {
-        match log.seal()? {
-            Some(segment) => segment.digest().clone(),
-            // The head was read a moment ago and had something to seal,
-            // and a log has one writer.
-            None => return Ok(Sealing::Empty),
+        // `None` from either: another writer sealed since the reading,
+        // and the next round reads what it left.
+        if dry_run {
+            if let Some(digest) = log.seal_preview()? {
+                break (digest, true);
+            }
+        } else if let Some(segment) = log.seal()? {
+            break (segment.digest().clone(), true);
+        }
+        tries += 1;
+        if tries == SEAL_TRIES {
+            return Err(Error::SealContended {
+                root: archive.root().to_path_buf(),
+                tries,
+            });
         }
     };
     Ok(Sealing::Sealed(Seal {
@@ -468,6 +487,27 @@ mod tests {
         )]
         permissions.set_readonly(false);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[test]
+    fn a_seal_that_never_happens_is_an_error_and_not_an_empty_archive() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"one", "2026-10-26T12:00:00Z");
+        // Stands in for a writer that seals first on every try: a
+        // directory under the name the rename of step 1 wants, so that
+        // Log::seal answers that it sealed nothing while the open
+        // segment still holds the claim.
+        let taken = archive.root().join("open").join("first.sealing");
+        fs::create_dir_all(taken.join("tmp")).unwrap();
+
+        let outcome = seal(&archive, false);
+
+        assert!(matches!(
+            outcome,
+            Err(Error::SealContended { tries: 10, .. })
+        ));
+        assert_eq!(archive.log().head().unwrap().len(), 1, "nothing was lost");
     }
 
     fn sealed(sealing: Sealing) -> Seal {
