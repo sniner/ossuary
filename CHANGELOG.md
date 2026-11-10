@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ossuary mailvault fetch --full` could lose track of a message it still had to fetch.** A
+  message the IMAP server refuses is put on the folder's list of messages still to fetch. `--full`
+  emptied that list when it started. When it was then interrupted before it reached the message,
+  no later run asked for the message again, and nothing reported it. `--full` now keeps the list
+  and fetches those messages first
+
 ## [0.21.0] - 2026-11-10
 
 ### Added

@@ -655,9 +655,11 @@ impl Fetch<'_> {
         let whole = self.options.full || self.options.compare;
         let resume = self.memo.imap_resume(place.account, place.folder)?;
         // The pending list holds UIDs of the promise the point was saved
-        // under, and a fetch that does not carry on from the point asks
-        // for them anyway.
-        let resumed = !whole && resume.is_some_and(|point| point.uidvalidity == opened.uidvalidity);
+        // under, and is valid as long as that promise is. A fetch of the
+        // whole folder keeps it too: the point stays where it is, and
+        // when the fetch stops short, the list is all that names the
+        // UIDs below the point that are still missing.
+        let pending_valid = resume.is_some_and(|point| point.uidvalidity == opened.uidvalidity);
         let (above, mut how) = carry_on(resume, opened.uidvalidity, whole);
         if self.options.compare && !self.options.full {
             how = "full fetch (--compare)".to_string();
@@ -669,7 +671,7 @@ impl Fetch<'_> {
                 return Ok(());
             }
         };
-        let pending: Vec<Pending<()>> = if resumed {
+        let pending: Vec<Pending<()>> = if pending_valid {
             self.memo.pending(place.account, place.folder)?
         } else {
             Vec::new()
@@ -724,7 +726,7 @@ impl Fetch<'_> {
             mailbox,
             &uids,
             opened.uidvalidity,
-            resumed,
+            pending_valid,
             above,
             attempts,
             identified,
@@ -1063,7 +1065,9 @@ impl Fetch<'_> {
 
     /// The fetch of a folder once it is decided what to ask for: `uids`
     /// above the point `above`, and the pending UIDs in `attempts` with
-    /// the runs that failed them.
+    /// the runs that failed them. Without `pending_valid` the folder's
+    /// pending list is of another UIDVALIDITY, or of none, and is emptied
+    /// first.
     #[allow(
         clippy::too_many_arguments,
         reason = "the parts of one decision, made by two callers"
@@ -1074,7 +1078,7 @@ impl Fetch<'_> {
         mailbox: &mut impl Mailbox,
         uids: &[u32],
         uidvalidity: u32,
-        resumed: bool,
+        pending_valid: bool,
         above: u32,
         attempts: HashMap<u32, u32>,
         identified: Identified,
@@ -1098,7 +1102,7 @@ impl Fetch<'_> {
             gone: 0,
             progress: self.say.progress(),
         };
-        self.imap_walk(place, mailbox, resumed, above, &mut walk, tally)?;
+        self.imap_walk(place, mailbox, pending_valid, above, &mut walk, tally)?;
         if walk.gone > 0 {
             self.say.line(format_args!(
                 "{name}: {} no longer in the folder, skipped",
@@ -1122,7 +1126,7 @@ impl Fetch<'_> {
         &self,
         place: &Place<'_>,
         mailbox: &mut impl Mailbox,
-        resumed: bool,
+        pending_valid: bool,
         above: u32,
         walk: &mut Walk<'_>,
         tally: &mut Tally,
@@ -1138,7 +1142,7 @@ impl Fetch<'_> {
             .filter(|uid| !walk.pending.contains_key(uid) && !walk.identified.settles(*uid))
             .collect();
         self.memo.begin()?;
-        if !resumed {
+        if !pending_valid {
             self.memo.clear_pending(place.account, place.folder)?;
         }
         // A message whose Proton id is on record gets its place without a
@@ -2593,6 +2597,45 @@ mod tests {
             imap_pending(&bench).is_empty(),
             "UID 5 meant another message there"
         );
+    }
+
+    #[test]
+    fn a_full_fetch_stopped_short_keeps_the_pending_list() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(3);
+        fetch(&bench, &mut inbox, false, false);
+        assert_eq!(point(&bench), Some(at(7, 9)));
+
+        // The connection drops before the full fetch reaches UID 3. The
+        // point is still at 9, so only the list names UID 3 as missing.
+        inbox.refused.clear();
+        inbox.give_up_after = Some(0);
+        let full = fetch(&bench, &mut inbox, true, false);
+        assert_eq!(full.failed.len(), 1);
+        assert_eq!(imap_pending(&bench), [("3".to_string(), 1)]);
+
+        inbox.give_up_after = None;
+        let next = fetch(&bench, &mut inbox, false, false);
+        assert_eq!(next.stored, 1, "the pending one");
+        assert!(imap_pending(&bench).is_empty());
+    }
+
+    #[test]
+    fn a_full_fetch_asks_for_the_pending_messages_first_and_takes_them_off() {
+        let bench = bench();
+        let mut inbox = mailbox(7, &[3, 5, 9]);
+        inbox.refused.insert(3);
+        fetch(&bench, &mut inbox, false, false);
+
+        inbox.refused.clear();
+        inbox.fetched.clear();
+        let full = fetch(&bench, &mut inbox, true, false);
+
+        assert_eq!(inbox.fetched, [3, 5, 9]);
+        assert_eq!((full.stored, full.known), (1, 2));
+        assert!(imap_pending(&bench).is_empty());
+        assert_eq!(point(&bench), Some(at(7, 9)));
     }
 
     #[test]
