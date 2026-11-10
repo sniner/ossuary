@@ -24,6 +24,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to fix them. This is not a finding and does not change the exit code. `--json` prints them as
   `{"observation":"undescribed"}` with the missing attributes in `lacks`
 
+### Changed
+
+- **Appending no longer lists the open segment each time.** Every append listed the directory of
+  the open segment to see whether it was due to be sealed, which on a network share is most of
+  what an append costs. A program now lists it once, with its first append, and counts its own
+  appends from there. With several programs writing at once, each counts for itself, so the open
+  segment can grow beyond 1000 appends before one of them seals it
+
 ### Fixed
 
 - **A seal that was interrupted could block every later write.** The seal left a file behind whose

@@ -8,10 +8,11 @@
 //! by time and then by the line itself, and the directory becomes the next
 //! open segment. A sealed segment is never compacted, combined or rewritten:
 //! superseded and retracted claims stay where they were written, which for
-//! an archive is not a limitation but the point. An append that finds
-//! [`SEAL_AT`] bundles or more, or that has itself appended
-//! [`SEAL_AT_BYTES`] since the last seal it saw, seals first; sealing by
-//! hand remains for closing the segment on demand.
+//! an archive is not a limitation but the point. An append seals first
+//! when the open segment holds [`SEAL_AT`] bundles by the count of the
+//! appending process, or when that process has itself appended
+//! [`SEAL_AT_BYTES`]; sealing by hand remains for closing the segment on
+//! demand.
 //!
 //! Segments hang together. The directory's name is the segment sealed
 //! last, `open/<S>`, and the segment sealed from it names S in its header
@@ -97,16 +98,22 @@ use crate::error::{Error, Result};
 /// refused as [`Error::SegmentGeneration`] rather than guessed at.
 pub const GENERATION: u32 = 1;
 
-/// The open segment is sealed by the first append that finds this many
-/// bundles in it or more.
+/// The open segment is sealed by an append once it holds this many
+/// bundles by the count of the appending process.
 ///
 /// A bundle is one append: a file's claims from an ingest, a message's
 /// from a fetch, an extractor's findings. A thousand of them is about the
-/// size of segment the concept asks for, and a listing of a thousand
-/// names is what every append pays to know. When to seal is the
-/// software's business (`docs/format.md` says so in words), so this is a
-/// constant, not a knob; [`seal`](Log::seal) stays alongside as the
-/// on-demand grip.
+/// size of segment the concept asks for.
+///
+/// The count is the process's own. It lists the directory once, with
+/// its first append there, and adds what it appends itself; a listing of
+/// a thousand names for every append is most of what an append costs on
+/// a network share. Bundles that other writers add meanwhile are not
+/// seen, so with several writers the open segment can reach writers
+/// times this before one of them seals. Nothing depends on the number:
+/// when to seal is the software's business (`docs/format.md` says so in
+/// words), which is also why this is a constant, not a knob;
+/// [`seal`](Log::seal) stays alongside for sealing on demand.
 pub const SEAL_AT: usize = 1000;
 
 /// The open segment is sealed by an append once the appends of this
@@ -381,15 +388,19 @@ enum Found {
 pub struct Log {
     store: Store,
     root: PathBuf,
-    written: Mutex<Written>,
+    written: Mutex<Option<Written>>,
 }
 
-/// What this process appended to one open segment directory: the bytes
-/// behind [`SEAL_AT_BYTES`]. A different directory, after a seal, starts
-/// the count anew.
-#[derive(Debug, Default)]
+/// What this process knows of the open segment it appends to, so that an
+/// append neither looks for the directory nor lists it: where it is, how
+/// many bundles it held when the process first appended there plus those
+/// the process added, and the bytes the process added. Forgotten when a
+/// seal was asked for or the directory turns out to be gone, and learned
+/// again by the next append.
+#[derive(Debug)]
 struct Written {
     dir: PathBuf,
+    bundles: usize,
     bytes: u64,
 }
 
@@ -499,12 +510,17 @@ impl Log {
     /// returns. Each call costs one file, so a caller with many claims
     /// passes them together.
     ///
-    /// An open segment at [`SEAL_AT`] bundles or more, or one this
-    /// process has appended [`SEAL_AT_BYTES`] to, is sealed before
-    /// anything is written, so no writer needs a sealing policy of its
-    /// own. The order is what makes an error mean what it says: a seal
-    /// that fails leaves the claims unwritten, and the caller can treat
-    /// them as not recorded.
+    /// An open segment at [`SEAL_AT`] bundles or more by this process's
+    /// count, or one this process has appended [`SEAL_AT_BYTES`] to, is
+    /// sealed before anything is written, so no writer needs a sealing
+    /// policy of its own. The order is what makes an error mean what it
+    /// says: a seal that fails leaves the claims unwritten, and the
+    /// caller can treat them as not recorded.
+    ///
+    /// The first append of a process looks for the open segment and
+    /// lists it; the ones after it write into the same directory without
+    /// either, until the directory is gone, which is how an append
+    /// learns that the segment was sealed.
     ///
     /// # Errors
     ///
@@ -522,53 +538,81 @@ impl Log {
             text.push('\n');
         }
         loop {
-            let dir = self.open_dir_to_write()?;
-            let bundles = self.bundle_store(&dir);
-            let count = match bundles.entries().count_entries() {
-                Ok(count) => count,
-                Err(immure::Error::RootMissing(_)) => continue,
-                Err(error) => return Err(error.into()),
+            let (dir, bundles, bytes) = if let Some(known) = self.known() {
+                known
+            } else {
+                let dir = self.open_dir_to_write()?;
+                let bundles = match self.bundle_store(&dir).entries().count_entries() {
+                    Ok(count) => count,
+                    Err(immure::Error::RootMissing(_)) => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                self.learn(&dir, bundles);
+                (dir, bundles, 0)
             };
-            if count >= SEAL_AT || self.written_to(&dir) >= SEAL_AT_BYTES {
+            if bundles >= SEAL_AT || bytes >= SEAL_AT_BYTES {
                 self.seal()?;
                 self.forget_written();
                 continue;
             }
-            match bundles.add(text.as_bytes()) {
+            match self.bundle_store(&dir).add(text.as_bytes()) {
                 Ok(_) => {
-                    self.note_written(&dir, text.len() as u64);
+                    self.note_written(text.len() as u64);
                     return Ok(());
                 }
-                // Sealed since the count; the next round writes to the
-                // new open segment.
-                Err(immure::Error::RootMissing(_)) => {}
+                // Sealed since this process looked, by itself or by
+                // another; the next round finds the new open segment.
+                Err(immure::Error::RootMissing(_)) => self.forget_written(),
                 Err(error) => return Err(error.into()),
             }
         }
     }
 
-    /// What this process has appended to `dir`; nothing, when its last
-    /// append went elsewhere.
-    fn written_to(&self, dir: &Path) -> u64 {
+    /// The open segment this process appends to, as far as it knows: the
+    /// directory, its count of bundles, and the bytes it added.
+    fn known(&self) -> Option<(PathBuf, usize, u64)> {
         let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
-        if written.dir == dir { written.bytes } else { 0 }
+        written
+            .as_ref()
+            .map(|written| (written.dir.clone(), written.bundles, written.bytes))
     }
 
-    fn note_written(&self, dir: &Path, bytes: u64) {
+    /// Begin counting for `dir`, which a listing showed to hold `bundles`.
+    fn learn(&self, dir: &Path, bundles: usize) {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
-        if written.dir != dir {
-            written.dir = dir.to_path_buf();
-            written.bytes = 0;
-        }
-        written.bytes += bytes;
+        *written = Some(Written {
+            dir: dir.to_path_buf(),
+            bundles,
+            bytes: 0,
+        });
     }
 
-    /// After a seal this process asked for, whatever came of it: the
-    /// count starts anew, so a seal that was not needed is not asked for
-    /// again at once.
+    /// One more bundle of `bytes` in the directory counted for.
+    fn note_written(&self, bytes: u64) {
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(written) = written.as_mut() {
+            written.bundles += 1;
+            written.bytes += bytes;
+        }
+    }
+
+    /// After a seal this process asked for, whatever came of it, and
+    /// after the directory was found gone: the next append looks for the
+    /// open segment and lists it again. A seal that was not needed is
+    /// thereby not asked for again at once.
     fn forget_written(&self) {
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
-        *written = Written::default();
+        *written = None;
+    }
+
+    /// The bytes this process has appended to `dir`; nothing, when it
+    /// does not count for that directory.
+    #[cfg(test)]
+    fn written_to(&self, dir: &Path) -> u64 {
+        match self.known() {
+            Some((known, _, bytes)) if known == dir => bytes,
+            _ => 0,
+        }
     }
 
     /// The claims of the open segment, in the order a seal would give
@@ -1839,6 +1883,62 @@ mod tests {
     }
 
     #[test]
+    fn a_writer_counts_what_it_found_at_its_first_append_and_what_it_added() {
+        let dir = TempDir::new().unwrap();
+        let first = log_in(&dir);
+        for n in 0..600 {
+            first
+                .append(&claim(&format!("first{n}"), "2026-09-05T12:00:00Z"))
+                .unwrap();
+        }
+        // Another process: it lists the 600 with its first append.
+        let second = Log::new(store_in(&dir), dir.path());
+        for n in 0..400 {
+            second
+                .append(&claim(&format!("second{n}"), "2026-09-05T12:00:00Z"))
+                .unwrap();
+        }
+        assert_eq!(second.known().map(|known| known.1), Some(SEAL_AT));
+        assert_eq!(first.segments().unwrap().len(), 0);
+
+        // The first writer has not seen the 400 and does not seal.
+        first
+            .append(&claim("unaware", "2026-09-05T12:00:01Z"))
+            .unwrap();
+        assert_eq!(first.segments().unwrap().len(), 0);
+        assert_eq!(first.known().map(|known| known.1), Some(601));
+
+        second
+            .append(&claim("one more", "2026-09-05T12:00:02Z"))
+            .unwrap();
+
+        let segments = second.segments().unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(second.read(segments[0].digest()).unwrap().len(), 1001);
+        assert_eq!(second.head().unwrap().len(), 1, "the one more");
+    }
+
+    #[test]
+    fn an_append_finds_the_open_segment_again_after_another_writer_sealed() {
+        let dir = TempDir::new().unwrap();
+        let ours = log_in(&dir);
+        ours.append(&claim("before", "2026-09-05T12:00:00Z"))
+            .unwrap();
+        let theirs = Log::new(store_in(&dir), dir.path());
+        let sealed = theirs.seal().unwrap().unwrap();
+
+        // `ours` still has the directory under its old name.
+        ours.append(&claim("after", "2026-09-05T12:00:01Z"))
+            .unwrap();
+
+        let open = ours.head_contents().unwrap();
+        assert_eq!(open.previous(), Some(sealed.digest()));
+        assert_eq!(open.claims().len(), 1);
+        assert_eq!(open.claims()[0].value(), Some(&json!("after")));
+        assert_eq!(ours.known().map(|known| known.1), Some(1));
+    }
+
+    #[test]
     fn an_append_that_has_itself_written_a_mebibyte_seals_first() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
@@ -2182,8 +2282,12 @@ mod tests {
 
         assert!(matches!(log.open(), Err(Error::TwoOpen(_))));
         assert!(matches!(log.seal(), Err(Error::TwoOpen(_))));
+        // A writer that starts now looks for the open segment and is
+        // refused. One that appended before knows its directory and does
+        // not look again until it has to seal, which is refused too.
+        let starting = Log::new(store_in(&dir), dir.path());
         assert!(matches!(
-            log.append(&claim("x", "2026-09-05T12:00:00Z")),
+            starting.append(&claim("x", "2026-09-05T12:00:00Z")),
             Err(Error::TwoOpen(_))
         ));
     }
