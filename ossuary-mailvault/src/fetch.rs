@@ -58,7 +58,6 @@
 //! a folder that will not open are named in the tally, and the run
 //! goes on to the next. The archive or the memo refusing ends the run.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 
@@ -76,7 +75,7 @@ use crate::memo::{ImapResume, Memo, Pending};
 use crate::output::{Progress, Say, counted};
 use crate::place;
 use crate::proton;
-use crate::remote::{Each, Flavour, Got, Mailbox, Remote, Stop};
+use crate::remote::{Each, Flavour, Folder, Got, Mailbox, Remote, Stop};
 use crate::tally::Tally;
 
 pub struct Options {
@@ -89,15 +88,17 @@ pub struct Options {
     pub dry_run: bool,
 }
 
+/// Under `--compare`, the messages a round stored, by server id as the
+/// memo has it, with their subjects: what decides whether another round
+/// is needed.
+type Stored = Vec<(String, String)>;
+
 /// One folder of one account: the pair the memo is keyed by, and its
 /// name as the record and every line about it have it.
 struct Place<'a> {
     account: &'a str,
     folder: &'a str,
     name: String,
-    /// For a Proton Mail Bridge label folder, the label its messages
-    /// are tagged with. Such a folder is never their place.
-    label: Option<&'a str>,
 }
 
 impl<'a> Place<'a> {
@@ -106,17 +107,15 @@ impl<'a> Place<'a> {
             account,
             folder,
             name: place::folder(account, folder),
-            label: None,
-        }
-    }
-
-    fn labelled(account: &'a str, folder: &'a str, label: &'a str) -> Self {
-        Self {
-            label: Some(label),
-            ..Self::new(account, folder)
         }
     }
 }
+
+/// Under `--full`, the Proton ids that the configured folders of one
+/// account listed: the messages still in the mailbox. The full listing
+/// makes them at no extra cost; a label is taken back only from one of
+/// these.
+type InMailbox = HashSet<String>;
 
 /// What a pass over a folder's pending list came to.
 #[derive(Default)]
@@ -125,6 +124,8 @@ struct Landed {
     left: usize,
     /// Taken off because the server no longer has them.
     gone: usize,
+    /// Under `--compare`, the messages the pass stored.
+    stored: Stored,
 }
 
 /// What the Proton ids settled before a folder downloads anything.
@@ -167,6 +168,8 @@ struct Walk<'a> {
     total: usize,
     refused_in_a_row: usize,
     gone: usize,
+    /// Under `--compare`, the messages the pass stored.
+    stored: Stored,
     progress: Progress,
 }
 
@@ -225,16 +228,12 @@ pub fn run(
         place: Attribute::parse(place::ATTRIBUTE)?,
         tag: Attribute::parse(place::TAG)?,
         id: Attribute::parse(proton::ATTRIBUTE)?,
-        record: RefCell::new(None),
-        landed: RefCell::new(Vec::new()),
-        said: RefCell::new(HashMap::new()),
-        in_mailbox: RefCell::new(HashSet::new()),
         say,
     };
-    let mut tally = Tally::new("fetch");
+    let mut state = State::new();
     for account in accounts {
-        if let Err(error) = fetch.account(account, &mut tally)? {
-            tally.failed.push(format!("{error:#}"));
+        if let Err(error) = fetch.account(account, &mut state)? {
+            state.tally.failed.push(format!("{error:#}"));
         }
     }
     // The pending lists of this run are mostly deleted again by now;
@@ -248,7 +247,7 @@ pub fn run(
                 crate::memo::FILE_NAME
             ));
     }
-    Ok(tally)
+    Ok(state.tally)
 }
 
 /// The line that opens an account: how many folders it fetches, and
@@ -295,37 +294,155 @@ struct Fetch<'a> {
     tag: Attribute,
     /// The id a mailbox gives a message, where it gives one that lasts.
     id: Attribute,
-    /// The record as it stood when the current folder was reached, with
+    say: Say,
+}
+
+/// What changes while a fetch runs: the count, and what the run knows of
+/// the record. Handed from step to step; the [`Fetch`] itself is the
+/// same for the whole run.
+struct State {
+    tally: Tally,
+    standing: Standing,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            tally: Tally::new("fetch"),
+            standing: Standing::default(),
+        }
+    }
+}
+
+/// What stands on the record, as far as the run reads it.
+#[derive(Default)]
+struct Standing {
+    /// The index as it stood when the current folder was reached, with
     /// what the folders before it wrote: `None` until the first folder
     /// that needs it (see [`refresh`](Self::refresh)). No question asked
     /// of it within a folder depends on what that folder writes.
-    record: RefCell<Option<Index>>,
-    /// Under `--compare`, the messages stored in the current round, by
-    /// server id as the memo has it, with their subjects: what decides
-    /// whether another round is needed.
-    landed: RefCell<Vec<(String, String)>>,
+    index: Option<Index>,
     /// The tag assertions this run wrote: by subject, each tag with the
     /// ids its claims got. A retraction later in the run has to name
-    /// them as well, since the record only catches up between folders.
-    said: RefCell<HashMap<String, BTreeMap<String, Vec<ClaimId>>>>,
-    /// Under `--full`, the Proton ids the current account's configured
-    /// folders listed: the messages still in the mailbox. The full
-    /// listing makes them at no extra cost; a label is taken back only
-    /// from one of these.
-    in_mailbox: RefCell<HashSet<String>>,
-    say: Say,
+    /// them as well, since the index only catches up between folders.
+    said: HashMap<String, BTreeMap<String, Vec<ClaimId>>>,
+}
+
+impl Standing {
+    /// Bring the index up to date before a folder that reads it; it then
+    /// holds the claims of the folders before this one. The first call
+    /// builds it from the log, a later fold reads only the segments sealed
+    /// since and what was appended to the open head.
+    fn refresh(&mut self, archive: &Archive, say: Say) -> Result<()> {
+        match self.index.as_mut() {
+            Some(index) => {
+                index.fold(archive.log())?;
+            }
+            None => self.index = Some(caught_up(archive, say)?),
+        }
+        Ok(())
+    }
+
+    /// The index, for a step that cannot do without it.
+    ///
+    /// # Panics
+    ///
+    /// When [`refresh`](Self::refresh) has not run. Every folder of a
+    /// Proton account, every Graph folder and every folder under
+    /// `--compare` runs it before anything else.
+    fn index(&self) -> &Index {
+        self.index
+            .as_ref()
+            .expect("the folder refreshed the index when it was opened")
+    }
+
+    /// Note the tag assertions among the claims a message was recorded
+    /// with.
+    fn wrote(&mut self, tag: &Attribute, claims: &[Claim]) {
+        for claim in claims {
+            if claim.attribute() != tag {
+                continue;
+            }
+            let Some((Value::String(value), id)) = claim.value().zip(claim.id()) else {
+                continue;
+            };
+            self.said
+                .entry(claim.subject().as_str().to_string())
+                .or_default()
+                .entry(value.clone())
+                .or_default()
+                .push(id.clone());
+        }
+    }
+
+    /// The tags standing on `subject` that are not among `current`, each
+    /// with the ids of the claims that put it there: the index's claims,
+    /// and the ones this run wrote since the index last caught up.
+    /// Without an index, only the latter.
+    fn gone(
+        &self,
+        subject: &Subject,
+        tag: &Attribute,
+        current: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, Vec<ClaimId>>> {
+        let mut gone: BTreeMap<String, Vec<ClaimId>> = BTreeMap::new();
+        if let Some(index) = &self.index {
+            for value in index.values(subject, tag, Scope::Held)? {
+                let Value::String(name) = &value else {
+                    continue;
+                };
+                if !current.contains(name) {
+                    gone.entry(name.clone())
+                        .or_default()
+                        .extend(index.standing_ids(subject, tag, Some(&value))?);
+                }
+            }
+        }
+        if let Some(said) = self.said.get(subject.as_str()) {
+            for (name, ids) in said {
+                if !current.contains(name) {
+                    gone.entry(name.clone())
+                        .or_default()
+                        .extend(ids.iter().cloned());
+                }
+            }
+        }
+        for ids in gone.values_mut() {
+            ids.sort();
+            ids.dedup();
+        }
+        Ok(gone)
+    }
+
+    /// The ids of the claims that put the tag `name` on `subject`, from
+    /// the index and from this run.
+    fn ids_of(&self, subject: &Subject, tag: &Attribute, name: &str) -> Result<Vec<ClaimId>> {
+        let mut ids = self
+            .index()
+            .standing_ids(subject, tag, Some(&json!(name)))?;
+        if let Some(said) = self
+            .said
+            .get(subject.as_str())
+            .and_then(|tags| tags.get(name))
+        {
+            ids.extend(said.iter().cloned());
+        }
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
 }
 
 impl Fetch<'_> {
     /// One account. The outer `Result` is the archive's trouble, which
     /// ends the run; the inner is this account's, which ends only the
     /// account.
-    fn account(&self, account: &Account, tally: &mut Tally) -> Result<Result<()>> {
+    fn account(&self, account: &Account, state: &mut State) -> Result<Result<()>> {
         // Everything that can say no before the first byte is fetched
         // says it here: the commanded keys, the login, the folder list.
         match account.reach() {
-            Ok(Reach::Imap(imap)) => self.imap_account(account, &imap, tally),
-            Ok(Reach::Graph(graph)) => self.graph_account(account, &graph, tally),
+            Ok(Reach::Imap(imap)) => self.imap_account(account, &imap, state),
+            Ok(Reach::Graph(graph)) => self.graph_account(account, &graph, state),
             Err(error) => Ok(Err(error)),
         }
     }
@@ -344,7 +461,7 @@ impl Fetch<'_> {
         bytes: &[u8],
         tags: Option<&[String]>,
         id: Option<&str>,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<Subject> {
         let admitted = admit(self.archive.content(), bytes)?;
         let mut facts = vec![(self.place.clone(), json!(place.name))];
@@ -359,37 +476,22 @@ impl Fetch<'_> {
             &admitted,
             &Sighting {
                 source: &self.source,
-                run: &tally.run,
+                run: &state.tally.run,
                 mime: Some(crate::MESSAGE),
                 facts: &facts,
                 tags: &[],
                 time: None,
             },
         )?;
-        tally.claims += written.len();
-        {
-            let mut said = self.said.borrow_mut();
-            for claim in written {
-                if claim.attribute() != &self.tag {
-                    continue;
-                }
-                let Some((Value::String(tag), id)) = claim.value().zip(claim.id()) else {
-                    continue;
-                };
-                said.entry(claim.subject().as_str().to_string())
-                    .or_default()
-                    .entry(tag.clone())
-                    .or_default()
-                    .push(id.clone());
-            }
-        }
+        state.tally.claims += written.len();
+        state.standing.wrote(&self.tag, &written);
         if admitted.is_new() {
-            tally.stored += 1;
+            state.tally.stored += 1;
         } else {
-            tally.known += 1;
+            state.tally.known += 1;
         }
         if let Some(tags) = tags {
-            self.take_back(admitted.subject(), tags, tally)?;
+            self.take_back(admitted.subject(), tags, &state.standing, &mut state.tally)?;
         }
         Ok(admitted.subject().clone())
     }
@@ -421,15 +523,19 @@ impl Fetch<'_> {
     }
 
     /// Under `--compare`, note which subject the message fetched under
-    /// the server's `id` turned out to be: for the next round of this
-    /// run, and in the memo for later runs.
-    fn note(&self, place: &Place<'_>, id: &str, subject: &Subject) -> Result<()> {
+    /// the server's `id` turned out to be: in `stored` for the next
+    /// round of this run, and in the memo for later runs.
+    fn note(
+        &self,
+        place: &Place<'_>,
+        id: &str,
+        subject: &Subject,
+        stored: &mut Stored,
+    ) -> Result<()> {
         if self.options.compare {
             self.memo
                 .add_compared(place.account, place.folder, id, subject.as_str())?;
-            self.landed
-                .borrow_mut()
-                .push((id.to_string(), subject.as_str().to_string()));
+            stored.push((id.to_string(), subject.as_str().to_string()));
         }
         Ok(())
     }
@@ -438,38 +544,18 @@ impl Fetch<'_> {
     /// any more are taken back, one retraction each — under this
     /// fetcher's source, in this run. What stood is what the record
     /// held when the folder was reached.
-    fn take_back(&self, subject: &Subject, tags: &[String], tally: &mut Tally) -> Result<()> {
+    fn take_back(
+        &self,
+        subject: &Subject,
+        tags: &[String],
+        standing: &Standing,
+        tally: &mut Tally,
+    ) -> Result<()> {
         let current: BTreeSet<String> = tags.iter().cloned().collect();
-        // What stood, with the ids of the claims that put it there: a
-        // retraction names them. The record's claims, and the ones this
-        // run said since the record last caught up.
-        let mut gone: BTreeMap<String, Vec<ClaimId>> = BTreeMap::new();
-        if let Some(record) = self.record.borrow().as_ref() {
-            for value in record.values(subject, &self.tag, Scope::Held)? {
-                let Value::String(tag) = &value else {
-                    continue;
-                };
-                if !current.contains(tag) {
-                    gone.entry(tag.clone())
-                        .or_default()
-                        .extend(record.standing_ids(subject, &self.tag, Some(&value))?);
-                }
-            }
-        }
-        if let Some(said) = self.said.borrow().get(subject.as_str()) {
-            for (tag, ids) in said {
-                if !current.contains(tag) {
-                    gone.entry(tag.clone())
-                        .or_default()
-                        .extend(ids.iter().cloned());
-                }
-            }
-        }
         let time = Timestamp::now();
         let mut claims = Vec::new();
-        for (_, mut ids) in gone {
-            ids.sort();
-            ids.dedup();
+        // A retraction names the claims that put the tag there.
+        for ids in standing.gone(subject, &self.tag, &current)?.into_values() {
             claims.push(Claim::retract(
                 subject.clone(),
                 self.tag.clone(),
@@ -485,26 +571,11 @@ impl Fetch<'_> {
         Ok(())
     }
 
-    /// Bring the record up to date before a folder that reads it; it then
-    /// holds the claims of the folders before this one. The first call
-    /// builds it from the log, a later fold reads only the segments sealed
-    /// since and what was appended to the open head.
-    fn refresh(&self) -> Result<()> {
-        let mut record = self.record.borrow_mut();
-        match record.as_mut() {
-            Some(index) => {
-                index.fold(self.archive.log())?;
-            }
-            None => *record = Some(caught_up(self.archive, self.say)?),
-        }
-        Ok(())
-    }
-
     fn imap_account(
         &self,
         account: &Account,
         imap: &config::Imap,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<Result<()>> {
         let password = match imap.password(&account.name) {
             Ok(password) => password,
@@ -526,7 +597,7 @@ impl Fetch<'_> {
         };
         self.say
             .line(format_args!("{}", opening(account, folders.len())));
-        self.imap_folders(account, &mut remote, &folders, tally)?;
+        self.imap_folders(account, &mut remote, &folders, state)?;
         remote.logout();
         Ok(Ok(()))
     }
@@ -538,12 +609,13 @@ impl Fetch<'_> {
         account: &Account,
         mailbox: &mut impl Mailbox,
         folders: &[String],
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<()> {
-        let failed = tally.failed.len();
-        self.in_mailbox.borrow_mut().clear();
+        let failed = state.tally.failed.len();
+        let mut in_mailbox = InMailbox::new();
         for folder in folders {
-            self.folder(account, mailbox, folder, tally)?;
+            let place = Place::new(&account.name, folder);
+            self.read_folder(&place, mailbox, &mut in_mailbox, state)?;
         }
         if mailbox.flavour() == Flavour::Proton
             && let Some(configured) = &account.folders
@@ -552,13 +624,13 @@ impl Fetch<'_> {
             // folders. Read after one of them failed, it would count the
             // messages that folder did not bring as missing; the next run
             // asks about them in any case.
-            if tally.failed.len() > failed {
+            if state.tally.failed.len() > failed {
                 self.say.line(format_args!(
                     "{}: the label folders are left for the next run, because a folder of the account could not be read",
                     account.name
                 ));
             } else {
-                self.proton_labels(account, mailbox, configured, tally)?;
+                self.proton_labels(account, mailbox, configured, &in_mailbox, state)?;
             }
         }
         Ok(())
@@ -574,12 +646,16 @@ impl Fetch<'_> {
         account: &Account,
         mailbox: &mut impl Mailbox,
         configured: &[String],
-        tally: &mut Tally,
+        in_mailbox: &InMailbox,
+        state: &mut State,
     ) -> Result<()> {
         let listed = match mailbox.folders() {
             Ok(listed) => listed,
             Err(error) => {
-                tally.failed.push(format!("{}: {error:#}", account.name));
+                state
+                    .tally
+                    .failed
+                    .push(format!("{}: {error:#}", account.name));
                 return Ok(());
             }
         };
@@ -597,60 +673,62 @@ impl Fetch<'_> {
             counted(labels.len(), "label folder", "label folders")
         ));
         for (folder, label) in labels {
-            self.read_folder(
-                &Place::labelled(&account.name, folder, label),
-                mailbox,
-                tally,
-            )?;
+            let place = Place::new(&account.name, folder);
+            self.label_folder(&place, label, mailbox, in_mailbox, state)?;
         }
         Ok(())
+    }
+
+    /// Open an IMAP folder, and bring the index up to date where the
+    /// folder reads it: Gmail's marks are taken back against it, a
+    /// folder of Proton Mail Bridge asks it for ids and places, and a
+    /// comparison reads the archive's side from it. `None` when the
+    /// folder would not open, which the tally then names.
+    fn open(
+        &self,
+        place: &Place<'_>,
+        mailbox: &mut impl Mailbox,
+        state: &mut State,
+    ) -> Result<Option<Folder>> {
+        let opened = match mailbox.examine(place.folder) {
+            Ok(opened) => opened,
+            Err(error) => {
+                state
+                    .tally
+                    .failed
+                    .push(format!("{}: {error:#}", place.account));
+                return Ok(None);
+            }
+        };
+        if mailbox.flavour() != Flavour::Standard || self.options.compare {
+            state.standing.refresh(self.archive, self.say)?;
+        }
+        Ok(Some(opened))
     }
 
     /// One IMAP folder: from its resume point on, or whole, and what
     /// the last run left on the pending list first. The server's
     /// trouble ends the folder and is named in the tally; the archive's
-    /// or the memo's ends the run.
-    fn folder(
-        &self,
-        account: &Account,
-        mailbox: &mut impl Mailbox,
-        folder: &str,
-        tally: &mut Tally,
-    ) -> Result<()> {
-        self.read_folder(&Place::new(&account.name, folder), mailbox, tally)
-    }
-
-    /// [`folder`](Self::folder), for a folder already made a place.
+    /// or the memo's ends the run. Under `--full` the Proton ids the
+    /// folder lists are added to `in_mailbox`.
     fn read_folder(
         &self,
         place: &Place<'_>,
         mailbox: &mut impl Mailbox,
-        tally: &mut Tally,
+        in_mailbox: &mut InMailbox,
+        state: &mut State,
     ) -> Result<()> {
         let name = &place.name;
-        let opened = match mailbox.examine(place.folder) {
-            Ok(opened) => opened,
-            Err(error) => {
-                tally.failed.push(format!("{}: {error:#}", place.account));
-                return Ok(());
-            }
+        let Some(opened) = self.open(place, mailbox, state)? else {
+            return Ok(());
         };
-        // Gmail's marks are taken back against the record; a Proton
-        // label folder asks it whether a message has a place, and a
-        // comparison reads the archive's side from it.
-        if mailbox.flavour() != Flavour::Standard || self.options.compare {
-            self.refresh()?;
-        }
-        if let Some(label) = place.label {
-            return self.label_folder(place, label, mailbox, opened.uidvalidity, tally);
-        }
         // From Proton Mail Bridge the archive's side is the Proton id,
         // and a comparison by Message-ID is not needed: --compare lists
         // the folder whole like --full, and neither downloads a message
         // whose id is on record.
         let proton = mailbox.flavour() == Flavour::Proton;
         if self.options.compare && !proton {
-            return self.imap_compare(place, mailbox, opened.uidvalidity, tally);
+            return self.imap_compare(place, mailbox, opened.uidvalidity, state);
         }
         let whole = if self.options.full {
             Some("--full")
@@ -670,7 +748,7 @@ impl Fetch<'_> {
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
             Err(error) => {
-                tally.failed.push(format!("{name}: {error:#}"));
+                state.tally.failed.push(format!("{name}: {error:#}"));
                 return Ok(());
             }
         };
@@ -684,10 +762,17 @@ impl Fetch<'_> {
             .filter_map(|message| Some((message.id.parse().ok()?, message.attempts)))
             .collect();
         let identified = if proton {
-            match self.identify(place, mailbox, &uids, &attempts) {
+            match self.identify(
+                place,
+                mailbox,
+                &uids,
+                &attempts,
+                in_mailbox,
+                &state.standing,
+            ) {
                 Ok(identified) => identified?,
                 Err(error) => {
-                    tally.failed.push(format!("{name}: {error:#}"));
+                    state.tally.failed.push(format!("{name}: {error:#}"));
                     return Ok(());
                 }
             }
@@ -720,8 +805,8 @@ impl Fetch<'_> {
             ));
         }
         if self.options.dry_run {
-            tally.would += fresh + attempts.len();
-            tally.identified += identified.known.len();
+            state.tally.would += fresh + attempts.len();
+            state.tally.identified += identified.known.len();
             return Ok(());
         }
         self.imap_fetch(
@@ -733,8 +818,9 @@ impl Fetch<'_> {
             above,
             attempts,
             identified,
-            tally,
-        )
+            state,
+        )?;
+        Ok(())
     }
 
     /// The Proton id of each UID a folder would download, `uids` and the
@@ -749,17 +835,17 @@ impl Fetch<'_> {
         mailbox: &mut impl Mailbox,
         uids: &[u32],
         attempts: &HashMap<u32, u32>,
+        in_mailbox: &mut InMailbox,
+        standing: &Standing,
     ) -> Result<Result<Identified>> {
         let mut asked: Vec<u32> = uids.iter().chain(attempts.keys()).copied().collect();
         asked.sort_unstable();
         asked.dedup();
         let listed = mailbox.header(&asked, proton::HEADER)?;
         if self.options.full {
-            self.in_mailbox
-                .borrow_mut()
-                .extend(listed.iter().filter_map(|(_, value)| proton::id(value)));
+            in_mailbox.extend(listed.iter().filter_map(|(_, value)| proton::id(value)));
         }
-        Ok(self.identified(place, &asked, &listed))
+        Ok(self.identified(place, &asked, &listed, standing))
     }
 
     /// The archive's side of [`identify`](Self::identify), once the
@@ -769,16 +855,9 @@ impl Fetch<'_> {
         place: &Place<'_>,
         asked: &[u32],
         listed: &[(u32, String)],
+        standing: &Standing,
     ) -> Result<Identified> {
-        let borrowed = self.record.borrow();
-        let index = borrowed
-            .as_ref()
-            .expect("a Proton folder catches the record up");
-        let record = proton::Record {
-            index,
-            id: &self.id,
-            place: &self.place,
-        };
+        let record = self.proton_record(standing);
         let sorted = proton::sort(asked, listed, |id| record.holders(id))?;
         let here = json!(place.name);
         let mut known = Vec::with_capacity(sorted.known.len());
@@ -798,17 +877,30 @@ impl Fetch<'_> {
         })
     }
 
+    /// The record's side of the questions a folder of Proton Mail Bridge
+    /// asks: which files carry an id, and which of them a fact goes to.
+    fn proton_record<'s>(&'s self, standing: &'s Standing) -> proton::Record<'s> {
+        proton::Record {
+            index: standing.index(),
+            id: &self.id,
+            place: &self.place,
+        }
+    }
+
     /// Under `--full`: the files that carry `label` but whose Proton id
-    /// the label folder no longer lists, while a configured folder of the
-    /// account still does. The label was removed from them. A message no
-    /// longer in the mailbox keeps its labels, as from Gmail, and a file
-    /// without a Proton id is not this folder's to judge.
-    fn label_removed(&self, label: &str, in_folder: &HashSet<String>) -> Result<Vec<Subject>> {
-        let in_mailbox = self.in_mailbox.borrow();
-        let borrowed = self.record.borrow();
-        let index = borrowed
-            .as_ref()
-            .expect("a Proton folder catches the record up");
+    /// the label folder no longer lists (`in_folder`), while a configured
+    /// folder of the account still does (`in_mailbox`). The label was
+    /// removed from them. A message no longer in the mailbox keeps its
+    /// labels, as from Gmail, and a file without a Proton id is not this
+    /// folder's to judge.
+    fn label_removed(
+        &self,
+        label: &str,
+        in_folder: &HashSet<String>,
+        in_mailbox: &InMailbox,
+        standing: &Standing,
+    ) -> Result<Vec<Subject>> {
+        let index = standing.index();
         // Quoted: the label is meant literally.
         let terms = [
             Term::Attribute(self.tag.clone(), format!("\"{label}\"")),
@@ -843,10 +935,14 @@ impl Fetch<'_> {
         place: &Place<'_>,
         label: &str,
         mailbox: &mut impl Mailbox,
-        uidvalidity: u32,
-        tally: &mut Tally,
+        in_mailbox: &InMailbox,
+        state: &mut State,
     ) -> Result<()> {
         let name = &place.name;
+        let Some(opened) = self.open(place, mailbox, state)? else {
+            return Ok(());
+        };
+        let uidvalidity = opened.uidvalidity;
         let resume = self.memo.imap_resume(place.account, place.folder)?;
         let resumed =
             !self.options.full && resume.is_some_and(|point| point.uidvalidity == uidvalidity);
@@ -854,7 +950,7 @@ impl Fetch<'_> {
         let uids = match mailbox.uids_above(above) {
             Ok(uids) => uids,
             Err(error) => {
-                tally.failed.push(format!("{name}: {error:#}"));
+                state.tally.failed.push(format!("{name}: {error:#}"));
                 return Ok(());
             }
         };
@@ -876,12 +972,12 @@ impl Fetch<'_> {
             match mailbox.header(&asked, proton::HEADER) {
                 Ok(listed) => listed,
                 Err(error) => {
-                    tally.failed.push(format!("{name}: {error:#}"));
+                    state.tally.failed.push(format!("{name}: {error:#}"));
                     return Ok(());
                 }
             }
         };
-        let sorted = self.sort_labelled(&asked, &listed)?;
+        let sorted = self.sort_labelled(&asked, &listed, &state.standing)?;
         // A UID the server no longer lists, or one without an id, can
         // never be found; only an id not on record yet stays open.
         let still_open: Vec<u32> = sorted
@@ -914,7 +1010,7 @@ impl Fetch<'_> {
         });
         if self.options.dry_run {
             if let Some(in_folder) = &in_folder {
-                let gone = self.label_removed(label, in_folder)?;
+                let gone = self.label_removed(label, in_folder, in_mailbox, &state.standing)?;
                 if !gone.is_empty() {
                     self.say.line(format_args!(
                         "{name}: the label would be retracted from {} no longer in the folder",
@@ -928,25 +1024,22 @@ impl Fetch<'_> {
         if !resumed {
             self.memo.clear_pending(place.account, place.folder)?;
         }
-        self.tag_labelled(&sorted.known, label, tally)?;
+        self.tag_labelled(&sorted.known, label, state)?;
         if let Some(in_folder) = &in_folder {
-            self.retract_label(name, label, in_folder, tally)?;
+            self.retract_label(name, label, in_folder, in_mailbox, state)?;
         }
         let top = uids.iter().copied().max().unwrap_or(above).max(above);
         self.settle_label_folder(place, &open, &still_open, top, uidvalidity)
     }
 
     /// `asked` sorted by what the record holds of each UID's Proton id.
-    fn sort_labelled(&self, asked: &[u32], listed: &[(u32, String)]) -> Result<proton::Sorted> {
-        let borrowed = self.record.borrow();
-        let index = borrowed
-            .as_ref()
-            .expect("a Proton folder catches the record up");
-        let record = proton::Record {
-            index,
-            id: &self.id,
-            place: &self.place,
-        };
+    fn sort_labelled(
+        &self,
+        asked: &[u32],
+        listed: &[(u32, String)],
+        standing: &Standing,
+    ) -> Result<proton::Sorted> {
+        let record = self.proton_record(standing);
         proton::sort(asked, listed, |id| record.holders(id))
     }
 
@@ -956,18 +1049,10 @@ impl Fetch<'_> {
         &self,
         known: &[(u32, Vec<Subject>)],
         label: &str,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<()> {
         let value = json!(label);
-        let borrowed = self.record.borrow();
-        let index = borrowed
-            .as_ref()
-            .expect("a Proton folder catches the record up");
-        let record = proton::Record {
-            index,
-            id: &self.id,
-            place: &self.place,
-        };
+        let record = self.proton_record(&state.standing);
         // One append for the whole folder: each append lists the open
         // segment first, and over SMB that listing takes up to a second
         // once the previous append has changed the directory.
@@ -977,7 +1062,7 @@ impl Fetch<'_> {
         }
         receivers.sort();
         receivers.dedup();
-        self.assert_on(&receivers, &self.tag, &value, tally)
+        self.assert_on(&receivers, &self.tag, &value, &mut state.tally)
     }
 
     /// Under `--full`: retract the label from the files that the label
@@ -987,28 +1072,14 @@ impl Fetch<'_> {
         name: &str,
         label: &str,
         in_folder: &HashSet<String>,
-        tally: &mut Tally,
+        in_mailbox: &InMailbox,
+        state: &mut State,
     ) -> Result<()> {
-        let value = json!(label);
-        let gone = self.label_removed(label, in_folder)?;
+        let gone = self.label_removed(label, in_folder, in_mailbox, &state.standing)?;
         let time = Timestamp::now();
         let mut claims = Vec::new();
-        let borrowed = self.record.borrow();
-        let index = borrowed
-            .as_ref()
-            .expect("a Proton folder catches the record up");
         for subject in &gone {
-            let mut ids = index.standing_ids(subject, &self.tag, Some(&value))?;
-            if let Some(said) = self
-                .said
-                .borrow()
-                .get(subject.as_str())
-                .and_then(|tags| tags.get(label))
-            {
-                ids.extend(said.iter().cloned());
-            }
-            ids.sort();
-            ids.dedup();
+            let ids = state.standing.ids_of(subject, &self.tag, label)?;
             if ids.is_empty() {
                 continue;
             }
@@ -1018,12 +1089,12 @@ impl Fetch<'_> {
                 ids,
                 time.clone(),
                 self.source.clone(),
-                tally.run.clone(),
+                state.tally.run.clone(),
             )?);
         }
         self.archive.log().append_all(&claims)?;
-        tally.claims += claims.len();
-        tally.taken += claims.len();
+        state.tally.claims += claims.len();
+        state.tally.taken += claims.len();
         if !gone.is_empty() {
             self.say.line(format_args!(
                 "{name}: the label retracted from {} no longer in the folder",
@@ -1071,7 +1142,7 @@ impl Fetch<'_> {
     /// above the point `above`, and the pending UIDs in `attempts` with
     /// the runs that failed them. Without `pending_valid` the folder's
     /// pending list is of another UIDVALIDITY, or of none, and is emptied
-    /// first.
+    /// first. Answers, under `--compare`, the messages it stored.
     #[allow(
         clippy::too_many_arguments,
         reason = "the parts of one decision, made by two callers"
@@ -1086,8 +1157,8 @@ impl Fetch<'_> {
         above: u32,
         attempts: HashMap<u32, u32>,
         identified: Identified,
-        tally: &mut Tally,
-    ) -> Result<()> {
+        state: &mut State,
+    ) -> Result<Stored> {
         let name = &place.name;
         let fresh = uids
             .iter()
@@ -1104,9 +1175,10 @@ impl Fetch<'_> {
             done: 0,
             refused_in_a_row: 0,
             gone: 0,
+            stored: Stored::new(),
             progress: self.say.progress(),
         };
-        self.imap_walk(place, mailbox, pending_valid, above, &mut walk, tally)?;
+        self.imap_walk(place, mailbox, pending_valid, above, &mut walk, state)?;
         if walk.gone > 0 {
             self.say.line(format_args!(
                 "{name}: {} no longer in the folder, skipped",
@@ -1120,10 +1192,10 @@ impl Fetch<'_> {
                 counted(left, "message", "messages")
             ));
         }
-        Ok(())
+        Ok(walk.stored)
     }
 
-    /// The fetches of [`folder`](Self::folder): the pending UIDs, then
+    /// The fetches of [`read_folder`](Self::read_folder): the pending UIDs, then
     /// the others above the point, committed every [`COMMIT_EVERY`]
     /// messages.
     fn imap_walk(
@@ -1133,7 +1205,7 @@ impl Fetch<'_> {
         pending_valid: bool,
         above: u32,
         walk: &mut Walk<'_>,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<()> {
         let name = &place.name;
         let uidvalidity = walk.uidvalidity;
@@ -1153,19 +1225,19 @@ impl Fetch<'_> {
         // download, and the point passes it as if it had landed.
         let known = std::mem::take(&mut walk.identified.known);
         for (settled, (uid, receivers)) in known.iter().enumerate() {
-            self.assert_on(receivers, &self.place, &json!(place.name), tally)?;
+            self.assert_on(receivers, &self.place, &json!(place.name), &mut state.tally)?;
             self.memo
                 .remove_pending(place.account, place.folder, &uid.to_string())?;
             if let Some(point) = walk.pass(*uid) {
                 self.memo.advance_imap(place.account, place.folder, point)?;
             }
-            tally.identified += 1;
+            state.tally.identified += 1;
             if (settled + 1).is_multiple_of(COMMIT_EVERY) {
                 self.memo.commit_for(self.archive)?;
                 self.memo.begin()?;
             }
         }
-        let each: &mut Each<'_> = &mut |uid, got| self.imap_got(place, uid, got, walk, tally);
+        let each: &mut Each<'_> = &mut |uid, got| self.imap_got(place, uid, got, walk, state);
         let mut outcome = mailbox.fetch(&retry, each);
         if matches!(outcome, Ok(ControlFlow::Continue(()))) {
             outcome = mailbox.fetch(&fresh, each);
@@ -1189,7 +1261,7 @@ impl Fetch<'_> {
         match outcome {
             Ok(_) => closed,
             Err(Stop::Server(error)) => {
-                tally.failed.push(format!("{name}: {error:#}"));
+                state.tally.failed.push(format!("{name}: {error:#}"));
                 closed
             }
             Err(Stop::Caller(error)) => Err(match closed {
@@ -1211,7 +1283,7 @@ impl Fetch<'_> {
         uid: u32,
         got: Got<'_>,
         walk: &mut Walk<'_>,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<ControlFlow<()>> {
         let name = &place.name;
         let id = uid.to_string();
@@ -1221,8 +1293,9 @@ impl Fetch<'_> {
             Got::Message(bytes, labels) => {
                 let proton_id = walk.identified.ids.get(&uid).cloned();
                 let subject =
-                    self.land(place, bytes, labels.as_deref(), proton_id.as_deref(), tally)?;
-                self.note(place, &compare::imap_id(walk.uidvalidity, uid), &subject)?;
+                    self.land(place, bytes, labels.as_deref(), proton_id.as_deref(), state)?;
+                let compared = compare::imap_id(walk.uidvalidity, uid);
+                self.note(place, &compared, &subject, &mut walk.stored)?;
                 walk.refused_in_a_row = 0;
                 if attempts.is_some() {
                     self.memo.remove_pending(place.account, place.folder, &id)?;
@@ -1237,7 +1310,7 @@ impl Fetch<'_> {
             }
             Got::Refused(error) => {
                 walk.refused_in_a_row += 1;
-                self.imap_refused(place, &id, attempts, &error, tally)?;
+                self.imap_refused(place, &id, attempts, &error, &mut state.tally)?;
             }
         }
         if let Some(point) = walk.pass(uid) {
@@ -1255,7 +1328,7 @@ impl Fetch<'_> {
             &format!("{name}: {} of {} fetched", walk.done, walk.total),
         );
         if walk.refused_in_a_row >= STOP_AFTER {
-            tally.failed.push(format!(
+            state.tally.failed.push(format!(
                 "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
                 counted(walk.total - walk.done, "message", "messages")
             ));
@@ -1300,7 +1373,7 @@ impl Fetch<'_> {
         &self,
         account: &Account,
         graph: &config::Graph,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<Result<()>> {
         // The token and the folder tree say no before the first
         // message is asked for.
@@ -1322,7 +1395,7 @@ impl Fetch<'_> {
         self.say
             .line(format_args!("{}", opening(account, folders.len())));
         for folder in &folders {
-            self.graph_folder(account, &mut client, folder, tally)?;
+            self.graph_folder(account, &mut client, folder, state)?;
         }
         Ok(Ok(()))
     }
@@ -1381,37 +1454,37 @@ impl Fetch<'_> {
     /// refuses is named in the tally and stays on the list, until it
     /// has been refused in [`GIVE_UP_AFTER`] runs. The rest of the list
     /// is left for the next run when the server refuses [`STOP_AFTER`]
-    /// messages in a row, or gives no usable answer at all. Returns
-    /// how many are left on the list. With `only`, just those ids of
-    /// the list are fetched.
+    /// messages in a row, or gives no usable answer at all. Answers
+    /// what the pass came to. With `only`, just those ids of the list
+    /// are fetched.
     fn graph_land(
         &self,
         place: &Place<'_>,
         client: &mut Graph<'_>,
         only: Option<&HashSet<String>>,
-        tally: &mut Tally,
-    ) -> Result<usize> {
+        state: &mut State,
+    ) -> Result<Landed> {
         let mut pending: Vec<Pending<Vec<String>>> =
             self.memo.pending(place.account, place.folder)?;
         if let Some(only) = only {
             pending.retain(|message| only.contains(&message.id));
         }
         self.memo.begin()?;
-        let outcome = self.graph_each(place, &pending, client, tally);
+        let outcome = self.graph_each(place, &pending, client, state);
         // What came off the list before the trouble stays off it
         // either way.
         let closed = self.memo.commit_for(self.archive);
         match outcome {
-            Ok(Landed { left, gone }) => {
+            Ok(landed) => {
                 closed?;
-                if gone > 0 {
+                if landed.gone > 0 {
                     self.say.line(format_args!(
                         "{}: {} no longer in the folder, skipped",
                         place.name,
-                        counted(gone, "message", "messages")
+                        counted(landed.gone, "message", "messages")
                     ));
                 }
-                Ok(left)
+                Ok(landed)
             }
             Err(error) => Err(match closed {
                 Ok(()) => error,
@@ -1429,7 +1502,7 @@ impl Fetch<'_> {
         place: &Place<'_>,
         pending: &[Pending<Vec<String>>],
         client: &mut Graph<'_>,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<Landed> {
         let name = &place.name;
         let mut progress = self.say.progress();
@@ -1438,8 +1511,8 @@ impl Fetch<'_> {
         for (done, message) in pending.iter().enumerate() {
             match client.message(&message.id) {
                 Ok(bytes) => {
-                    let subject = self.land(place, &bytes, Some(&message.detail), None, tally)?;
-                    self.note(place, &message.id, &subject)?;
+                    let subject = self.land(place, &bytes, Some(&message.detail), None, state)?;
+                    self.note(place, &message.id, &subject, &mut landed.stored)?;
                     self.memo
                         .remove_pending(place.account, place.folder, &message.id)?;
                     refused_in_a_row = 0;
@@ -1455,20 +1528,20 @@ impl Fetch<'_> {
                     if message.attempts + 1 >= GIVE_UP_AFTER {
                         self.memo
                             .remove_pending(place.account, place.folder, &message.id)?;
-                        tally.failed.push(format!(
+                        state.tally.failed.push(format!(
                             "{name}: {error:#}; given up after {GIVE_UP_AFTER} runs, --full lists it again"
                         ));
-                        tally.given_up += 1;
+                        state.tally.given_up += 1;
                     } else {
                         self.memo
                             .fail_pending(place.account, place.folder, &message.id)?;
-                        tally.failed.push(format!("{name}: {error:#}"));
+                        state.tally.failed.push(format!("{name}: {error:#}"));
                         landed.left += 1;
                     }
                     if refused_in_a_row >= STOP_AFTER {
                         let rest = pending.len() - done - 1;
                         landed.left += rest;
-                        tally.failed.push(format!(
+                        state.tally.failed.push(format!(
                             "{name}: {STOP_AFTER} messages in a row refused; {} left for the next run",
                             counted(rest, "message", "messages")
                         ));
@@ -1478,7 +1551,7 @@ impl Fetch<'_> {
                 Err(Miss::Unreachable(error)) => {
                     let rest = pending.len() - done;
                     landed.left += rest;
-                    tally.failed.push(format!(
+                    state.tally.failed.push(format!(
                         "{name}: {error:#}; {} left for the next run",
                         counted(rest, "message", "messages")
                     ));
@@ -1509,21 +1582,21 @@ impl Fetch<'_> {
         account: &Account,
         client: &mut Graph<'_>,
         folder: &str,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<()> {
         let place = Place::new(&account.name, folder);
         let name = &place.name;
         // Categories are taken back against the record.
-        self.refresh()?;
+        state.standing.refresh(self.archive, self.say)?;
         let Some(id) = client.resolve(folder).map(str::to_string) else {
-            tally.failed.push(format!(
+            state.tally.failed.push(format!(
                 "{name}: no such folder; the mailbox has {}",
                 client.folders().join(", ")
             ));
             return Ok(());
         };
         if self.options.compare {
-            return self.graph_compare(&place, client, &id, tally);
+            return self.graph_compare(&place, client, &id, state);
         }
         let point = if self.options.full {
             None
@@ -1564,12 +1637,12 @@ impl Fetch<'_> {
                 match client.round(&id, None) {
                     Ok(round) => round,
                     Err(Halt::Failed(error)) => {
-                        tally.failed.push(format!("{name}: {error:#}"));
+                        state.tally.failed.push(format!("{name}: {error:#}"));
                         return Ok(());
                     }
                     // A round from scratch has no link to expire.
                     Err(Halt::Expired) => {
-                        tally.failed.push(format!(
+                        state.tally.failed.push(format!(
                             "{name}: the server did not list the folder's messages"
                         ));
                         return Ok(());
@@ -1577,7 +1650,7 @@ impl Fetch<'_> {
                 }
             }
             Err(Halt::Failed(error)) => {
-                tally.failed.push(format!("{name}: {error:#}"));
+                state.tally.failed.push(format!("{name}: {error:#}"));
                 return Ok(());
             }
         };
@@ -1605,13 +1678,13 @@ impl Fetch<'_> {
             counted(round.offered.len(), "message", "messages")
         ));
         if self.options.dry_run {
-            tally.would += would_fetch(&left, &round);
+            state.tally.would += would_fetch(&left, &round);
             return Ok(());
         }
 
         let listed_any = !round.offered.is_empty();
         self.graph_listed(&place, from.is_some(), listed_any, round)?;
-        let left = self.graph_land(&place, client, None, tally)?;
+        let left = self.graph_land(&place, client, None, state)?.left;
         if left > 0 {
             self.say.line(format_args!(
                 "{name}: {} not fetched; the next run tries them again",
@@ -1637,13 +1710,8 @@ impl Fetch<'_> {
     /// The archive's side of the folder and what earlier `--compare`
     /// runs fetched from it, and a word when some archived messages
     /// have no Message-ID on record.
-    fn comparison(&self, place: &Place<'_>) -> Result<Comparison> {
-        self.landed.borrow_mut().clear();
-        let record = self.record.borrow();
-        let index = record
-            .as_ref()
-            .expect("the folder catches the record up under --compare");
-        let archived = Archived::read(index, &self.place, &place.name)?;
+    fn comparison(&self, place: &Place<'_>, standing: &Standing) -> Result<Comparison> {
+        let archived = Archived::read(standing.index(), &self.place, &place.name)?;
         let known = self.memo.compared(place.account, place.folder)?;
         let comparison = Comparison::new(archived, known);
         let without = comparison.without_message_id();
@@ -1709,9 +1777,9 @@ impl Fetch<'_> {
 
     /// Hand the comparison what the last round stored, by the server's
     /// Message-ID for each id. Answers whether anything was reopened.
-    fn settle(&self, comparison: &mut Comparison, keys: &HashMap<String, String>) -> bool {
+    fn settle(comparison: &mut Comparison, keys: &HashMap<String, String>, stored: Stored) -> bool {
         let mut reopened = false;
-        for (id, subject) in self.landed.take() {
+        for (id, subject) in stored {
             if let Some(key) = keys.get(&id) {
                 reopened |= comparison.landed(key, &subject);
             }
@@ -1724,17 +1792,17 @@ impl Fetch<'_> {
         place: &Place<'_>,
         mailbox: &mut impl Mailbox,
         uidvalidity: u32,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<()> {
         let name = &place.name;
-        let mut comparison = self.comparison(place)?;
+        let mut comparison = self.comparison(place, &state.standing)?;
         let listed = match mailbox
             .uids_above(0)
             .and_then(|uids| mailbox.header(&uids, compare::HEADER))
         {
             Ok(listed) => listed,
             Err(error) => {
-                tally.failed.push(format!("{name}: {error:#}"));
+                state.tally.failed.push(format!("{name}: {error:#}"));
                 return Ok(());
             }
         };
@@ -1754,11 +1822,11 @@ impl Fetch<'_> {
             mut kept,
             recalled,
         } = comparison.split(listed, id);
-        tally.recalled += recalled;
+        state.tally.recalled += recalled;
         self.compared(place, wanted.len(), on_server);
         if self.options.dry_run {
-            tally.would += wanted.len();
-            tally.matched += kept.len();
+            state.tally.would += wanted.len();
+            state.tally.matched += kept.len();
             return Ok(());
         }
         self.forget(place, comparison.stale(|id| keys.contains_key(id)))?;
@@ -1789,7 +1857,7 @@ impl Fetch<'_> {
             // Only this round's: a UID refused in an earlier round waits
             // for the next run, as it would after any other fetch.
             let attempts: HashMap<u32, u32> = wanted.iter().map(|(uid, _)| (*uid, 0)).collect();
-            self.imap_fetch(
+            let stored = self.imap_fetch(
                 place,
                 mailbox,
                 &[],
@@ -1798,14 +1866,14 @@ impl Fetch<'_> {
                 top,
                 attempts,
                 Identified::default(),
-                tally,
+                state,
             )?;
-            if !self.settle(&mut comparison, &keys) {
+            if !Self::settle(&mut comparison, &keys, stored) {
                 break;
             }
             let more = comparison.split(kept, id);
             kept = more.kept;
-            tally.recalled += more.recalled;
+            state.tally.recalled += more.recalled;
             if more.wanted.is_empty() {
                 break;
             }
@@ -1813,7 +1881,7 @@ impl Fetch<'_> {
             wanted = more.wanted;
             first = false;
         }
-        tally.matched += kept.len();
+        state.tally.matched += kept.len();
         self.forget_settled(place, &comparison, &kept, id)
     }
 
@@ -1822,10 +1890,10 @@ impl Fetch<'_> {
         place: &Place<'_>,
         client: &mut Graph<'_>,
         folder_id: &str,
-        tally: &mut Tally,
+        state: &mut State,
     ) -> Result<()> {
         let name = &place.name;
-        let mut comparison = self.comparison(place)?;
+        let mut comparison = self.comparison(place, &state.standing)?;
         let Round {
             offered,
             gone,
@@ -1833,12 +1901,12 @@ impl Fetch<'_> {
         } = match client.listing(folder_id) {
             Ok(round) => round,
             Err(Halt::Failed(error)) => {
-                tally.failed.push(format!("{name}: {error:#}"));
+                state.tally.failed.push(format!("{name}: {error:#}"));
                 return Ok(());
             }
             // A round from scratch has no link to expire.
             Err(Halt::Expired) => {
-                tally.failed.push(format!(
+                state.tally.failed.push(format!(
                     "{name}: the server did not list the folder's messages"
                 ));
                 return Ok(());
@@ -1862,11 +1930,11 @@ impl Fetch<'_> {
             mut kept,
             recalled,
         } = comparison.split(listed, id);
-        tally.recalled += recalled;
+        state.tally.recalled += recalled;
         self.compared(place, wanted.len(), on_server);
         if self.options.dry_run {
-            tally.would += wanted.len();
-            tally.matched += kept.len();
+            state.tally.would += wanted.len();
+            state.tally.matched += kept.len();
             return Ok(());
         }
         self.forget(place, comparison.stale(|id| keys.contains_key(id)))?;
@@ -1881,19 +1949,19 @@ impl Fetch<'_> {
         };
         self.graph_listed(place, false, on_server > 0, round)?;
         while !only.is_empty() {
-            let left = self.graph_land(place, client, Some(&only), tally)?;
-            if left > 0 {
+            let landed = self.graph_land(place, client, Some(&only), state)?;
+            if landed.left > 0 {
                 self.say.line(format_args!(
                     "{name}: {} not fetched; the next run tries them again",
-                    counted(left, "message", "messages")
+                    counted(landed.left, "message", "messages")
                 ));
             }
-            if !self.settle(&mut comparison, &keys) {
+            if !Self::settle(&mut comparison, &keys, landed.stored) {
                 break;
             }
             let more = comparison.split(kept, id);
             kept = more.kept;
-            tally.recalled += more.recalled;
+            state.tally.recalled += more.recalled;
             if more.wanted.is_empty() {
                 break;
             }
@@ -1913,7 +1981,7 @@ impl Fetch<'_> {
                 .map(|(message, _)| message.id)
                 .collect();
         }
-        tally.matched += kept.len();
+        state.tally.matched += kept.len();
         self.forget_settled(place, &comparison, &kept, id)
     }
 }
@@ -2125,7 +2193,6 @@ mod tests {
         }
     }
 
-    /// A fetch with the record caught up to the log, as `run` makes one.
     fn fetcher<'a>(bench: &'a Bench, options: &'a Options) -> Fetch<'a> {
         Fetch {
             archive: &bench.archive,
@@ -2135,12 +2202,26 @@ mod tests {
             place: Attribute::parse(place::ATTRIBUTE).unwrap(),
             tag: Attribute::parse(place::TAG).unwrap(),
             id: Attribute::parse(proton::ATTRIBUTE).unwrap(),
-            record: RefCell::new(Some(caught_up(&bench.archive, Say::new(true)).unwrap())),
-            landed: RefCell::new(Vec::new()),
-            said: RefCell::new(HashMap::new()),
-            in_mailbox: RefCell::new(HashSet::new()),
             say: Say::new(true),
         }
+    }
+
+    /// The state of a fetch whose index is caught up to the log already.
+    fn caught(bench: &Bench) -> State {
+        let mut state = State::new();
+        state
+            .standing
+            .refresh(&bench.archive, Say::new(true))
+            .unwrap();
+        state
+    }
+
+    /// One folder read on its own, as the only folder of its account.
+    fn read(fetch: &Fetch<'_>, bench: &Bench, mailbox: &mut Fake, folder: &str, state: &mut State) {
+        let place = Place::new(&bench.account.name, folder);
+        fetch
+            .read_folder(&place, mailbox, &mut InMailbox::new(), state)
+            .unwrap();
     }
 
     fn options(full: bool, dry_run: bool) -> Options {
@@ -2154,11 +2235,9 @@ mod tests {
     fn fetch(bench: &Bench, mailbox: &mut Fake, full: bool, dry_run: bool) -> Tally {
         let options = options(full, dry_run);
         let fetch = fetcher(bench, &options);
-        let mut tally = Tally::new("fetch");
-        fetch
-            .folder(&bench.account, mailbox, "INBOX", &mut tally)
-            .unwrap();
-        tally
+        let mut state = caught(bench);
+        read(&fetch, bench, mailbox, "INBOX", &mut state);
+        state.tally
     }
 
     fn point(bench: &Bench) -> Option<ImapResume> {
@@ -2201,11 +2280,9 @@ mod tests {
             dry_run,
         };
         let fetch = fetcher(bench, &options);
-        let mut tally = Tally::new("fetch");
-        fetch
-            .folder(&bench.account, mailbox, "INBOX", &mut tally)
-            .unwrap();
-        tally
+        let mut state = caught(bench);
+        read(&fetch, bench, mailbox, "INBOX", &mut state);
+        state.tally
     }
 
     #[test]
@@ -2699,13 +2776,10 @@ mod tests {
     /// record is read only once the folder turns out to have labels.
     fn fetch_labeled(bench: &Bench, mailbox: &mut Fake, full: bool) -> Tally {
         let options = options(full, false);
-        let mut fetch = fetcher(bench, &options);
-        fetch.record = RefCell::new(None);
-        let mut tally = Tally::new("fetch");
-        fetch
-            .folder(&bench.account, mailbox, "INBOX", &mut tally)
-            .unwrap();
-        tally
+        let fetch = fetcher(bench, &options);
+        let mut state = State::new();
+        read(&fetch, bench, mailbox, "INBOX", &mut state);
+        state.tally
     }
 
     #[test]
@@ -2781,16 +2855,17 @@ mod tests {
     /// One fetch, folder after folder, as `run` makes it for an IMAP
     /// account: the record is read once a folder needs it.
     fn run_folders(bench: &Bench, folders: &mut [(&str, &mut Fake)], options: &Options) -> Tally {
-        let mut fetch = fetcher(bench, options);
-        fetch.record = RefCell::new(None);
-        let mut tally = Tally::new("fetch");
+        let fetch = fetcher(bench, options);
+        let mut state = State::new();
+        let mut in_mailbox = InMailbox::new();
         for (folder, mailbox) in folders.iter_mut() {
+            let place = Place::new(&bench.account.name, folder);
             fetch
-                .folder(&bench.account, *mailbox, folder, &mut tally)
+                .read_folder(&place, *mailbox, &mut in_mailbox, &mut state)
                 .unwrap();
         }
-        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
-        tally
+        assert!(state.tally.failed.is_empty(), "{:?}", state.tally.failed);
+        state.tally
     }
 
     /// A claim on the record about a message, as another run left it.
@@ -2973,21 +3048,28 @@ mod tests {
 
     /// One run over All Mail and then the label folder `Labels/Sales`.
     fn with_label(bench: &Bench, all: &mut Fake, sales: &mut Fake, options: &Options) -> Tally {
-        let mut fetch = fetcher(bench, options);
-        fetch.record = RefCell::new(None);
-        let mut tally = Tally::new("fetch");
-        fetch
-            .folder(&bench.account, all, "All Mail", &mut tally)
-            .unwrap();
+        let fetch = fetcher(bench, options);
+        let mut state = State::new();
+        let mut in_mailbox = InMailbox::new();
         fetch
             .read_folder(
-                &Place::labelled("example.org", "Labels/Sales", "Sales"),
-                sales,
-                &mut tally,
+                &Place::new("example.org", "All Mail"),
+                all,
+                &mut in_mailbox,
+                &mut state,
             )
             .unwrap();
-        assert!(tally.failed.is_empty(), "{:?}", tally.failed);
-        tally
+        fetch
+            .label_folder(
+                &Place::new("example.org", "Labels/Sales"),
+                "Sales",
+                sales,
+                &in_mailbox,
+                &mut state,
+            )
+            .unwrap();
+        assert!(state.tally.failed.is_empty(), "{:?}", state.tally.failed);
+        state.tally
     }
 
     /// The UIDs of `Labels/Sales` left open, and its resume point.
@@ -3224,14 +3306,13 @@ mod tests {
                 bridge.unopenable.insert("All Mail".to_string());
             }
             let options = options(false, false);
-            let mut fetch = fetcher(&bench, &options);
-            fetch.record = RefCell::new(None);
-            let mut tally = Tally::new("fetch");
+            let fetch = fetcher(&bench, &options);
+            let mut state = State::new();
             fetch
-                .imap_folders(&account, &mut bridge, &folders, &mut tally)
+                .imap_folders(&account, &mut bridge, &folders, &mut state)
                 .unwrap();
             assert_eq!(bridge.examined, examined);
-            assert_eq!(tally.failed.len(), usize::from(failing));
+            assert_eq!(state.tally.failed.len(), usize::from(failing));
         }
     }
 
@@ -3359,11 +3440,11 @@ mod tests {
                 Say::new(true),
             )
             .unwrap();
-            let mut tally = Tally::new("fetch");
+            let mut state = caught(bench);
             fetch
-                .graph_folder(account, &mut client, "Inbox", &mut tally)
+                .graph_folder(account, &mut client, "Inbox", &mut state)
                 .unwrap();
-            tally
+            state.tally
         }
 
         /// `fetch --compare` of the folder.
@@ -3384,11 +3465,11 @@ mod tests {
                 Say::new(true),
             )
             .unwrap();
-            let mut tally = Tally::new("fetch");
+            let mut state = caught(bench);
             fetch
-                .graph_folder(account, &mut client, "Inbox", &mut tally)
+                .graph_folder(account, &mut client, "Inbox", &mut state)
                 .unwrap();
-            tally
+            state.tally
         }
 
         /// The round `--compare` asks for offers these messages, each
@@ -4058,12 +4139,12 @@ mod tests {
                 Say::new(true),
             )
             .unwrap();
-            let mut tally = Tally::new("fetch");
+            let mut state = caught(&bench);
             fetch
-                .graph_folder(&account, &mut client, "Drafts", &mut tally)
+                .graph_folder(&account, &mut client, "Drafts", &mut state)
                 .unwrap();
             assert_eq!(
-                tally.failed,
+                state.tally.failed,
                 ["m365:Drafts: no such folder; the mailbox has Inbox"]
             );
         }
