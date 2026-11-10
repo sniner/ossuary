@@ -12,6 +12,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   emptied that list when it started. When it was then interrupted before it reached the message,
   no later run asked for the message again, and nothing reported it. `--full` now keeps the list
   and fetches those messages first
+- **`port_cmd` and `tls_cmd` in `mailvault.toml`** were refused with `invalid type: string ""`,
+  while the README and the starter file said any key could be given as a command. The two keys
+  take no command; the message now says so and names the key, and the documentation lists them
 
 ## [0.21.0] - 2026-11-10
 

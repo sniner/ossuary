@@ -10,9 +10,10 @@
 //! `config.toml` does: the two cannot drift apart, and a backup of the
 //! archive carries the recipe. That puts a mailbox's login where the
 //! archive lies — the secrets themselves belong in a password manager,
-//! and any key can be given as `KEY_cmd` instead: a command whose first
-//! line is the value, run only when the account is reached, so a
-//! command that fails costs that account and nothing else.
+//! and any key whose value is text can be given as `KEY_cmd` instead: a
+//! command whose first line is the value, run only when the account is
+//! reached, so a command that fails costs that account and nothing else.
+//! `port` and `tls` take no command: a command's output is text.
 //!
 //! The commands run as the user, so whoever can write the file can run
 //! anything as them, and without a command can still send the password
@@ -144,9 +145,9 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # The examples below are commented out: remove the "# " in front of the
 # lines of one and fill it in. Keys not shown here are rejected.
 #
-# Any key except name, backend, folders and skip can be given as KEY_cmd
-# instead: a command that prints the value on its first line, most
-# often password_cmd. The commands run as you, so keep this file where
+# Any key except name, backend, port, tls, folders and skip can be given
+# as KEY_cmd instead: a command that prints the value on its first line,
+# most often password_cmd. The commands run as you, so keep this file where
 # nobody else can write, or keep it elsewhere and name it with
 # `ossuary mailvault fetch --accounts FILE`.
 
@@ -359,7 +360,10 @@ impl<'de> Deserialize<'de> for Account {
             .collect();
         for key in commanded {
             let target = key[..key.len() - CMD.len()].to_string();
-            if matches!(target.as_str(), "name" | "backend" | "folders" | "skip") {
+            if matches!(
+                target.as_str(),
+                "name" | "backend" | "folders" | "skip" | "port" | "tls"
+            ) {
                 return Err(D::Error::custom(format!(
                     "{name}: {key} is not supported; set {target} directly"
                 )));
@@ -801,7 +805,7 @@ mod tests {
 
     #[test]
     fn the_keys_that_shape_the_account_take_no_command() {
-        for key in ["name", "backend", "folders", "skip"] {
+        for key in ["name", "backend", "folders", "skip", "port", "tls"] {
             let refused = load(&format!(
                 "[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n{key}_cmd = \"echo x\"\n"
             ))
