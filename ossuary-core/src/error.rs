@@ -149,14 +149,6 @@ pub enum Error {
     )]
     TwoOpen(std::path::PathBuf),
 
-    /// A seal is under way or stopped, and a reader waited for the open
-    /// segment longer than a seal takes.
-    #[error(
-        "{}: a seal is under way or stopped before the open segment was back; a command that writes finishes it, `ossuary seal` for one",
-        .0.display()
-    )]
-    SealPending(std::path::PathBuf),
-
     /// A seal was decided, named by its directory, and the segment file
     /// that holds its bytes is not there to store: the decision cannot be
     /// carried out.

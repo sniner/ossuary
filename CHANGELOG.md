@@ -15,6 +15,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   JSON spelling. A line that another program had written differently (other spacing, other order
   of the fields) got a new id that way, and a retraction written before the seal no longer applied
   to it: the retracted value was back after the seal. Lines written by ossuary were not affected
+- **Commands that read no longer stop at a seal that was interrupted.** `find`, `ls`, `about` and
+  the others ended with "a seal is under way or stopped" until a command that writes had finished
+  the seal, which nothing can do in an archive that is read-only. They now wait two seconds for a
+  seal that is under way and then read the open segment as it is
+- **`ossuary audit` no longer reports a missing segment for a seal that was interrupted.** When the
+  seal had stopped before its segment was stored, the audit named that segment as missing and
+  pointed to `ossuary-fix chain`, although nothing was lost and the next command that writes
+  finishes the seal. The audit also skipped the claims of that open segment; it reads them now
 
 ## [0.20.3] - 2026-11-10
 

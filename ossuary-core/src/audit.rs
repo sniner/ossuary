@@ -204,14 +204,16 @@ pub struct LogAudit {
     pub broken: Vec<(String, String)>,
     /// What stands in the open head's way, when something does.
     pub head_broken: Option<String>,
-    /// Whether the open head was lost: it is missing or empty while
-    /// sealed segments are there, and the claims recorded since the
+    /// Whether the open segment was lost: no directory of it is there
+    /// while sealed segments are, and the claims recorded since the
     /// last seal went with it.
     pub head_lost: bool,
-    /// Whether a seal stopped before its fresh head was in place: the
-    /// head is missing, and the fresh head that vouches for it waits
-    /// next to it. Nothing is lost, and the next run that writes moves
-    /// it into place, so this is not a finding.
+    /// Whether a seal stopped before the open segment was back: its
+    /// directory is named `.sealing` or `.sealed-…`. The claims in it
+    /// were read like those of an open segment. The next run that
+    /// writes finishes the seal, so this is not a finding. A decided
+    /// segment that neither the store nor the directory holds is one,
+    /// and [`Ends::Missing`] reports it.
     pub seal_pending: bool,
     /// The segments the walk back from the open head reached, in log
     /// order: the first segment first.
@@ -327,25 +329,24 @@ pub fn audit_log(log: &Log) -> Result<LogAudit> {
         }
     }
     report.head_lost = !held.is_empty() && log.head_lost()?;
-    report.seal_pending = log.seal_pending()?;
-    let open = if report.seal_pending {
-        // The bundles are in a seal under way; the audit does not wait
-        // for it and reads the chain from the directory's name.
-        log.tip()?.as_ref().map(hex)
-    } else {
-        match log.head_contents() {
-            Ok(contents) => {
-                report.claims += contents.claims().len();
-                for claim in contents.claims() {
-                    reference(claim, &mut report.referenced);
-                }
-                contents.previous().map(hex)
+    // A decided segment that is nowhere is a lost segment, which the walk
+    // reports; "stopped, and nothing is lost" is not true of it.
+    report.seal_pending = log.seal_pending()? && !log.decided_segment_lost()?;
+    // A seal that stopped is read as it stands: its bundles are claims
+    // of the record like any other, and the files they refer to must be
+    // held.
+    let open = match log.head_contents() {
+        Ok(contents) => {
+            report.claims += contents.claims().len();
+            for claim in contents.claims() {
+                reference(claim, &mut report.referenced);
             }
-            Err(_) if report.head_lost => None,
-            Err(error) => {
-                report.head_broken = Some(error.spelled());
-                None
-            }
+            contents.previous().map(hex)
+        }
+        Err(_) if report.head_lost => None,
+        Err(error) => {
+            report.head_broken = Some(error.spelled());
+            None
         }
     };
     if report.head_lost || report.head_broken.is_some() {
@@ -686,6 +687,57 @@ mod tests {
         );
         assert_eq!(audit.log.segments, 0);
         assert_eq!(audit.findings(), 1);
+    }
+
+    #[test]
+    fn a_seal_that_stopped_is_read_like_an_open_segment_and_is_no_finding() {
+        use crate::log::{StoppedAfter, stop_seal};
+
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"held");
+        let absent = Subject::parse(&"ab".repeat(32)).unwrap();
+        record(&archive, &absent, "user:tag", json!("nothing holds this"));
+        stop_seal(archive.log(), StoppedAfter::Deciding { segment_file: true });
+
+        let audit = run(&archive);
+
+        assert!(audit.log.seal_pending);
+        assert_eq!(audit.log.ends, Ends::First);
+        assert_eq!(audit.log.findings(), 0, "nothing is lost");
+        assert_eq!(audit.log.claims, 2, "the bundles were read");
+        assert_eq!(
+            audit.missing,
+            [absent.as_str()],
+            "and what they refer to was looked for"
+        );
+    }
+
+    #[test]
+    fn a_decided_segment_that_is_nowhere_is_a_lost_segment() {
+        use crate::log::{StoppedAfter, stop_seal};
+
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"held");
+        let decided = stop_seal(
+            archive.log(),
+            StoppedAfter::Deciding {
+                segment_file: false,
+            },
+        );
+
+        let audit = run(&archive);
+
+        assert_eq!(
+            audit.log.ends,
+            Ends::Missing {
+                segment: HEAD.to_string(),
+                missing: decided.to_string(),
+            }
+        );
+        assert_eq!(audit.findings(), 1);
+        assert!(!audit.log.seal_pending, "this seal cannot be finished");
     }
 
     #[test]
