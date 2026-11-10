@@ -15,6 +15,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`port_cmd` and `tls_cmd` in `mailvault.toml`** were refused with `invalid type: string ""`,
   while the README and the starter file said any key could be given as a command. The two keys
   take no command; the message now says so and names the key, and the documentation lists them
+- **A Microsoft 365 folder that could not be listed after its resume point had expired** was
+  reported as "the server did not list the folder's messages", without the server's answer. The
+  report now includes it, such as the HTTP status and Graph's error code
 
 ## [0.21.0] - 2026-11-10
 

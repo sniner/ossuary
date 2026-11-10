@@ -1558,7 +1558,12 @@ impl Fetch<'_> {
                 how = "full fetch";
                 match client.round(&id, None) {
                     Ok(round) => round,
-                    Err(Halt::Expired | Halt::Failed(_)) => {
+                    Err(Halt::Failed(error)) => {
+                        tally.failed.push(format!("{name}: {error:#}"));
+                        return Ok(());
+                    }
+                    // A round from scratch has no link to expire.
+                    Err(Halt::Expired) => {
                         tally.failed.push(format!(
                             "{name}: the server did not list the folder's messages"
                         ));
@@ -3637,6 +3642,42 @@ mod tests {
             );
             assert!(again.failed.is_empty(), "{:?}", again.failed);
             assert!(link(&bench).unwrap().ends_with("/delta/fresh"));
+        }
+
+        #[test]
+        fn a_whole_round_that_fails_after_an_expired_link_is_named_with_its_cause() {
+            let bench = bench();
+            let account = m365();
+            let stub = stub(&["M1"]);
+            first_round(&stub, &["M1"], "one");
+            fetch(&bench, &stub, &account, false, false);
+
+            stub.script(
+                "GET /v1.0/delta/one",
+                vec![Reply::json(
+                    410,
+                    &json!({ "error": { "code": "syncStateNotFound" } }),
+                )],
+            );
+            stub.script(
+                &format!(
+                    "GET /v1.0/users/{USER}/mailFolders/F1/messages/delta?$select=id,categories"
+                ),
+                vec![Reply::json(
+                    403,
+                    &json!({ "error": { "code": "ErrorAccessDenied", "message": "denied" } }),
+                )],
+            );
+
+            let again = fetch(&bench, &stub, &account, false, false);
+
+            assert_eq!(again.failed.len(), 1, "{:?}", again.failed);
+            assert!(
+                again.failed[0].contains("HTTP 403 ErrorAccessDenied: denied"),
+                "{:?}",
+                again.failed
+            );
+            assert!(link(&bench).unwrap().ends_with("/delta/one"));
         }
 
         /// The list pending for `Inbox`, in listing order.
