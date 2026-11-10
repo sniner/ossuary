@@ -14,22 +14,41 @@ use crate::output::{errln, say};
 /// right there; more turns into a count, and --verbose names them all.
 const HANDFUL: usize = 5;
 
-pub(crate) fn audit(root: &Path, json: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
+/// What a quick audit leaves out, in the words of the report and the
+/// verdict.
+const NOT_READ: &str = "not checked against their hashes";
+
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "two switches of the verb and two of the run, each one flag the user set"
+)]
+pub(crate) fn audit(
+    root: &Path,
+    json: bool,
+    fast: bool,
+    verbose: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
     if json && verbose {
         return Err(anyhow!(
             "--json already lists every finding; drop --verbose"
         ));
     }
     let archive = open(root)?;
+    let what = if fast {
+        "listing every file; --fast, their contents are not read"
+    } else {
+        "checking every file against its hash"
+    };
     if !quiet {
         errln!("archive {}", archive.root().display());
-        errln!("step 1 of 3: content/, checking every file against its hash");
+        errln!("step 1 of 3: content/, {what}");
     }
-    let content = ossuary_core::audit_store(archive.content())?;
+    let content = ossuary_core::audit_store(archive.content(), !fast)?;
     if !quiet {
-        errln!("step 2 of 3: derived/, checking every file against its hash");
+        errln!("step 2 of 3: derived/, {what}");
     }
-    let derived = ossuary_core::audit_store(archive.derived())?;
+    let derived = ossuary_core::audit_store(archive.derived(), !fast)?;
     if !quiet {
         errln!("step 3 of 3: claims/, reading every sealed segment and the open segment");
     }
@@ -40,8 +59,8 @@ pub(crate) fn audit(root: &Path, json: bool, verbose: bool, quiet: bool) -> Resu
     let mut out = stdout.lock();
     if json {
         render_json(&mut out, &audit)?;
-        // Under --json stdout is findings and nothing else; the verdict
-        // is the run's word on how it went.
+        // Under --json stdout is the mode line and the findings; the
+        // verdict is the run's word on how it went.
         if !quiet {
             errln!("{}", verdict(&audit));
         }
@@ -149,6 +168,7 @@ fn fixity_word(fixity: &Fixity) -> &'static str {
         Fixity::Sound => "sound",
         Fixity::Damaged => "damaged",
         Fixity::Unreadable(_) => "unreadable",
+        Fixity::Unchecked => "unchecked",
     }
 }
 
@@ -214,12 +234,19 @@ fn named_by(segment: &str) -> String {
     }
 }
 
-/// The last line: which clean outcome it is, or how much is wrong.
+/// The last line: which clean outcome it is, or how much is wrong, and
+/// after a quick audit what it did not check.
 fn verdict(audit: &Audit) -> String {
-    if audit.is_sound() {
-        "sound; every file matches its hash, every claim is readable, no segment or referenced file is missing".to_string()
-    } else {
-        format!("not sound: {} finding(s)", audit.findings())
+    match (audit.is_sound(), audit.read()) {
+        (true, true) => "sound; every file matches its hash, every claim is readable, no segment or referenced file is missing".to_string(),
+        (true, false) => format!(
+            "sound as far as --fast checks: every claim is readable, no segment or referenced file is missing; the files in content/ and derived/ were {NOT_READ}, `ossuary audit` without --fast checks them"
+        ),
+        (false, true) => format!("not sound: {} finding(s)", audit.findings()),
+        (false, false) => format!(
+            "not sound: {} finding(s); the files in content/ and derived/ were {NOT_READ}",
+            audit.findings()
+        ),
     }
 }
 
@@ -234,6 +261,12 @@ fn store_block(
 ) -> Result<bool> {
     if store.checked == 0 {
         return say(out, &format!("{name}: empty"));
+    }
+    if !store.read {
+        return say(
+            out,
+            &format!("{name}: {} file(s), {NOT_READ} (--fast)", store.checked),
+        );
     }
     for (digest, error) in &store.unreadable {
         if !say(out, &format!("{name}: could not read {digest}: {error}"))? {
@@ -345,8 +378,11 @@ pub(crate) fn listing(
     }
 }
 
-/// One JSON object per finding or observation, ready for jq — a sound,
-/// fully recorded archive answers an empty stream.
+/// One JSON object per finding or observation, ready for jq, after a
+/// first line with the mode. A sound, fully recorded archive answers the
+/// mode line alone. The mode line comes first and always, because a
+/// member on the findings would be missing exactly where a quick audit
+/// finds nothing.
 #[allow(
     clippy::too_many_lines,
     reason = "one push per kind of finding, in the order the report reads; splitting it would only hide that order"
@@ -354,7 +390,8 @@ pub(crate) fn listing(
 fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     use serde_json::json;
 
-    let mut lines: Vec<serde_json::Value> = Vec::new();
+    let mode = if audit.read() { "full" } else { "fast" };
+    let mut lines: Vec<serde_json::Value> = vec![json!({"mode": mode})];
     for (place, store) in [("content", &audit.content), ("derived", &audit.derived)] {
         for subject in &store.damaged {
             lines.push(json!({"finding": "damaged", "store": place, "subject": subject}));

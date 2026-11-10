@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **`ossuary audit --fast`** checks the archive without reading the files in `content/` and
+  `derived/`, which shows a missing file but not a damaged one. The claims and the chain of sealed
+  segments are checked in full. The report and the last line say that the files were not checked
+  against their hashes
+
+### Changed
+
+- **`ossuary audit --json`** prints `{"mode":"fast"}` or `{"mode":"full"}` as its first line, also
+  for a sound archive, which used to print nothing. Scripts that test for empty output should test
+  the exit code instead
+
 ## [0.20.2] - 2026-11-09
 
 ### Fixed

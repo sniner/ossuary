@@ -581,12 +581,12 @@ enum Command {
     },
     /// Verify file hashes, claims and the chain of sealed segments
     ///
-    /// Reads the whole archive. Three checks: every file in content/
-    /// and derived/ is re-hashed and compared with its name; every
-    /// sealed segment and the open segment in claims/ must be readable
-    /// claim by claim, and every segment named as a predecessor must be
-    /// present; every file the claims refer to, as subject or as origin
-    /// of a derived file, must be present in content/ or derived/.
+    /// Three checks: every file in content/ and derived/ is re-hashed
+    /// and compared with its name; every sealed segment and the open
+    /// segment in claims/ must be readable claim by claim, and every
+    /// segment named as a predecessor must be present; every file the
+    /// claims refer to, as subject or as origin of a derived file, must
+    /// be present in content/ or derived/.
     ///
     /// The sealed segments form one chain, from the open segment back to
     /// the first. A segment the chain cannot follow, a lost open segment
@@ -597,14 +597,24 @@ enum Command {
     /// both content/ and derived/ (`ossuary maintain weed` removes the
     /// copy in derived/).
     ///
+    /// Every file is read in full. --fast only lists the files in
+    /// content/ and derived/ and does not read them, which shows a
+    /// missing file but not a damaged one; the claims and the chain are
+    /// checked in full either way.
+    ///
     /// The report counts what it finds and lists up to five names per
     /// finding; --verbose lists all of them, --json prints one object
-    /// per finding. Exits 0 if the archive is sound, 1 if there are
+    /// per finding, after a first line {"mode":"fast"} or
+    /// {"mode":"full"}. Exits 0 if the archive is sound, 1 if there are
     /// findings.
     Audit {
         /// Print one JSON object per finding or observation
         #[arg(short, long)]
         json: bool,
+
+        /// List the files in content/ and derived/ without reading them
+        #[arg(long)]
+        fast: bool,
     },
     /// Repair and clean up the archive
     #[command(subcommand)]
@@ -783,7 +793,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             as_of.as_deref(),
             quiet,
         ),
-        Command::Audit { json } => audit::audit(&cli.archive, json, cli.verbose, quiet),
+        Command::Audit { json, fast } => audit::audit(&cli.archive, json, fast, cli.verbose, quiet),
         Command::Maintain(task) => maintain::run(&cli.archive, &task, cli.verbose, quiet),
         Command::Outside(pieces) => outside(&cli.archive, &pieces),
     }

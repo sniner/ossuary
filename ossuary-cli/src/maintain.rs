@@ -185,6 +185,9 @@ fn standing_reason(twin: &Twin, repair: bool) -> String {
         (_, Fixity::Unreadable(error)) => {
             format!("could not read the copy in derived/: {error}; left unchanged")
         }
+        (Fixity::Unchecked, _) | (_, Fixity::Unchecked) => {
+            "not checked against its hash; left unchanged".to_string()
+        }
         (Fixity::Damaged, Fixity::Damaged) => {
             "damaged in both content/ and derived/; left unchanged, restore it from a backup of the archive"
                 .to_string()

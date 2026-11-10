@@ -51,7 +51,7 @@ impl Twin {
     /// nothing unexplained is being deleted through.
     #[must_use]
     pub fn releasable(&self) -> bool {
-        self.content == Fixity::Sound && !matches!(self.derived, Fixity::Unreadable(_))
+        self.content == Fixity::Sound && matches!(self.derived, Fixity::Sound | Fixity::Damaged)
     }
 }
 
@@ -167,8 +167,8 @@ mod tests {
 
     fn audit(archive: &Archive) -> Audit {
         Audit::assemble(
-            audit_store(archive.content()).unwrap(),
-            audit_store(archive.derived()).unwrap(),
+            audit_store(archive.content(), true).unwrap(),
+            audit_store(archive.derived(), true).unwrap(),
             audit_log(archive.log()).unwrap(),
         )
     }

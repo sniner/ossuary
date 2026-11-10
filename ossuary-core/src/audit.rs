@@ -34,6 +34,11 @@
 //! at it. Repairing the chain rewrites segments, which only
 //! `ossuary-fix` does.
 //!
+//! A quick audit lists the entries of both blob stores and reads none of
+//! them. It finds a missing file and no damaged one. The segments are
+//! still re-hashed and read claim by claim, because the presence check
+//! needs every claim.
+//!
 //! The whole pass works from the truth tiers alone: stores, segments,
 //! head. The cache is never consulted — an audit is the tool for the day
 //! nothing else is trusted, so it leans on nothing the archive could
@@ -54,9 +59,14 @@ use crate::log::Log;
 pub const LINKS: [&str; 1] = ["prov:origin"];
 
 /// One blob store's fixity: every entry read whole, its bytes re-hashed
-/// against the name they are filed under.
+/// against the name they are filed under, or, in a quick audit, only
+/// listed.
 #[derive(Debug)]
 pub struct StoreAudit {
+    /// Whether every entry was read and re-hashed. When false, no entry
+    /// was read, and `damaged` and `unreadable` are empty for that
+    /// reason.
+    pub read: bool,
     /// Entries the walk met.
     pub checked: usize,
     /// Entries whose bytes are no longer what their names say.
@@ -100,6 +110,9 @@ pub enum Fixity {
     /// Not read, with what stood in the way. Not damaged: the entry
     /// answers for its bytes, not for a permission.
     Unreadable(String),
+    /// Present and not read, in a quick audit: nothing is known about
+    /// its bytes, so it is neither sound nor damaged.
+    Unchecked,
 }
 
 impl Fixity {
@@ -138,15 +151,17 @@ impl Twin {
     }
 }
 
-/// Audit one blob store: walk it whole, verify every entry.
+/// Audit one blob store: walk it whole and, with `read`, verify every
+/// entry. Without `read`, the report only lists what the store holds.
 ///
 /// # Errors
 ///
 /// [`Error::Store`](crate::Error::Store) when the store cannot be walked
 /// at all; what a single entry has to answer for lands in the report
 /// instead.
-pub fn audit_store(store: &Store) -> Result<StoreAudit> {
+pub fn audit_store(store: &Store, read: bool) -> Result<StoreAudit> {
     let mut report = StoreAudit {
+        read,
         checked: 0,
         damaged: Vec::new(),
         unreadable: Vec::new(),
@@ -157,6 +172,9 @@ pub fn audit_store(store: &Store) -> Result<StoreAudit> {
         let name = entry.digest().as_str().to_string();
         report.checked += 1;
         report.held.insert(name.clone(), entry.digest().clone());
+        if !read {
+            continue;
+        }
         match store.verify(&entry) {
             Ok(true) => {}
             Ok(false) => report.damaged.push(name),
@@ -434,8 +452,12 @@ impl Audit {
         };
         let content_troubles = content.troubles();
         let derived_troubles = derived.troubles();
-        let fixity = |troubles: &BTreeMap<&str, Fixity>, name: &str| {
-            troubles.get(name).cloned().unwrap_or(Fixity::Sound)
+        let fixity = |store: &StoreAudit, troubles: &BTreeMap<&str, Fixity>, name: &str| {
+            if store.read {
+                troubles.get(name).cloned().unwrap_or(Fixity::Sound)
+            } else {
+                Fixity::Unchecked
+            }
         };
         let twins = content
             .held
@@ -443,8 +465,8 @@ impl Audit {
             .filter(|(name, _)| derived.held.contains_key(*name))
             .map(|(name, digest)| Twin {
                 digest: digest.clone(),
-                content: fixity(&content_troubles, name),
-                derived: fixity(&derived_troubles, name),
+                content: fixity(&content, &content_troubles, name),
+                derived: fixity(&derived, &derived_troubles, name),
             })
             .collect();
         Audit {
@@ -467,10 +489,19 @@ impl Audit {
     }
 
     /// Whether the archive is sound: no finding stands. Observations
-    /// may — soundness is about loss and damage, not tidiness.
+    /// may — soundness is about loss and damage, not tidiness. After a
+    /// quick audit (see [`Audit::read`]) it says nothing about damage to
+    /// the files in `content/` and `derived/`.
     #[must_use]
     pub fn is_sound(&self) -> bool {
         self.findings() == 0
+    }
+
+    /// Whether every file in both blob stores was read and re-hashed.
+    /// False after a quick audit, which only lists them.
+    #[must_use]
+    pub fn read(&self) -> bool {
+        self.content.read && self.derived.read
     }
 }
 
@@ -524,9 +555,13 @@ mod tests {
     }
 
     fn run(archive: &Archive) -> Audit {
+        run_reading(archive, true)
+    }
+
+    fn run_reading(archive: &Archive, read: bool) -> Audit {
         Audit::assemble(
-            audit_store(archive.content()).unwrap(),
-            audit_store(archive.derived()).unwrap(),
+            audit_store(archive.content(), read).unwrap(),
+            audit_store(archive.derived(), read).unwrap(),
             audit_log(archive.log()).unwrap(),
         )
     }
@@ -791,6 +826,47 @@ mod tests {
             "damaged is still held — one finding, not damaged and missing both"
         );
         assert!(audit.missing.is_empty());
+    }
+
+    #[test]
+    fn a_quick_audit_finds_a_missing_file_and_no_damaged_one() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let damaged = take(&archive, b"original bytes");
+        let path = archive
+            .content()
+            .find(&Digest::parse(damaged.as_str()).unwrap())
+            .unwrap()
+            .unwrap();
+        tamper(&path, b"tampered");
+        let ghost = Subject::parse(&"ab".repeat(32)).unwrap();
+        record(&archive, &ghost, "user:tag", json!("gone"));
+
+        let audit = run_reading(&archive, false);
+
+        assert!(!audit.read());
+        assert!(!audit.content.read);
+        assert_eq!(audit.content.checked, 1);
+        assert!(audit.content.damaged.is_empty(), "the bytes were not read");
+        assert_eq!(audit.missing, vec![ghost.as_str().to_string()]);
+        assert_eq!(audit.findings(), 1);
+        assert!(run(&archive).read());
+    }
+
+    #[test]
+    fn a_twin_in_a_quick_audit_is_unchecked_and_not_releasable() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        take(&archive, b"in both stores");
+        archive.derived().add(b"in both stores").unwrap();
+
+        let audit = run_reading(&archive, false);
+
+        assert_eq!(audit.twins.len(), 1);
+        assert_eq!(audit.twins[0].content, Fixity::Unchecked);
+        assert_eq!(audit.twins[0].derived, Fixity::Unchecked);
+        assert!(!audit.twins[0].releasable());
+        assert!(!audit.twins[0].repairable());
     }
 
     #[test]

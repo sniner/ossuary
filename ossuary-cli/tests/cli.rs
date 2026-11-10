@@ -330,6 +330,62 @@ fn a_run_inside_the_archive_names_it_by_its_absolute_path() {
     assert_eq!(stderr.lines().next(), Some(expected.as_str()), "{stderr}");
 }
 
+#[test]
+fn audit_fast_misses_a_damaged_file_and_says_it_did_not_check() {
+    let (_dir, archive) = archive_with_a_file();
+    let name = name_of_the_note(&archive);
+    let found = run(ossuary(&archive).args(["get", "--path", &name]));
+    let path = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim_end());
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "the test plays the corruption"
+    )]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    std::fs::write(&path, b"a changed note").unwrap();
+
+    let fast = run(ossuary(&archive).args(["audit", "--fast"]));
+
+    assert!(fast.status.success(), "{fast:?}");
+    let stdout = String::from_utf8(fast.stdout).unwrap();
+    assert!(
+        stdout.contains("content/: 1 file(s), not checked against their hashes (--fast)"),
+        "{stdout}"
+    );
+    let verdict = stdout.lines().last().unwrap();
+    assert!(
+        verdict.starts_with("sound as far as --fast checks:")
+            && verdict.contains("not checked against their hashes"),
+        "{verdict}"
+    );
+    let stderr = String::from_utf8(fast.stderr).unwrap();
+    assert!(
+        stderr.contains("--fast, their contents are not read"),
+        "{stderr}"
+    );
+
+    let json = run(ossuary(&archive).args(["audit", "--fast", "--json"]));
+
+    assert!(json.status.success(), "{json:?}");
+    assert_eq!(
+        String::from_utf8(json.stdout).unwrap(),
+        "{\"mode\":\"fast\"}\n",
+        "a sound archive answers the mode line alone"
+    );
+
+    let full = run(ossuary(&archive).args(["audit", "--json"]));
+
+    assert_eq!(full.status.code(), Some(1), "{full:?}");
+    let stdout = String::from_utf8(full.stdout).unwrap();
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next(), Some("{\"mode\":\"full\"}"), "{stdout}");
+    assert!(
+        lines.any(|line| line.contains("\"finding\":\"damaged\"")),
+        "{stdout}"
+    );
+}
+
 /// The full name of note.txt in an archive made by `archive_with_a_file`.
 fn name_of_the_note(archive: &Path) -> String {
     let found = run(ossuary(archive).args(["find", "--id", "file:name=note.txt"]));

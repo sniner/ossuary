@@ -559,7 +559,7 @@ mod tests {
         assert!(files.gone.is_empty() && files.damaged.is_empty());
         assert_eq!(since.continued, ossuary_core::Continued::Yes);
         assert!(copy.root().join("cache").read_dir().is_err(), "no cache/");
-        let derived = ossuary_core::audit_store(copy.derived()).unwrap();
+        let derived = ossuary_core::audit_store(copy.derived(), true).unwrap();
         assert_eq!(derived.checked, 0, "an empty derived/ is there to be read");
     }
 
