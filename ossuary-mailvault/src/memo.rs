@@ -4,7 +4,7 @@
 //!
 //! All of it is cache by the archive's own rule: losing the file costs
 //! time, never a claim, and no claim is ever built from what stands
-//! here. Four tables:
+//! here. Five tables:
 //!
 //! - `resume` (account, folder, state): one row per folder, `state`
 //!   is a [`Resume`] as JSON, tagged with the backend that wrote it.
@@ -35,6 +35,10 @@
 //!   `uidvalidity/uid`, so a renumbered folder matches no row. Each
 //!   `--compare` removes the rows of messages no longer listed, no
 //!   longer at the place, or settled by the Message-ID.
+//! - `archive` (id, segment): one row, the sealed segment the archive
+//!   held last when the memo was committed. A memo kept outside the
+//!   archive is used only when the archive holds that segment (see
+//!   [`Memo::proof`]).
 //!
 //! Server-side numbering like a UID belongs here and nowhere on a
 //! message's record: it means nothing once the UIDVALIDITY changes.
