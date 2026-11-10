@@ -124,17 +124,29 @@ impl Source {
     }
 
     /// Write [`STARTER`] to the file. One already there is left as it
-    /// is; answers whether the file was written.
+    /// is; answers whether the file was written. The file is made
+    /// readable and writable for its owner alone: it is where a password
+    /// may be written, and who can write it can run commands as the owner.
     ///
     /// # Errors
     ///
     /// The file could not be written.
     pub fn begin(&self) -> Result<bool> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
         let path = self.path();
-        if path.exists() {
-            return Ok(false);
-        }
-        std::fs::write(&path, STARTER).with_context(|| format!("writing {}", path.display()))?;
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path);
+        let mut file = match made {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(error).context(format!("writing {}", path.display())),
+        };
+        file.write_all(STARTER.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
         Ok(true)
     }
 }
@@ -216,7 +228,7 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # folders = ["Inbox", "Sent Items"]  # as Outlook shows them; "Inbox/Projects" for a subfolder
 "##;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default, rename = "account")]
@@ -227,7 +239,9 @@ pub struct Config {
 }
 
 /// One mailbox and how to reach it.
-#[derive(Debug)]
+///
+/// Neither this nor [`Reach`] and its two ways implement `Debug`: they
+/// hold the password or the secret when the file gives it outright.
 pub struct Account {
     /// What the record calls this mailbox in every sighting, and the
     /// key its resume points are kept under.
@@ -252,7 +266,6 @@ enum Backend {
 
 /// The two ways to a mailbox, each with the keys it takes — every
 /// `KEY_cmd` run and its value filled in.
-#[derive(Debug)]
 pub enum Reach {
     /// `backend = "imap"`, or no `backend` at all.
     Imap(Imap),
@@ -261,7 +274,7 @@ pub enum Reach {
 }
 
 /// An IMAP server and a login.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Imap {
     pub host: String,
@@ -278,7 +291,7 @@ pub struct Imap {
 /// A Microsoft 365 mailbox behind an app registration: the tenant, the
 /// application and its secret are the login; `user` only says whose
 /// mailbox to read.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Graph {
     pub tenant_id: String,
@@ -671,6 +684,18 @@ mod tests {
             std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap(),
             "# mine\n"
         );
+    }
+
+    #[test]
+    fn begin_makes_the_file_for_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Source::Archive(dir.path().to_path_buf()).begin().unwrap());
+        let mode = std::fs::metadata(dir.path().join(FILE_NAME))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

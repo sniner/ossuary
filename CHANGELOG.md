@@ -5,6 +5,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`ossuary mailvault init` creates `mailvault.toml` readable and writable for its owner only**
+  (mode 0600), since the file may hold a password and its commands run as the user. A file that
+  exists keeps its mode; `chmod 600 mailvault.toml` sets it
+
 ### Fixed
 
 - **`ossuary mailvault fetch --full` could lose track of a message it still had to fetch.** A

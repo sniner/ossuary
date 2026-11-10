@@ -127,6 +127,11 @@ $ ossuary mailvault init --accounts ~/.config/ossuary/mailvault.toml
 $ ossuary mailvault fetch --accounts ~/.config/ossuary/mailvault.toml
 ```
 
+`init` creates the file readable and writable for its owner only (mode
+0600), so a password written into it cannot be read by other users of the
+machine. That does not replace the directory: whoever can write the
+directory can replace the file.
+
 ## What is recorded
 
 Each message is stored like a file added by `ossuary ingest`, with its
