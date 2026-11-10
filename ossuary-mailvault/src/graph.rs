@@ -659,7 +659,7 @@ fn backoff(attempt: u32) -> Duration {
 }
 
 /// The pause the server asked for in `Retry-After` when it named a
-/// number of seconds, the backoff otherwise.
+/// number of seconds, at most [`PAUSE_MOST`]; the backoff otherwise.
 fn pause_for(answer: &Answer, attempt: u32) -> Duration {
     answer
         .retry_after
@@ -668,7 +668,9 @@ fn pause_for(answer: &Answer, attempt: u32) -> Duration {
         .filter(|seconds| seconds.is_finite())
         .map_or_else(
             || backoff(attempt),
-            |seconds| Duration::from_secs_f64(seconds.max(0.0)).min(PAUSE_MOST),
+            // Clamped before the conversion: `from_secs_f64` panics on a
+            // number of seconds no `Duration` can hold.
+            |seconds| Duration::from_secs_f64(seconds.clamp(0.0, PAUSE_MOST.as_secs_f64())),
         )
 }
 
@@ -1335,6 +1337,11 @@ mod tests {
         };
         assert_eq!(pause_for(&answer(Some("7")), 0), Duration::from_secs(7));
         assert_eq!(pause_for(&answer(Some("900")), 0), Duration::from_secs(60));
+        assert_eq!(
+            pause_for(&answer(Some("1e300")), 0),
+            Duration::from_secs(60)
+        );
+        assert_eq!(pause_for(&answer(Some("-5")), 0), Duration::ZERO);
         assert_eq!(
             pause_for(&answer(Some("Wed, 21 Oct 2026 07:28:00 GMT")), 1),
             Duration::from_secs(4),
