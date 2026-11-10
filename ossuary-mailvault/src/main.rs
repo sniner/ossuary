@@ -240,7 +240,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             let config = source.load()?;
             let chosen = chosen(&config, &accounts)?;
-            let memo = opened(&archive, say, "every folder is fetched in full")?;
+            let memo = opened(&archive, say, "every folder is fetched in full", dry_run)?;
             let tally = fetch::run(
                 &archive,
                 &chosen,
@@ -279,7 +279,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     anyhow!("{error:#}; or pass --no-auto-labels to import without the accounts")
                 })?)
             };
-            let memo = opened(&archive, say, "the import reads every message again")?;
+            let memo = opened(
+                &archive,
+                say,
+                "the import reads every message again",
+                dry_run,
+            )?;
             say.line(format_args!(
                 "importing the Python mailvault archive at {}",
                 vault.display()
@@ -302,9 +307,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
 /// line says so and what that costs this command. So does a line when
 /// the memo is kept outside the archive and does not name a sealed
 /// segment the archive holds: it may be another archive's, and a resume
-/// point from there would pass by messages this archive never got.
-fn opened(archive: &Archive, say: Say, costs: &str) -> Result<Memo> {
+/// point from there would pass by messages this archive never got. Such
+/// a memo is emptied.
+///
+/// A dry run makes no memo file and empties none. Where a run would do
+/// either, it gets a memo in memory that holds nothing, and so counts
+/// what the run would fetch.
+fn opened(archive: &Archive, say: Say, costs: &str, dry_run: bool) -> Result<Memo> {
     let path = archive.cache_dir()?.join(memo::FILE_NAME);
+    if dry_run && !path.exists() {
+        return Memo::empty();
+    }
     let memo = Memo::open(&path)?;
     if memo.reset() {
         say.line(format_args!(
@@ -312,13 +325,21 @@ fn opened(archive: &Archive, say: Say, costs: &str) -> Result<Memo> {
             path.display()
         ));
     }
-    if !archive.accepts_cache(memo.proof()?.as_deref())? && memo.clear()? {
+    if archive.accepts_cache(memo.proof()?.as_deref())? {
+        return Ok(memo);
+    }
+    let held = if dry_run {
+        !memo.is_empty()?
+    } else {
+        memo.clear()?
+    };
+    if held {
         say.line(format_args!(
             "{}: names no sealed segment of this archive, so it is not used; {costs}",
             path.display()
         ));
     }
-    Ok(memo)
+    if dry_run { Memo::empty() } else { Ok(memo) }
 }
 
 /// The accounts named, or all of them; an error when there are none at
@@ -428,4 +449,78 @@ fn open(root: &Path) -> Result<Archive> {
         ),
         other => other.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use ossuary_core::Algorithm;
+
+    use super::*;
+
+    /// An archive with its caches outside it, and the path of its memo.
+    fn outside(dir: &Path) -> (Archive, PathBuf) {
+        let archive = Archive::create(dir.join("archive"), Algorithm::Sha256)
+            .unwrap()
+            .with_cache(dir.join("elsewhere"));
+        let path = dir.join("elsewhere").join(memo::FILE_NAME);
+        (archive, path)
+    }
+
+    /// A memo file with one resume point and no proof of its archive.
+    fn unproven(path: &Path) {
+        let memo = Memo::open(path).unwrap();
+        memo.begin().unwrap();
+        memo.advance_imap(
+            "john",
+            "INBOX",
+            memo::ImapResume {
+                uidvalidity: 1,
+                uid: 7,
+            },
+        )
+        .unwrap();
+        memo.commit().unwrap();
+    }
+
+    fn point(memo: &Memo) -> Option<memo::ImapResume> {
+        memo.imap_resume("john", "INBOX").unwrap()
+    }
+
+    #[test]
+    fn a_dry_run_makes_no_memo_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, path) = outside(dir.path());
+
+        let memo = opened(&archive, Say::new(true), "", true).unwrap();
+
+        assert!(memo.is_empty().unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_dry_run_does_not_use_a_memo_without_proof_and_leaves_it_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, path) = outside(dir.path());
+        unproven(&path);
+
+        let memo = opened(&archive, Say::new(true), "", true).unwrap();
+
+        assert_eq!(point(&memo), None, "the run starts from nothing");
+        assert!(
+            point(&Memo::open(&path).unwrap()).is_some(),
+            "the file still has the point"
+        );
+    }
+
+    #[test]
+    fn a_run_empties_a_memo_without_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, path) = outside(dir.path());
+        unproven(&path);
+
+        let memo = opened(&archive, Say::new(true), "", false).unwrap();
+
+        assert_eq!(point(&memo), None);
+        assert_eq!(point(&Memo::open(&path).unwrap()), None);
+    }
 }

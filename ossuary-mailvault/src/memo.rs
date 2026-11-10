@@ -56,6 +56,9 @@ pub const FILE_NAME: &str = "mailvault.sqlite";
 /// rewrites the file.
 const COMPACT_FROM: i64 = 1024 * 1024;
 
+/// Every table of the memo.
+const TABLES: [&str; 5] = ["resume", "pending", "imported", "compared", "archive"];
+
 /// An IMAP folder's resume point: what the server promised about its
 /// UIDs, and the highest one fetched under that promise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +160,23 @@ impl Memo {
                  DROP TABLE IF EXISTS said;",
             )?;
         }
+        Self::with(connection, reset)
+    }
+
+    /// A memo that holds nothing and is kept in memory, never in a file:
+    /// for a dry run that may not use the memo in `cache/`, or would have
+    /// to make it.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn empty() -> Result<Self> {
+        let connection = Connection::open_in_memory().context("opening a memo in memory")?;
+        Self::with(connection, false)
+    }
+
+    /// The memo on `connection`, its tables made where they are missing.
+    fn with(connection: Connection, reset: bool) -> Result<Self> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS resume (
                  account TEXT NOT NULL,
@@ -216,12 +236,32 @@ impl Memo {
     /// `SQLite` refusing.
     pub fn clear(&self) -> Result<bool> {
         let mut removed = 0;
-        for table in ["resume", "pending", "imported", "compared", "archive"] {
+        for table in TABLES {
             removed += self
                 .connection
                 .execute(&format!("DELETE FROM {table}"), [])?;
         }
         Ok(removed > 0)
+    }
+
+    /// Whether the memo holds nothing: what [`clear`](Self::clear)
+    /// leaves.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn is_empty(&self) -> Result<bool> {
+        for table in TABLES {
+            let held: bool = self.connection.query_row(
+                &format!("SELECT EXISTS (SELECT 1 FROM {table})"),
+                [],
+                |row| row.get(0),
+            )?;
+            if held {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Commit, and with it the proof that the memo belongs to `archive`
@@ -645,9 +685,11 @@ mod tests {
         );
         assert!(accepted(&memo));
 
+        assert!(!memo.is_empty().unwrap());
         assert!(memo.clear().unwrap(), "it held a resume point");
         assert_eq!(memo.imap_resume("john", "INBOX").unwrap(), None);
         assert_eq!(memo.proof().unwrap(), None);
+        assert!(memo.is_empty().unwrap());
         assert!(!memo.clear().unwrap(), "and holds nothing now");
     }
 

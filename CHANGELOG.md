@@ -18,6 +18,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A Microsoft 365 folder that could not be listed after its resume point had expired** was
   reported as "the server did not list the folder's messages", without the server's answer. The
   report now includes it, such as the HTTP status and Graph's error code
+- **`--dry-run` of `ossuary mailvault fetch` and `import` emptied a cache it could not use.** With
+  `--cache DIR`, a cache that does not belong to the archive is emptied before the run. A dry run
+  did that too, so a mistyped DIR emptied the cache of another archive, which then fetched every
+  folder in full. A dry run now leaves such a file as it is, and no longer creates the file when
+  there is none
 
 ## [0.21.0] - 2026-11-10
 
