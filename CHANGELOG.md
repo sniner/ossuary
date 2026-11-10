@@ -23,6 +23,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   did that too, so a mistyped DIR emptied the cache of another archive, which then fetched every
   folder in full. A dry run now leaves such a file as it is, and no longer creates the file when
   there is none
+- **`ossuary mailvault init` and `folders` with `--accounts FILE` needed an archive**, though they
+  only write or read FILE, and stopped with "not an ossuary archive" outside one. They now run
+  anywhere. Without `--accounts` they work on `mailvault.toml` in the archive, as before
 
 ## [0.21.0] - 2026-11-10
 

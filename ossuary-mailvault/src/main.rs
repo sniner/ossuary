@@ -199,32 +199,23 @@ fn finish_interrupted_seal(archive: &Archive) -> Result<()> {
 }
 fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
-        archive,
+        archive: root,
         cache,
         accounts_file: named,
         quiet,
         command,
     } = cli;
     let say = Say::new(quiet);
-    let archive = open(&archive)?;
-    let archive = match cache {
-        Some(dir) => archive.with_cache(dir),
-        None => archive,
-    };
-    let source = match named {
-        Some(path) => Source::Named(path),
-        None => Source::Archive(archive.root().to_path_buf()),
-    };
     // Everything that can say no before the archive is touched says it
     // before the memo is opened — the memo is a file, and a refused
     // call should make none.
     match command {
         Command::Init => {
-            init(&source)?;
+            init(&accounts_alone(named, &root)?)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Folders { accounts } => {
-            let config = source.load()?;
+            let config = accounts_alone(named, &root)?.load()?;
             let chosen = chosen(&config, &accounts)?;
             folders(&chosen, say)
         }
@@ -234,6 +225,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             compare,
             dry_run,
         } => {
+            let (archive, source) = archive_and_accounts(&root, cache, named)?;
             say.line(format_args!("archive {}", archive.root().display()));
             if !dry_run {
                 finish_interrupted_seal(&archive)?;
@@ -261,12 +253,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             no_auto_labels,
         } => {
-            if no_auto_labels && let Source::Named(path) = &source {
+            if no_auto_labels && let Some(path) = &named {
                 bail!(
                     "--accounts {}: --no-auto-labels reads no accounts; drop one of the two",
                     path.display()
                 );
             }
+            let (archive, source) = archive_and_accounts(&root, cache, named)?;
             say.line(format_args!("archive {}", archive.root().display()));
             if !dry_run {
                 finish_interrupted_seal(&archive)?;
@@ -301,6 +294,34 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(finish(&tally, dry_run))
         }
     }
+}
+
+/// The accounts file for a command that works on it alone, `init` and
+/// `folders`. A file named with `--accounts` need not lie in an archive,
+/// so none is opened for it.
+fn accounts_alone(named: Option<PathBuf>, root: &Path) -> Result<Source> {
+    Ok(match named {
+        Some(path) => Source::Named(path),
+        None => Source::Archive(open(root)?.root().to_path_buf()),
+    })
+}
+
+/// The archive a command fetches or imports into, and its accounts file.
+fn archive_and_accounts(
+    root: &Path,
+    cache: Option<PathBuf>,
+    named: Option<PathBuf>,
+) -> Result<(Archive, Source)> {
+    let archive = open(root)?;
+    let archive = match cache {
+        Some(dir) => archive.with_cache(dir),
+        None => archive,
+    };
+    let source = match named {
+        Some(path) => Source::Named(path),
+        None => Source::Archive(archive.root().to_path_buf()),
+    };
+    Ok((archive, source))
 }
 
 /// The memo, opened; when it had an older layout and was emptied, a
@@ -484,6 +505,45 @@ mod tests {
 
     fn point(memo: &Memo) -> Option<memo::ImapResume> {
         memo.imap_resume("john", "INBOX").unwrap()
+    }
+
+    #[test]
+    fn init_with_a_named_accounts_file_needs_no_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mail.toml");
+        let cli = Cli::try_parse_from([
+            "ossuary-mailvault".as_ref(),
+            "--archive".as_ref(),
+            dir.path().join("no-archive").as_os_str(),
+            "--accounts".as_ref(),
+            file.as_os_str(),
+            "init".as_ref(),
+        ])
+        .unwrap();
+
+        run(cli).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), config::STARTER);
+    }
+
+    #[test]
+    fn init_without_a_named_accounts_file_needs_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from([
+            "ossuary-mailvault".as_ref(),
+            "--archive".as_ref(),
+            dir.path().as_os_str(),
+            "init".as_ref(),
+        ])
+        .unwrap();
+
+        let refused = run(cli).err().unwrap();
+
+        assert!(
+            refused.to_string().contains("not an ossuary archive"),
+            "{refused:#}"
+        );
+        assert!(!dir.path().join(config::FILE_NAME).exists());
     }
 
     #[test]
