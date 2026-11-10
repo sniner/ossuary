@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.21.1] - 2026-11-11
 
 ### Changed
 
@@ -21,23 +21,6 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   emptied that list when it started. When it was then interrupted before it reached the message,
   no later run asked for the message again, and nothing reported it. `--full` now keeps the list
   and fetches those messages first
-- **`port_cmd` and `tls_cmd` in `mailvault.toml`** were refused with `invalid type: string ""`,
-  while the README and the starter file said any key could be given as a command. The two keys
-  take no command; the message now says so and names the key, and the documentation lists them
-- **A Microsoft 365 folder that could not be listed after its resume point had expired** was
-  reported as "the server did not list the folder's messages", without the server's answer. The
-  report now includes it, such as the HTTP status and Graph's error code
-- **`--dry-run` of `ossuary mailvault fetch` and `import` emptied a cache it could not use.** With
-  `--cache DIR`, a cache that does not belong to the archive is emptied before the run. A dry run
-  did that too, so a mistyped DIR emptied the cache of another archive, which then fetched every
-  folder in full. A dry run now leaves such a file as it is, and no longer creates the file when
-  there is none
-- **`ossuary mailvault init` and `folders` with `--accounts FILE` needed an archive**, though they
-  only write or read FILE, and stopped with "not an ossuary archive" outside one. They now run
-  anywhere. Without `--accounts` they work on `mailvault.toml` in the archive, as before
-- **The last line of a fetch that failed in part** said "the next run tries the failed ones again"
-  also for messages the same report listed as given up. It now says how many were given up and
-  that only `--full` fetches those again
 - **A Gmail message fetched from several folders lost a label it still had.** Gmail lists a
   message's labels without the label of the folder being read, and the fetch retracted every tag
   missing from that list. A message under `Work` and in the inbox ended up with the tags of the
@@ -47,6 +30,23 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A second `ossuary mailvault` on the same archive stopped with `database is locked`** when
   another was fetching or importing: a run kept `cache/mailvault.sqlite` locked while it downloaded
   or read messages. A run now locks the file only for the moment it writes to it
+- **`--dry-run` of `ossuary mailvault fetch` and `import` emptied a cache it could not use.** With
+  `--cache DIR`, a cache that does not belong to the archive is emptied before the run. A dry run
+  did that too, so a mistyped DIR emptied the cache of another archive, which then fetched every
+  folder in full. A dry run now leaves such a file as it is, and no longer creates the file when
+  there is none
+- **`port_cmd` and `tls_cmd` in `mailvault.toml`** were refused with `invalid type: string ""`,
+  while the README and the starter file said any key could be given as a command. The two keys
+  take no command; the message now says so and names the key, and the documentation lists them
+- **`ossuary mailvault init` and `folders` with `--accounts FILE` needed an archive**, though they
+  only write or read FILE, and stopped with "not an ossuary archive" outside one. They now run
+  anywhere. Without `--accounts` they work on `mailvault.toml` in the archive, as before
+- **A Microsoft 365 folder that could not be listed after its resume point had expired** was
+  reported as "the server did not list the folder's messages", without the server's answer. The
+  report now includes it, such as the HTTP status and Graph's error code
+- **The last line of a fetch that failed in part** said "the next run tries the failed ones again"
+  also for messages the same report listed as given up. It now says how many were given up and
+  that only `--full` fetches those again
 
 ## [0.21.0] - 2026-11-10
 
