@@ -324,12 +324,11 @@ fn archive_and_accounts(
     Ok((archive, source))
 }
 
-/// The memo, opened; when it had an older layout and was emptied, a
-/// line says so and what that costs this command. So does a line when
-/// the memo is kept outside the archive and does not name a sealed
-/// segment the archive holds: it may be another archive's, and a resume
-/// point from there would pass by messages this archive never got. Such
-/// a memo is emptied.
+/// The memo, opened. A memo kept outside the archive that does not
+/// name a sealed segment the archive holds is emptied, and a line says
+/// so and what that costs this command: it may be another archive's,
+/// and a resume point from there would pass by messages this archive
+/// never got.
 ///
 /// A dry run makes no memo file and empties none. Where a run would do
 /// either, it gets a memo in memory that holds nothing, and so counts
@@ -340,12 +339,6 @@ fn opened(archive: &Archive, say: Say, costs: &str, dry_run: bool) -> Result<Mem
         return Memo::empty();
     }
     let memo = Memo::open(&path)?;
-    if memo.reset() {
-        say.line(format_args!(
-            "{}: older layout, emptied; {costs}",
-            path.display()
-        ));
-    }
     if archive.accepts_cache(memo.proof()?.as_deref())? {
         return Ok(memo);
     }

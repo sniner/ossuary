@@ -10,6 +10,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary mailvault init` creates `mailvault.toml` readable and writable for its owner only**
   (mode 0600), since the file may hold a password and its commands run as the user. A file that
   exists keeps its mode; `chmod 600 mailvault.toml` sets it
+- **A `cache/mailvault.sqlite` last written by ossuary 0.11.1 or older is no longer emptied on the
+  next run.** `ossuary mailvault` stops on such a file with `no such column: state`. Delete the
+  file; the next fetch then fetches every folder in full
 
 ### Fixed
 

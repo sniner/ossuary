@@ -121,17 +121,6 @@ impl GraphResume {
     }
 }
 
-/// Whether the file has a `resume` table of an older layout, one
-/// without the `state` column. `CREATE TABLE IF NOT EXISTS` would keep
-/// it, and the first read would fail on the missing column.
-fn older_layout(connection: &Connection) -> Result<bool> {
-    let mut statement = connection.prepare("PRAGMA table_info(resume)")?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(!columns.is_empty() && !columns.iter().any(|column| column == "state"))
-}
-
 /// Seconds since the epoch, as the memo stamps them.
 fn now() -> i64 {
     SystemTime::now()
@@ -184,18 +173,13 @@ enum Write {
 
 pub struct Memo {
     connection: Connection,
-    /// Whether the file had an older layout and was emptied on open.
-    reset: bool,
     /// The writes of the batch that is open, in the order they were
     /// asked for; `None` when no batch is open.
     batch: RefCell<Option<Vec<Write>>>,
 }
 
 impl Memo {
-    /// Open the memo at `path`, making file and schema as needed. A
-    /// file with an older layout is emptied: it is cache, and the
-    /// tables of the older layout cannot be read. [`reset`](Self::reset)
-    /// says when that happened.
+    /// Open the memo at `path`, making file and schema as needed.
     ///
     /// # Errors
     ///
@@ -207,15 +191,7 @@ impl Memo {
         }
         let connection = Connection::open(path)
             .with_context(|| format!("{}: could not be opened", path.display()))?;
-        let reset = older_layout(&connection)?;
-        if reset {
-            connection.execute_batch(
-                "DROP TABLE IF EXISTS resume;
-                 DROP TABLE IF EXISTS delta;
-                 DROP TABLE IF EXISTS said;",
-            )?;
-        }
-        Self::with(connection, reset)
+        Self::with(connection)
     }
 
     /// A memo that holds nothing and is kept in memory, never in a file:
@@ -227,11 +203,11 @@ impl Memo {
     /// `SQLite` refusing.
     pub fn empty() -> Result<Self> {
         let connection = Connection::open_in_memory().context("opening a memo in memory")?;
-        Self::with(connection, false)
+        Self::with(connection)
     }
 
     /// The memo on `connection`, its tables made where they are missing.
-    fn with(connection: Connection, reset: bool) -> Result<Self> {
+    fn with(connection: Connection) -> Result<Self> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS resume (
                  account TEXT NOT NULL,
@@ -266,7 +242,6 @@ impl Memo {
         )?;
         Ok(Self {
             connection,
-            reset,
             batch: RefCell::new(None),
         })
     }
@@ -336,13 +311,6 @@ impl Memo {
             self.write(Write::Proof(sealed.as_str().to_string()))?;
         }
         self.commit()
-    }
-
-    /// Whether the file had an older layout and was emptied on open:
-    /// every folder is fetched in full, and an import starts over.
-    #[must_use]
-    pub fn reset(&self) -> bool {
-        self.reset
     }
 
     /// Begin a batch of writes. Until [`commit`](Self::commit) every
@@ -1047,42 +1015,6 @@ mod tests {
             !memo.compact().unwrap(),
             "and now there is nothing to give back"
         );
-    }
-
-    #[test]
-    fn a_file_with_an_older_layout_is_emptied_on_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cache").join(FILE_NAME);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        Connection::open(&path)
-            .unwrap()
-            .execute_batch(
-                "CREATE TABLE resume (account TEXT NOT NULL, folder TEXT NOT NULL,
-                     uidvalidity INTEGER NOT NULL, uid INTEGER NOT NULL,
-                     PRIMARY KEY (account, folder));
-                 INSERT INTO resume VALUES ('a', 'INBOX', 7, 40);
-                 CREATE TABLE delta (account TEXT NOT NULL, folder TEXT NOT NULL,
-                     link TEXT NOT NULL, issued INTEGER NOT NULL,
-                     PRIMARY KEY (account, folder));
-                 CREATE TABLE said (store_id TEXT NOT NULL, place TEXT NOT NULL,
-                     PRIMARY KEY (store_id, place));",
-            )
-            .unwrap();
-
-        let memo = Memo::open(&path).unwrap();
-
-        assert!(memo.reset());
-        assert_eq!(
-            memo.imap_resume("a", "INBOX").unwrap(),
-            None,
-            "a first fetch"
-        );
-        memo.advance_imap("a", "INBOX", at(7, 40)).unwrap();
-        assert_eq!(memo.imap_resume("a", "INBOX").unwrap(), Some(at(7, 40)));
-
-        let again = Memo::open(&path).unwrap();
-        assert!(!again.reset(), "the new layout is kept");
-        assert_eq!(again.imap_resume("a", "INBOX").unwrap(), Some(at(7, 40)));
     }
 
     #[test]
