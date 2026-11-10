@@ -68,9 +68,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ossuary mount` shows at the path. An index rebuilt after deleting `cache/` could answer
   differently from the one before. The claim with the larger id now decides in both
 - **A copy of `cache/` in another copy of the archive.** When `cache/index.sqlite` was copied into
-  a copy of the archive that was some appends behind, or into another archive that had no sealed
-  segment yet, commands showed claims that archive did not hold. The index is now rebuilt in both
-  cases
+  a copy of the archive that was some appends behind, or into another archive while neither had a
+  sealed segment yet, commands showed claims that archive did not hold. The index is now rebuilt
+  in both cases
 - **Two directories under `open/`.** The message for two open segments named `ossuary-fix chain`
   as the way out, and that command stopped with the same message. It now says what to do: move
   the directory that does not belong out of `open/`. An open segment next to the directory of an
