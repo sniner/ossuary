@@ -28,6 +28,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   about to, the command said there was nothing to seal and printed no id, and `ossuary sync`
   stopped with "the archive holds no claims yet". Both now take the seal the other program made,
   or seal what was written after it
+- **Two `ossuary ingest` runs on one archive at the same time.** The second one stopped after five
+  seconds with "database is locked", because the first kept its list of files already read locked
+  until it ended
+- **An `ossuary ingest` that is interrupted keeps what it has done.** The list of files already read
+  was only saved when the run ended, so the next run after an interruption read every file again
+  and recorded its path, name, host and modification time a second time. The list is now saved
+  every 100 files
 
 ## [0.20.3] - 2026-11-10
 

@@ -161,7 +161,9 @@ where
         None => Judged::default(),
     };
     result.empty = empty;
-    let remembering = sweep.memory.map(IngestMemory::begin).transpose()?;
+    let mut remembering = sweep
+        .memory
+        .map(|memory| Remembering::new(memory, sweep.host));
     for path in &gathered.files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
@@ -190,10 +192,10 @@ where
                     result.known += 1;
                 }
                 result.claims += claims;
-                if let (Some(memory), Some(Observation::Changed(size, mtime))) =
-                    (sweep.memory, seen)
+                if let (Some(remembering), Some(Observation::Changed(size, mtime))) =
+                    (remembering.as_mut(), seen)
                 {
-                    memory.record(sweep.host, path, size, mtime)?;
+                    remembering.note(path, size, mtime)?;
                 }
             }
             Err(error) => result.failed.push((path.clone(), error)),
@@ -217,13 +219,8 @@ where
     log.append_all(&retractions)?;
     result.claims += retractions.len();
     result.gone += retractions.len();
-    if let Some(memory) = sweep.memory {
-        for (path, _, _) in &gone {
-            memory.forget(sweep.host, path)?;
-        }
-    }
     if let Some(remembering) = remembering {
-        remembering.commit()?;
+        remembering.finish(gone.iter().map(|(path, _, _)| path.as_path()))?;
     }
     result.archives = gathered.archives;
     result.failed.extend(gathered.failed);
@@ -669,42 +666,61 @@ impl IngestMemory {
         )?;
         Ok(IngestMemory { connection })
     }
-
-    /// One transaction around a whole run: thousands of sightings, one
-    /// sync. A run that dies on the way rolls back whole, and its files
-    /// are merely observed again next time.
-    fn begin(&self) -> Result<Remembering<'_>> {
-        self.connection.execute_batch("BEGIN IMMEDIATE")?;
-        Ok(Remembering {
-            memory: self,
-            done: false,
-        })
-    }
 }
 
-/// The memory's transaction for one run: committed when the run gets to
-/// the end, rolled back when it leaves early — so a memory used for a
-/// second run is not still inside the first.
+/// How many sightings one run collects before it writes them to the
+/// memory. A run that stops loses at most this many: their files are read
+/// again by the next run, and their sightings recorded a second time.
+const REMEMBER_EVERY: usize = 100;
+
+/// What one run adds to the memory, written in steps.
+///
+/// A sighting is noted after its claims are in the log, so every step is
+/// right by itself and nothing has to be undone when the run stops. The
+/// database is locked only while a step is written, not while files are
+/// read: a second run on the same archive gets its turn, and a run that
+/// takes hours keeps what it has done when it is interrupted.
 struct Remembering<'a> {
     memory: &'a IngestMemory,
-    done: bool,
+    host: &'a str,
+    noted: Vec<(PathBuf, i64, i64)>,
 }
 
-impl Remembering<'_> {
-    fn commit(mut self) -> Result<()> {
-        self.memory.connection.execute_batch("COMMIT")?;
-        self.done = true;
+impl<'a> Remembering<'a> {
+    fn new(memory: &'a IngestMemory, host: &'a str) -> Self {
+        Remembering {
+            memory,
+            host,
+            noted: Vec::new(),
+        }
+    }
+
+    /// Note a sighting that just went on the record.
+    fn note(&mut self, path: &Path, size: i64, mtime: i64) -> Result<()> {
+        self.noted.push((path.to_path_buf(), size, mtime));
+        if self.noted.len() >= REMEMBER_EVERY {
+            self.write(std::iter::empty())?;
+        }
         Ok(())
     }
-}
 
-impl Drop for Remembering<'_> {
-    fn drop(&mut self) {
-        if !self.done {
-            // Nothing to answer with from a drop; a rollback that fails
-            // leaves the transaction to the connection's own end.
-            let _ = self.memory.connection.execute_batch("ROLLBACK");
+    /// Write what is still noted, and forget the places whose sightings
+    /// the run retracted.
+    fn finish<'p>(mut self, gone: impl Iterator<Item = &'p Path>) -> Result<()> {
+        self.write(gone)
+    }
+
+    fn write<'p>(&mut self, gone: impl Iterator<Item = &'p Path>) -> Result<()> {
+        let transaction = self.memory.connection.unchecked_transaction()?;
+        for (path, size, mtime) in &self.noted {
+            self.memory.record(self.host, path, *size, *mtime)?;
         }
+        for path in gone {
+            self.memory.forget(self.host, path)?;
+        }
+        transaction.commit()?;
+        self.noted.clear();
+        Ok(())
     }
 }
 
@@ -718,8 +734,8 @@ impl IngestMemory {
         Ok(found)
     }
 
-    /// Forget a place whose sighting was just taken back, so a file that
-    /// returns there unchanged is observed anew rather than passed by.
+    /// Forget a place whose sighting was just retracted, so that a file
+    /// that returns there unchanged is read again.
     fn forget(&self, host: &str, path: &Path) -> Result<()> {
         let mut statement = self
             .connection
@@ -1584,6 +1600,52 @@ mod tests {
         assert_eq!(second.unchanged, 2, "nothing changed, nothing observed");
         assert_eq!(second.stored + second.known, 0);
         assert_eq!(second.claims, 0, "a quiet sweep writes nothing at all");
+    }
+
+    #[test]
+    fn the_memory_is_written_in_steps_and_not_locked_in_between() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ingest.sqlite");
+        let memory = IngestMemory::open(&path).unwrap();
+        let other = IngestMemory::open(&path).unwrap();
+        let file = |n: usize| PathBuf::from(format!("/tree/{n}.txt"));
+
+        let mut remembering = Remembering::new(&memory, "atlas.example.net");
+        for n in 0..REMEMBER_EVERY {
+            remembering.note(&file(n), 1, 1).unwrap();
+        }
+        // The run goes on. What it has noted so far is in the file, and
+        // a second run can write.
+        remembering.note(&file(REMEMBER_EVERY), 1, 1).unwrap();
+        assert!(
+            other
+                .unchanged("atlas.example.net", &file(0), 1, 1)
+                .unwrap(),
+            "a full step was written"
+        );
+        assert!(
+            !other
+                .unchanged("atlas.example.net", &file(REMEMBER_EVERY), 1, 1)
+                .unwrap(),
+            "the next one waits for its step"
+        );
+        other
+            .record("vega.example.net", &file(0), 1, 1)
+            .expect("the first run holds no lock between steps");
+
+        remembering.finish([file(0).as_path()].into_iter()).unwrap();
+
+        assert!(
+            other
+                .unchanged("atlas.example.net", &file(REMEMBER_EVERY), 1, 1)
+                .unwrap()
+        );
+        assert!(
+            !other
+                .unchanged("atlas.example.net", &file(0), 1, 1)
+                .unwrap(),
+            "a place the run retracted is forgotten"
+        );
     }
 
     #[test]
