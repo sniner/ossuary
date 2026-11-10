@@ -25,12 +25,13 @@
 //! larger id when they share a second. An index built anew therefore
 //! answers as one that was folded on.
 //!
-//! The fold keeps two tables of substance and four of names. `claims` is
-//! the history, verbatim: every claim a row, retractions included, in
-//! fold order — what [`about`](Index::about) reads. `standing` is the
-//! folded answer: one row per standing (subject, attribute, value), the
-//! set semantics as a primary key — an assertion is an upsert that
-//! renews the row's moment, a retraction a `DELETE` — and what
+//! The fold keeps two tables of substance and five of names. `claims` is
+//! the history, verbatim: every claim a row, retractions included, what
+//! [`about`](Index::about) reads. `standing` is the folded answer: one
+//! row per standing (subject, attribute, value), the set semantics as a
+//! primary key. An assertion that no retraction names puts its value
+//! there; a retraction marks the claims it names, and a value goes when
+//! its last assertion is marked. It is what
 //! [`find`](Index::find) reads. Subjects, attributes, sources, runs and
 //! segments stand in tables of their own and appear in the two big
 //! tables as integer ids: a digest is 64 bytes and a segment name the
@@ -482,7 +483,6 @@ impl Index {
                  DROP TABLE IF EXISTS retractions;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
-                 DROP TABLE IF EXISTS open_read;
                  DROP TABLE IF EXISTS open_read;
                  DROP TABLE IF EXISTS bundles;
                  DROP TABLE IF EXISTS subjects;
@@ -1861,9 +1861,7 @@ impl Index {
 
 /// Claims of one segment into the tables, in their order, the first of
 /// them at position `first`: every claim a history row, and each one
-/// folded into `standing`. An assertion puts the value in and renews its
-/// moment, a retraction takes it out, a valueless retraction empties the
-/// attribute.
+/// folded into `standing` as [`replay`] describes.
 fn insert(
     transaction: &rusqlite::Transaction<'_>,
     ids: &mut Ids,

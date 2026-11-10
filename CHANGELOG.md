@@ -51,6 +51,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read last decided: which run or source `ossuary find` names for the value, and which file
   `ossuary mount` shows at the path. An index rebuilt after deleting `cache/` could answer
   differently from the one before. The claim with the larger id now decides in both
+- **A seal is safer against a power failure.** The file with the sealed segment is now flushed with
+  its directory entry before the seal is decided. Without that, a power failure at that moment
+  could leave a seal that no command finishes, to be repaired with `ossuary-fix chain`
 
 ## [0.20.3] - 2026-11-10
 

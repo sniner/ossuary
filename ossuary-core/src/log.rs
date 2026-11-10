@@ -867,6 +867,9 @@ impl Log {
             Found::Open(dir) => dir,
             Found::Pending { .. } => return Ok(None),
             Found::Nothing => {
+                if self.find_again()? != Found::Nothing {
+                    return self.seal();
+                }
                 if self.holds_segments()? {
                     return Err(Error::HeadLost(self.root.clone()));
                 }
@@ -1462,6 +1465,10 @@ fn write_segment_file(dir: &Path, text: &str) -> Result<bool> {
             };
             file.write_all(text.as_bytes()).map_err(io)?;
             immure::sync_file(&file).map_err(io)?;
+            // The rename that follows decides the seal and is flushed.
+            // After a power loss the file's entry in this directory must
+            // not be missing where that rename has survived.
+            sync_dir(dir);
             Ok(true)
         }
         Err(source) if source.kind() == ErrorKind::NotFound => Ok(false),
