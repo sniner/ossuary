@@ -35,6 +35,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   was only saved when the run ended, so the next run after an interruption read every file again
   and recorded its path, name, host and modification time a second time. The list is now saved
   every 100 files
+- **Two claims of the same second no longer depend on how the index was built.** When the same
+  value was recorded twice within one second, or two files at one path, the claim the index had
+  read last decided: which run or source `ossuary find` names for the value, and which file
+  `ossuary mount` shows at the path. An index rebuilt after deleting `cache/` could answer
+  differently from the one before. The claim with the larger id now decides in both
 
 ## [0.20.3] - 2026-11-10
 

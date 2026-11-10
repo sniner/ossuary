@@ -58,7 +58,7 @@ record:
 * **One file per path.** If several files were recorded at the same path
   (the same path with different content over time), the file with the
   newest standing claim is shown; within the same second, the claim
-  written later to the log wins.
+  with the larger id wins.
 * **A path is either a file or a folder.** If a path was recorded both as
   a file and as a folder, the folder is shown, so the files in it stay
   reachable. The file is shown next to it under a name with the start of

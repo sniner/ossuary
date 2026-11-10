@@ -11,15 +11,15 @@
 
 use std::collections::BTreeMap;
 
-/// What one place answers with: the winning file's digest, when its
-/// assertion was made, and where that assertion stood in log order —
-/// the tie-breaker for places said twice in one second.
+/// One file at one place: its digest, when the newest assertion of the
+/// place was made, and that assertion's id, which decides between two
+/// files recorded at one place in the same second.
 #[derive(Debug, Clone)]
 pub struct Sighting {
     pub path: String,
     pub digest: String,
     pub asserted: String,
-    pub order: u64,
+    pub claim: String,
 }
 
 /// One entry of the flattened tree. Ids are indices into
@@ -69,13 +69,13 @@ pub fn grown(
     modified: &BTreeMap<String, u32>,
 ) -> Forest {
     // The first narrowing: of everything standing at one place, the
-    // newest assertion wins, log order breaking ties within a second.
+    // newest assertion wins, the larger claim id within a second.
     let mut winners: BTreeMap<&str, &Sighting> = BTreeMap::new();
     for sighting in places {
         match winners.get(sighting.path.as_str()) {
             Some(standing)
-                if (standing.asserted.as_str(), standing.order)
-                    >= (sighting.asserted.as_str(), sighting.order) => {}
+                if (standing.asserted.as_str(), standing.claim.as_str())
+                    >= (sighting.asserted.as_str(), sighting.claim.as_str()) => {}
             _ => {
                 winners.insert(&sighting.path, sighting);
             }
@@ -249,12 +249,13 @@ pub fn clamped(seconds: Option<i64>) -> Option<u32> {
 mod tests {
     use super::*;
 
-    fn sighting(path: &str, digest: &str, asserted: &str, order: u64) -> Sighting {
+    /// `claim` stands in for a claim id: hex digits, compared as text.
+    fn sighting(path: &str, digest: &str, asserted: &str, claim: u8) -> Sighting {
         Sighting {
             path: path.to_string(),
             digest: digest.to_string(),
             asserted: asserted.to_string(),
-            order,
+            claim: format!("{claim:02x}"),
         }
     }
 
@@ -284,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn within_one_second_the_later_claim_wins() {
+    fn within_one_second_the_larger_claim_id_wins() {
         let forest = grown(
             &[
                 sighting("/a", "1111", "2026-01-01T00:00:00Z", 7),
@@ -296,7 +297,7 @@ mod tests {
         let Kind::File { digest, .. } = &forest.entries[1].kind else {
             panic!("/a is a file");
         };
-        assert_eq!(digest, "1111", "log order breaks the tie");
+        assert_eq!(digest, "1111", "the claim id breaks the tie");
     }
 
     #[test]

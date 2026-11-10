@@ -18,8 +18,12 @@
 //! fold walks back to the one it knows and folds the segments passed on
 //! the way, oldest first. A claim of theirs that the index already holds,
 //! read from the head before the seal, only gets its new segment and
-//! position. Then the bundles of the new head are read. The order of the
-//! fold is the order of the log, and claim times play no part in it.
+//! position. Then the bundles of the new head are read. The fold reads
+//! the log in its order, and what it arrives at does not depend on that
+//! order: a retraction names its claims by id, and of several assertions
+//! of one value the newest by claim time answers for it, the one with the
+//! larger id when they share a second. An index built anew therefore
+//! answers as one that was folded on.
 //!
 //! The fold keeps two tables of substance and four of names. `claims` is
 //! the history, verbatim: every claim a row, retractions included, in
@@ -183,9 +187,8 @@ pub struct Folded {
 }
 
 /// One value standing at a closing time: whose record it is on, what
-/// stands, when its newest surviving assertion was made, and that
-/// assertion's place in fold order — the tie-breaker claim time cannot
-/// be, since many claims share a second.
+/// stands, and the assertion that answers for it: the newest one that
+/// is not retracted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Standing {
     /// The file the value stands on.
@@ -195,9 +198,11 @@ pub struct Standing {
     /// When the newest assertion still standing was made, in claim
     /// time's own spelling.
     pub asserted: String,
-    /// That assertion's row in the index, which counts up in fold
-    /// order: larger is later in the log.
-    pub order: u64,
+    /// That assertion's id. Of several made in the same second it is the
+    /// largest, and `(asserted, claim)` orders the assertions of
+    /// different values the same way: an order that follows from the log
+    /// alone, whatever order an index read it in.
+    pub claim: ClaimId,
 }
 
 /// One row of `segments`: id, digest, place in the chain.
@@ -1229,8 +1234,10 @@ impl Index {
     /// standing set as it is.
     fn standing_now(&self, attribute: &str) -> Result<Vec<Standing>> {
         let mut statement = self.connection.prepare(
-            "SELECT su.digest, st.value, st.time, st.claim
-             FROM standing st JOIN subjects su ON su.id = st.subject
+            "SELECT su.digest, st.value, st.time, c.cid
+             FROM standing st
+             JOIN subjects su ON su.id = st.subject
+             JOIN claims c ON c.id = st.claim
              WHERE st.attribute = (SELECT id FROM attributes WHERE name = ?1)
              ORDER BY su.digest, st.value",
         )?;
@@ -1239,7 +1246,7 @@ impl Index {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
+                row.get::<_, String>(3)?,
             ))
         })?;
         let mut standing = Vec::new();
@@ -1249,7 +1256,7 @@ impl Index {
                 subject: Subject::parse(&subject)?,
                 value: serde_json::from_str(&value)?,
                 asserted,
-                order: order_of(claim),
+                claim: ClaimId::parse(&claim)?,
             });
         }
         Ok(standing)
@@ -1260,10 +1267,11 @@ impl Index {
     fn standing_replayed(&self, attribute: &str, cutoff: &str) -> Result<Vec<Standing>> {
         use std::collections::BTreeMap;
 
-        type Held = BTreeMap<String, BTreeMap<String, BTreeMap<String, (String, u64)>>>;
+        // Subject, value, claim id, and the time of that claim.
+        type Held = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
 
         let mut statement = self.connection.prepare(
-            "SELECT su.digest, c.value, c.time, c.id, c.cid,
+            "SELECT su.digest, c.value, c.time, c.cid,
                     (SELECT json_group_array(rt.target) FROM retractions rt WHERE rt.claim = c.id)
              FROM claims c
              JOIN subjects su ON su.id = c.subject
@@ -1277,9 +1285,8 @@ impl Index {
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
+                row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
             ))
         })?;
 
@@ -1291,7 +1298,7 @@ impl Index {
         let mut where_is: HashMap<String, (String, String)> = HashMap::new();
         let mut retracted: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
-            let (subject, value, time, claim, cid, targets) = row?;
+            let (subject, value, time, cid, targets) = row?;
             if let Some(value) = value {
                 if retracted.contains(&cid) {
                     continue;
@@ -1301,7 +1308,7 @@ impl Index {
                     .or_default()
                     .entry(value)
                     .or_default()
-                    .insert(cid, (time, order_of(claim)));
+                    .insert(cid, time);
             } else {
                 let targets: Vec<String> = serde_json::from_str(&targets)?;
                 for target in targets {
@@ -1315,15 +1322,17 @@ impl Index {
                 }
             }
         }
-        let folded: BTreeMap<String, BTreeMap<String, (String, u64)>> = held
+        // The newest assertion of each value, by time and then by id.
+        let folded: BTreeMap<String, BTreeMap<String, (String, String)>> = held
             .into_iter()
             .map(|(subject, values)| {
                 let values = values
                     .into_iter()
                     .filter_map(|(value, claims)| {
                         claims
-                            .into_values()
-                            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
+                            .into_iter()
+                            .map(|(cid, time)| (time, cid))
+                            .max()
                             .map(|newest| (value, newest))
                     })
                     .collect();
@@ -1337,12 +1346,12 @@ impl Index {
                 continue;
             }
             let subject = Subject::parse(&subject)?;
-            for (value, (asserted, order)) in values {
+            for (value, (asserted, claim)) in values {
                 standing.push(Standing {
                     subject: subject.clone(),
                     value: serde_json::from_str(&value)?,
                     asserted,
-                    order,
+                    claim: ClaimId::parse(&claim)?,
                 });
             }
         }
@@ -1850,11 +1859,6 @@ impl Index {
     }
 }
 
-/// A claim's row id as a [`Standing`] order: ids count up from one.
-fn order_of(claim: i64) -> u64 {
-    u64::try_from(claim).expect("row ids are positive")
-}
-
 /// Claims of one segment into the tables, in their order, the first of
 /// them at position `first`: every claim a history row, and each one
 /// folded into `standing`. An assertion puts the value in and renews its
@@ -2021,21 +2025,27 @@ fn replay(
     let id = transaction.last_insert_rowid();
     if let Some(value) = value {
         if !retracted {
-            // Said again, the value stands as before, but the moment and
-            // the row that answer for it are the newest.
+            // Asserted again, the value stands as before, and the newest
+            // assertion answers for it: the later time, and in the same
+            // second the larger id. The row id says when this index read
+            // a claim, which differs between an index folded on and one
+            // built anew, so it does not decide.
             let mut put = transaction.prepare_cached(
                 "INSERT INTO standing (subject, attribute, value, time, claim)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT (subject, attribute, value)
                  DO UPDATE SET time = excluded.time, claim = excluded.claim
-                 WHERE excluded.time >= standing.time",
+                 WHERE excluded.time > standing.time
+                    OR (excluded.time = standing.time
+                        AND ?6 > (SELECT cid FROM claims WHERE id = standing.claim))",
             )?;
             put.execute(params![
                 subject,
                 attribute,
                 value,
                 claim.time().as_str(),
-                id
+                id,
+                cid
             ])?;
         }
         return Ok(());
@@ -2074,7 +2084,7 @@ fn restand(
             "SELECT id, time FROM claims
              WHERE subject = ?1 AND attribute = ?2 AND value = ?3
                AND retract = 0 AND retracted = 0
-             ORDER BY time DESC, id DESC LIMIT 1",
+             ORDER BY time DESC, cid DESC LIMIT 1",
             params![subject, attribute, value],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -2989,6 +2999,55 @@ mod tests {
             [subject()],
             "the record still knows who said it first"
         );
+    }
+
+    /// Review 0.20.3, B7: of two assertions in one second the one the
+    /// index read last answered, so an index folded on and one built
+    /// anew could name different claims.
+    #[test]
+    fn two_assertions_in_one_second_answer_alike_however_the_index_read_them() {
+        let moment = "2026-09-01T10:00:00Z";
+        let name = Attribute::parse("file:name").unwrap();
+        for (first, second) in [('a', 'b'), ('b', 'a')] {
+            let dir = TempDir::new().unwrap();
+            let log = log_in(&dir);
+            let mut index = index_in(&dir);
+            for run in [first, second] {
+                log.append(&said_in(
+                    &subject(),
+                    "file:name",
+                    json!("abc"),
+                    moment,
+                    &run_x(run),
+                ))
+                .unwrap();
+                index.fold(&log).unwrap();
+            }
+            log.seal().unwrap().unwrap();
+            index.fold(&log).unwrap();
+            let fresh_dir = TempDir::new().unwrap();
+            let mut fresh = index_in(&fresh_dir);
+            fresh.fold(&log).unwrap();
+
+            let answering = |index: &Index| {
+                index.standing_as_of("file:name", None).unwrap()[0]
+                    .claim
+                    .clone()
+            };
+            let largest = index
+                .standing_ids(&subject(), &name, None)
+                .unwrap()
+                .into_iter()
+                .max()
+                .unwrap();
+            assert_eq!(answering(&index), largest, "run {first} read first");
+            assert_eq!(answering(&fresh), largest, "and in an index built anew");
+            assert_eq!(
+                index.standing_as_of("file:name", Some(moment)).unwrap()[0].claim,
+                largest,
+                "and in a replay"
+            );
+        }
     }
 
     #[test]
@@ -4286,14 +4345,22 @@ mod tests {
             "at a cutoff behind the retraction nothing stands"
         );
         let today = at(None);
+        let surviving = index
+            .standing_ids(&subject(), &Attribute::parse("file:path").unwrap(), None)
+            .unwrap();
+        assert_eq!(surviving.len(), 1);
         assert_eq!(
             (
                 today[0].value.clone(),
                 today[0].asserted.clone(),
-                today[0].order
+                today[0].claim.clone()
             ),
-            (place, "2026-03-01T00:00:00Z".to_string(), 3),
-            "no cutoff answers for today, and the surviving assertion names its moment and its row, the third claim folded"
+            (
+                place,
+                "2026-03-01T00:00:00Z".to_string(),
+                surviving[0].clone()
+            ),
+            "no cutoff answers for today, and the surviving assertion names its moment and its id"
         );
     }
 

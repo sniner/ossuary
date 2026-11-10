@@ -24,7 +24,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
-use ossuary_core::{Archive, Error, Index, Standing, Timestamp, Value};
+use ossuary_core::{Archive, ClaimId, Error, Index, Standing, Timestamp, Value};
 
 mod forest;
 mod record;
@@ -236,7 +236,7 @@ fn grown_view(index: &Index) -> Result<Forest> {
             path,
             digest: standing.subject.as_str().to_string(),
             asserted: standing.asserted,
-            order: standing.order,
+            claim: standing.claim.as_str().to_string(),
         });
     }
 
@@ -258,17 +258,17 @@ fn grown_view(index: &Index) -> Result<Forest> {
     Ok(forest::grown(&places, &sizes, &modified))
 }
 
-/// The newest standing value per subject — the mounted view's
-/// newest-wins, decided by assertion moment, log order breaking ties.
+/// The newest standing value per subject: the one asserted last, and of
+/// two asserted in the same second the one with the larger claim id.
 fn newest(standing: Vec<Standing>) -> BTreeMap<String, Value> {
-    let mut best: BTreeMap<String, (String, u64, Value)> = BTreeMap::new();
+    let mut best: BTreeMap<String, (String, ClaimId, Value)> = BTreeMap::new();
     for one in standing {
         let key = one.subject.as_str().to_string();
         match best.get(&key) {
-            Some((asserted, order, _))
-                if (asserted.as_str(), *order) >= (one.asserted.as_str(), one.order) => {}
+            Some((asserted, claim, _))
+                if (asserted.as_str(), claim) >= (one.asserted.as_str(), &one.claim) => {}
             _ => {
-                best.insert(key, (one.asserted, one.order, one.value));
+                best.insert(key, (one.asserted, one.claim, one.value));
             }
         }
     }
