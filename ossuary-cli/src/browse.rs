@@ -7,24 +7,23 @@
 //! both show as they stand.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use ossuary_core::{Index, Subject, Value};
 
 use crate::output::{errln, say};
-use crate::{index_at, open, shorten};
+use crate::{Location, index_at, open, shorten};
 
 pub(crate) fn ls(
-    root: &Path,
+    location: &Location,
     place: Option<&str>,
     json: bool,
     as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
     let place = named(place);
-    let archive = open(root)?;
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
     let pairs = index.under(&place)?;
     if pairs.is_empty() {
@@ -64,13 +63,13 @@ pub(crate) fn ls(
 }
 
 pub(crate) fn tree(
-    root: &Path,
+    location: &Location,
     place: Option<&str>,
     as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
     let place = named(place);
-    let archive = open(root)?;
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
     let pairs = shortened(&index, index.under(&place)?)?;
     if pairs.is_empty() {

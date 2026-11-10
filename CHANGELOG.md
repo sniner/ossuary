@@ -7,6 +7,14 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`--cache DIR` and `OSSUARY_CACHE`** keep the query index and the other caches in a directory
+  outside the archive. An archive that cannot be written to can be read that way, also a copy made
+  by `ossuary sync`, which has no `cache/`; so far every command failed there with "Permission
+  denied" or "attempt to write a readonly database". It also keeps the caches off a network
+  share. `ossuary mount`, `ossuary mailvault` and `ossuary fix` take the option too, and `ossuary`
+  passes it on to them. Use one directory per archive. A cache outside the archive is used only
+  once the archive has a sealed segment (`ossuary seal` makes one); until then every command
+  builds the index again, and `ossuary ingest` and `ossuary mailvault fetch` start from nothing
 - **`ossuary maintain describe`** records the size and type of files that have neither. The two
   are recorded when a file is new to the archive. A run that was interrupted after it stored a
   file and before it recorded it left the file without them for good: the next run found the file
@@ -51,6 +59,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read last decided: which run or source `ossuary find` names for the value, and which file
   `ossuary mount` shows at the path. An index rebuilt after deleting `cache/` could answer
   differently from the one before. The claim with the larger id now decides in both
+- **A copy of `cache/` in another copy of the archive.** When `cache/index.sqlite` was copied into
+  a copy of the archive that was some appends behind, or into another archive that had no sealed
+  segment yet, commands showed claims that archive did not hold. The index is now rebuilt in both
+  cases
 - **A seal is safer against a power failure.** The file with the sealed segment is now flushed with
   its directory entry before the seal is decided. Without that, a power failure at that moment
   could leave a seal that no command finishes, to be repaired with `ossuary-fix chain`

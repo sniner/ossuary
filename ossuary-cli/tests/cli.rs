@@ -351,6 +351,91 @@ fn a_file_stored_before_it_was_recorded_gets_its_size_and_type_from_describe() {
     assert!(String::from_utf8_lossy(&again.stdout).contains("nothing to describe"));
 }
 
+/// Every file and directory under `dir`, relative to it.
+fn tree_of(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path.clone());
+            }
+            found.push(path.strip_prefix(dir).unwrap().to_path_buf());
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn with_the_cache_elsewhere_a_command_that_reads_writes_nothing_into_the_archive() {
+    let (dir, archive) = archive_with_a_file();
+    assert!(run(ossuary(&archive).arg("seal")).status.success());
+    // As a copy made by `ossuary sync` is: no cache/ in it.
+    std::fs::remove_dir_all(archive.join("cache")).unwrap();
+    let before = tree_of(&archive);
+    let cache = dir.path().join("cache-elsewhere");
+    let find = |cache: &Path| {
+        run(ossuary(&archive)
+            .arg("--cache")
+            .arg(cache)
+            .args(["find", "file:name=note.txt"]))
+    };
+
+    let first = find(&cache);
+    let second = find(&cache);
+
+    assert!(first.status.success(), "{first:?}");
+    assert!(String::from_utf8_lossy(&first.stdout).contains("file:name=note.txt"));
+    assert_eq!(tree_of(&archive), before, "nothing was made in the archive");
+    assert!(cache.join("index.sqlite").is_file());
+    assert!(
+        String::from_utf8_lossy(&first.stderr).contains("index updated: 1 new log segment(s)"),
+        "the first command builds the index: {first:?}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&second.stderr).contains("index"),
+        "and the next command uses it: {second:?}"
+    );
+}
+
+#[test]
+fn a_cache_elsewhere_is_not_used_for_another_archive() {
+    let (dir, archive) = archive_with_a_file();
+    let cache = dir.path().join("cache-elsewhere");
+    let other_files = dir.path().join("other-files");
+    std::fs::create_dir(&other_files).unwrap();
+    std::fs::write(other_files.join("letter.txt"), b"a letter").unwrap();
+    let other = dir.path().join("other");
+    assert!(run(ossuary(&other).arg("init")).status.success());
+    assert!(
+        run(ossuary(&other).arg("ingest").arg(&other_files))
+            .status
+            .success()
+    );
+    let names = |archive: &Path| {
+        let found = run(ossuary(archive)
+            .arg("--cache")
+            .arg(&cache)
+            .args(["find", "file:name=.."]));
+        assert!(found.status.success());
+        String::from_utf8_lossy(&found.stdout).into_owned()
+    };
+
+    let ours = names(&archive);
+    let theirs = names(&other);
+
+    assert!(
+        ours.contains("note.txt") && !ours.contains("letter.txt"),
+        "{ours}"
+    );
+    assert!(
+        theirs.contains("letter.txt") && !theirs.contains("note.txt"),
+        "the index of the first archive is not used for the second: {theirs}"
+    );
+}
+
 #[test]
 fn a_run_inside_the_archive_names_it_by_its_absolute_path() {
     let (_dir, archive) = archive_with_a_file();

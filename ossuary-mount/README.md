@@ -17,7 +17,8 @@ $ open ~/view/home/john/photos/DSC_1042.jpg
 [outside verb](../ossuary-cli/README.md#external-commands): `ossuary` finds it
 on the PATH as `ossuary-mount`, and it can also be called directly under
 that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every ossuary
-command.
+command, and `--cache` and `OSSUARY_CACHE` for an index kept outside the
+archive, which an archive that cannot be written to needs.
 
 The command runs in the foreground. Ctrl-C unmounts, and so does `umount`
 from another terminal. A mountpoint that does not exist is created, and

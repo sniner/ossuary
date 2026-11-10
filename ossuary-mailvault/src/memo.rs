@@ -183,9 +183,61 @@ impl Memo {
                  id      TEXT NOT NULL,
                  subject TEXT NOT NULL,
                  PRIMARY KEY (account, folder, id)
+             );
+             CREATE TABLE IF NOT EXISTS archive (
+                 id      INTEGER PRIMARY KEY CHECK (id = 0),
+                 segment TEXT NOT NULL
              );",
         )?;
         Ok(Self { connection, reset })
+    }
+
+    /// The sealed segment the memo recorded when it was last committed:
+    /// what shows a memo kept outside the archive to belong to it (see
+    /// `Archive::accepts_cache`). `None` when nothing was sealed then.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn proof(&self) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row("SELECT segment FROM archive WHERE id = 0", [], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Empty the memo: every folder is fetched in full again, and an
+    /// import starts over. Returns whether it held anything.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing.
+    pub fn clear(&self) -> Result<bool> {
+        let mut removed = 0;
+        for table in ["resume", "pending", "imported", "compared", "archive"] {
+            removed += self
+                .connection
+                .execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        Ok(removed > 0)
+    }
+
+    /// Commit, and with it the proof that the memo belongs to `archive`
+    /// when it is kept outside it: the segment sealed last.
+    ///
+    /// # Errors
+    ///
+    /// `SQLite` refusing, or the archive's open segment not answering.
+    pub fn commit_for(&self, archive: &ossuary_core::Archive) -> Result<()> {
+        if let Some(sealed) = archive.cache_proof()? {
+            self.connection.execute(
+                "INSERT OR REPLACE INTO archive (id, segment) VALUES (0, ?1)",
+                rusqlite::params![sealed.as_str()],
+            )?;
+        }
+        self.commit()
     }
 
     /// Whether the file had an older layout and was emptied on open:
@@ -552,6 +604,51 @@ mod tests {
 
     fn at(uidvalidity: u32, uid: u32) -> ImapResume {
         ImapResume { uidvalidity, uid }
+    }
+
+    #[test]
+    fn a_memo_outside_the_archive_records_the_segment_sealed_last() {
+        use ossuary_core::{Algorithm, Archive, Attribute, Claim, Run, Source, Subject, Timestamp};
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Archive::create(dir.path().join("archive"), Algorithm::Sha256)
+            .unwrap()
+            .with_cache(dir.path().join("elsewhere"));
+        let memo = Memo::open(&archive.cache_dir().unwrap().join(FILE_NAME)).unwrap();
+        let accepted = |memo: &Memo| {
+            archive
+                .accepts_cache(memo.proof().unwrap().as_deref())
+                .unwrap()
+        };
+        memo.begin().unwrap();
+        memo.advance_imap("john", "INBOX", at(1, 7)).unwrap();
+        memo.commit_for(&archive).unwrap();
+        assert_eq!(memo.proof().unwrap(), None, "nothing is sealed yet");
+        assert!(!accepted(&memo));
+
+        let claim = Claim::assert(
+            Subject::parse(&"ab".repeat(32)).unwrap(),
+            Attribute::parse("user:tag").unwrap(),
+            serde_json::json!("x"),
+            Timestamp::now(),
+            Source::parse("user").unwrap(),
+            Run::new(),
+        )
+        .unwrap();
+        archive.log().append(&claim).unwrap();
+        let sealed = archive.log().seal().unwrap().unwrap();
+        memo.begin().unwrap();
+        memo.commit_for(&archive).unwrap();
+        assert_eq!(
+            memo.proof().unwrap().as_deref(),
+            Some(sealed.digest().as_str())
+        );
+        assert!(accepted(&memo));
+
+        assert!(memo.clear().unwrap(), "it held a resume point");
+        assert_eq!(memo.imap_resume("john", "INBOX").unwrap(), None);
+        assert_eq!(memo.proof().unwrap(), None);
+        assert!(!memo.clear().unwrap(), "and holds nothing now");
     }
 
     #[test]

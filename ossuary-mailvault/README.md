@@ -30,7 +30,8 @@ example.org:Sent: resuming above UID 310, 0 messages to fetch
 [outside verb](../ossuary-cli/README.md#external-commands): `ossuary` finds it
 on the PATH as `ossuary-mailvault`, and it can also be called directly
 under that name. It takes `--archive` and `OSSUARY_ARCHIVE` like every
-ossuary command, and `--accounts FILE` to read the accounts from a file
+ossuary command, `--cache` and `OSSUARY_CACHE` for caches kept outside
+the archive, and `--accounts FILE` to read the accounts from a file
 outside the archive (see [Who may write the file](#who-may-write-the-file)).
 
 | | |

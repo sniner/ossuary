@@ -746,6 +746,16 @@ impl Log {
         Ok((sealed, rest))
     }
 
+    /// The segment sealed last, as the open segment names it; `None`
+    /// before the first seal.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`open`](Log::open) can answer.
+    pub fn last_sealed(&self) -> Result<Option<Digest>> {
+        Ok(self.open()?.and_then(|open| open.previous))
+    }
+
     /// One bundle of the open segment, its claims with their ids. `None`
     /// when the bundle is gone: sealed since the listing, and to be read
     /// from its segment.

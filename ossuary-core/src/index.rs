@@ -48,9 +48,9 @@
 //! index but no head in the log, claims but no record of what was read
 //! of the head, a chain that does not lead back to the segment the index
 //! followed. The index is then emptied and folded anew, which is what
-//! deleting the cache does. A bundle that disappears from the head
-//! without a seal is not found; its claims stay in the index until it is
-//! folded anew.
+//! deleting the cache does. So is an index that has read a bundle the
+//! open segment no longer holds while it follows the same segment: the
+//! index of another copy of the archive, or a log set back.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -392,6 +392,10 @@ const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
 pub struct Index {
     connection: Connection,
     ids: Ids,
+    /// Whether the file is known to belong to the log it is folded
+    /// from: it lies in the archive's `cache/`, or a fold of this
+    /// instance found that it does. See [`open_outside`](Index::open_outside).
+    proved: bool,
 }
 
 /// The name tables, as far as this instance has met them: a digest, an
@@ -514,7 +518,26 @@ impl Index {
         Ok(Index {
             connection,
             ids: Ids::default(),
+            proved: true,
         })
+    }
+
+    /// Open an index kept outside the archive it is folded from.
+    ///
+    /// Such a file may be another archive's. A fold tells by the sealed
+    /// segment the index followed: the chain of this log must lead back
+    /// to it. An index that followed none has nothing to tell by, and
+    /// the first fold of this instance empties it and folds the log
+    /// anew. That is the open segment at most, since a log with a sealed
+    /// segment gives the index one to follow.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Index::open).
+    pub fn open_outside(path: impl AsRef<Path>) -> Result<Self> {
+        let mut index = Index::open(path)?;
+        index.proved = false;
+        Ok(index)
     }
 
     /// Fold the log in: new segments once, and of the open head what was
@@ -545,14 +568,18 @@ impl Index {
 
     fn fold_in(&mut self, log: &Log) -> Result<Folded> {
         if let Some(folded) = self.follow(log)? {
+            self.proved = true;
             return Ok(folded);
         }
         self.empty()?;
         match self.follow(log)? {
-            Some(folded) => Ok(Folded {
-                rebuilt: true,
-                ..folded
-            }),
+            Some(folded) => {
+                self.proved = true;
+                Ok(Folded {
+                    rebuilt: true,
+                    ..folded
+                })
+            }
             None => Err(Error::IndexMismatch),
         }
     }
@@ -577,6 +604,24 @@ impl Index {
             return Ok(None);
         }
         let followed = read.followed();
+        if !self.proved && followed.is_none() && holds_claims(&self.connection)? {
+            // Kept outside the archive, and no segment to tell by whose
+            // claims these are.
+            return Ok(None);
+        }
+        // The bundles read so far. With the open segment following the
+        // same segment as then, every one of them is still in it: a
+        // bundle goes only when a seal has put its lines into a segment,
+        // and then the open segment follows that one. A bundle that is
+        // missing means another open segment: a copy of the archive, or
+        // a log set back.
+        let read = read_bundles(&self.connection)?;
+        if open.previous().map(Digest::as_str) == followed.as_deref() {
+            let listed: HashSet<&str> = open.bundles().iter().map(Digest::as_str).collect();
+            if read.iter().any(|bundle| !listed.contains(bundle.as_str())) {
+                return Ok(None);
+            }
+        }
 
         // Back from the open segment to the segment the index followed.
         // Every segment passed on the way is new.
@@ -639,20 +684,25 @@ impl Index {
             before = Some(digest);
         }
 
-        folded.head += self.follow_open(log, &open)?;
+        // A segment folded above emptied the list of bundles read.
+        let read = if fresh.is_empty() {
+            read
+        } else {
+            HashSet::new()
+        };
+        folded.head += self.follow_open(log, &open, &read)?;
         Ok(Some(folded))
     }
 
-    /// Fold in the bundles of the open segment that the index has not
-    /// read, and record which segment the open segment follows. Returns
-    /// how many claims went in.
-    fn follow_open(&mut self, log: &Log, open: &Open) -> Result<usize> {
+    /// Fold in the bundles of the open segment that are not among `read`,
+    /// the ones the index has read, and record which segment the open
+    /// segment follows. Returns how many claims went in.
+    fn follow_open(&mut self, log: &Log, open: &Open, read: &HashSet<String>) -> Result<usize> {
         // The bundles not read yet, their claims in the order the seal
         // will give them, so that the rows follow the record's order as
         // far as the open segment has one.
         let mut unread = Vec::new();
         let mut claims = Vec::new();
-        let read = read_bundles(&self.connection)?;
         for bundle in open.bundles() {
             if read.contains(bundle.as_str()) {
                 continue;
@@ -838,7 +888,9 @@ impl Index {
                 row.get::<_, i64>(9)?,
             ))
         })?;
-        let Index { connection, ids } = &mut replayed;
+        let Index {
+            connection, ids, ..
+        } = &mut replayed;
         let transaction = connection.transaction()?;
         for (id, digest, seq) in segments? {
             transaction.execute(
@@ -2685,6 +2737,90 @@ mod tests {
             "nothing of the other chain stays"
         );
         assert_eq!(tagged(&index, "theirs"), [subject()]);
+    }
+
+    #[test]
+    fn an_index_that_read_a_bundle_the_open_segment_no_longer_has_is_folded_anew() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        log.append(&tag("stays", "2026-09-01T00:00:00Z")).unwrap();
+        log.append(&tag("goes", "2026-09-02T00:00:00Z")).unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(tagged(&index, "goes"), [subject()]);
+        // The open segment of a copy that is one append behind: the
+        // same segment before it, one bundle fewer.
+        let open = log.open().unwrap().unwrap();
+        let gone = open
+            .bundles()
+            .iter()
+            .find(|bundle| {
+                let claims = log.bundle(&open, bundle).unwrap().unwrap();
+                claims[0].value() == Some(&json!("goes"))
+            })
+            .unwrap();
+        std::fs::remove_file(
+            dir.path()
+                .join("open")
+                .join("first")
+                .join(format!("{gone}.jsonl")),
+        )
+        .unwrap();
+
+        let folded = index.fold(&log).unwrap();
+
+        assert!(folded.rebuilt);
+        assert_eq!(
+            tagged(&index, "goes"),
+            [],
+            "nothing of the other copy stays"
+        );
+        assert_eq!(tagged(&index, "stays"), [subject()]);
+    }
+
+    #[test]
+    fn an_index_outside_the_archive_is_used_only_with_a_segment_to_tell_by() {
+        let one_dir = TempDir::new().unwrap();
+        let one = log_in(&one_dir);
+        one.append(&tag("ours", "2026-09-01T00:00:00Z")).unwrap();
+        let other_dir = TempDir::new().unwrap();
+        let other = log_in(&other_dir);
+        other
+            .append(&tag("theirs", "2026-09-01T00:00:00Z"))
+            .unwrap();
+        let outside = TempDir::new().unwrap();
+        let path = outside.path().join("index.sqlite");
+
+        // Neither log has a sealed segment: nothing shows whose claims
+        // the file holds, so each first fold begins anew.
+        let mut index = Index::open_outside(&path).unwrap();
+        index.fold(&one).unwrap();
+        assert!(
+            !index.fold(&one).unwrap().rebuilt,
+            "one instance folds on from what it folded itself"
+        );
+        drop(index);
+        let mut index = Index::open_outside(&path).unwrap();
+        let folded = index.fold(&other).unwrap();
+        assert!(folded.rebuilt);
+        assert_eq!(tagged(&index, "ours"), [], "nothing of the other log stays");
+        assert_eq!(tagged(&index, "theirs"), [subject()]);
+        drop(index);
+
+        // With a sealed segment the index follows it, and the next
+        // instance folds on.
+        other.seal().unwrap().unwrap();
+        let mut index = Index::open_outside(&path).unwrap();
+        assert!(
+            index.fold(&other).unwrap().rebuilt,
+            "still nothing to tell by"
+        );
+        drop(index);
+        other.append(&tag("later", "2026-09-02T00:00:00Z")).unwrap();
+        let mut index = Index::open_outside(&path).unwrap();
+        let folded = index.fold(&other).unwrap();
+        assert!(!folded.rebuilt);
+        assert_eq!(folded.head, 1, "only what was appended since");
     }
 
     #[test]

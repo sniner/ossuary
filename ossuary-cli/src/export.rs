@@ -16,10 +16,10 @@ use anyhow::{Context as _, Result, anyhow};
 use ossuary_core::{Algorithm, Archive, Attribute, Index, Placed, Placement, Run, Scope, Subject};
 
 use crate::output::{errln, outln, say};
-use crate::{index_at, open, resolve, shorten};
+use crate::{Location, index_at, open, resolve, shorten};
 
 pub(crate) fn export(
-    root: &Path,
+    location: &Location,
     destination: &Path,
     ids: &[String],
     dry_run: bool,
@@ -32,7 +32,7 @@ pub(crate) fn export(
             destination.display()
         ));
     }
-    let archive = open(root)?;
+    let archive = open(location)?;
     // Said no to before anything is read: an export tree strewn between
     // the stores serves nobody, and a later ingest of it is refused
     // anyway.

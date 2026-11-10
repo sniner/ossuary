@@ -2,7 +2,6 @@
 //! `content/` also has, `describe` records size and type of files that
 //! have neither.
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -11,7 +10,7 @@ use ossuary_core::{Fixity, Twin, Undescribing, Weeded};
 
 use crate::audit::listing;
 use crate::output::{errln, say};
-use crate::{finish_interrupted_seal, open};
+use crate::{Location, finish_interrupted_seal, open};
 
 /// The maintenance commands.
 #[derive(Subcommand)]
@@ -57,17 +56,22 @@ pub(crate) enum Maintenance {
 }
 
 /// Run one maintenance task.
-pub(crate) fn run(root: &Path, task: &Maintenance, verbose: bool, quiet: bool) -> Result<ExitCode> {
+pub(crate) fn run(
+    location: &Location,
+    task: &Maintenance,
+    verbose: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
     match task {
-        Maintenance::Describe { dry_run } => describe(root, *dry_run, verbose, quiet),
-        Maintenance::Weed { dry_run, repair } => weed(root, *dry_run, *repair, verbose, quiet),
+        Maintenance::Describe { dry_run } => describe(location, *dry_run, verbose, quiet),
+        Maintenance::Weed { dry_run, repair } => weed(location, *dry_run, *repair, verbose, quiet),
     }
 }
 
 /// `maintain describe`: find the files recorded without size or type,
 /// read each one and record what it lacks.
-fn describe(root: &Path, dry_run: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
-    let archive = open(root)?;
+fn describe(location: &Location, dry_run: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
+    let archive = open(location)?;
     if !quiet {
         errln!("archive {}", archive.root().display());
     }
@@ -152,8 +156,14 @@ fn describe(root: &Path, dry_run: bool, verbose: bool, quiet: bool) -> Result<Ex
     clippy::fn_params_excessive_bools,
     reason = "two switches of the verb and two of the run, each one flag the user set"
 )]
-fn weed(root: &Path, dry_run: bool, repair: bool, verbose: bool, quiet: bool) -> Result<ExitCode> {
-    let archive = open(root)?;
+fn weed(
+    location: &Location,
+    dry_run: bool,
+    repair: bool,
+    verbose: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
+    let archive = open(location)?;
     if !quiet {
         errln!("archive {}", archive.root().display());
         errln!(

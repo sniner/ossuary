@@ -219,7 +219,7 @@ pub fn run(
     takeover.settle(&mut batch, &mut tally)?;
     progress.finish();
     if let Some(memo) = takeover.memo {
-        memo.commit()?;
+        memo.commit_for(takeover.archive)?;
     }
     Ok(tally)
 }
@@ -517,7 +517,7 @@ impl Takeover<'_> {
                 let places: Vec<&String> = pending.places.iter().map(|(place, _)| place).collect();
                 memo.mark_imported(&pending.store_id, &places)?;
             }
-            memo.commit()?;
+            memo.commit_for(self.archive)?;
             memo.begin()?;
         }
         batch.clear();

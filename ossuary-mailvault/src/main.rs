@@ -75,6 +75,16 @@ struct Cli {
     )]
     archive: PathBuf,
 
+    /// Keep the caches in DIR, not in the archive
+    ///
+    /// The caches hold where each folder was left and the index of the
+    /// archive. For keeping them off a network share. DIR is created if
+    /// missing. Use one DIR per archive. A cache outside the archive is
+    /// only used once the archive has a sealed segment; until then
+    /// every folder is fetched in full.
+    #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
+    cache: Option<PathBuf>,
+
     /// Read the accounts from FILE instead of mailvault.toml in the
     /// archive
     // Not `accounts`: that id is the ACCOUNT positional of fetch and
@@ -190,17 +200,21 @@ fn finish_interrupted_seal(archive: &Archive) -> Result<()> {
 fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         archive,
+        cache,
         accounts_file: named,
         quiet,
         command,
     } = cli;
     let say = Say::new(quiet);
     let archive = open(&archive)?;
+    let archive = match cache {
+        Some(dir) => archive.with_cache(dir),
+        None => archive,
+    };
     let source = match named {
         Some(path) => Source::Named(path),
         None => Source::Archive(archive.root().to_path_buf()),
     };
-    let memo_path = archive.root().join("cache").join(memo::FILE_NAME);
     // Everything that can say no before the archive is touched says it
     // before the memo is opened — the memo is a file, and a refused
     // call should make none.
@@ -226,7 +240,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             let config = source.load()?;
             let chosen = chosen(&config, &accounts)?;
-            let memo = opened(&memo_path, say, "every folder is fetched in full")?;
+            let memo = opened(&archive, say, "every folder is fetched in full")?;
             let tally = fetch::run(
                 &archive,
                 &chosen,
@@ -265,7 +279,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     anyhow!("{error:#}; or pass --no-auto-labels to import without the accounts")
                 })?)
             };
-            let memo = opened(&memo_path, say, "the import reads every message again")?;
+            let memo = opened(&archive, say, "the import reads every message again")?;
             say.line(format_args!(
                 "importing the Python mailvault archive at {}",
                 vault.display()
@@ -285,13 +299,23 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 /// The memo, opened; when it had an older layout and was emptied, a
-/// line says so and what that costs this command.
-fn opened(path: &Path, say: Say, costs: &str) -> Result<Memo> {
-    let memo = Memo::open(path)?;
+/// line says so and what that costs this command. So does a line when
+/// the memo is kept outside the archive and does not name a sealed
+/// segment the archive holds: it may be another archive's, and a resume
+/// point from there would pass by messages this archive never got.
+fn opened(archive: &Archive, say: Say, costs: &str) -> Result<Memo> {
+    let path = archive.cache_dir()?.join(memo::FILE_NAME);
+    let memo = Memo::open(&path)?;
     if memo.reset() {
         say.line(format_args!(
-            "cache/{}: older layout, emptied; {costs}",
-            memo::FILE_NAME
+            "{}: older layout, emptied; {costs}",
+            path.display()
+        ));
+    }
+    if !archive.accepts_cache(memo.proof()?.as_deref())? && memo.clear()? {
+        say.line(format_args!(
+            "{}: names no sealed segment of this archive, so it is not used; {costs}",
+            path.display()
         ));
     }
     Ok(memo)

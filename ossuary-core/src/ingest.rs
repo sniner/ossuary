@@ -163,7 +163,7 @@ where
     result.empty = empty;
     let mut remembering = sweep
         .memory
-        .map(|memory| Remembering::new(memory, sweep.host));
+        .map(|memory| Remembering::new(memory, sweep.host, log));
     for path in &gathered.files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
@@ -662,9 +662,52 @@ impl IngestMemory {
                  size  INTEGER NOT NULL,
                  mtime INTEGER NOT NULL,
                  PRIMARY KEY (host, path)
+             );
+             CREATE TABLE IF NOT EXISTS archive (
+                 id      INTEGER PRIMARY KEY CHECK (id = 0),
+                 segment TEXT NOT NULL
              );",
         )?;
         Ok(IngestMemory { connection })
+    }
+
+    /// The sealed segment the memory recorded when it was last written:
+    /// what shows a memory kept outside the archive to belong to it (see
+    /// [`Archive::accepts_cache`](crate::Archive::accepts_cache)). `None`
+    /// when nothing was sealed then.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`.
+    pub fn proof(&self) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension as _;
+        let segment = self
+            .connection
+            .query_row("SELECT segment FROM archive WHERE id = 0", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(segment)
+    }
+
+    /// Forget every sighting and the proof: the next run reads every
+    /// file again.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`.
+    pub fn clear(&self) -> Result<()> {
+        self.connection
+            .execute_batch("DELETE FROM seen; DELETE FROM archive;")?;
+        Ok(())
+    }
+
+    fn prove(&self, segment: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR REPLACE INTO archive (id, segment) VALUES (0, ?1)",
+            params![segment],
+        )?;
+        Ok(())
     }
 }
 
@@ -683,14 +726,18 @@ const REMEMBER_EVERY: usize = 100;
 struct Remembering<'a> {
     memory: &'a IngestMemory,
     host: &'a str,
+    /// The log the sightings went into: each step records its last
+    /// sealed segment as the memory's proof.
+    log: &'a Log,
     noted: Vec<(PathBuf, i64, i64)>,
 }
 
 impl<'a> Remembering<'a> {
-    fn new(memory: &'a IngestMemory, host: &'a str) -> Self {
+    fn new(memory: &'a IngestMemory, host: &'a str, log: &'a Log) -> Self {
         Remembering {
             memory,
             host,
+            log,
             noted: Vec::new(),
         }
     }
@@ -711,12 +758,16 @@ impl<'a> Remembering<'a> {
     }
 
     fn write<'p>(&mut self, gone: impl Iterator<Item = &'p Path>) -> Result<()> {
+        let sealed = self.log.last_sealed()?;
         let transaction = self.memory.connection.unchecked_transaction()?;
         for (path, size, mtime) in &self.noted {
             self.memory.record(self.host, path, *size, *mtime)?;
         }
         for path in gone {
             self.memory.forget(self.host, path)?;
+        }
+        if let Some(sealed) = &sealed {
+            self.memory.prove(sealed.as_str())?;
         }
         transaction.commit()?;
         self.noted.clear();
@@ -1605,12 +1656,13 @@ mod tests {
     #[test]
     fn the_memory_is_written_in_steps_and_not_locked_in_between() {
         let dir = TempDir::new().unwrap();
+        let (_content, log) = archive(&dir);
         let path = dir.path().join("ingest.sqlite");
         let memory = IngestMemory::open(&path).unwrap();
         let other = IngestMemory::open(&path).unwrap();
         let file = |n: usize| PathBuf::from(format!("/tree/{n}.txt"));
 
-        let mut remembering = Remembering::new(&memory, "atlas.example.net");
+        let mut remembering = Remembering::new(&memory, "atlas.example.net", &log);
         for n in 0..REMEMBER_EVERY {
             remembering.note(&file(n), 1, 1).unwrap();
         }
@@ -1646,6 +1698,71 @@ mod tests {
                 .unwrap(),
             "a place the run retracted is forgotten"
         );
+    }
+
+    #[test]
+    fn a_memory_outside_the_archive_counts_only_once_a_segment_is_sealed() {
+        use crate::archive::Archive;
+
+        let dir = TempDir::new().unwrap();
+        let archive = Archive::create(dir.path().join("archive"), immure::Algorithm::Sha256)
+            .unwrap()
+            .with_cache(dir.path().join("elsewhere"));
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("a.txt"), b"hello world").unwrap();
+        let sweep = |archive: &Archive| {
+            let memory = archive.ingest_memory().unwrap();
+            ingest(
+                archive.content(),
+                archive.log(),
+                [&tree],
+                &Sweep {
+                    host: "atlas.example.net",
+                    tags: &[],
+                    excludes: &none(),
+                    memory: Some(&memory),
+                    record: None,
+                    emptied: false,
+                },
+            )
+            .unwrap()
+        };
+
+        assert_eq!(sweep(&archive).stored, 1);
+        assert!(dir.path().join("elsewhere").join("ingest.sqlite").is_file());
+        assert_eq!(
+            sweep(&archive).unchanged,
+            0,
+            "nothing is sealed, so nothing shows whose memory this is"
+        );
+
+        archive.log().seal().unwrap().unwrap();
+        assert_eq!(sweep(&archive).unchanged, 0, "this run records the segment");
+        assert_eq!(sweep(&archive).unchanged, 1, "and the next one is spared");
+
+        // The same directory named for another archive: its memory of
+        // the tree must not have the walk pass the file by.
+        let other = Archive::create(dir.path().join("other"), immure::Algorithm::Sha256)
+            .unwrap()
+            .with_cache(dir.path().join("elsewhere"));
+        other
+            .log()
+            .append(
+                &Claim::assert(
+                    Subject::parse(&"ab".repeat(32)).unwrap(),
+                    known_attribute("user:tag"),
+                    json!("something to seal"),
+                    Timestamp::now(),
+                    Source::parse("user").unwrap(),
+                    Run::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        other.log().seal().unwrap().unwrap();
+        let taken = sweep(&other);
+        assert_eq!((taken.stored, taken.unchanged), (1, 0));
     }
 
     #[test]

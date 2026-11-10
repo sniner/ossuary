@@ -493,7 +493,7 @@ pub(crate) fn parse(text: &str) -> Result<Segment> {
 
 /// Drop what the cache knows of segments by name: the query index.
 fn forget(archive: &Archive) -> Result<()> {
-    let cache = archive.root().join("cache");
+    let cache = archive.cache_dir()?;
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let path = cache.join(format!("index.sqlite{suffix}"));
         match fs::remove_file(&path) {

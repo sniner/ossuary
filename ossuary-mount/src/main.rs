@@ -55,6 +55,14 @@ struct Cli {
     #[arg(long, value_name = "DIR", env = "OSSUARY_ARCHIVE", default_value = ".")]
     archive: PathBuf,
 
+    /// Keep the index in DIR, not in the archive
+    ///
+    /// For an archive that cannot be written to, and to keep the index
+    /// off a network share. DIR is created if missing. Use one DIR per
+    /// archive.
+    #[arg(long, value_name = "DIR", env = "OSSUARY_CACHE")]
+    cache: Option<PathBuf>,
+
     /// The directory to mount on; created if missing, and then removed
     /// again on unmount
     #[arg(value_name = "DIR")]
@@ -84,11 +92,12 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         archive,
+        cache,
         mountpoint,
         as_of,
         quiet,
     } = cli;
-    let archive = open(&archive)?;
+    let archive = open(&archive, cache.as_deref())?;
     let index = caught_up(&archive, quiet)?;
     let (index, moment, stood) = match as_of.as_deref() {
         None => (index, Timestamp::now(), None),
@@ -181,13 +190,17 @@ impl Room<'_> {
 }
 
 /// The archive, or the way to one — `ossuary`'s own wording.
-fn open(root: &Path) -> Result<Archive> {
-    Archive::open(root).map_err(|error| match error {
+fn open(root: &Path, cache: Option<&Path>) -> Result<Archive> {
+    let archive = Archive::open(root).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
             "{}: not an ossuary archive; run in an archive, name one with --archive, or create one with `ossuary init`",
             path.display()
         ),
-        other => other.into(),
+        other => anyhow::Error::from(other),
+    })?;
+    Ok(match cache {
+        Some(dir) => archive.with_cache(dir),
+        None => archive,
     })
 }
 
@@ -198,7 +211,11 @@ fn caught_up(archive: &Archive, quiet: bool) -> Result<Index> {
     if quiet {
         return Ok(index);
     }
-    if folded.rebuilt {
+    if folded.rebuilt && folded.segments == 0 && archive.cache_is_outside() {
+        eprintln!(
+            "index rebuilt: the cache is kept outside the archive, and the archive has no sealed segment yet that shows the cache to be its own; `ossuary seal` makes one"
+        );
+    } else if folded.rebuilt {
         eprintln!("index rebuilt: {} log segment(s)", folded.segments);
     } else if folded.segments > 0 {
         eprintln!("index updated: {} new log segment(s)", folded.segments);

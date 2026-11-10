@@ -8,6 +8,16 @@
 //! and `claims/`, the open head, a `config.toml` of settings that reading
 //! never needs, and a `cache/` that answers questions and owes nothing.
 //!
+//! The caches may be kept in a directory outside the archive
+//! ([`Archive::with_cache`]): for an archive that cannot be written to,
+//! and to keep `SQLite` off a network share. A cache in `cache/` belongs
+//! to its archive by where it lies. One outside has to show it: it
+//! records a sealed segment, and it is used only while the archive holds
+//! that segment ([`Archive::accepts_cache`]). A cache that records none,
+//! or one this archive does not hold, is treated as empty. Until an
+//! archive has its first sealed segment, a cache outside it therefore
+//! saves nothing.
+//!
 //! The mark is read before anything else is touched, and a generation this
 //! build does not know is refused for what it is: a layout never seen
 //! before would look familiar in exactly the wrong way — the directories it
@@ -16,7 +26,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use immure::{Algorithm, Store};
+use immure::{Algorithm, Digest, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, Config};
@@ -78,6 +88,8 @@ pub struct Archive {
     content: Store,
     derived: Store,
     log: Log,
+    /// Where the caches are kept when not in `cache/` in the root.
+    cache: Option<PathBuf>,
 }
 
 impl Archive {
@@ -161,6 +173,7 @@ impl Archive {
             content,
             derived,
             log,
+            cache: None,
         })
     }
 
@@ -249,7 +262,64 @@ impl Archive {
             content,
             derived,
             root,
+            cache: None,
         })
+    }
+
+    /// Keep the caches in `dir` instead of `cache/` in the archive: the
+    /// index, the ingest memory, and what other programs keep beside
+    /// them. Nothing is made or read here. Naming the archive's own
+    /// `cache/` changes nothing.
+    ///
+    /// A cache outside the archive is used only while it records a
+    /// sealed segment that the archive holds; see the module notes.
+    #[must_use]
+    pub fn with_cache(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        let dir = fs::canonicalize(&dir)
+            .or_else(|_| std::path::absolute(&dir))
+            .unwrap_or(dir);
+        self.cache = (dir != self.root.join("cache")).then_some(dir);
+        self
+    }
+
+    /// Whether the caches are kept outside the archive.
+    #[must_use]
+    pub fn cache_is_outside(&self) -> bool {
+        self.cache.is_some()
+    }
+
+    /// What a cache outside the archive records to show later that it
+    /// belongs to this archive: the segment sealed last. `None` for an
+    /// archive with nothing sealed, and for caches in `cache/`, which
+    /// need no proof.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Log::last_sealed`] can answer.
+    pub fn cache_proof(&self) -> Result<Option<Digest>> {
+        if self.cache.is_none() {
+            return Ok(None);
+        }
+        self.log.last_sealed()
+    }
+
+    /// Whether a cache that recorded `proof` may be used. A cache in
+    /// `cache/` always may. One outside the archive may when `proof`
+    /// names a segment the claims store holds; without one, or with one
+    /// this archive does not hold, it is to be treated as empty.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] when the claims store cannot be asked.
+    pub fn accepts_cache(&self, proof: Option<&str>) -> Result<bool> {
+        if self.cache.is_none() {
+            return Ok(true);
+        }
+        let Some(Ok(segment)) = proof.map(Digest::parse) else {
+            return Ok(false);
+        };
+        Ok(self.log.store().contains(&segment)?)
     }
 
     /// Complete the archive: add what [`create`](Archive::create) would
@@ -319,8 +389,12 @@ impl Archive {
     ///
     /// [`Error::Io`] making `cache/`, [`Error::Index`] opening the file.
     pub fn index(&self) -> Result<Index> {
-        let cache = self.cache()?;
-        Index::open(cache.join("index.sqlite"))
+        let path = self.cache_dir()?.join("index.sqlite");
+        if self.cache_is_outside() {
+            Index::open_outside(path)
+        } else {
+            Index::open(path)
+        }
     }
 
     /// The ingest walk's memory in `cache/`, opened — what earlier runs
@@ -328,20 +402,37 @@ impl Archive {
     /// peace. A cache like the index: deleting it costs one noisy run,
     /// never a claim.
     ///
+    /// A memory kept outside the archive that does not show it belongs
+    /// to this archive is emptied first: a memory of another archive
+    /// would have the walk pass by files this one never took in.
+    ///
     /// # Errors
     ///
-    /// [`Error::Io`] making `cache/`, [`Error::Index`] opening the file.
+    /// [`Error::Io`] making `cache/`, [`Error::Index`] opening the file,
+    /// and [`Error::Store`] when the claims store cannot be asked.
     pub fn ingest_memory(&self) -> Result<IngestMemory> {
-        let cache = self.cache()?;
-        IngestMemory::open(cache.join("ingest.sqlite"))
+        let memory = IngestMemory::open(self.cache_dir()?.join("ingest.sqlite"))?;
+        if !self.accepts_cache(memory.proof()?.as_deref())? {
+            memory.clear()?;
+        }
+        Ok(memory)
     }
 
-    /// `cache/`, made if it is not there — it owes nothing and may vanish
-    /// between any two commands.
-    fn cache(&self) -> Result<PathBuf> {
-        let cache = self.root.join("cache");
+    /// The directory the caches are kept in, made if it is not there:
+    /// `cache/` in the archive, or the directory named with
+    /// [`with_cache`](Archive::with_cache). It owes nothing and may
+    /// vanish between any two commands.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the directory cannot be made.
+    pub fn cache_dir(&self) -> Result<PathBuf> {
+        let cache = match &self.cache {
+            Some(outside) => outside.clone(),
+            None => self.root.join("cache"),
+        };
         fs::create_dir_all(&cache).map_err(|source| Error::Io {
-            context: format!("{}: creating cache/", self.root.display()),
+            context: format!("{}: creating the cache directory", cache.display()),
             source,
         })?;
         Ok(cache)
@@ -548,6 +639,55 @@ mod tests {
         assert!(expected.is_absolute());
         assert_eq!(created.root(), expected);
         assert_eq!(opened.root(), expected);
+    }
+
+    #[test]
+    fn a_cache_outside_the_archive_needs_a_segment_the_archive_holds() {
+        let dir = TempDir::new().unwrap();
+        let inside = Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap();
+        assert!(!inside.cache_is_outside());
+        assert!(
+            inside.accepts_cache(None).unwrap(),
+            "cache/ in the archive needs no proof"
+        );
+        assert_eq!(inside.cache_proof().unwrap(), None);
+
+        let root = inside.root().to_path_buf();
+        let named_own = Archive::open(&root).unwrap().with_cache(root.join("cache"));
+        assert!(
+            !named_own.cache_is_outside(),
+            "its own cache/ is not outside"
+        );
+
+        let outside = Archive::open(&root)
+            .unwrap()
+            .with_cache(dir.path().join("elsewhere"));
+        assert!(outside.cache_is_outside());
+        assert!(!outside.accepts_cache(None).unwrap());
+        assert_eq!(outside.cache_proof().unwrap(), None, "nothing sealed yet");
+        let made = outside.cache_dir().unwrap();
+        assert!(made.is_dir() && made.ends_with("elsewhere"));
+        assert!(made.is_absolute());
+
+        let claim = crate::Claim::assert(
+            crate::Subject::parse(&"ab".repeat(32)).unwrap(),
+            crate::Attribute::parse("user:tag").unwrap(),
+            serde_json::json!("x"),
+            crate::Timestamp::now(),
+            crate::Source::parse("user").unwrap(),
+            crate::Run::new(),
+        )
+        .unwrap();
+        outside.log().append(&claim).unwrap();
+        let sealed = outside.log().seal().unwrap().unwrap();
+        let proof = outside.cache_proof().unwrap().unwrap();
+        assert_eq!(&proof, sealed.digest());
+        assert!(outside.accepts_cache(Some(proof.as_str())).unwrap());
+        assert!(
+            !outside.accepts_cache(Some(&"cd".repeat(32))).unwrap(),
+            "a segment of another archive"
+        );
+        assert!(!outside.accepts_cache(Some("not a digest")).unwrap());
     }
 
     #[test]

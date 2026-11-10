@@ -342,7 +342,8 @@ segment, and deleting it loses nothing. What is kept there (query indexes in
 SQLite, full-text or whatever the queries need) is internal to the
 software and deliberately
 not specified: no cache is ever authoritative, and none is part of the
-format.
+format. The software can keep its caches in another directory, and an
+archive without `cache/` is complete.
 
 ## Recovery
 

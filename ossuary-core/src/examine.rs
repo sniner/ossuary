@@ -829,12 +829,12 @@ fn read_identities(program: &str, answer: &str) -> Result<Vec<Identity>> {
 }
 
 /// Where the per-file scratch directories go: what `temp_dir` named, or
-/// `cache/tmp` in the archive — the disposable tier, on a disk sized for
-/// content, where a system /tmp may be a small ramdisk.
+/// `tmp` in the archive's cache directory, which lies on a disk sized
+/// for content where a system /tmp may be a small ramdisk.
 fn scratch_parent(archive: &Archive, temp_dir: Option<&Path>) -> Result<PathBuf> {
     let parent = match temp_dir {
         Some(dir) => dir.to_path_buf(),
-        None => archive.root().join("cache").join("tmp"),
+        None => archive.cache_dir()?.join("tmp"),
     };
     std::fs::create_dir_all(&parent).map_err(|error| Error::Io {
         context: format!(

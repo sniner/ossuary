@@ -54,6 +54,11 @@ struct Cli {
     )]
     archive: PathBuf,
 
+    /// The directory of the archive's caches, when they are not kept in
+    /// the archive
+    #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
+    cache: Option<PathBuf>,
+
     /// Show what would be written, write nothing
     #[arg(long, global = true)]
     dry_run: bool,
@@ -207,6 +212,10 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             other => other.into(),
         })?,
         _ => open(&cli.archive)?,
+    };
+    let archive = match &cli.cache {
+        Some(dir) => archive.with_cache(dir),
+        None => archive,
     };
     let (sentence, seals) = match cli.command {
         Command::Origin => (

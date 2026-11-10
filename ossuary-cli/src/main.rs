@@ -49,6 +49,16 @@ struct Cli {
     )]
     archive: PathBuf,
 
+    /// Keep the index and the other caches in DIR, not in the archive
+    ///
+    /// For an archive that cannot be written to, and to keep the caches
+    /// off a network share. DIR is created if missing. Use one DIR per
+    /// archive. A cache outside the archive is only used once the
+    /// archive has a sealed segment, which `ossuary seal` makes; until
+    /// then each command reads the open segment again.
+    #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
+    cache: Option<PathBuf>,
+
     /// Print only results and errors
     #[arg(short, long, global = true)]
     quiet: bool,
@@ -638,14 +648,25 @@ fn main() -> ExitCode {
     }
 }
 
+/// Where a command works: the archive, and the directory of its caches
+/// when that is not `cache/` in the archive.
+pub(crate) struct Location {
+    pub(crate) archive: PathBuf,
+    pub(crate) cache: Option<PathBuf>,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one arm per verb — the table is the point, and splitting it hides the map"
 )]
 fn run(cli: Cli) -> Result<ExitCode> {
     let quiet = cli.quiet;
+    let location = Location {
+        archive: cli.archive,
+        cache: cli.cache,
+    };
     match cli.command {
-        Command::Init { algorithm } => init(&cli.archive, algorithm.as_deref()),
+        Command::Init { algorithm } => init(&location, algorithm.as_deref()),
         Command::Ingest {
             paths,
             tags,
@@ -654,7 +675,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             emptied,
             dry_run,
         } => ingest(
-            &cli.archive,
+            &location,
             &paths,
             &tags,
             Switches {
@@ -672,7 +693,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             temp_dir,
         } => extract::extract(
-            &cli.archive,
+            &location,
             name.as_deref(),
             &subjects,
             full,
@@ -684,16 +705,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             subjects,
             comments,
             tags,
-        } => annotate(&cli.archive, &subjects, &comments, &tags, quiet),
-        Command::Retract { targets, dry_run } => retract(&cli.archive, &targets, dry_run, quiet),
+        } => annotate(&location, &subjects, &comments, &tags, quiet),
+        Command::Retract { targets, dry_run } => retract(&location, &targets, dry_run, quiet),
         Command::Seal {
             json,
             dry_run,
             check,
             fast,
         } => match check {
-            Some(id) => seal::check(&cli.archive, &id, fast, cli.verbose, quiet),
-            None => seal::seal(&cli.archive, json, dry_run, cli.verbose, quiet),
+            Some(id) => seal::check(&location, &id, fast, cli.verbose, quiet),
+            None => seal::seal(&location, json, dry_run, cli.verbose, quiet),
         },
         Command::About {
             subject,
@@ -701,7 +722,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             as_of,
         } => about(
-            &cli.archive,
+            &location,
             &subject,
             &attributes,
             json,
@@ -714,7 +735,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             as_of,
         } => standing(
-            &cli.archive,
+            &location,
             &subject,
             &attributes,
             json,
@@ -731,7 +752,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             with_derived,
             with_origin,
         } => find(
-            &cli.archive,
+            &location,
             &terms,
             &missing,
             id,
@@ -749,35 +770,24 @@ fn run(cli: Cli) -> Result<ExitCode> {
             count,
             json,
             as_of,
-        } => attributes(
-            &cli.archive,
-            &namespaces,
-            count,
-            json,
-            as_of.as_deref(),
-            quiet,
-        ),
-        Command::History { json, as_of } => history(&cli.archive, json, as_of.as_deref(), quiet),
-        Command::Ls { place, json, as_of } => browse::ls(
-            &cli.archive,
-            place.as_deref(),
-            json,
-            as_of.as_deref(),
-            quiet,
-        ),
-        Command::Tree { place, as_of } => {
-            browse::tree(&cli.archive, place.as_deref(), as_of.as_deref(), quiet)
+        } => attributes(&location, &namespaces, count, json, as_of.as_deref(), quiet),
+        Command::History { json, as_of } => history(&location, json, as_of.as_deref(), quiet),
+        Command::Ls { place, json, as_of } => {
+            browse::ls(&location, place.as_deref(), json, as_of.as_deref(), quiet)
         }
-        Command::Id { path } => id(&cli.archive, &path, quiet),
+        Command::Tree { place, as_of } => {
+            browse::tree(&location, place.as_deref(), as_of.as_deref(), quiet)
+        }
+        Command::Id { path } => id(&location, &path, quiet),
         Command::Get {
             subject,
             output,
             path,
         } => {
             if path {
-                stored_path(&cli.archive, &subject)
+                stored_path(&location, &subject)
             } else {
-                get(&cli.archive, &subject, output.as_deref(), quiet)
+                get(&location, &subject, output.as_deref(), quiet)
             }
         }
         Command::Export {
@@ -786,16 +796,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             dry_run,
             as_of,
         } => export::export(
-            &cli.archive,
+            &location,
             &destination,
             &ids,
             dry_run,
             as_of.as_deref(),
             quiet,
         ),
-        Command::Audit { json, fast } => audit::audit(&cli.archive, json, fast, cli.verbose, quiet),
-        Command::Maintain(task) => maintain::run(&cli.archive, &task, cli.verbose, quiet),
-        Command::Outside(pieces) => outside(&cli.archive, &pieces),
+        Command::Audit { json, fast } => audit::audit(&location, json, fast, cli.verbose, quiet),
+        Command::Maintain(task) => maintain::run(&location, &task, cli.verbose, quiet),
+        Command::Outside(pieces) => outside(&location, &pieces),
     }
 }
 
@@ -803,8 +813,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 /// `ossuary-NAME …` found on the PATH and *becomes* this process —
 /// signals, exit code and all. The archive travels resolved: however
 /// it was named — flag, environment, or standing in it — the child
-/// sees one absolute `OSSUARY_ARCHIVE` and resolves nothing itself.
-fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
+/// sees one absolute `OSSUARY_ARCHIVE` and resolves nothing itself. The
+/// directory of the caches travels the same way, in `OSSUARY_CACHE`,
+/// when one was named.
+fn outside(location: &Location, pieces: &[OsString]) -> Result<ExitCode> {
     use std::os::unix::process::CommandExt as _;
     let Some((name, rest)) = pieces.split_first() else {
         return Err(anyhow!(
@@ -813,11 +825,16 @@ fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
     };
     let name = name.to_string_lossy();
     let program = format!("ossuary-{name}");
-    let archive = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let error = std::process::Command::new(&program)
-        .args(rest)
-        .env("OSSUARY_ARCHIVE", &archive)
-        .exec();
+    let root = &location.archive;
+    let archive = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+    let mut command = std::process::Command::new(&program);
+    command.args(rest).env("OSSUARY_ARCHIVE", &archive);
+    if let Some(cache) = &location.cache {
+        // Absolute, because the program may change its directory.
+        let cache = std::path::absolute(cache).unwrap_or_else(|_| cache.clone());
+        command.env("OSSUARY_CACHE", cache);
+    }
+    let error = command.exec();
     if error.kind() == std::io::ErrorKind::NotFound {
         return Err(anyhow!(
             "unknown command `{name}`, and no `{program}` on the PATH; `ossuary --help` lists the commands"
@@ -827,13 +844,17 @@ fn outside(root: &Path, pieces: &[OsString]) -> Result<ExitCode> {
 }
 
 /// The archive, or the way to one.
-pub(crate) fn open(root: &Path) -> Result<Archive> {
-    Archive::open(root).map_err(|error| match error {
+pub(crate) fn open(location: &Location) -> Result<Archive> {
+    let archive = Archive::open(&location.archive).map_err(|error| match error {
         Error::NoArchive(path) => anyhow!(
             "{}: not an ossuary archive; run in an archive, name one with --archive, or create one with `ossuary init`",
             path.display()
         ),
-        other => other.into(),
+        other => anyhow::Error::from(other),
+    })?;
+    Ok(match &location.cache {
+        Some(dir) => archive.with_cache(dir),
+        None => archive,
     })
 }
 
@@ -853,8 +874,9 @@ pub(crate) fn finish_interrupted_seal(archive: &Archive) -> Result<()> {
     }
 }
 
-fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
+fn init(location: &Location, algorithm: Option<&str>) -> Result<ExitCode> {
     let requested = algorithm.map(str::parse::<Algorithm>).transpose()?;
+    let root = &location.archive;
     match Archive::create(root, requested.unwrap_or(Algorithm::Sha256)) {
         Ok(archive) => {
             outln!(
@@ -867,7 +889,7 @@ fn init(root: &Path, algorithm: Option<&str>) -> Result<ExitCode> {
         // never remade, what is missing appears. Only remaking would need
         // refusing, and only choosing an algorithm anew would be remaking.
         Err(Error::AlreadyArchive(_)) => {
-            let archive = open(root)?;
+            let archive = open(location)?;
             let standing = archive.content().algorithm();
             if let Some(asked) = requested
                 && asked != standing
@@ -909,7 +931,7 @@ struct Switches {
 }
 
 fn ingest(
-    root: &Path,
+    location: &Location,
     paths: &[PathBuf],
     tags: &[String],
     switches: Switches,
@@ -926,7 +948,7 @@ fn ingest(
             "--tag {empty:?} is empty; give it a value or leave it out"
         ));
     }
-    let archive = open(root)?;
+    let archive = open(location)?;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
     if !quiet {
@@ -1093,7 +1115,7 @@ fn previewed(paths: &[PathBuf], sweep: &Sweep<'_>, quiet: bool) -> Result<ExitCo
 }
 
 fn annotate(
-    root: &Path,
+    location: &Location,
     given: &[String],
     comments: &[String],
     tags: &[String],
@@ -1112,7 +1134,7 @@ fn annotate(
             "--tag {empty:?} is empty; give it a value or leave it out"
         ));
     }
-    let archive = open(root)?;
+    let archive = open(location)?;
     finish_interrupted_seal(&archive)?;
     let mut index = archive.index()?;
     catch_up(&mut index, &archive, quiet)?;
@@ -1261,7 +1283,12 @@ fn matched(
     Ok((takings, falling))
 }
 
-fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Result<ExitCode> {
+fn retract(
+    location: &Location,
+    targets: &[String],
+    dry_run: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
     // Shapes first, before the archive opens: a call that cannot mean
     // anything is refused without touching a thing.
     let mut names: Vec<&str> = Vec::new();
@@ -1296,7 +1323,7 @@ fn retract(root: &Path, targets: &[String], dry_run: bool, quiet: bool) -> Resul
         ));
     }
 
-    let archive = open(root)?;
+    let archive = open(location)?;
     if !dry_run {
         finish_interrupted_seal(&archive)?;
     }
@@ -1363,7 +1390,13 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
     if quiet {
         return Ok(());
     }
-    if folded.rebuilt {
+    if folded.rebuilt && folded.segments == 0 && archive.cache_is_outside() {
+        // This happens on every command until a segment is sealed, so
+        // the line says why and how it ends.
+        errln!(
+            "index rebuilt: the cache is kept outside the archive, and the archive has no sealed segment yet that shows the cache to be its own; `ossuary seal` makes one"
+        );
+    } else if folded.rebuilt {
         errln!("index rebuilt: {} log segment(s)", folded.segments);
     } else if folded.segments > 0 {
         errln!("index updated: {} new log segment(s)", folded.segments);
@@ -1401,14 +1434,14 @@ pub(crate) fn resolve(index: &Index, given: &str) -> Result<Option<Subject>> {
 }
 
 fn about(
-    root: &Path,
+    location: &Location,
     subject: &str,
     attributes: &[String],
     json: bool,
     as_of: Option<&str>,
     quiet: bool,
 ) -> Result<ExitCode> {
-    let archive = open(root)?;
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
 
     // Under --json, stdout is claims and nothing else; the calm zero
@@ -1466,7 +1499,7 @@ fn about(
 }
 
 fn standing(
-    root: &Path,
+    location: &Location,
     subject: &str,
     attributes: &[String],
     json: bool,
@@ -1495,7 +1528,7 @@ fn standing(
     let bare =
         attributes.len() == 1 && matches!(projections.as_slice(), [Projection::Attribute(_)]);
 
-    let archive = open(root)?;
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
 
     // Nothing standing is a testable answer, not a broken run: the exit
@@ -1634,7 +1667,7 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Term>, Vec<Projectio
     reason = "every one is a switch the user set on the command line, passed through as it came"
 )]
 fn find(
-    root: &Path,
+    location: &Location,
     terms: &[String],
     missing: &[String],
     id_only: bool,
@@ -1665,7 +1698,7 @@ fn find(
             "the retract field works only with --all; add --all"
         ));
     }
-    let archive = open(root)?;
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
     // Only bare names asked: nothing narrows, every file answers.
     let subjects = if filters.is_empty() && missing.is_empty() {
@@ -1894,8 +1927,8 @@ fn flat(found: &output::Found) -> Vec<String> {
     names
 }
 
-fn history(root: &Path, json: bool, as_of: Option<&str>, quiet: bool) -> Result<ExitCode> {
-    let archive = open(root)?;
+fn history(location: &Location, json: bool, as_of: Option<&str>, quiet: bool) -> Result<ExitCode> {
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
     let episodes = index.history()?;
     if episodes.is_empty() {
@@ -1934,7 +1967,7 @@ fn history(root: &Path, json: bool, as_of: Option<&str>, quiet: bool) -> Result<
 }
 
 fn attributes(
-    root: &Path,
+    location: &Location,
     namespaces: &[String],
     count: bool,
     json: bool,
@@ -1957,7 +1990,7 @@ fn attributes(
             wanted.push(namespace);
         }
     }
-    let archive = open(root)?;
+    let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
     let mut words = index.attributes()?;
     if !wanted.is_empty() {
@@ -2093,8 +2126,8 @@ pub(crate) fn shorten(index: &Index, subject: &Subject) -> Result<String> {
     Ok(hex.to_string())
 }
 
-fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
-    let archive = open(root)?;
+fn id(location: &Location, path: &Path, quiet: bool) -> Result<ExitCode> {
+    let archive = open(location)?;
     let algorithm = archive.content().algorithm();
     let mut file =
         std::fs::File::open(path).with_context(|| format!("{}: reading", path.display()))?;
@@ -2118,8 +2151,8 @@ fn id(root: &Path, path: &Path, quiet: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result<ExitCode> {
-    let archive = open(root)?;
+fn get(location: &Location, subject: &str, output: Option<&Path>, quiet: bool) -> Result<ExitCode> {
+    let archive = open(location)?;
     let content = archive.content();
     let derived = archive.derived();
     let digest = stored_digest(&archive, subject)?;
@@ -2158,8 +2191,8 @@ fn get(root: &Path, subject: &str, output: Option<&Path>, quiet: bool) -> Result
 
 /// `get --path`: the stored file itself, in whatever form it is stored.
 /// The path names the full digest, so a prefix needs no echo on stderr.
-fn stored_path(root: &Path, subject: &str) -> Result<ExitCode> {
-    let archive = open(root)?;
+fn stored_path(location: &Location, subject: &str) -> Result<ExitCode> {
+    let archive = open(location)?;
     let digest = stored_digest(&archive, subject)?;
     // The same order as `get` reads in: content/ before derived/.
     let path = match archive.content().find(&digest)? {

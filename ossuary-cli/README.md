@@ -18,6 +18,19 @@ used if set, otherwise the current directory. Two more options are
 global: `-q`/`--quiet` prints only results and errors, `-v`/`--verbose`
 lists every item where the output would otherwise show only a count.
 
+`--cache DIR`, or `OSSUARY_CACHE`, keeps the query index and the other
+caches in DIR instead of `cache/` in the archive. An archive that cannot
+be written to needs that, a copy made by `ossuary sync` on a read-only
+share for example, and it keeps the caches off a network share. DIR is
+created if it is missing. Use one directory per archive.
+
+A cache outside the archive is used only once the archive has a sealed
+segment, because that is what shows the cache to belong to this archive
+and not to another one. Until then every command builds the index again,
+and a repeated `ossuary ingest` reads every file again and records where
+it lies a second time. An archive seals by itself after 1000 appends,
+and `ossuary seal` does it at once.
+
 Results go to stdout, progress messages to stderr, so `ossuary find --id
 … | …` pipes only the results. If the reading end of a pipe is closed
 early, the output stops and the command still exits with success.

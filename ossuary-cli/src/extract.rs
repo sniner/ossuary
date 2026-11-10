@@ -10,13 +10,14 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::Location;
 use anyhow::{Result, anyhow};
 use ossuary_core::{Archive, Event, Run, Source, Tally};
 
 use crate::output::{errln, outln};
 
 pub fn extract(
-    root: &Path,
+    location: &Location,
     name: Option<&str>,
     subjects: &[String],
     full: bool,
@@ -31,7 +32,7 @@ pub fn extract(
             "a dry run needs named files; name subjects or a run id"
         ));
     }
-    let archive = crate::open(root)?;
+    let archive = crate::open(location)?;
     if !quiet {
         errln!("archive {}", archive.root().display());
     }

@@ -2,27 +2,26 @@
 //! an id against the archive.
 
 use std::io::Write;
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use ossuary_core::{Continued, Seal, SealCheck, Sealing};
 
 use crate::output::{errln, outln, say};
-use crate::{audit, open};
+use crate::{Location, audit, open};
 
 #[allow(
     clippy::fn_params_excessive_bools,
     reason = "two switches of the verb and two of the run, each one flag the user set"
 )]
 pub(crate) fn seal(
-    root: &Path,
+    location: &Location,
     json: bool,
     dry_run: bool,
     verbose: bool,
     quiet: bool,
 ) -> Result<ExitCode> {
-    let archive = open(root)?;
+    let archive = open(location)?;
     if !quiet {
         errln!("archive {}", archive.root().display());
     }
@@ -112,13 +111,13 @@ fn rehearsal(seal: &Seal) -> String {
 /// `seal --check`: the seal held against the archive, step by step, and
 /// the verdict last.
 pub(crate) fn check(
-    root: &Path,
+    location: &Location,
     given: &str,
     fast: bool,
     verbose: bool,
     quiet: bool,
 ) -> Result<ExitCode> {
-    let archive = open(root)?;
+    let archive = open(location)?;
     let segment = ossuary_core::parse_id(&archive, given)?;
     let id = segment.as_str();
     if !quiet {

@@ -266,3 +266,11 @@ with `rsync -rlt archive/ /mnt/nas/archive/`. Without `cache/`, the next
 command rebuilds the query index, and on a share that takes long as
 well. Later runs record a few claims at a time and work well on the
 share.
+
+The query index and the other caches can be kept on a local disk while
+the archive is on the share: `--cache DIR`, or `OSSUARY_CACHE`, names
+the directory, one per archive. Every machine that uses the archive
+then has caches of its own. The same option reads an archive that
+cannot be written to, since nothing is written into it. See
+[Selecting the archive](../ossuary-cli/README.md#selecting-the-archive)
+for when such a cache is used.

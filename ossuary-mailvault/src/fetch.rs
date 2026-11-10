@@ -1058,7 +1058,7 @@ impl Fetch<'_> {
                 uid: top,
             },
         )?;
-        self.memo.commit()
+        self.memo.commit_for(self.archive)
     }
 
     /// The fetch of a folder once it is decided what to ask for: `uids`
@@ -1153,7 +1153,7 @@ impl Fetch<'_> {
             }
             tally.identified += 1;
             if (settled + 1).is_multiple_of(COMMIT_EVERY) {
-                self.memo.commit()?;
+                self.memo.commit_for(self.archive)?;
                 self.memo.begin()?;
             }
         }
@@ -1177,7 +1177,7 @@ impl Fetch<'_> {
             )?;
         }
         // What landed before the trouble stays remembered either way.
-        let closed = self.memo.commit();
+        let closed = self.memo.commit_for(self.archive);
         match outcome {
             Ok(_) => closed,
             Err(Stop::Server(error)) => {
@@ -1239,7 +1239,7 @@ impl Fetch<'_> {
         // Committed in batches: a run that dies repeats at most a
         // batch, and the bytes dedup.
         if walk.done.is_multiple_of(COMMIT_EVERY) {
-            self.memo.commit()?;
+            self.memo.commit_for(self.archive)?;
             self.memo.begin()?;
         }
         walk.progress.update(
@@ -1363,7 +1363,7 @@ impl Fetch<'_> {
                 "{name}: the server returned no resume point; the next run fetches all messages again"
             )),
         }
-        self.memo.commit()
+        self.memo.commit_for(self.archive)
     }
 
     /// Every message on the folder's pending list, one request each,
@@ -1391,7 +1391,7 @@ impl Fetch<'_> {
         let outcome = self.graph_each(place, &pending, client, tally);
         // What came off the list before the trouble stays off it
         // either way.
-        let closed = self.memo.commit();
+        let closed = self.memo.commit_for(self.archive);
         match outcome {
             Ok(Landed { left, gone }) => {
                 closed?;
@@ -1478,7 +1478,7 @@ impl Fetch<'_> {
             // Committed in batches: a run that dies repeats at most a
             // batch, and the bytes dedup.
             if (done + 1) % COMMIT_EVERY == 0 {
-                self.memo.commit()?;
+                self.memo.commit_for(self.archive)?;
                 self.memo.begin()?;
             }
             progress.update(
@@ -1654,7 +1654,7 @@ impl Fetch<'_> {
         self.memo.begin()?;
         self.memo
             .remove_compared(place.account, place.folder, ids)?;
-        self.memo.commit()
+        self.memo.commit_for(self.archive)
     }
 
     /// After the last round: what the Message-ID settled needs no row
@@ -1767,7 +1767,7 @@ impl Fetch<'_> {
                     uid: top,
                 },
             )?;
-            self.memo.commit()?;
+            self.memo.commit_for(self.archive)?;
             if wanted.is_empty() {
                 break;
             }
@@ -1891,7 +1891,7 @@ impl Fetch<'_> {
                     .iter()
                     .map(|(message, _)| (message.id.as_str(), &message.tags)),
             )?;
-            self.memo.commit()?;
+            self.memo.commit_for(self.archive)?;
             only = more
                 .wanted
                 .into_iter()

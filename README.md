@@ -107,7 +107,9 @@ $ ossuary --archive /home/john/archive init
 
 Every command takes `--archive`. Without it, `OSSUARY_ARCHIVE` is used
 if it is set, otherwise the current directory. The examples below set
-`OSSUARY_ARCHIVE` once for the shell session.
+`OSSUARY_ARCHIVE` once for the shell session. `--cache DIR` keeps the
+query index outside the archive, for an archive that cannot be written
+to or lies on a network share.
 
 Two settings are best decided before the first file is added. The hash
 algorithm that names the files is set by `init --algorithm` (default

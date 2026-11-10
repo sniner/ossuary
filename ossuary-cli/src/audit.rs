@@ -1,14 +1,13 @@
 //! `ossuary audit`: the archive held against its own record.
 
 use std::io::Write;
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
 use ossuary_core::{Audit, Ends, Fixity, LogAudit, StoreAudit};
 
-use crate::open;
 use crate::output::{errln, say};
+use crate::{Location, open};
 
 /// How many names still fit in a plain answer. Up to a handful stands
 /// right there; more turns into a count, and --verbose names them all.
@@ -23,7 +22,7 @@ const NOT_READ: &str = "not checked against their hashes";
     reason = "two switches of the verb and two of the run, each one flag the user set"
 )]
 pub(crate) fn audit(
-    root: &Path,
+    location: &Location,
     json: bool,
     fast: bool,
     verbose: bool,
@@ -34,7 +33,7 @@ pub(crate) fn audit(
             "--json already lists every finding; drop --verbose"
         ));
     }
-    let archive = open(root)?;
+    let archive = open(location)?;
     let what = if fast {
         "listing every file; --fast, their contents are not read"
     } else {
