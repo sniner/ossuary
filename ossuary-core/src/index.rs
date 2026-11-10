@@ -3149,9 +3149,9 @@ mod tests {
         );
     }
 
-    /// Review 0.20.3, B7: of two assertions in one second the one the
-    /// index read last answered, so an index folded on and one built
-    /// anew could name different claims.
+    /// Of two assertions in one second the one with the larger id
+    /// answers, whichever the index read first, so an index folded on
+    /// and one built anew name the same claim.
     #[test]
     fn two_assertions_in_one_second_answer_alike_however_the_index_read_them() {
         let moment = "2026-09-01T10:00:00Z";
