@@ -12,6 +12,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sources (`extractor:mail`), only the claims of these extractors are removed. Sealed segments are
   rewritten, so seal ids issued before no longer pass `ossuary seal --check`
 
+### Changed
+
+- **`ossuary-extract-mail` records header values in a form that can be searched.** `mail:date` is
+  the time in UTC (`2026-03-10T13:22:05Z`), so `mail:date=2026-03-01..2026-04-01` finds the
+  messages of March. Address headers give one value per address, with the address in lower case
+  (`Erika Muster <erika@example.org>`, `<erika@example.org>`). Message ids and content ids are
+  recorded without angle brackets, and `in-reply-to` and `references` give one value per id. A
+  value that cannot be read this way is not recorded and is reported with its message. To rewrite
+  the values in an existing archive, run `ossuary-fix unextract` and then `ossuary extract`
+
 ### Fixed
 
 - **A missing segment, a missing open segment and an unfinished seal without its segment file now

@@ -25,23 +25,21 @@
 //! on the record the same way, `application/mbox`, so a future mailbox
 //! reader finds its work waiting.
 //!
-//! Header values are unfolded and their RFC 2047 encoded words decoded —
-//! conversion, not tidying, the way the text extractor reads a PDF's
-//! UTF-16 strings — and otherwise stand as the mail spells them: the
-//! date keeps its own calendar, addresses their display names, commas
-//! and angle brackets. A raw byte no charset accounts for reads as
-//! U+FFFD rather than silencing its whole header. Only failing to read
-//! stdin or to write a carried file is a failure.
+//! The header values are recorded in a form that can be searched (see
+//! `header.rs`). A value that cannot be read in that form is not
+//! recorded and is reported on stderr, one line for each. Only failing
+//! to read stdin or to write a carried file is a failure.
 
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
-use mail_parser::parsers::MessageStream;
-use mail_parser::{HeaderValue, MessageParser};
+use mail_parser::MessageParser;
 use serde_json::json;
 
+mod date;
+mod header;
 mod mime;
 
 /// The generation of what this extractor writes: the number in its
@@ -91,9 +89,12 @@ fn examine(directory: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
     match harvest(&bytes, directory) {
-        Ok(lines) => {
-            for line in lines {
+        Ok(harvest) => {
+            for line in harvest.lines {
                 println!("{line}");
+            }
+            for remark in harvest.remarks {
+                eprintln!("ossuary-extract-mail: {remark}");
             }
             ExitCode::SUCCESS
         }
@@ -104,24 +105,34 @@ fn examine(directory: &Path) -> ExitCode {
     }
 }
 
+/// The result for one file: the lines for stdout, and the remarks for
+/// stderr about values that could not be read.
+#[derive(Debug, Default)]
+struct Harvest {
+    lines: Vec<serde_json::Value>,
+    remarks: Vec<String>,
+}
+
 /// The whole answer for one file: nothing when the bytes are no message,
 /// otherwise the sharper kind, the message's own headers, and one
 /// announcement per carried file — written into the directory on the
 /// way. The protocol reads the answer whole, so the order of lines is
 /// convenience, not contract.
-fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Value>> {
+fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Harvest> {
     if looks_like_mbox(bytes) {
         // A mailbox is not a message and stays shut — but the bytes have
         // told their kind, and the sharper word goes on the record.
-        return Ok(vec![
-            json!({ "attribute": "file:mime", "value": "application/mbox" }),
-        ]);
+        return Ok(Harvest {
+            lines: vec![json!({ "attribute": "file:mime", "value": "application/mbox" })],
+            remarks: Vec::new(),
+        });
     }
     if !looks_like_mail(bytes) {
-        return Ok(Vec::new());
+        return Ok(Harvest::default());
     }
     let root = mime::parse(bytes);
     let mut lines = Vec::new();
+    let mut remarks = Vec::new();
     // The bytes answered as a message from their first byte — a sharper
     // word than the sniff's text/plain, said onto the same set.
     lines.push(json!({ "attribute": "file:mime", "value": "message/rfc822" }));
@@ -136,8 +147,13 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
         let raw = bytes
             .get(header.offset_start as usize..header.offset_end as usize)
             .unwrap_or_default();
-        if let Some(value) = unfold(raw) {
-            lines.push(json!({ "attribute": format!("mail:{name}"), "value": value }));
+        for value in header::read(name, raw, &header.value) {
+            match value {
+                Ok(value) => {
+                    lines.push(json!({ "attribute": format!("mail:{name}"), "value": value }));
+                }
+                Err(reason) => remarks.push(format!("mail:{name} not recorded: {reason}")),
+            }
         }
     }
     let mut taken = HashSet::new();
@@ -185,34 +201,19 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Va
             lines.push(json!({
                 "file": &announced,
                 "attribute": "mail:content-id",
-                "value": format!("<{id}>"),
+                "value": id,
             }));
         }
     }
-    Ok(lines)
+    Ok(Harvest { lines, remarks })
 }
 
-/// The headers this extractor repeats: the message's own voice — who
-/// speaks, to whom, about what, when, and the message-id family that
-/// threads it. The transport's trail — received, return-path, the x-
-/// families — describes the journey, not the message, and stays untold.
-/// Answers the attribute spelling for a header that is spoken.
+/// The attribute name for a header that is recorded, `None` for one that
+/// is not.
 fn spoken(name: &str) -> Option<&'static str> {
-    [
-        "from",
-        "sender",
-        "reply-to",
-        "to",
-        "cc",
-        "bcc",
-        "subject",
-        "date",
-        "message-id",
-        "in-reply-to",
-        "references",
-    ]
-    .into_iter()
-    .find(|known| known.eq_ignore_ascii_case(name))
+    header::RECORDED
+        .into_iter()
+        .find(|known| known.eq_ignore_ascii_case(name))
 }
 
 /// Header names that only a mail carries — the gate's yardstick. The
@@ -290,22 +291,6 @@ fn looks_like_mbox(bytes: &[u8]) -> bool {
         .iter()
         .position(|&byte| byte == b'\n')
         .is_some_and(|end| looks_like_mail(&bytes[end + 1..]))
-}
-
-/// One header's raw value in the claim's spelling: unfolded — the
-/// transport's line breaks read as the single space they mean — and its
-/// RFC 2047 encoded words decoded, in whatever charset each word names.
-/// Everything else stands as the mail spells it. A header with nothing
-/// left to say is no finding.
-fn unfold(raw: &[u8]) -> Option<String> {
-    let mut data = raw.to_vec();
-    if data.last() != Some(&b'\n') {
-        data.push(b'\n');
-    }
-    match MessageStream::new(&data).parse_unstructured() {
-        HeaderValue::Text(text) if !text.trim().is_empty() => Some(text.into_owned()),
-        _ => None,
-    }
 }
 
 /// The type of an extracted file: the content type the part declares. A
@@ -426,30 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn header_values_unfold_and_decode_but_stay_spelled() {
-        assert_eq!(
-            unfold(b" Thu, 4 Sep 2026 12:34:56 +0200\r\n"),
-            Some("Thu, 4 Sep 2026 12:34:56 +0200".to_string()),
-            "the date keeps its own calendar"
-        );
-        assert_eq!(
-            unfold(b" alice <a@example.com>,\r\n bob <b@example.com>\r\n"),
-            Some("alice <a@example.com>, bob <b@example.com>".to_string()),
-            "a fold reads as the single space it means"
-        );
-        assert_eq!(
-            unfold(b" =?ISO-8859-1?Q?Gr=FC=DFe?= aus dem Test\r\n"),
-            Some("Gr\u{fc}\u{df}e aus dem Test".to_string()),
-            "an encoded word is spelling, not content"
-        );
-        assert_eq!(
-            unfold(b"   \r\n"),
-            None,
-            "nothing left to say is no finding"
-        );
-    }
-
-    #[test]
     fn names_shed_their_paths_and_yield_to_the_taken() {
         assert_eq!(basename("invoice.pdf"), Some("invoice.pdf".to_string()));
         assert_eq!(basename("reports/q3.pdf"), Some("q3.pdf".to_string()));
@@ -501,7 +462,7 @@ mod tests {
             long = "x".repeat(300)
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
 
         let announced = "x".repeat(NAME_AT_MOST);
         assert!(
@@ -549,7 +510,7 @@ mod tests {
             "body\n",
         );
 
-        let lines = harvest(mbox.as_bytes(), dir.path()).unwrap();
+        let lines = harvest(mbox.as_bytes(), dir.path()).unwrap().lines;
 
         assert_eq!(
             lines,
@@ -563,11 +524,11 @@ mod tests {
     fn bytes_without_a_message_are_an_empty_answer_not_an_error() {
         let dir = TempDir::new().unwrap();
         assert_eq!(
-            harvest(b"plain words", dir.path()).unwrap(),
+            harvest(b"plain words", dir.path()).unwrap().lines,
             Vec::<serde_json::Value>::new()
         );
         assert_eq!(
-            harvest(b"", dir.path()).unwrap(),
+            harvest(b"", dir.path()).unwrap().lines,
             Vec::<serde_json::Value>::new()
         );
         assert_eq!(
@@ -578,34 +539,45 @@ mod tests {
     }
 
     #[test]
-    fn the_message_speaks_verbatim_under_mail() {
+    fn the_headers_are_recorded_under_mail_in_searchable_form() {
         let dir = TempDir::new().unwrap();
         let mail = concat!(
             "Received: from mx.example.com by mail.example.org\r\n",
-            "From: Alice Adams <alice@example.com>\r\n",
+            "From: Alice Adams <Alice@Example.com>\r\n",
             "To: bob <bob@example.org>,\r\n",
             " carol <carol@example.org>\r\n",
+            "Cc: John Doe\r\n",
             "Subject: =?ISO-8859-1?Q?Gr=FC=DFe?=\r\n",
-            "Date: Thu, 4 Sep 2026 12:34:56 +0200\r\n",
+            "Date: Fri, 4 Sep 2026 12:34:56 +0200\r\n",
             "Message-ID: <one@example.com>\r\n",
+            "References: <zero@example.com> <half@example.com>\r\n",
             "\r\n",
             "Hello.\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let harvest = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let lines = harvest.lines;
 
         let expect = |line: serde_json::Value| {
             assert!(lines.contains(&line), "missing {line}; got {lines:#?}");
         };
         expect(json!({ "attribute": "file:mime", "value": "message/rfc822" }));
         expect(json!({ "attribute": "mail:from", "value": "Alice Adams <alice@example.com>" }));
-        expect(json!({
-            "attribute": "mail:to",
-            "value": "bob <bob@example.org>, carol <carol@example.org>",
-        }));
+        expect(json!({ "attribute": "mail:to", "value": "bob <bob@example.org>" }));
+        expect(json!({ "attribute": "mail:to", "value": "carol <carol@example.org>" }));
         expect(json!({ "attribute": "mail:subject", "value": "Gr\u{fc}\u{df}e" }));
-        expect(json!({ "attribute": "mail:date", "value": "Thu, 4 Sep 2026 12:34:56 +0200" }));
-        expect(json!({ "attribute": "mail:message-id", "value": "<one@example.com>" }));
+        expect(json!({ "attribute": "mail:date", "value": "2026-09-04T10:34:56Z" }));
+        expect(json!({ "attribute": "mail:message-id", "value": "one@example.com" }));
+        expect(json!({ "attribute": "mail:references", "value": "zero@example.com" }));
+        expect(json!({ "attribute": "mail:references", "value": "half@example.com" }));
+        assert!(
+            !lines.iter().any(|line| line["attribute"] == "mail:cc"),
+            "a name without an address is not recorded; got {lines:#?}"
+        );
+        assert_eq!(
+            harvest.remarks,
+            ["mail:cc not recorded: \"John Doe\" has no address"]
+        );
         assert!(
             !lines
                 .iter()
@@ -643,7 +615,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
 
         assert!(
             lines.contains(&json!({ "file": "invoice.pdf", "mime": "application/pdf" })),
@@ -666,9 +638,9 @@ mod tests {
             lines.contains(&json!({
                 "file": "invoice.pdf",
                 "attribute": "mail:content-id",
-                "value": "<part2@example.com>",
+                "value": "part2@example.com",
             })),
-            "the part's identity stands on the part; got {lines:#?}"
+            "the content-id is recorded on the part, without angle brackets; got {lines:#?}"
         );
         assert_eq!(
             std::fs::read(dir.path().join("invoice.pdf")).unwrap(),
@@ -806,7 +778,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
 
         assert!(
             lines.contains(&json!({ "file": "message.eml", "mime": "message/rfc822" })),
@@ -825,7 +797,7 @@ mod tests {
             "the nested message's own bytes, headers and all; got {carried:?}"
         );
         assert!(
-            harvest(carried.as_bytes(), dir.path()).unwrap().len() > 1,
+            harvest(carried.as_bytes(), dir.path()).unwrap().lines.len() > 1,
             "and what came out reads as a mail in its own right"
         );
     }
@@ -852,7 +824,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
 
         assert!(lines.contains(&json!({ "file": "image.png", "mime": "image/png" })));
         assert!(lines.contains(&json!({
@@ -903,7 +875,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
 
         assert!(lines.contains(&json!({
             "file": "Rechnung.pdf",
@@ -1076,7 +1048,7 @@ mod tests {
             From: d@example.org\r\nSubject: =C3=BCber\r\n\r\nbody\r\n\
             --cut--\r\n";
         let dir = TempDir::new().unwrap();
-        let lines = harvest(mail, dir.path()).unwrap();
+        let lines = harvest(mail, dir.path()).unwrap().lines;
         let read = identity()["mimes"].as_array().unwrap().clone();
 
         let written: Vec<_> = lines.iter().filter_map(|line| line.get("mime")).collect();

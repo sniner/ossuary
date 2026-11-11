@@ -93,14 +93,14 @@ writes zero or more lines, one JSON object each, in three shapes:
 ```json
 {"attribute": "mail:subject", "value": "Re: the plan"}
 {"file": "report.pdf", "mime": "application/pdf"}
-{"file": "report.pdf", "attribute": "mail:content-id", "value": "<part2@example.com>"}
+{"file": "report.pdf", "attribute": "mail:content-id", "value": "part2@example.com"}
 ```
 
 - The first shape is a finding about the examined file. `attribute`
   must match the claim grammar (`namespace:attribute`, lowercase `a-z`,
-  `0-9`, `-`); `value` may be any JSON value except `null`. Record
-  verbatim, with the format's own field names and the format's own
-  spelling; see the [vocabulary](vocabulary.md).
+  `0-9`, `-`); `value` may be any JSON value except `null`. Use the
+  format's own field names; the form of each value is given in the
+  [vocabulary](vocabulary.md).
 - The second shape announces a derived file: `file` is its name in the
   directory (a bare name, without a path), and `mime` is its type, as
   stated by the program that wrote the bytes instead of detected from

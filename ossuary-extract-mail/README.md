@@ -14,9 +14,10 @@ access the archive; `ossuary extract` runs it and records the results.
 file:mime = "message/rfc822"
 mail:from = "Erika Muster <erika@example.org>"
 mail:to = "John Doe <john@example.net>"
+mail:to = "<jane@example.net>"
 mail:subject = "Quarterly figures"
-mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"
-mail:message-id = "<74a2f19c@mail.example.org>"
+mail:date = "2026-03-10T13:22:05Z"
+mail:message-id = "74a2f19c@mail.example.org"
 ```
 
 Eleven headers are recorded: `from`, `sender`, `reply-to`, `to`, `cc`,
@@ -24,11 +25,32 @@ Eleven headers are recorded: `from`, `sender`, `reply-to`, `to`, `cc`,
 Transport headers (`received`, `return-path`, the `x-` headers) are not
 recorded.
 
-Folded values are unfolded, and RFC 2047 encoded words are decoded.
-Nothing else is changed: the date keeps its original format, and
-addresses keep their display names, commas and angle brackets. A byte
-that no charset can decode is replaced with U+FFFD; the rest of the
-header is kept.
+Folded values are unfolded, and RFC 2047 encoded words are decoded. A
+byte that no charset can decode is replaced with U+FFFD; the rest of the
+header is kept. The values are then written in a form that can be
+searched; the message itself stays in the archive with the headers as
+they were.
+
+- **Date**: in UTC, in the form `2026-03-10T13:22:05Z`, so that
+  `find mail:date=2026-03-01..2026-04-01` finds the messages of March.
+  A date without a time zone stays local time and is written without
+  one (`2026-03-10T14:22:05`).
+- **Addresses** (`from`, `sender`, `reply-to`, `to`, `cc`, `bcc`): one
+  value per address, with the name if there is one. The address is
+  written in lower case. `find 'mail:to=*<erika@example.org>'` finds
+  every message to that address, with or without a name. The members of
+  a group are recorded without the group's name.
+- **Message ids** (`message-id`, `in-reply-to`, `references`): one value
+  per id, without the angle brackets. `find
+  mail:in-reply-to=74a2f19c@mail.example.org` finds the replies to the
+  message above.
+- **Subject**: as written.
+
+A value that cannot be read this way is not recorded: a date that is not
+a date, or an entry of `To:` with only a name and no address. Each one is
+reported with the message it is in, and the message is still examined.
+An attachment's content id is recorded without angle brackets, the way
+an HTML part refers to it (`cid:part2@example.com`).
 
 ## Attachments
 

@@ -166,7 +166,10 @@ impl Fields {
                 .content_transfer_encoding()
                 .map_or(Encoding::Identity, Encoding::named),
             name: message.attachment_name().map(str::to_string),
-            content_id: message.content_id().map(str::to_string),
+            content_id: message
+                .header_raw("Content-ID")
+                .and_then(ossuary_extract_mail::message_id)
+                .map(str::to_string),
         }
     }
 }

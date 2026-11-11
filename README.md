@@ -27,7 +27,7 @@ add to the same archive at the same time, also over a network share
 * **Information about any file.** What it is, where it came from, on
   which machines it was, what arrived with it. A file is looked up by
   its content hash, not by a path that may no longer exist.
-* **Metadata, extracted verbatim.** EXIF fields, a PDF's text and
+* **Metadata from inside the files.** EXIF fields, a PDF's text and
   document info, a mail's headers. What a mail or a zip contains
   (attachments, nested messages, zip entries) is stored as files of
   their own, each linked to the file it came from.

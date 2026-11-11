@@ -29,13 +29,22 @@ who asserted a value (the extract worklist does) reads the claims
 themselves, including their source: the set is the default view of an
 attribute, but not the only one.
 
-**Extractors record verbatim.** An extractor records what the format
-contains, under the format's own names and with the values as found
-(`exif:date-time-original`, for example), and never normalizes. Which
-value is "the creation date", when EXIF, a mail header and a PDF field
-each have one, is interpretation. Interpretation is query-time policy,
-and the mapping belongs in this document, where it can change without
-any change to the log.
+**Extractors record what the format contains, in a form that can be
+searched.** An extractor records under the format's own names
+(`exif:date-time-original`, for example). Where the format's own way
+of writing a value cannot be searched as text, the extractor writes the
+value in one fixed form: a date in RFC 3339, a list of addresses as one
+claim per address. The form changes, the content does not: the value
+states nothing that the file does not state, and a value that cannot be
+read in this form is not recorded. The original form is still in the
+file, which stays in the archive. The entry of each namespace below
+says which values are rewritten this way.
+
+**Extractors do not interpret.** Which value is "the creation date",
+when EXIF, a mail header and a PDF field each have one, is
+interpretation. Interpretation is query-time policy, and the mapping
+belongs in this document, where it can change without any change to
+the log.
 
 **Upgrades write their claims again, on purpose.** A new extractor
 generation examines the files again and records what it finds, under a
@@ -76,7 +85,7 @@ its source.
   that predates XMP), as read by `ossuary-extract-image`
 - `pdf:` holds PDF document information verbatim, as read by
   `ossuary-extract-pdf`
-- `mail:` holds a message's own headers verbatim, as read by
+- `mail:` holds a message's own headers, as read by
   `ossuary-extract-mail`. The headers are recorded on the message, a
   part's identity on the part
 - `packed:` holds the list of entries of a packed archive, as read by
@@ -357,20 +366,44 @@ added when it is first needed.
 
 ### mail:…
 
-- meaning: one header of the message itself, verbatim: `mail:`
-  followed by the header's name in lower case. The headers recorded are
-  from, sender, reply-to, to, cc, bcc, subject, date, message-id,
-  in-reply-to and references, with one claim for each occurrence. The
-  value is unfolded and its RFC 2047 encoded words are decoded (a
-  conversion of the encoding, not a cleanup); otherwise it is kept as
-  written in the mail: the date keeps its original format
-  (`"Thu, 4 Sep 2026 12:34:56 +0200"`), and addresses keep their
-  display names, commas and angle brackets. Transport headers
-  (received, return-path, the x- headers) describe the delivery, not
-  the message, and are not recorded. Named attachments and nested
-  messages are not attributes; they are derived files, linked to the
-  mail by `prov:origin`. Such a part has `mail:content-id`, the part's
-  identifier as written in the mail (`"<part2@example.com>"`)
+- meaning: one header of the message itself: `mail:` followed by the
+  header's name in lower case. The headers recorded are from, sender,
+  reply-to, to, cc, bcc, subject, date, message-id, in-reply-to and
+  references, each occurrence of a header on its own. Folded values are
+  unfolded and RFC 2047 encoded words are decoded. Each value is then
+  written in a form that can be searched:
+  - `mail:date`: the time in RFC 3339, in UTC
+    (`"2026-09-04T10:34:56Z"` for `Fri, 4 Sep 2026 12:34:56 +0200`), so
+    that comparing two values as text compares them in time. A date
+    without a zone, or with a zone name that is unknown or stands for
+    more than one zone (`IST`), is written as local time without a zone
+    (`"2026-09-04T12:34:56"`). A missing second is written as `00`
+  - `mail:from`, `sender`, `reply-to`, `to`, `cc`, `bcc`: one claim per
+    address, `"Erika Muster <erika@example.org>"`, or
+    `"<erika@example.org>"` for an address without a name. The address
+    is in lower case, the name is decoded and without the quotes of the
+    header. The members of a group are recorded without the group's
+    name. `mail:to=*<erika@example.org>` finds the address with and
+    without a name. A local name in angle brackets, as a local mail
+    system writes it, is recorded like an address (`"<root>"`), although
+    RFC 5322 knows no address without a domain
+  - `mail:message-id`, `in-reply-to`, `references`: one claim per
+    message id, without the angle brackets, which are not part of the
+    id (RFC 5322, 3.6.4), and in its original case
+    (`"74a2f19c@mail.example.org"`). A `mail:in-reply-to` or
+    `mail:references` equal to the `mail:message-id` of another message
+    refers to that message
+  - `mail:subject`: as written
+
+  A value that cannot be read in this form (a date that is no date, an
+  entry of `To:` without an address) is not recorded, and the extractor
+  reports it. Transport headers (received, return-path, the x- headers)
+  describe the delivery, not the message, and are not recorded. Named
+  attachments and nested messages are not attributes; they are derived
+  files, linked to the mail by `prov:origin`. Such a part has
+  `mail:content-id`, the part's identifier without angle brackets
+  (`"part2@example.com"`), as an HTML part refers to it with
+  `cid:part2@example.com`
 - value: string
 - written by: ossuary-extract-mail
 
