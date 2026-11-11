@@ -279,7 +279,7 @@ fn unpack<R: Read + Seek>(
         // pins the archive, so the refusal could not go asking for them
         // then.
         let (spelled_raw, locked) = archive.by_index_raw(index).map_or_else(
-            |_| (format!("{index}"), false),
+            |_| (format!("number {}", index + 1), false),
             |raw| (raw.name().to_string(), raw.encrypted()),
         );
         let mut file = match archive.by_index(index) {

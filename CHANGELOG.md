@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ossuary-extract-pdf` said "reading the document failed" also when it could not write an
+  attachment.** It now says "attachments not extracted" or "document information not read"
+
 ## [0.21.1] - 2026-11-11
 
 ### Changed

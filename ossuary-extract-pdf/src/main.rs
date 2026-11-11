@@ -200,7 +200,8 @@ enum Task<'a> {
 }
 
 impl Task<'_> {
-    /// The start of the note when the worker stops on the document.
+    /// The start of the note or the error when the worker does not
+    /// finish the task.
     fn not_read(self) -> &'static str {
         match self {
             Task::Info => "document information not read",
@@ -215,7 +216,7 @@ impl Task<'_> {
 fn identify() -> ExitCode {
     if !pdftotext_present() {
         eprintln!(
-            "no `pdftotext` on PATH; install poppler (Homebrew: poppler, Debian: poppler-utils), then run this again"
+            "no `pdftotext` on PATH; install poppler (Homebrew: poppler, Debian: poppler-utils), then run again"
         );
         return ExitCode::FAILURE;
     }
@@ -281,7 +282,8 @@ fn guarded(task: Task<'_>, bytes: &[u8]) -> std::io::Result<()> {
         Verdict::Failed => {
             std::io::stderr().write_all(&ended.stderr)?;
             Err(std::io::Error::other(format!(
-                "reading the document failed ({})",
+                "{} ({})",
+                task.not_read(),
                 ended.status
             )))
         }
@@ -311,7 +313,7 @@ fn in_worker(task: Task<'_>, bytes: &[u8], limit: usize) -> std::io::Result<Ende
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
-            std::io::Error::new(error.kind(), format!("starting the worker: {error}"))
+            std::io::Error::new(error.kind(), format!("starting a worker process: {error}"))
         })?;
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let mut stdout = child.stdout.take().expect("stdout was piped");
@@ -339,7 +341,7 @@ fn in_worker(task: Task<'_>, bytes: &[u8], limit: usize) -> std::io::Result<Ende
     {
         return Err(std::io::Error::new(
             error.kind(),
-            format!("handing the document to the worker: {error}"),
+            format!("writing the document to the worker process: {error}"),
         ));
     }
     Ok(Ended {
@@ -407,8 +409,8 @@ fn verdict(status: ExitStatus, stderr: &str, limit: usize) -> Verdict {
     }
     if aborted(status) {
         return Verdict::Refused(match last {
-            Some(message) => format!("the PDF library stopped: {message}"),
-            None => "the PDF library stopped".to_string(),
+            Some(message) => format!("the PDF library aborted: {message}"),
+            None => "the PDF library aborted".to_string(),
         });
     }
     Verdict::Failed
@@ -665,8 +667,9 @@ fn attachments(
     let mut taken = HashSet::new();
     for specification in file_specifications(&document) {
         let Some(spelled) = specification.name(&document) else {
+            let (number, generation) = specification.stream;
             lines.push(stays_inside(
-                &format!("{:?}", specification.stream),
+                &format!("(object {number} {generation})"),
                 "no file name",
             ));
             continue;
@@ -1461,7 +1464,7 @@ mod tests {
                 limit
             ),
             Verdict::Refused(
-                "the PDF library stopped: fatal runtime error: stack overflow".to_string()
+                "the PDF library aborted: fatal runtime error: stack overflow".to_string()
             )
         );
     }
