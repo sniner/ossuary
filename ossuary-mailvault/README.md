@@ -414,8 +414,9 @@ skipped.
 
 `--no-auto-labels` records every place as `mailbox:place`, as the log names
 it, and does not read the accounts. Use it for a mailbox that is no longer
-fetched and has no account: import it by name with `--no-auto-labels`, and
-the other mailboxes by name without it.
+fetched and has no account. If other mailboxes in the archive have
+accounts, import that mailbox by name with `--no-auto-labels` and the rest
+in a separate run.
 
 An import of a large archive takes long. If it is interrupted, the next
 `import` continues where it stopped. The progress is kept in `cache/`, and
