@@ -186,6 +186,35 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Remove the claims of extractors and the derived files only they recorded
+    ///
+    /// Removes every claim written by `ossuary extract`: what the
+    /// extractors found in the files, the records that a file was
+    /// examined, and the claims about derived files. A derived file that
+    /// no other claim names is removed from derived/. Afterwards the
+    /// archive is as it was before `ossuary extract` first ran, and the
+    /// next run examines every file again. Use it when an extractor
+    /// writes its values in another form than before and the old values
+    /// are not to stay in the archive.
+    ///
+    /// Claims of other sources are not changed. A retraction by another
+    /// source is removed when every claim it names is removed. A derived
+    /// file that another claim names stays in derived/, without its
+    /// recorded size and type; `ossuary maintain describe` records both
+    /// again. Files in content/ are not touched.
+    ///
+    /// The segments from the first one with a removed claim on get new
+    /// names, so seal ids issued for them no longer pass
+    /// `ossuary seal --check`. The query index in cache/ is removed and
+    /// rebuilt by the next command. Make a copy of the archive first.
+    Unextract {
+        /// Remove only the claims of these extractors: a source as the
+        /// claims name it (extractor:mail/1), or without its generation
+        /// (extractor:mail) for every generation. `--dry-run` lists the
+        /// sources in the archive
+        #[arg(value_name = "SOURCE")]
+        sources: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -258,6 +287,25 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             ref target,
             force,
         } => (rehash(cli, &archive, target, algorithm, force)?, None),
+        Command::Unextract { ref sources } => {
+            let (rewrite, removed) = fixes::unextract::plan(&archive, sources)?;
+            for line in removed.lines() {
+                println!("{line}");
+            }
+            if !cli.dry_run {
+                removed.apply(&archive)?;
+            }
+            let mut sentence = segments(cli, &archive, &rewrite)?;
+            if rewrite.changes() && !cli.dry_run {
+                // A file without size or type is skipped by `ossuary extract`.
+                sentence.push_str(if removed.kept > 0 {
+                    "; run `ossuary maintain describe`, then `ossuary extract` to examine the files again"
+                } else {
+                    "; run `ossuary extract` to examine the files again"
+                });
+            }
+            (sentence, rewrite.seals(cli.dry_run))
+        }
     };
     println!("{sentence}");
     if let Some(seals) = seals {

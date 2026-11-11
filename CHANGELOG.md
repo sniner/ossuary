@@ -5,6 +5,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary-fix unextract` removes the claims of extractors**, and from derived/ the files that no
+  other claim names. The next `ossuary extract` examines every file again. With one or more
+  sources (`extractor:mail`), only the claims of these extractors are removed. Sealed segments are
+  rewritten, so seal ids issued before no longer pass `ossuary seal --check`
+
 ### Fixed
 
 - **A missing segment, a missing open segment and an unfinished seal without its segment file now

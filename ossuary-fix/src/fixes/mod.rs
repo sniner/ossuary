@@ -13,6 +13,7 @@ pub mod open;
 pub mod origin;
 pub mod packed;
 pub mod rehash;
+pub mod unextract;
 
 #[cfg(test)]
 pub mod testing;

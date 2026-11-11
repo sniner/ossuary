@@ -7,8 +7,9 @@ current format.*
 changes the digest of a sealed segment. Some repairs cannot be made that
 way. An attribute name changed between versions, the form of a segment
 header changed, a sealed segment or the open segment was lost and the
-gap in the chain has to be closed, or the archive is to move to
-another hash algorithm. `ossuary-fix` makes these changes, each as a
+gap in the chain has to be closed, the archive is to move to another
+hash algorithm, or the claims of the extractors are to be removed so
+that the files can be examined anew. `ossuary-fix` makes these changes, each as a
 subcommand. The ossuary programs contain no migration code.
 
 A fix reads the whole log and writes only what is missing or in an old
@@ -114,4 +115,28 @@ they come after everything recorded before the fix.
 
   ```console
   $ ossuary-fix --archive ~/archive rehash --algorithm blake3 ~/archive-blake3
+  ```
+- `unextract`: removes every claim written by `ossuary extract`: what
+  the extractors found in the files, the records that a file was
+  examined, and the claims about derived files. A derived file that no
+  other claim names is removed from `derived/`. Afterwards the archive
+  is as it was before `ossuary extract` first ran, and the next run
+  examines every file again. Use it when an extractor writes its values
+  in another form than before and the old values are not to stay in the
+  archive. Claims of other sources are not changed. A retraction by
+  another source is removed when every claim it names is removed. A
+  derived file that another claim names, a tag of the user for example,
+  stays in `derived/` without its recorded size and type; `ossuary
+  maintain describe` records both again, and `ossuary extract` skips the
+  file until then. Files in `content/` are not touched. With one or more
+  sources, only the claims of these extractors are removed: a source as
+  the claims name it (`extractor:mail/1`), or without its generation
+  (`extractor:mail`) for every generation.
+
+  ```console
+  $ ossuary-fix --dry-run unextract
+  extractor:mail/1: 13 claim(s) to remove
+  1 file(s) in derived/ that no other claim names to remove
+  the open segment would be rewritten without the claims of extractors; 1 segment(s) without claims would be removed; 1 unchanged
+  every seal id issued so far would no longer pass `ossuary seal --check`
   ```
