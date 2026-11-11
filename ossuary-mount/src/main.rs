@@ -57,9 +57,9 @@ struct Cli {
 
     /// Keep the index in DIR, not in the archive
     ///
-    /// For an archive that cannot be written to, and to keep the index
-    /// off a network share. DIR is created if missing. Use one DIR per
-    /// archive.
+    /// Use it for an archive that cannot be written to, or to keep the
+    /// index off a network share. DIR is created if missing. Use one DIR
+    /// per archive.
     #[arg(long, value_name = "DIR", env = "OSSUARY_CACHE")]
     cache: Option<PathBuf>,
 
@@ -130,6 +130,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         stood: stood.as_deref(),
         files,
         folders,
+        empty: (files == 0).then(|| unshown(&archive, as_of.is_some())),
         quiet,
     };
     let record = Record::new(view, archive, uid, gid, view_time);
@@ -154,6 +155,8 @@ pub struct Room<'a> {
     stood: Option<&'a str>,
     files: usize,
     folders: usize,
+    /// The line for a view without files; `None` when it shows some.
+    empty: Option<&'static str>,
     quiet: bool,
 }
 
@@ -178,8 +181,8 @@ impl Room<'_> {
         self.tell(format_args!(
             "mounted read-only at {place}: {files} file(s) in {folders} folder(s){stood}; press Ctrl-C to unmount"
         ));
-        if *files == 0 {
-            self.tell("no files to show; add files with `ossuary ingest`");
+        if let Some(empty) = self.empty {
+            self.tell(empty);
         }
     }
 
@@ -213,7 +216,7 @@ fn caught_up(archive: &Archive, quiet: bool) -> Result<Index> {
     }
     if folded.rebuilt && folded.segments == 0 && archive.cache_is_outside() {
         eprintln!(
-            "index rebuilt: the cache is kept outside the archive, and the archive has no sealed segment yet that shows the cache to be its own; `ossuary seal` makes one"
+            "index rebuilt; a cache outside the archive is only used once the archive has a sealed segment; `ossuary seal` makes one"
         );
     } else if folded.rebuilt {
         eprintln!("index rebuilt: {} log segment(s)", folded.segments);
@@ -292,6 +295,22 @@ fn newest(standing: Vec<Standing>) -> BTreeMap<String, Value> {
     best.into_iter()
         .map(|(subject, (_, _, value))| (subject, value))
         .collect()
+}
+
+/// The line for a view without files. `ossuary ingest` is the way to
+/// one only when the view is of the present and the archive stores no
+/// file at all; a store that cannot be listed counts as holding files.
+fn unshown(archive: &Archive, as_of: bool) -> &'static str {
+    if as_of {
+        "no file has a recorded path at that time"
+    } else if [archive.content(), archive.derived()]
+        .into_iter()
+        .any(|store| store.entries().next().is_some())
+    {
+        "no file has a recorded path"
+    } else {
+        "no files to show; add files with `ossuary ingest`"
+    }
 }
 
 /// The view's own count of what it shows.

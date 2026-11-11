@@ -57,7 +57,7 @@ impl Directory {
                 fs::read_dir(root).with_context(|| format!("{}: reading", root.display()))?;
             if listing.next().is_some() {
                 bail!(
-                    "{}: holds files but is not an ossuary archive; name an empty directory or a copy that ossuary sync made",
+                    "{}: contains files but is not an ossuary archive; name an empty directory or a copy made by ossuary sync",
                     root.display()
                 );
             }

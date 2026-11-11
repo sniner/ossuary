@@ -246,7 +246,7 @@ impl WebDav {
         // The folder itself is the first response of the listing.
         if elements(&self.list("1")?, "response") > 1 {
             bail!(
-                "{}: holds files but is not an ossuary archive; name an empty folder or a copy that ossuary sync made",
+                "{}: contains files but is not an ossuary archive; name an empty folder or a copy made by ossuary sync",
                 self.root
             );
         }
@@ -380,9 +380,9 @@ impl WebDav {
                     "{url}: the server redirects to {}; name that URL as the target",
                     location.to_str().unwrap_or("another URL")
                 ),
-                None => anyhow!("{url}: {act} failed, the server answers {}", show(status)),
+                None => anyhow!("{url}: {act} failed, the server returned {}", show(status)),
             },
-            _ => anyhow!("{url}: {act} failed, the server answers {}", show(status)),
+            _ => anyhow!("{url}: {act} failed, the server returned {}", show(status)),
         }
     }
 
@@ -410,7 +410,7 @@ impl WebDav {
         match self.try_put(&self.url(path), &[], body, size, dest)? {
             Sent::Stored => Ok(()),
             Sent::TooLarge if self.root.contains("/remote.php/webdav/") => bail!(
-                "{}: the server refuses a file of {}; name the folder by its address below /remote.php/dav/files/, where files go up in parts, or raise the server's upload limit",
+                "{}: the server refuses a file of {}; name the folder by its address below /remote.php/dav/files/, or raise the server's upload limit",
                 self.url(dest),
                 human_bytes(size)
             ),
@@ -517,7 +517,7 @@ impl WebDav {
                     }
                     Sent::TooLarge if self.lower() => {}
                     Sent::TooLarge => bail!(
-                        "{}: the server refuses a part of {} of a file uploaded in parts; raise its upload limit and sync again",
+                        "{}: the server refuses an upload part of {}; raise its upload limit and sync again",
                         self.url(dest),
                         human_bytes(piece.len() as u64)
                     ),
@@ -717,9 +717,9 @@ fn read_exactly(from: &mut dyn Read, size: u64, dest: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
     from.take(size)
         .read_to_end(&mut bytes)
-        .with_context(|| format!("{dest}: reading the file here"))?;
+        .with_context(|| format!("{dest}: reading the file in the archive"))?;
     if bytes.len() as u64 != size {
-        bail!("{dest}: the file here changed while it was read; sync again");
+        bail!("{dest}: the file in the archive changed while it was read; sync again");
     }
     Ok(bytes)
 }
@@ -947,7 +947,7 @@ mod tests {
             .create("content/ab/cd/abcd", &mut &b"0123456789"[..], 10)
             .unwrap_err();
 
-        assert!(error.to_string().contains("refuses a part of 4 B"));
+        assert!(error.to_string().contains("refuses an upload part of 4 B"));
     }
 
     #[test]

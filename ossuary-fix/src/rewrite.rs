@@ -141,7 +141,7 @@ impl Rewrite {
             }
             let bytes = store
                 .read(&digest)?
-                .ok_or_else(|| anyhow!("segment {digest} disappeared while reading"))?;
+                .ok_or_else(|| anyhow!("segment {digest} disappeared while it was being read"))?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| anyhow!("segment {digest} is not UTF-8 text"))?;
             let segment = parse(&text).with_context(|| format!("segment {digest}"))?;
@@ -181,7 +181,7 @@ impl Rewrite {
                 // no segment can name one that names it back; a segment
                 // that names one the edit dropped waits for ever.
                 bail!(
-                    "{} segment(s) name a segment that is dropped, or each other in a circle; nothing was written",
+                    "internal error: {} segment(s) name a segment that is dropped, or each other in a circle; nothing was written",
                     remaining.len()
                 );
             }
@@ -328,17 +328,17 @@ impl Rewrite {
             .iter()
             .filter_map(|step| step.first.as_deref())
             .min();
-        let (which, checks) = match since {
-            Some(time) if self.unchanged > 0 => {
-                (format!("seal ids given out since {time}"), "check")
-            }
-            _ => ("every seal id given out so far".to_string(), "checks"),
+        let (which, pass) = match since {
+            Some(time) if self.unchanged > 0 => (format!("seal ids issued since {time}"), "pass"),
+            _ => ("every seal id issued so far".to_string(), "passes"),
         };
         if dry_run {
-            Some(format!("{which} would no longer check"))
+            Some(format!(
+                "{which} would no longer pass `ossuary seal --check`"
+            ))
         } else {
             Some(format!(
-                "{which} no longer {checks}; run `ossuary seal` and keep the new id in their place"
+                "{which} no longer {pass} `ossuary seal --check`; run `ossuary seal` and keep the new id instead"
             ))
         }
     }
@@ -429,7 +429,7 @@ fn render(segment: &Segment, names: &BTreeMap<&str, String>) -> Result<String> {
                 .map_or(name.as_str(), String::as_str),
         ),
         several => bail!(
-            "names {} segments as sealed before it; the fix leaves one at most",
+            "internal error: the header names {} segments sealed before it; nothing was written",
             several.len()
         ),
     };
@@ -463,7 +463,7 @@ pub(crate) fn parse(text: &str) -> Result<Segment> {
     match header.remove("ossuary-segment") {
         Some(Value::Number(generation)) if generation.as_u64() == Some(u64::from(GENERATION)) => {}
         Some(Value::Number(generation)) => {
-            bail!("segment generation {generation} is not one this build can rewrite")
+            bail!("segment generation {generation} is not supported by this version of ossuary-fix")
         }
         _ => bail!("header does not name a segment generation: {first}"),
     }
@@ -630,7 +630,9 @@ mod tests {
         );
         assert_eq!(
             plan.seals(true).as_deref(),
-            Some("seal ids given out since 2026-09-02T00:00:00Z would no longer check")
+            Some(
+                "seal ids issued since 2026-09-02T00:00:00Z would no longer pass `ossuary seal --check`"
+            )
         );
 
         plan.apply(&archive).unwrap();
@@ -734,7 +736,7 @@ mod tests {
         let error = Rewrite::plan(&archive, WORDS, |_, _| Ok(())).unwrap_err();
 
         assert!(
-            format!("{error:#}").contains("names 2 segments"),
+            format!("{error:#}").contains("internal error: the header names 2 segments"),
             "{error:#}"
         );
     }

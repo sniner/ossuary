@@ -43,10 +43,10 @@ use webdav::{Certificate, Login, WebDav};
     long_about = "Copy an ossuary archive to another directory, a filebridge location or a WebDAV folder, or bring the copy up to date
 
 sync seals the archive and copies to TARGET every file and sealed segment the
-copy does not hold yet; a later sync copies only what was recorded since. The
-copy is an archive of its own, and the seal id that sync prints checks it:
-`ossuary --archive DIR seal --check ID`, with DIR the copy's directory, on the
-server for a filebridge or WebDAV folder. cache/, config.toml and
+copy does not have yet; a later sync copies only what was recorded since. The
+copy is an archive of its own; check it against the seal id that sync prints
+with `ossuary --archive DIR seal --check ID`, with DIR the copy's directory, on
+the server for a filebridge or WebDAV folder. cache/, config.toml and
 mailvault.toml are not copied, and nothing in the copy is deleted.
 
 TARGET is a directory, a folder in a filebridge location named as
@@ -55,8 +55,8 @@ WebDAV folder. Set OSSUARY_SYNC_TOKEN for a filebridge location with a token,
 and OSSUARY_SYNC_USERNAME and OSSUARY_SYNC_PASSWORD for a WebDAV server that
 asks for a login.
 
-If a file is missing or damaged in the archive, the copy keeps the seal it had,
-and sync exits 1.",
+If a file is missing or damaged in the archive, the copy is not brought up to
+the new seal and sync exits 1.",
     max_term_width = 100
 )]
 #[allow(
@@ -122,7 +122,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         say.line("the server's certificate is not checked");
     }
 
-    say.line("step 1 of 4: sealing the archive, after checking every sealed segment");
+    say.line("step 1 of 4: checking every sealed segment and sealing the archive");
     let seal = sealed(&archive, cli.dry_run)?;
     say.line(if !seal.sealed_now {
         "nothing recorded since the last seal"
@@ -135,9 +135,9 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     say.line("step 2 of 4: working out what the target lacks");
     let held = sync::held(&archive, remote)?;
     say.line(match &held.seal {
-        None => "the target holds no seal yet".to_string(),
-        Some(segment) if *segment == seal.segment => "the target holds this seal".to_string(),
-        Some(segment) => format!("the target holds the seal {segment}"),
+        None => "the target has no seal yet".to_string(),
+        Some(segment) if *segment == seal.segment => "the target has this seal".to_string(),
+        Some(segment) => format!("the target has the seal {segment}"),
     });
     // A dry run has not sealed the open segment, so its claims are
     // counted on their own and the segment it would become is one more.
@@ -174,14 +174,17 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     if findings > 0 {
         report(&plan, &copied, cli.verbose);
         let kept = if copied.new > 0 {
-            format!("; the {} file(s) copied stay there", copied.new)
+            format!(
+                "; the {} file(s) already copied remain at the target",
+                copied.new
+            )
         } else {
             String::new()
         };
         println!(
-            "the target was not brought up to the seal {}: {findings} file(s) above; {}{kept}; `ossuary audit` lists what is missing or damaged here, sync again once it is restored",
+            "the target was not brought up to the seal {} because of the {findings} file(s) above; {}{kept}; `ossuary audit` lists what is missing or damaged in the archive, sync again once it is restored",
             seal.segment,
-            holds(&held)
+            still_has(&held)
         );
         return Ok(ExitCode::FAILURE);
     }
@@ -196,11 +199,11 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     let id = &seal.segment;
     say.line(if cli.target.to_string_lossy().contains("://") {
         format!(
-            "the target holds the seal {id}; in the folder on the server, or with it mounted, `ossuary --archive DIR seal --check {id}` checks it"
+            "the target has the seal {id}; check it with `ossuary --archive DIR seal --check {id}`, with DIR the folder on the server or its mount point"
         )
     } else {
         format!(
-            "the target holds the seal {id}; `ossuary --archive {} seal --check {id}` checks it",
+            "the target has the seal {id}; check it with `ossuary --archive {} seal --check {id}`",
             cli.target.display()
         )
     });
@@ -252,9 +255,9 @@ fn webdav_url(target: &Path) -> bool {
 fn sealed(archive: &Archive, dry_run: bool) -> Result<Seal> {
     match ossuary_core::seal(archive, dry_run)? {
         Sealing::Sealed(seal) => Ok(seal),
-        Sealing::Empty => bail!("the archive holds no claims yet; there is nothing to sync"),
+        Sealing::Empty => bail!("no claims recorded yet, nothing to sync"),
         Sealing::Refused(log) => bail!(
-            "the archive cannot be sealed, {} finding(s) in its record; nothing was copied; `ossuary seal` lists them and the way out, sync again once they are resolved",
+            "the archive cannot be sealed: {} finding(s) in claims/; nothing was copied; `ossuary seal` lists them, sync again once they are resolved",
             log.findings()
         ),
     }
@@ -284,19 +287,19 @@ fn rehearsal(plan: &Plan, segments: usize, held: &Held, seal: &Seal, verbose: bo
         human_bytes(plan.bytes())
     );
     if plan.gone.is_empty() {
-        println!("{copy}; --dry-run, nothing written");
+        println!("{copy}; nothing written");
         return ExitCode::SUCCESS;
     }
     let gone = names(&plan.gone);
     listing(
-        &format!("{} file(s) missing here", gone.len()),
+        &format!("{} file(s) missing in the archive", gone.len()),
         &gone,
         verbose,
     );
     println!(
-        "{copy} but would not bring the target up to the seal {}, because of the file(s) above; {}; --dry-run, nothing written",
+        "{copy} but would not bring the target up to the seal {}, because of the file(s) above; {}; nothing written",
         seal.segment,
-        holds(held)
+        still_has(held)
     );
     ExitCode::FAILURE
 }
@@ -306,28 +309,29 @@ fn report(plan: &Plan, copied: &Copied, verbose: bool) {
     let gone = names(&plan.gone);
     if !gone.is_empty() {
         listing(
-            &format!("{} file(s) missing here", gone.len()),
+            &format!("{} file(s) missing in the archive", gone.len()),
             &gone,
             verbose,
         );
     }
     if !copied.damaged.is_empty() {
         listing(
-            &format!("{} file(s) damaged here", copied.damaged.len()),
+            &format!("{} file(s) damaged in the archive", copied.damaged.len()),
             &copied.damaged,
             verbose,
         );
     }
     for (name, error) in &copied.unreadable {
-        println!("file {name} cannot be read here: {error}");
+        println!("file {name} cannot be read in the archive: {error}");
     }
 }
 
-/// What the target holds while it was not brought up to the seal.
-fn holds(held: &Held) -> String {
+/// The seal the target still has while it was not brought up to the
+/// new one.
+fn still_has(held: &Held) -> String {
     match &held.seal {
-        Some(segment) => format!("it still holds the seal {segment}"),
-        None => "it holds no seal yet".to_string(),
+        Some(segment) => format!("it still has the seal {segment}"),
+        None => "it has no seal yet".to_string(),
     }
 }
 

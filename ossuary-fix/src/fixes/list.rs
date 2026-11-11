@@ -33,8 +33,8 @@ pub fn plan(archive: &Archive) -> Result<(Rewrite, Found)> {
     let rewrite = Rewrite::plan(
         archive,
         Words {
-            done: "into one chain in the order ossuary 0.14 read them, each naming its predecessor by one name",
-            nothing: "every segment names its predecessor by one name",
+            done: "into one chain, in the order ossuary 0.14 read them",
+            nothing: "every segment header is in the current format",
         },
         |segments, head| {
             relink(segments, head, &mut found);
@@ -237,7 +237,7 @@ mod tests {
         assert!(!rewrite.changes(), "the order of the chain is its meaning");
         assert_eq!(
             rewrite.sentence(false),
-            "nothing to do: every segment names its predecessor by one name"
+            "nothing to do: every segment header is in the current format"
         );
     }
 }

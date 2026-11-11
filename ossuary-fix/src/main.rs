@@ -38,10 +38,10 @@ use crate::plan::Plan;
 #[command(
     name = "ossuary-fix",
     version,
-    about = "Repair tool for ossuary archives: the changes ossuary itself never makes",
+    about = "Repair ossuary archives and convert archives of older versions to the current format",
     after_help = "Each fix reads the whole log and writes only what is missing or in an old form.
 Running a fix again writes nothing. A fix that rewrites sealed segments gives
-them new names, so seal ids given out before no longer check."
+them new names, so seal ids issued before no longer pass `ossuary seal --check`."
 )]
 struct Cli {
     /// The archive to work in
@@ -99,13 +99,14 @@ enum Command {
     ///
     /// Until 0.14 a segment header named the segments sealed before it
     /// as a list, so that a segment could follow several: after `ossuary
-    /// merge`, or after `ossuary maintain mend` closed a break. Both are
-    /// gone, and the current version reads a header only with one name:
-    /// `"previous":"3c1e…"`. Such an archive was read in the order of its
-    /// segments' first claims; this fix links the segments in that order,
-    /// so the record says what it said before. Segments without claims,
-    /// the mends and the segments that joined merged archives, are
-    /// removed. An archive in the current form is left as it is.
+    /// merge`, or after `ossuary maintain mend` closed a break. Both
+    /// commands were removed, and the current version reads only a
+    /// header that names one segment: `"previous":"3c1e…"`. Such an
+    /// archive was read in the order of its segments' first claims; this
+    /// fix links the segments in that order, so the claims are read in
+    /// the same order as before. Segments without claims, the mends and
+    /// the segments that joined merged archives, are removed. An archive
+    /// in the current form is left as it is.
     ///
     /// A segment that is missing and that no mend records as lost, and a
     /// missing open segment, are lost with their claims; the fix goes on
@@ -117,62 +118,61 @@ enum Command {
     /// it. Claims are not changed. The query index in cache/ is removed
     /// and rebuilt by the next command. Make a copy of the archive first.
     List {
-        /// Go on although a segment or the open segment is missing; the
-        /// claims they held are lost
+        /// Continue although a segment or the open segment is missing;
+        /// their claims are lost
         #[arg(long)]
         accept_loss: bool,
     },
     /// Bring an archive of 0.18 or earlier into the current form
     ///
     /// Until 0.17 the open segment was one file, head.jsonl, and a
-    /// retraction carried the value it retracted; 0.18 kept the open
+    /// retraction contained the value it retracted; 0.18 kept the open
     /// segment as a directory in the archive root. The open segment is
     /// now a directory under open/, and a retraction names the claims it
     /// retracts by id. This fix moves the open segment into open/,
-    /// rewrites every retraction to name the claims that stood when it
-    /// was written, a retraction that found nothing standing left out,
-    /// and seals. Assertions are not changed. The current version refuses
-    /// an archive in an older form, so this fix runs once, before
-    /// anything else.
+    /// rewrites every retraction to name the claims that were standing
+    /// when it was written, leaves out retractions that had nothing to
+    /// retract, and seals the open segment. Assertions are not changed.
+    /// Other commands do not open an archive in an older format; run
+    /// this fix first.
     ///
     /// The segments from the first rewritten retraction on get new
-    /// names, so seal ids given out for them no longer check. The query
-    /// index in cache/ is removed and rebuilt by the next command. Make a
-    /// copy of the archive first.
+    /// names, so seal ids issued for them no longer pass
+    /// `ossuary seal --check`. The query index in cache/ is removed and
+    /// rebuilt by the next command. Make a copy of the archive first.
     Open,
     /// Close a broken chain of sealed segments
     ///
-    /// For a sealed segment that is missing, and that no copy of the
-    /// archive has: the segment after the gap is made to name the one
-    /// before it. A missing open segment is begun anew after the last
-    /// sealed one. The claims they held are lost, so the fix goes on only
-    /// with --accept-loss; copy the file back instead, if a copy has it.
-    /// Nothing that is still linked changes its place, because the order
-    /// of the chain is the order of the record. Segments that nothing
-    /// links to the rest are put at the end and named. Where the chain is
-    /// broken in more than one place and the order of the pieces cannot
-    /// be told, the fix stops.
+    /// If a sealed segment is missing and no copy of the archive has it,
+    /// the segment after the gap is linked to the one before it. A
+    /// missing open segment is replaced by a new, empty one after the
+    /// last sealed segment. Their claims are lost, so the fix continues
+    /// only with --accept-loss; if a copy of the archive has the file,
+    /// copy it back instead. Segments that are still linked keep their
+    /// order. Segments not linked to the rest are moved to the end of the
+    /// chain and listed. If the chain is broken in more than one place
+    /// and the order of the pieces is unknown, the fix stops.
     ///
-    /// The segments after a gap get new names, so seal ids given out for
-    /// them no longer check. The query index in cache/ is removed and
-    /// rebuilt by the next command. Make a copy of the archive first.
+    /// The segments after a gap get new names, so seal ids issued for
+    /// them no longer pass `ossuary seal --check`. The query index in
+    /// cache/ is removed and rebuilt by the next command. Make a copy of
+    /// the archive first.
     Chain {
-        /// Go on although a segment or the open segment is missing; the
-        /// claims they held are lost
+        /// Continue although a segment or the open segment is missing;
+        /// their claims are lost
         #[arg(long)]
         accept_loss: bool,
     },
     /// Copy the archive into a new one that uses another hash algorithm
     ///
-    /// Every file in content/ and derived/ is hashed anew with the
-    /// algorithm given and stored in a new archive at TARGET, which must
-    /// not exist or be empty. Every claim is written there with the new
+    /// Every file in content/ and derived/ is hashed again with the
+    /// given algorithm and stored in a new archive at TARGET, which must
+    /// be empty or not exist. Every claim is written there with the new
     /// names, in the order of the log, with its time, source and run
-    /// unchanged. config.toml and mailvault.toml are copied, and so is
-    /// the mail fetcher's memory of where each folder's fetch stands.
-    /// The archive itself is only read. A damaged file, or a claim about
-    /// a file the archive does not hold, stops the run; --force leaves
-    /// them out.
+    /// unchanged. config.toml, mailvault.toml and the fetch state of
+    /// ossuary-mailvault in cache/ are copied. The archive itself is only
+    /// read. A damaged file, or a claim about a file that is not in the
+    /// archive, stops the run; --force leaves them out.
     Rehash {
         /// The hash algorithm of the new archive, one that `ossuary init
         /// --algorithm` takes
@@ -181,8 +181,8 @@ enum Command {
         /// Where the new archive is created
         #[arg(value_name = "TARGET")]
         target: PathBuf,
-        /// Leave out damaged files, and claims about files the archive
-        /// does not hold
+        /// Leave out damaged files and claims about files not in the
+        /// archive
         #[arg(long)]
         force: bool,
     },
@@ -307,7 +307,7 @@ fn rehash(
     let done = fixes::rehash::rehash(archive, target, algorithm, force, cli.dry_run)?;
     if cli.dry_run {
         return Ok(format!(
-            "would hash {} file(s) in content/ and {} in derived/ anew with {algorithm} and write {} claim(s) to a new archive at {}; nothing written",
+            "would rehash {} file(s) in content/ and {} in derived/ with {algorithm} and write {} claim(s) to a new archive at {}; nothing written",
             done.content,
             done.derived,
             done.claims,
@@ -315,7 +315,7 @@ fn rehash(
         ));
     }
     let mut sentence = format!(
-        "{} file(s) in content/ and {} in derived/ hashed anew with {algorithm}, {} claim(s) written; the new archive is at {}",
+        "{} file(s) in content/ and {} in derived/ rehashed with {algorithm}, {} claim(s) written; the new archive is at {}",
         done.content,
         done.derived,
         done.claims,
@@ -325,7 +325,7 @@ fn rehash(
     if !done.damaged.is_empty() {
         let _ = write!(
             sentence,
-            "; {} damaged file(s) left out, the first {}",
+            "; {} damaged file(s) left out, the first is {}",
             done.damaged.len(),
             done.damaged[0]
         );
@@ -333,7 +333,7 @@ fn rehash(
     if done.dropped > 0 {
         let _ = write!(
             sentence,
-            "; {} claim(s) about files the archive does not hold left out",
+            "; {} claim(s) about files not in the archive left out",
             done.dropped
         );
     }

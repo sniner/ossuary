@@ -8,7 +8,7 @@ filebridge location, or to a folder on a WebDAV server. The first run
 copies everything. Each later run copies only what was recorded since
 the last one, and does not have to read through the copy to find out
 what that is. The copy is an archive of its own: every ossuary command
-can open it, and `ossuary seal --check` shows whether it holds what it
+can open it, and `ossuary seal --check` shows whether it has everything it
 should.
 
 ```console
@@ -16,15 +16,15 @@ $ mkdir /mnt/backup/archive
 $ ossuary --archive /srv/archive sync /mnt/backup/archive
 archive /srv/archive
 target /mnt/backup/archive
-step 1 of 4: sealing the archive, after checking every sealed segment
+step 1 of 4: checking every sealed segment and sealing the archive
 open segment sealed
 step 2 of 4: working out what the target lacks
-the target holds the seal 52e6c7bbed43568c33a419f13edc574e36cb6f95c06b9024d04b9c13896216de
+the target has the seal 52e6c7bbed43568c33a419f13edc574e36cb6f95c06b9024d04b9c13896216de
 the target lacks 412 file(s), 1.3 GiB, and 3 segment(s)
 step 3 of 4: copying 412 file(s)
 step 4 of 4: copying 3 segment(s), then the open segment
 copied 412 file(s), 1.3 GiB
-the target holds the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776; `ossuary --archive /mnt/backup/archive seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776` checks it
+the target has the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776; check it with `ossuary --archive /mnt/backup/archive seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776`
 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 ```
 
@@ -37,17 +37,17 @@ and `--accept-any-certificate`, go after `sync`.
 
 ## What a run does
 
-1. It seals the archive, as `ossuary seal` does. If the record has
+1. It seals the archive, as `ossuary seal` does. If claims/ has
    findings, no seal is made and nothing is copied; `ossuary seal` lists
-   the findings and the way out.
-2. It reads the copy's open segment, which names the seal the copy
-   holds, and works out from the archive's record which files and
-   sealed segments the copy lacks.
+   the findings.
+2. It reads the copy's open segment, which names the seal of the copy,
+   and works out from the archive's claims which files and sealed
+   segments the copy lacks.
 3. It copies those files, each one checked against its hash first.
 4. It copies the sealed segments, and last replaces the copy's open
    segment, so that it names the new seal.
 
-The copy holds the new seal only after the last step. A run that is
+The copy has the new seal only after the last step. A run that is
 interrupted, by a full disk or a lost connection, leaves the copy at the
 seal it had. The next run copies what is still missing and skips what
 arrived.
@@ -57,7 +57,7 @@ the copy's open segment, can leave the copy without one. The next run
 then finds every file already in the copy and writes the open segment
 again.
 
-The only line on stdout is the seal id the copy now holds, as with
+The only line on stdout is the seal id the copy now has, as with
 `ossuary seal`, so a script can check the copy right away:
 
 ```console
@@ -76,10 +76,10 @@ first sync. For a share, name a directory on it, not the mount point
 itself: when the share is not mounted, the mount point is an empty
 directory on the local disk, and the archive would be copied there.
 
-A target that holds other files is refused. So is a copy that was
+A target that contains other files is refused. So is a copy that was
 changed by other means than `ossuary sync`: one with a different
-`FORMAT`, such as another hash algorithm, one whose open segment holds
-claims, and one at a seal that the archive's record does not lead to.
+`FORMAT`, such as another hash algorithm, one whose open segment
+contains claims, and one whose seal is not in the archive's chain.
 Another kind of server, such as SFTP or SMB, can be used once it is
 mounted.
 
@@ -172,15 +172,15 @@ stays in the copy.
 
 ## When a file is missing or damaged
 
-A file that the record refers to and that is missing or damaged in the
+A file that the claims refer to and that is missing or damaged in the
 archive is not copied, and the copy is not brought up to the new seal:
 
 ```console
 $ ossuary sync /mnt/backup/archive
 …
-1 file(s) missing here:
+1 file(s) missing in the archive:
   800a3760695414c4e2ff62055f94c7d7acf2ba441314e41d647f679878c81842
-the target was not brought up to the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776: 1 file(s) above; it still holds the seal 52e6c7bbed43568c33a419f13edc574e36cb6f95c06b9024d04b9c13896216de; the 411 file(s) copied stay there; `ossuary audit` lists what is missing or damaged here, sync again once it is restored
+the target was not brought up to the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 because of the 1 file(s) above; it still has the seal 52e6c7bbed43568c33a419f13edc574e36cb6f95c06b9024d04b9c13896216de; the 411 file(s) already copied remain at the target; `ossuary audit` lists what is missing or damaged in the archive, sync again once it is restored
 ```
 
 The command exits 1. Once the file is back, the next run copies it and

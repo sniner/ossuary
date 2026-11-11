@@ -45,7 +45,7 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
         None => false,
         Some(theirs) if mark(&theirs) == mark(&ours) && mark(&ours).is_some() => true,
         Some(theirs) => bail!(
-            "the target's {MARK} is {}, this archive's is {}; a copy needs the same hash and layout, so name another target",
+            "the target's {MARK} is {}, this archive's is {}; name another target",
             first_line(&theirs),
             first_line(&ours)
         ),
@@ -53,9 +53,7 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
     let mut opens = Vec::new();
     for name in open_entries(remote)? {
         if name.ends_with(".sealing") || name.contains(".sealed-") {
-            bail!(
-                "the target's open segment is being sealed (open/{name}), so something other than ossuary sync wrote to the target; name another target"
-            );
+            bail!("the target's open segment is being sealed (open/{name}); name another target");
         }
         opens.push(name);
     }
@@ -67,9 +65,7 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
                 .iter()
                 .any(|entry| is_bundle(entry))
             {
-                bail!(
-                    "the target's open segment holds claims, so something other than ossuary sync wrote to the target; name another target"
-                );
+                bail!("the target's open segment contains claims; name another target");
             }
             if name == "first" {
                 return Ok(Held { marked, seal: None });
@@ -85,7 +81,7 @@ pub fn held(archive: &Archive, remote: &dyn Remote) -> Result<Held> {
             })
         }
         _ => bail!(
-            "the target has {} open segments, so something other than ossuary sync wrote to the target; name another target",
+            "the target has {} open segments; name another target",
             opens.len()
         ),
     }
@@ -188,7 +184,7 @@ pub fn plan(
         // `follows` is false only with a seal held.
         let seal = held.map(Digest::as_str).unwrap_or_default();
         bail!(
-            "the target holds the seal {seal}, which this archive's record does not lead to: the target is a copy of another archive, or something other than ossuary sync wrote to it; name another target"
+            "the target has the seal {seal}, which is not in this archive's chain; name another target"
         );
     }
     let mut plan = Plan {
@@ -242,7 +238,7 @@ fn relative(root: &Path, path: &Path) -> Result<String> {
         .iter()
         .map(|part| part.to_str())
         .collect::<Option<Vec<_>>>()
-        .with_context(|| format!("{}: not a name the archive gives", path.display()))?;
+        .with_context(|| format!("{}: the path is not valid UTF-8", path.display()))?;
     Ok(parts.join("/"))
 }
 
@@ -389,7 +385,7 @@ pub fn advance(remote: &dyn Remote, seal: &Digest) -> Result<()> {
     left.sort();
     if !left.is_empty() {
         bail!(
-            "the target keeps the old open segment {}; remove it by hand, then run the sync again",
+            "the target still has the old open segment(s) {}; remove them by hand, then sync again",
             left.join(", ")
         );
     }
@@ -448,7 +444,7 @@ fn check(archive: &Archive, piece: &Piece) -> std::result::Result<bool, String> 
     let store = piece.kind.store(archive);
     let entry = store
         .entry_at(&piece.from)
-        .ok_or_else(|| "not a file the archive gives that name".to_string())?;
+        .ok_or_else(|| "not a valid file name for the archive".to_string())?;
     store.verify(&entry).map_err(|error| error.to_string())
 }
 
@@ -671,7 +667,7 @@ mod tests {
         };
 
         assert!(sync(&archive, &failing).is_err());
-        assert!(open_name(&path).is_none(), "the copy holds no seal yet");
+        assert!(open_name(&path).is_none(), "the copy has no seal yet");
 
         let (_, copied) = sync(&archive, &target).unwrap();
 
@@ -692,7 +688,7 @@ mod tests {
 
         let error = sync(&archive, &target).unwrap_err();
 
-        assert!(error.to_string().contains("does not lead to"));
+        assert!(error.to_string().contains("is not in this archive's chain"));
     }
 
     #[test]
@@ -709,7 +705,7 @@ mod tests {
 
         let error = sync(&archive, &target).unwrap_err();
 
-        assert!(error.to_string().contains("same hash and layout"));
+        assert!(error.to_string().contains("the target's FORMAT is"));
     }
 
     #[test]
@@ -724,7 +720,7 @@ mod tests {
 
         let error = held(&archive, &target).unwrap_err();
 
-        assert!(error.to_string().contains("holds claims"));
+        assert!(error.to_string().contains("contains claims"));
     }
 
     #[test]

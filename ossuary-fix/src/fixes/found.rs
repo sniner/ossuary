@@ -25,24 +25,26 @@ impl Found {
         !self.missing.is_empty() || self.head_lost
     }
 
-    /// One line per thing found, for the answer.
+    /// One line per thing found, for the answer. The lines are also
+    /// printed when nothing is written, for a loss without --accept-loss
+    /// and under --dry-run, so none of them states a change as done.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for (named_by, missing) in &self.missing {
             lines.push(format!(
-                "segment {missing} is missing ({named_by} names it); the chain is closed over it, and the claims it held are lost"
+                "segment {missing} is missing ({named_by} names it); its claims are lost when the chain is closed without it"
             ));
         }
         if self.head_lost {
             lines.push(
-                "the open segment is missing; a new one is begun after the last sealed segment, and the claims recorded since that seal are lost"
+                "the open segment is missing; its claims are lost when a new one is started after the last sealed segment"
                     .to_string(),
             );
         }
         if self.head_anew {
             lines.push(
-                "the open segment names no sealed segment, so it was begun anew after a loss; it now follows the last sealed segment"
+                "the open segment names no sealed segment; it is linked to the last sealed segment when the chain is closed"
                     .to_string(),
             );
         }

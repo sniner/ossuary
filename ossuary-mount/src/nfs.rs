@@ -190,7 +190,7 @@ impl NFSFileSystem for Door {
 /// Serve, mount, wait, give back.
 pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitCode> {
     tokio::runtime::Runtime::new()
-        .context("starting the runtime")?
+        .context("starting the NFS server")?
         .block_on(held(Door { record }, mountpoint, room))
 }
 

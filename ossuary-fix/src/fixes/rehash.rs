@@ -118,7 +118,7 @@ pub fn rehash(
     }
     if !done.damaged.is_empty() && !force {
         bail!(
-            "{} damaged file(s) in the archive, the first {}; restore them from a copy of the archive, remove {} and run again, or pass --force to leave them and the claims about them out",
+            "{} damaged file(s) in the archive, the first is {}; restore them from a copy of the archive, remove {} and run again, or pass --force to leave them and the claims about them out",
             done.damaged.len(),
             done.damaged[0],
             target.display()
@@ -131,7 +131,7 @@ pub fn rehash(
     let dropped = renamed.iter().filter(|claim| claim.is_none()).count();
     if dropped > 0 && !force {
         bail!(
-            "{dropped} claim(s) are about files the archive does not hold, and cannot be given the new names; restore the files from a copy of the archive, remove {} and run again, or pass --force to leave those claims out",
+            "{dropped} claim(s) are about files that are not in the archive; restore the files from a copy of the archive, remove {} and run again, or pass --force to leave those claims out",
             target.display()
         );
     }

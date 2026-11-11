@@ -114,7 +114,7 @@ impl Filebridge {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .context("starting the runtime for the filebridge client")?;
+            .context("starting the filebridge client")?;
         let place = Filebridge {
             runtime,
             client,
@@ -179,7 +179,7 @@ impl Filebridge {
         };
         if !entries.is_empty() && !entries.iter().any(|entry| entry.name == MARK) {
             bail!(
-                "{}: holds files but is not an ossuary archive; name an empty folder or a copy that ossuary sync made",
+                "{}: contains files but is not an ossuary archive; name an empty folder or a copy made by ossuary sync",
                 self.target
             );
         }
@@ -241,9 +241,12 @@ impl Filebridge {
                 self.failed("writing", dest, &error)
             }
         })?;
-        let pumped = pumped.with_context(|| format!("{path}: reading the file here"))?;
+        // The file in the archive is named by its path there: `dest`
+        // without the folder in the location.
+        let file = dest.strip_prefix(self.root.as_str()).unwrap_or(dest);
+        let pumped = pumped.with_context(|| format!("{file}: reading the file in the archive"))?;
         if pumped != size {
-            bail!("{path}: the file here changed while it was read; sync again");
+            bail!("{file}: the file in the archive changed while it was read; sync again");
         }
         Ok(())
     }

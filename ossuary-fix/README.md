@@ -1,12 +1,13 @@
 # ossuary-fix
 
-*The changes ossuary itself never makes.*
+*Repairs ossuary archives and converts archives of older versions to the
+current format.*
 
 `ossuary` only adds to an archive: it never removes a claim and never
 changes the digest of a sealed segment. Some repairs cannot be made that
 way. An attribute name changed between versions, the form of a segment
 header changed, a sealed segment or the open segment was lost and the
-chain has to be closed over the gap, or the archive is to move to
+gap in the chain has to be closed, or the archive is to move to
 another hash algorithm. `ossuary-fix` makes these changes, each as a
 subcommand. The ossuary programs contain no migration code.
 
@@ -20,9 +21,10 @@ its predecessor by that name, so the rewritten segment gets a new name,
 and every segment after it is rewritten to name it. The query index in
 `cache/` is removed first, the new files are written to `claims/`, and
 the old ones are removed; the next command rebuilds the index. A seal id
-is the name of a segment, so every seal id given out for a renamed
-segment no longer checks; the fix says from when on, and `ossuary seal`
-gives the new id. Make a copy of the archive before running such a fix.
+is the name of a segment, so a seal id issued for a renamed segment no
+longer passes `ossuary seal --check`; the fix prints since when seal ids
+are affected, and `ossuary seal` prints the new id. Make a copy of the
+archive before running such a fix.
 An archive written by a version before a change in the header is not
 read by the current version until the fix has run: every command stops
 at the first segment in the old form.
@@ -42,16 +44,16 @@ they come after everything recorded before the fix.
 ## The fixes
 
 - `open`: until 0.17 the open segment was one file, `head.jsonl`, and a
-  retraction carried the value it retracted; 0.18 kept the open segment
-  as a directory in the archive root. The open segment is now a
+  retraction contained the value it retracted; 0.18 kept the open
+  segment as a directory in the archive root. The open segment is now a
   directory under `open/` with one file per append, and a retraction
   names the claims it retracts by id. The fix moves the open segment
-  into `open/`, rewrites every retraction to name the claims that stood
-  when it was written, a retraction that found nothing standing left
-  out, and seals. Assertions are not changed. ossuary refuses an archive
-  in an older form, so this fix runs once, before anything else; an
-  archive written by 0.14 or earlier needs `ossuary-fix list` of ossuary
-  0.17 before it
+  into `open/`, rewrites every retraction to name the claims that were
+  standing when it was written, leaves out retractions that had nothing
+  to retract, and seals the open segment. Assertions are not changed.
+  Other commands do not open an archive in an older format, so run this
+  fix first; an archive written by 0.14 or earlier needs `ossuary-fix
+  list` of ossuary 0.17 before it
 - `origin`: until 0.6.3 the origin of a derived file was recorded as
   `derive:derived-from`; it is now `prov:origin`. A derived file whose
   origin is recorded only under the old attribute is still in the
@@ -72,43 +74,43 @@ they come after everything recorded before the fix.
 - `list`: until 0.14 a segment header named the segments sealed before
   it as a list, `"previous":["3c1e…"]`, so that a segment could follow
   several: after `ossuary merge`, or after `ossuary maintain mend` had
-  closed a break. Both are gone, and a header now names one segment,
-  `"previous":"3c1e…"`. Such an archive was read in the order of its
-  segments' first claims; the fix links the segments in that order, so
-  the record says what it said before, and rewrites every header as
-  described above. Segments without claims, the mends and the segments
+  closed a break. Both commands were removed, and a header now names one
+  segment, `"previous":"3c1e…"`. Such an archive was read in the order
+  of its segments' first claims; the fix links the segments in that
+  order, so the claims are read in the same order as before, and
+  rewrites every header as described above. Segments without claims, the mends and the segments
   that joined merged archives, are removed. Claims are not changed. Run
   it before any other command on an archive written by 0.14 or
   earlier. A segment that is missing and that no mend records as lost,
   or a missing open segment, stops it; `--accept-loss` goes on without
   them. An archive in the current form is left as it is.
-- `chain`: closes a broken chain, for a sealed segment that is missing
-  and that no copy of the archive has. The segment after the gap is
-  made to name the one before it, and a missing open segment is begun
-  anew after the last sealed one. Nothing that is still linked changes
-  its place, because the order of the chain is the order of the record:
-  seal ids up to the gap still check. Segments that nothing links to the
-  rest are put at the end and named. Where the chain is broken in more
-  than one place and the order of the pieces cannot be told, the fix
-  stops. The claims of what is missing are lost, so the fix names each
-  loss and goes on only with `--accept-loss`. Copy a missing file back
-  from a copy of the archive instead, if there is one.
+- `chain`: closes a broken chain. If a sealed segment is missing and no
+  copy of the archive has it, the segment after the gap is linked to the
+  one before it; a missing open segment is replaced by a new, empty one
+  after the last sealed segment. Segments that are still linked keep
+  their order, so seal ids up to the gap still pass `ossuary seal
+  --check`. Segments not linked to the rest are moved to the end of the
+  chain and listed. If the chain is broken in more than one place and
+  the order of the pieces is unknown, the fix stops. The claims of what
+  is missing are lost, so the fix lists each loss and continues only
+  with `--accept-loss`. If a copy of the archive has a missing file,
+  copy it back instead.
 
   ```console
   $ ossuary-fix chain
-  segment 9ae8aebc… is missing (segment 31fc5515… names it); the chain is closed over it, and the claims it held are lost
+  segment 9ae8aebc… is missing (segment 31fc5515… names it); its claims are lost when the chain is closed without it
   ossuary-fix: nothing was written: copy the missing files back from a copy of the archive and run again, or pass --accept-loss if there is no copy
   ```
 - `rehash`: copies the archive into a new one that uses another hash
   algorithm, as `ossuary init --algorithm` takes it. Every file in
-  `content/` and `derived/` is hashed anew and stored in the new archive,
-  and every claim is written there with the new names, in the order of
-  the log, with its time, source and run unchanged. `config.toml`,
-  `mailvault.toml` and the mail fetcher's memory of where each folder's
-  fetch stands are copied. The archive itself is only read; the new one
-  is created at the directory given, which must not exist or be empty.
-  A damaged file, or a claim about a file the archive does not hold,
-  stops the run; `--force` leaves them out.
+  `content/` and `derived/` is hashed again and stored in the new
+  archive, and every claim is written there with the new names, in the
+  order of the log, with its time, source and run unchanged.
+  `config.toml`, `mailvault.toml` and the fetch state of
+  ossuary-mailvault in `cache/` are copied. The archive itself is only
+  read; the new one is created at the directory given, which must be
+  empty or not exist. A damaged file, or a claim about a file that is
+  not in the archive, stops the run; `--force` leaves them out.
 
   ```console
   $ ossuary-fix --archive ~/archive rehash --algorithm blake3 ~/archive-blake3

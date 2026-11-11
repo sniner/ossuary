@@ -49,7 +49,7 @@ impl Converted {
         if self.dropped > 0 {
             write!(
                 sentence,
-                "; {} retraction(s) of nothing standing {would}left out",
+                "; {} retraction(s) without a standing value to retract {would}left out",
                 self.dropped
             )
             .expect("writing to a String");
@@ -66,17 +66,27 @@ impl Converted {
 /// 0.18 that does not read; a seal of 0.18 under way or stopped, which
 /// a 0.18 run that writes finishes first; an archive in the form of
 /// ossuary 0.14 or earlier, which `ossuary-fix list` of 0.17 brings into
-/// the chain form first; and an old retraction whose line does not read.
+/// the chain form first; a sealed segment missing from the chain, which
+/// `ossuary-fix chain` of the version that reads the form found closes
+/// first; and an old retraction whose line does not read.
 pub fn plan(archive: &Archive) -> Result<(Rewrite, Converted)> {
     let old = archive.root().join(OLD_HEAD);
-    let mut head_text = match fs::read_to_string(&old) {
+    let head_text = match fs::read_to_string(&old) {
         Ok(text) => Some(text),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
         Err(source) => return Err(source).with_context(|| format!("{}: reading", old.display())),
     };
-    if head_text.is_none() {
-        head_text = old_dir_text(archive.root())?;
-    }
+    // A gap in the chain is closed by the chain fix of the version that
+    // reads the form found. 0.18 does not open an archive with
+    // head.jsonl, and 0.17 finds no head.jsonl in an archive of 0.18 and
+    // takes its open segment for lost.
+    let (head_text, chain_fix) = match head_text {
+        Some(text) => (Some(text), "`ossuary-fix chain` of ossuary 0.17"),
+        None => match old_dir_text(archive.root())? {
+            Some(text) => (Some(text), "`ossuary-fix chain` of ossuary 0.18"),
+            None => (None, "`ossuary-fix chain`"),
+        },
+    };
     let algorithm = archive.log().store().algorithm();
     let mut converted = Converted::default();
     let rewrite = Rewrite::plan(
@@ -89,7 +99,7 @@ pub fn plan(archive: &Archive) -> Result<(Rewrite, Converted)> {
             if let Some(text) = &head_text {
                 *head = Some(parse(text).with_context(|| format!("{}", old.display()))?);
             }
-            convert(segments, head, algorithm, &mut converted)
+            convert(segments, head, algorithm, chain_fix, &mut converted)
         },
     )?;
     Ok((rewrite, converted))
@@ -106,14 +116,14 @@ fn old_dir_text(root: &Path) -> Result<Option<String>> {
             return Ok(None);
         }
         bail!(
-            "the archive has {} directories of the open segment of 0.18 in its root; a seal was under way or stopped there, and a run of ossuary 0.18 that writes finishes it; nothing was written",
+            "the archive root has {} open-segment directories of ossuary 0.18 from an unfinished seal; finish it with any command of ossuary 0.18 that writes, then run this fix again; nothing was written",
             dirs.len()
         );
     };
     let name = dir.file_name().unwrap_or_default().to_string_lossy();
     if !(name == "open" || name.starts_with("open-")) {
         bail!(
-            "{}: a seal of 0.18 was under way or stopped; a run of ossuary 0.18 that writes finishes it; nothing was written",
+            "{}: unfinished seal of ossuary 0.18; finish it with any command of ossuary 0.18 that writes, then run this fix again; nothing was written",
             dir.display()
         );
     }
@@ -132,8 +142,9 @@ fn old_dir_text(root: &Path) -> Result<Option<String>> {
         let text = fs::read_to_string(entry.path())
             .with_context(|| format!("{}: reading", entry.path().display()))?;
         for line in text.lines().filter(|line| !line.is_empty()) {
-            let claim = Claim::parse_line(line)
-                .with_context(|| format!("{}: a line does not read", entry.path().display()))?;
+            let claim = Claim::parse_line(line).with_context(|| {
+                format!("{}: a line is not a valid claim", entry.path().display())
+            })?;
             lines.push((claim.time().as_str().to_string(), line.to_string()));
         }
     }
@@ -150,11 +161,13 @@ fn old_dir_text(root: &Path) -> Result<Option<String>> {
 }
 
 /// Every old retraction in `segments` and `head` rewritten, in the order
-/// of the log.
+/// of the log. `chain_fix` is the command that closes a gap in the chain
+/// of this form.
 fn convert(
     segments: &mut BTreeMap<String, Segment>,
     head: &mut Option<Segment>,
     algorithm: Algorithm,
+    chain_fix: &str,
     converted: &mut Converted,
 ) -> Result<()> {
     if segments
@@ -173,11 +186,11 @@ fn convert(
         .and_then(|segment| segment.previous.first().cloned());
     while let Some(name) = next {
         if order.contains(&name) {
-            bail!("segment {name} names itself as sealed before it, nothing was written");
+            bail!("the chain loops back to segment {name}; nothing was written");
         }
         let Some(segment) = segments.get(&name) else {
             bail!(
-                "segment {name} is named as sealed before another and claims/ does not hold it; close the chain with `ossuary-fix chain` of ossuary 0.17 first, nothing was written"
+                "segment {name} is missing from claims/; close the chain with {chain_fix} first, nothing was written"
             );
         };
         next = segment.previous.first().cloned();
@@ -302,8 +315,9 @@ fn convert_lines(
         rewritten.push('}');
         // The bytes must be what the current form writes, so that the
         // line's id is what a reader computes.
-        let read_back = Claim::parse_line(&rewritten)
-            .with_context(|| format!("the rewritten retraction does not read: {rewritten}"))?;
+        let read_back = Claim::parse_line(&rewritten).with_context(|| {
+            format!("the rewritten retraction is not a valid claim: {rewritten}")
+        })?;
         if read_back.to_line() != rewritten {
             bail!("internal error: the rewritten retraction is not in canonical form: {rewritten}");
         }
@@ -332,7 +346,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::fixes::testing::{archive, sound};
+    use crate::fixes::testing::{archive, lose, sound};
 
     const SUBJECT: &str = "9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e";
 
@@ -502,6 +516,83 @@ mod tests {
         assert!(
             archive.root().join("sealing").is_dir(),
             "nothing was written"
+        );
+    }
+
+    #[test]
+    fn a_gap_in_an_archive_of_0_17_needs_the_chain_fix_of_0_17() {
+        let dir = TempDir::new().unwrap();
+        let first = assertion("holiday", "2026-09-01T10:00:00Z");
+        let archive = old_archive(
+            &dir,
+            &[
+                std::slice::from_ref(&first),
+                &[assertion("beach", "2026-09-02T10:00:00Z")],
+            ],
+            &[assertion("sea", "2026-09-03T10:00:00Z")],
+        );
+        let lost = archive
+            .log()
+            .store()
+            .digest(format!("{{\"ossuary-segment\":1}}\n{first}\n").as_bytes());
+        lose(&archive, &lost);
+
+        let error = plan(&archive).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("`ossuary-fix chain` of ossuary 0.17"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_gap_in_an_archive_of_0_18_needs_the_chain_fix_of_0_18() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let log = archive.log();
+        log.append(&Claim::parse_line(&assertion("holiday", "2026-09-01T10:00:00Z")).unwrap())
+            .unwrap();
+        let lost = log.seal().unwrap().unwrap();
+        log.append(&Claim::parse_line(&assertion("beach", "2026-09-02T10:00:00Z")).unwrap())
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        log.append(&Claim::parse_line(&assertion("sea", "2026-09-03T10:00:00Z")).unwrap())
+            .unwrap();
+        as_of_0_18(&archive);
+        lose(&archive, lost.digest());
+
+        let error = plan(&archive).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("`ossuary-fix chain` of ossuary 0.18"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_gap_in_the_current_form_needs_the_current_chain_fix() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let log = archive.log();
+        log.append(&Claim::parse_line(&assertion("holiday", "2026-09-01T10:00:00Z")).unwrap())
+            .unwrap();
+        let lost = log.seal().unwrap().unwrap();
+        log.append(&Claim::parse_line(&assertion("beach", "2026-09-02T10:00:00Z")).unwrap())
+            .unwrap();
+        log.seal().unwrap().unwrap();
+        lose(&archive, lost.digest());
+
+        let error = plan(&archive).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("close the chain with `ossuary-fix chain` first"),
+            "{error}"
         );
     }
 

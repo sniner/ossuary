@@ -205,7 +205,7 @@ pub fn serve(record: Record, mountpoint: &Path, room: &Room<'_>) -> Result<ExitC
 
     room.opened();
 
-    let runtime = tokio::runtime::Runtime::new().context("starting the runtime")?;
+    let runtime = tokio::runtime::Runtime::new().context("listening for signals")?;
     let let_go = runtime.block_on(async {
         let mut terminated =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

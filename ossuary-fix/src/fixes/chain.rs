@@ -31,7 +31,7 @@ pub fn plan(archive: &Archive) -> Result<(Rewrite, Found)> {
         archive,
         Words {
             done: "to close the chain",
-            nothing: "the chain is whole",
+            nothing: "the chain is unbroken",
         },
         |segments, head| relink(segments, head, &mut found),
     )?;
@@ -69,9 +69,7 @@ fn relink(
         if let Some(before) = previous(name).filter(|before| segments.contains_key(before))
             && let Some(other) = after.insert(before.clone(), name.clone())
         {
-            bail!(
-                "segments {other} and {name} both follow segment {before}; this fix cannot tell which comes first, nothing was written"
-            );
+            bail!("segments {other} and {name} both follow segment {before}; nothing was written");
         }
     }
     let mut pieces: Vec<Piece> = segments
@@ -107,7 +105,7 @@ fn relink(
             };
             if pieces[index].last() != Some(&last) {
                 bail!(
-                    "the open segment names segment {last}, which another segment follows; the record was cut back by hand, nothing was written"
+                    "the open segment names segment {last}, which another segment follows; nothing was written"
                 );
             }
             line.push(take(&mut pieces, index));
@@ -133,7 +131,7 @@ fn relink(
         };
         let [index] = candidates[..] else {
             bail!(
-                "the chain is broken in more than one place, and which piece came last cannot be told; copy the missing segments back from a copy of the archive, nothing was written"
+                "the chain is broken in more than one place and the last piece is unknown; nothing was written, copy the missing segments back from a copy of the archive"
             );
         };
         line.push(take(&mut pieces, index));
@@ -149,7 +147,7 @@ fn relink(
             0 => break,
             1 => line.push(take(&mut pieces, 0)),
             _ => bail!(
-                "the chain is broken in more than one place, and which piece stood before the gap at segment {start} cannot be told; copy the missing segments back from a copy of the archive, nothing was written"
+                "the chain is broken in more than one place and the piece before the gap at segment {start} is unknown; nothing was written, copy the missing segments back from a copy of the archive"
             ),
         }
     }
@@ -159,15 +157,20 @@ fn relink(
     // the log: they go at the end, oldest first, and are named.
     pieces.sort_by_key(|piece| (first_time(&segments[&piece[0]]), piece[0].clone()));
     for piece in &pieces {
-        let behind = line.iter().flatten().last().map_or_else(
-            || "at the start".to_string(),
-            |last| format!("behind segment {last}"),
+        let to = line.iter().flatten().last().map_or_else(
+            || "to the start".to_string(),
+            |last| format!("to the end, after segment {last}"),
         );
-        found.placed.push(format!(
-            "segment {} and the {} after it are linked to nothing else; they are put at the end, {behind}",
-            piece[0],
-            piece.len() - 1
-        ));
+        found.placed.push(match piece.len() - 1 {
+            0 => format!(
+                "segment {} is not linked to the rest of the chain; closing the chain moves it {to}",
+                piece[0]
+            ),
+            more => format!(
+                "segment {} and {more} segment(s) after it are not linked to the rest of the chain; closing the chain moves them {to}",
+                piece[0]
+            ),
+        });
         line.push(piece.clone());
     }
 
@@ -297,11 +300,11 @@ mod tests {
 
         let (rewrite, found) = plan(&archive).unwrap();
         assert!(!found.loses_claims(), "nothing is lost by placing it");
-        assert_eq!(found.placed.len(), 1);
-        assert!(
-            found.placed[0].contains(stray.as_str()),
-            "{:?}",
-            found.placed
+        assert_eq!(
+            found.placed,
+            [format!(
+                "segment {stray} is not linked to the rest of the chain; closing the chain moves it to the end, after segment {one}"
+            )]
         );
         rewrite.apply(&archive).unwrap();
 
@@ -326,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_chain_needs_nothing() {
+    fn an_unbroken_chain_needs_nothing() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         let log = archive.log();
@@ -342,6 +345,9 @@ mod tests {
 
         assert!(!rewrite.changes());
         assert!(found.lines().is_empty());
-        assert_eq!(rewrite.sentence(false), "nothing to do: the chain is whole");
+        assert_eq!(
+            rewrite.sentence(false),
+            "nothing to do: the chain is unbroken"
+        );
     }
 }

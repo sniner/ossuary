@@ -19,6 +19,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The hint after a `skip` entry that is not a folder of the mailbox now includes `--accounts
   FILE`** when the accounts came from such a file. Without it, the suggested `ossuary mailvault
   folders` read the archive's mailvault.toml
+- **`ossuary-fix open` named `ossuary-fix chain` of ossuary 0.17 for a gap also in an archive of
+  0.18.** 0.17 does not see the open segment of such an archive, and with `--accept-loss` its
+  claims would have been lost. The message now names the version that matches the archive
+- **`ossuary-fix chain` and `list` described closing a gap as done** also when they then refused
+  without `--accept-loss`, and under `--dry-run`. The lines now say what closing the chain does
+- **`ossuary-mount` suggested `ossuary ingest` for an empty view also with `--as-of`** and for an
+  archive whose files have no recorded path. It gives the hint only for an archive without files
+- **`ossuary sync` to a filebridge location named the temporary upload path on the server** when
+  reading a file of the archive failed or the file changed while it was read. It now names the
+  file in the archive
 - **`ossuary-extract-pdf` said "reading the document failed" also when it could not write an
   attachment.** It now says "attachments not extracted" or "document information not read"
 
