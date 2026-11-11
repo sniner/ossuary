@@ -147,12 +147,12 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Harvest> {
         let raw = bytes
             .get(header.offset_start as usize..header.offset_end as usize)
             .unwrap_or_default();
-        for value in header::read(name, raw, &header.value) {
+        for value in header::read(name, raw) {
             match value {
                 Ok(value) => {
                     lines.push(json!({ "attribute": format!("mail:{name}"), "value": value }));
                 }
-                Err(reason) => remarks.push(format!("mail:{name} not recorded: {reason}")),
+                Err(reason) => remarks.push(format!("mail:{name} not recorded, {reason}")),
             }
         }
     }
@@ -576,7 +576,7 @@ mod tests {
         );
         assert_eq!(
             harvest.remarks,
-            ["mail:cc not recorded: \"John Doe\" has no address"]
+            ["mail:cc not recorded, no address: John Doe"]
         );
         assert!(
             !lines
