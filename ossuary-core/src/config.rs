@@ -24,30 +24,29 @@ pub(crate) const CONFIG: &str = "config.toml";
 /// What `ossuary init` writes when no configuration stands yet: the
 /// defaults, spelled out where an editor finds them, so that changing the
 /// archive's behaviour is changing a line, not learning a scheme.
-pub(crate) const STARTER: &str = r#"# This archive's own settings: what goes in, and how it is written.
-# Reading the archive never needs this file. Without it - or without a
-# key - nothing is excluded and new content is stored as it came.
+pub(crate) const STARTER: &str = r#"# Settings for adding files to this archive. Reading the archive does
+# not need this file. Without it, or without a key, nothing is
+# excluded and new files are stored uncompressed.
 
 [ingest]
-# What never goes in. Glob patterns: one without a slash matches a file
-# or directory name at any level, one with a slash matches the path
-# below the ingested directory (`*` stays within one level, `**`
-# crosses levels). A directory left out is not walked at all.
+# Paths that ingest skips, as glob patterns. A pattern without a slash
+# matches a file or directory name at any level; a pattern with a slash
+# matches the path below the ingested directory (`*` matches within one
+# level, `**` across levels). Nothing inside an excluded directory is read.
 exclude = [".DS_Store", "._*", "Thumbs.db", "desktop.ini"]
 
 [store]
-# Compress new entries with zstd - in content/ and derived/ alike, one
-# word for both. What is already stored keeps its form either way, and
-# reading understands both. Claim segments are always compressed - that
-# is the format's choice, not this file's.
+# Compress new files in content/ and derived/ with zstd. Files already
+# stored are not changed, and both forms can be read. Segments in
+# claims/ are always compressed.
 compress = false
 
 [extract]
-# What a bare `ossuary extract` runs, in order - each a program
-# `ossuary-extract-<name>` found on PATH, like ["mail", "image", "pdf"].
-# A program offering several contracts runs them all; name:contract
-# runs one of them, like "packed:list". Empty means: nothing runs
-# unless named outright.
+# The extractors `ossuary extract` runs when none is named, in this
+# order, like ["mail", "image", "pdf"]. Each is a program
+# `ossuary-extract-<name>` on PATH. A name runs every contract of its
+# program; name:contract runs one, like "packed:list". When empty, only
+# an extractor named on the command line runs.
 run = []
 "#;
 

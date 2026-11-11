@@ -849,7 +849,7 @@ impl Walk<'_> {
     /// open is recorded and passed by rather than ending the walk.
     fn walk(&mut self, dir: &Path) {
         let trouble = |source| Error::Io {
-            context: "walking".to_string(),
+            context: "reading the directory".to_string(),
             source,
         };
         let entries = match fs::read_dir(dir) {
@@ -888,7 +888,7 @@ impl Walk<'_> {
                 Err(source) => self.failed.push((
                     path.clone(),
                     Error::Io {
-                        context: "walking".to_string(),
+                        context: "reading the file type".to_string(),
                         source,
                     },
                 )),

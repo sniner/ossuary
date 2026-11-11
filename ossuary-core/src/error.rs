@@ -38,7 +38,7 @@ pub enum Error {
 
     /// A claim carries a value and names claims it retracts; it is neither
     /// an assertion nor a retraction.
-    #[error("a retraction carries no value")]
+    #[error("a retraction must not have a value")]
     RetractionWithValue,
 
     /// A term without a colon named no field of a claim.
@@ -82,7 +82,7 @@ pub enum Error {
     /// The index still did not match the log after it was emptied and
     /// built anew: the log changed elsewhere than at its end while it was
     /// read.
-    #[error("the log changed while the query index was built anew; run the command again")]
+    #[error("the claims changed while the query index was rebuilt; run the command again")]
     IndexMismatch,
 
     /// Reading or writing the open segment failed.
@@ -105,7 +105,7 @@ pub enum Error {
     /// Written by a newer ossuary, and healthy — the one wrong response is
     /// to guess at it. The header exists so that a reader refuses what it
     /// does not know; a newer build reads it.
-    #[error("segment generation {0} is not supported by this version of ossuary")]
+    #[error("segment generation {0} is not supported by this version of ossuary; upgrade ossuary")]
     SegmentGeneration(u32),
 
     /// A digest that should name a segment names nothing in the store.
@@ -116,7 +116,7 @@ pub enum Error {
     /// ossuary 0.14 and earlier wrote, when a segment could follow
     /// several.
     #[error(
-        "a segment header names the segments sealed before it as a list, as ossuary 0.14 and earlier wrote; `ossuary-fix list` rewrites the archive in the current form"
+        "a segment header has the format of ossuary 0.14 and earlier; run `ossuary-fix list` to convert the archive to the current format"
     )]
     PreviousList,
 
@@ -125,7 +125,7 @@ pub enum Error {
     /// from the open segment ends there, and the segments before it are
     /// not reached.
     #[error(
-        "{segment} names {missing} as the segment sealed before it, and claims/ does not hold it; copy the file back from a copy of the archive, or close the gap with `ossuary-fix chain` if there is none"
+        "segment {missing} is missing; copy it back into claims/ from a copy of the archive, or, if no copy has it, run `ossuary-fix chain --accept-loss`"
     )]
     ChainBroken { segment: String, missing: String },
 
@@ -135,27 +135,32 @@ pub enum Error {
     /// begun anew would name no predecessor and start a second record
     /// beside the first.
     #[error(
-        "{}: no open segment; the claims recorded since the last seal are lost with it; `ossuary-fix chain` begins a new open segment after the last sealed one, then repeat the runs since the last seal",
+        "{}: the open segment is missing; copy it back from a copy of the archive, or run `ossuary-fix chain --accept-loss` to start a new one, then repeat the runs since the last seal",
         .0.display()
     )]
     HeadLost(std::path::PathBuf),
 
-    /// More than one directory stands under `open/`: two open segments,
-    /// or an open segment beside the directory of a seal. The open
-    /// segment is one directory that is only ever renamed, so something
-    /// else put the second there, and the record cannot tell which is
-    /// its end.
+    /// More than one directory under `open/`: two open segments, two
+    /// directories of a seal, or an open segment beside one. A seal only
+    /// renames the one directory, so a second one did not come from a
+    /// seal, and nothing in the archive shows which of them continues
+    /// the chain.
     #[error(
-        "{}: more than one directory under open/, where the open segment is the only one; one of them was put there by hand. Move the one that does not belong out of open/",
-        .0.display()
+        "{}: more than one directory under open/ ({}); move the one that does not belong out of open/",
+        .root.display(),
+        .dirs.join(", ")
     )]
-    TwoOpen(std::path::PathBuf),
+    TwoOpen {
+        root: std::path::PathBuf,
+        /// The names of the directories under `open/`, sorted.
+        dirs: Vec<String>,
+    },
 
     /// The open segment still held claims after every try to seal it:
     /// each time another writer had sealed first and more was appended,
     /// or the directory could not be renamed.
     #[error(
-        "{}: the open segment was not sealed in {tries} tries, because other programs sealed it first each time; run the command again",
+        "{}: the open segment could not be sealed in {tries} tries; run the command again",
         .root.display()
     )]
     SealContended {
@@ -167,7 +172,7 @@ pub enum Error {
     /// that holds its bytes is not there to store: the decision cannot be
     /// carried out.
     #[error(
-        "{}: a seal was decided but its segment file is missing; `ossuary-fix chain` begins the open segment anew from the bundles left there",
+        "{}: a seal was interrupted and its segment file is missing; run `ossuary-fix chain --accept-loss` to start the open segment again from the files in this directory",
         .0.display()
     )]
     SealUnfinished(std::path::PathBuf),
@@ -176,7 +181,7 @@ pub enum Error {
     /// version kept it: `head.jsonl`, or a directory in the root.
     /// Nothing here reads it.
     #[error(
-        "{}: the archive is in the form of 0.18 or earlier; run `ossuary-fix open` once to bring it into the current form",
+        "{}: the archive has the layout of ossuary 0.18 or earlier; run `ossuary-fix open` to convert it to the current layout",
         .0.display()
     )]
     OldForm(std::path::PathBuf),
@@ -229,7 +234,7 @@ pub enum Error {
     /// stays set aside, and what was read stands in `content/` under its
     /// own name, where the next audit notes it as unrecorded.
     #[error(
-        "{0}: the copy in derived/ is damaged as well; the original remains set aside, and the bytes read are stored in content/ under their own hash"
+        "{0}: the copy in derived/ is damaged as well; the original remains set aside, and the bytes read are stored in content/ under their own hash; restore the file from a copy of the archive"
     )]
     TwinChanged(String),
 
@@ -238,7 +243,7 @@ pub enum Error {
     /// Written by a newer ossuary, and healthy: a layout this build has
     /// never seen would look familiar in exactly the wrong way, which is
     /// what the mark exists to prevent. A newer build reads it.
-    #[error("archive generation {0} is not supported by this version of ossuary")]
+    #[error("archive generation {0} is not supported by this version of ossuary; upgrade ossuary")]
     ArchiveGeneration(u32),
 
     /// A beginning that names several subjects names none of them.
@@ -260,7 +265,7 @@ pub enum Error {
     /// A seal id that is not one: not a hash in hex, or not a whole
     /// hash. A beginning of an id proves nothing, as a forged seal can
     /// be made to start the same way.
-    #[error("{given:?}: {trouble}; a seal id is the whole hash, as `ossuary seal` prints it")]
+    #[error("{given:?}: {trouble}; give the full seal id that `ossuary seal` prints")]
     SealId { given: String, trouble: String },
 }
 

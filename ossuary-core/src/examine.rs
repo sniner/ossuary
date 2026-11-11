@@ -362,7 +362,7 @@ fn settle(invocation: &mut Invocation, index: &mut Index, runs: &[Run]) -> Resul
         total += examined;
         if round == MAX_ROUNDS {
             return Err(Error::Extract(format!(
-                "stopped after {MAX_ROUNDS} rounds: {} still had files to examine; the claims recorded so far are kept. Fix the extractor, then run again",
+                "stopped after {MAX_ROUNDS} rounds with files still waiting for {}; the claims recorded so far are kept; fix the extractor, then run again",
                 busy.join(", ")
             )));
         }
@@ -1191,7 +1191,7 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
     for line in answer.lines().filter(|line| !line.trim().is_empty()) {
         let parsed: Line = serde_json::from_str(line).map_err(|error| {
             Error::Extract(format!(
-                "`{program}` printed a line outside the extractor protocol: {line:?}: {error}"
+                "`{program}` printed a line that does not follow the extractor protocol: {line:?}: {error}"
             ))
         })?;
         match parsed {
@@ -1243,7 +1243,7 @@ fn harvest(program: &str, answer: &str, scratch: Option<&Path>) -> Result<Harves
             } => spoken.push((name, Attribute::parse(&attribute)?, value)),
             _ => {
                 return Err(Error::Extract(format!(
-                    "`{program}` printed a line outside the extractor protocol: {line:?}"
+                    "`{program}` printed a line that does not follow the extractor protocol: {line:?}"
                 )));
             }
         }
@@ -1324,7 +1324,9 @@ mod tests {
             .err()
             .unwrap();
         assert!(
-            error.spelled().contains("outside the extractor protocol"),
+            error
+                .spelled()
+                .contains("does not follow the extractor protocol"),
             "{}",
             error.spelled()
         );

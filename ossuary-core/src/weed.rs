@@ -77,7 +77,7 @@ pub fn twins(archive: &Archive) -> Result<Vec<Twin>> {
             continue;
         };
         let original = content.entry_at(&path).map_or_else(
-            || Fixity::Unreadable(format!("{}: not an entry's name", path.display())),
+            || Fixity::Unreadable(format!("{}: the file name is not a hash", path.display())),
             |original| Fixity::of(content, &original),
         );
         twins.push(Twin {

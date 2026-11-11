@@ -145,7 +145,7 @@ pub fn parse_id(archive: &Archive, given: &str) -> Result<Digest> {
     let whole = algorithm.hash(b"").as_str().len();
     if given.len() != whole {
         return Err(refuse(format!(
-            "{} hex characters where a whole {} hash has {whole}; the beginning of an id proves nothing, as a forged seal can be made to start the same way",
+            "{} hex characters, a {} hash has {whole}",
             given.len(),
             algorithm.name()
         )));
@@ -498,7 +498,7 @@ mod tests {
         let taken = archive.root().join("open").join("first.sealing");
         fs::create_dir_all(taken.join("tmp")).unwrap();
 
-        assert!(matches!(seal(&archive, false), Err(Error::TwoOpen(_))));
+        assert!(matches!(seal(&archive, false), Err(Error::TwoOpen { .. })));
 
         fs::remove_dir_all(taken).unwrap();
         assert_eq!(archive.log().head().unwrap().len(), 1, "nothing was lost");

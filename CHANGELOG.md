@@ -7,6 +7,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A missing segment, a missing open segment and an unfinished seal without its segment file now
+  name `ossuary-fix chain --accept-loss`.** The message named `ossuary-fix chain` alone, which
+  refuses without the flag. For a missing open segment, copying it back from a copy of the archive
+  comes first
+- **`ossuary find --missing` with an invalid namespace named an attribute that was not typed**
+  (`"Bad!:a"` for `Bad!:`). It now names the term as given
 - **`ossuary-extract-pdf` said "reading the document failed" also when it could not write an
   attachment.** It now says "attachments not extracted" or "document information not read"
 

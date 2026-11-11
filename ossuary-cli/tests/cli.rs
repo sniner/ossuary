@@ -300,9 +300,7 @@ fn the_next_run_that_writes_finishes_an_interrupted_seal_and_says_so() {
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains(
-            "a seal had stopped before the open segment was back; finished it, nothing was lost"
-        ),
+        stderr.contains("finished an interrupted seal, no claims were lost"),
         "said even under -q: {stderr}"
     );
     let dirs = open_dirs(&archive);

@@ -357,9 +357,7 @@ impl Writable {
     pub fn note(self) -> Option<&'static str> {
         match self {
             Writable::Ready => None,
-            Writable::SealFinished => Some(
-                "a seal had stopped before the open segment was back; finished it, nothing was lost",
-            ),
+            Writable::SealFinished => Some("finished an interrupted seal, no claims were lost"),
         }
     }
 }
@@ -461,7 +459,7 @@ impl Log {
             Err(source) if source.kind() == ErrorKind::AlreadyExists => {}
             Err(source) => {
                 return Err(Error::Io {
-                    context: format!("{}: making", parent.display()),
+                    context: format!("{}: creating", parent.display()),
                     source,
                 });
             }
@@ -471,8 +469,8 @@ impl Log {
             let context = format!("{}: {context}", dir.display());
             move |source| Error::Io { context, source }
         };
-        fs::create_dir(&dir).map_err(io("beginning the open segment"))?;
-        fs::create_dir(dir.join(TMP)).map_err(io("making tmp/"))?;
+        fs::create_dir(&dir).map_err(io("creating the open segment"))?;
+        fs::create_dir(dir.join(TMP)).map_err(io("creating tmp/"))?;
         sync_dir(&parent);
         Ok(())
     }
@@ -729,7 +727,7 @@ impl Log {
         let (dir, decided) = match (sealing, sealed) {
             ([dir], []) => (dir, None),
             ([], [dir]) => (dir, digest_in_name(dir)),
-            _ => return Err(Error::TwoOpen(self.root.clone())),
+            _ => return Err(self.two_open(sealing.iter().chain(sealed))),
         };
         let store = self.bundle_store(dir);
         let listed = match store.entries().digests() {
@@ -1267,6 +1265,24 @@ impl Log {
         Ok(dirs)
     }
 
+    /// [`Error::TwoOpen`] for the directories `dirs` under `open/`.
+    fn two_open<'a>(&self, dirs: impl IntoIterator<Item = &'a PathBuf>) -> Error {
+        let mut names: Vec<String> = dirs
+            .into_iter()
+            .map(|dir| {
+                dir.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        Error::TwoOpen {
+            root: self.root.clone(),
+            dirs: names,
+        }
+    }
+
     /// What `open/` shows of the open segment.
     ///
     /// The open segment is one directory under one of its three names. A
@@ -1278,34 +1294,36 @@ impl Log {
     /// past it, and nothing here can tell which of the two continues the
     /// record.
     fn find(&self) -> Result<Found> {
+        let mut dirs = Vec::new();
         for attempt in 1..=LISTING_TRIES {
-            if let Some(found) = self.find_once()? {
+            dirs = self.list()?;
+            if let Some(found) = self.found_in(&dirs)? {
                 return Ok(found);
             }
             if attempt < LISTING_TRIES {
                 std::thread::sleep(LISTING_DELAY);
             }
         }
-        Err(Error::TwoOpen(self.root.clone()))
+        Err(self.two_open(&dirs))
     }
 
-    /// One listing of `open/`. `None` when it shows an open segment and
-    /// the directory of a seal beside it.
-    fn find_once(&self) -> Result<Option<Found>> {
+    /// What one listing of `open/` shows. `None` when it shows an open
+    /// segment and the directory of a seal beside it.
+    fn found_in(&self, dirs: &[PathBuf]) -> Result<Option<Found>> {
         let mut opens = Vec::new();
         let mut sealing = Vec::new();
         let mut sealed = Vec::new();
-        for dir in self.list()? {
+        for dir in dirs {
             let name = dir.file_name().unwrap_or_default().to_string_lossy();
             match State::of(&name) {
-                Some(State::Open) => opens.push(dir),
-                Some(State::Sealed) => sealed.push(dir),
-                Some(State::Sealing) => sealing.push(dir),
+                Some(State::Open) => opens.push(dir.clone()),
+                Some(State::Sealed) => sealed.push(dir.clone()),
+                Some(State::Sealing) => sealing.push(dir.clone()),
                 None => {}
             }
         }
         if opens.len() > 1 {
-            return Err(Error::TwoOpen(self.root.clone()));
+            return Err(self.two_open(dirs));
         }
         let pending = !(sealing.is_empty() && sealed.is_empty());
         Ok(match opens.pop() {
@@ -2264,10 +2282,13 @@ mod tests {
         let log = log_in(&dir);
         let other = log.store.digest(b"other");
         fs::create_dir(under_open(&dir, other.as_ref())).unwrap();
-        assert!(matches!(log.open(), Err(Error::TwoOpen(_))));
+        let Err(Error::TwoOpen { dirs, .. }) = log.open() else {
+            panic!("two open segments are refused");
+        };
+        assert_eq!(dirs, [other.to_string(), FIRST.to_string()]);
         assert!(matches!(
             log.append(&claim("x", "2026-09-05T12:00:00Z")),
-            Err(Error::TwoOpen(_))
+            Err(Error::TwoOpen { .. })
         ));
     }
 
@@ -2280,15 +2301,23 @@ mod tests {
         // it to this name and cannot.
         fs::create_dir_all(under_open(&dir, "first.sealing").join("tmp")).unwrap();
 
-        assert!(matches!(log.open(), Err(Error::TwoOpen(_))));
-        assert!(matches!(log.seal(), Err(Error::TwoOpen(_))));
+        let Err(error @ Error::TwoOpen { .. }) = log.open() else {
+            panic!("an open segment beside a seal is refused");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("more than one directory under open/ (first, first.sealing);"),
+            "{error}"
+        );
+        assert!(matches!(log.seal(), Err(Error::TwoOpen { .. })));
         // A writer that starts now looks for the open segment and is
         // refused. One that appended before knows its directory and does
         // not look again until it has to seal, which is refused too.
         let starting = Log::new(store_in(&dir), dir.path());
         assert!(matches!(
             starting.append(&claim("x", "2026-09-05T12:00:00Z")),
-            Err(Error::TwoOpen(_))
+            Err(Error::TwoOpen { .. })
         ));
     }
 

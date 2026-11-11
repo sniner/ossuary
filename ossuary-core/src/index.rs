@@ -2424,9 +2424,11 @@ fn lacking(
             " EXCEPT SELECT subject FROM {rows} WHERE attribute IN (SELECT id FROM attributes WHERE "
         );
         if let Some(namespace) = absent.strip_suffix(':') {
-            // The grammar has one door; a prefix walks through it
-            // wearing a dummy name.
-            Attribute::parse(&format!("{namespace}:a"))?;
+            // The grammar is defined only in Attribute::parse, so a
+            // namespace is checked with a placeholder name. The error
+            // names the entry as given, which has no placeholder.
+            Attribute::parse(&format!("{namespace}:a"))
+                .map_err(|_| Error::Attribute(absent.clone()))?;
             // ';' is the character after ':', and no attribute
             // contains one: the half-open range is the namespace.
             sql.push_str("name >= ? AND name < ?)");
@@ -4196,6 +4198,18 @@ mod tests {
             [bare],
             "with no terms, missing is asked of every subject"
         );
+    }
+
+    #[test]
+    fn a_bad_namespace_in_missing_is_named_as_given() {
+        let dir = TempDir::new().unwrap();
+        let index = index_in(&dir);
+
+        let error = index
+            .find(&[], &["Bad!:".to_string()], Scope::Held)
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), r#"not an attribute: "Bad!:""#);
     }
 
     #[test]

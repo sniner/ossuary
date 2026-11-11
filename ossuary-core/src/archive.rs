@@ -140,7 +140,7 @@ impl Archive {
         // A struct of numbers and a string serialises; see `Claim::to_line`.
         let mut line = serde_json::to_string(&mark).expect("a mark serialises");
         line.push('\n');
-        fs::write(&path, line).map_err(io("writing the FORMAT mark"))?;
+        fs::write(&path, line).map_err(io("writing the FORMAT file"))?;
 
         let settings = root.join(config::CONFIG);
         if !settings.exists() {
@@ -215,7 +215,7 @@ impl Archive {
             }
             Err(source) => {
                 return Err(Error::Io {
-                    context: format!("{}: reading the FORMAT mark", root.display()),
+                    context: format!("{}: reading the FORMAT file", root.display()),
                     source,
                 });
             }

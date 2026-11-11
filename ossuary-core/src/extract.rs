@@ -191,7 +191,7 @@ fn take(
         let (status, entry) = derived.add_reader(fs::File::open(&derivation.path).map_err(io)?)?;
         if entry.digest().as_str() != digest.as_str() {
             return Err(Error::Extract(format!(
-                "{}: changed between hashing and storing",
+                "{}: the derived file changed while it was being stored",
                 derivation.name
             )));
         }
