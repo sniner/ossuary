@@ -331,7 +331,7 @@ much as `--full`. Before it fetches anything, `--compare` prints for each
 folder how many archived messages have no Message-ID on record:
 
 ```
-example.org:INBOX: 312 of 8008 archived messages have no Message-ID on record, and their copies on the server are fetched again; run `ossuary extract mail` first if it has not run since the last fetch
+example.org:INBOX: no Message-ID on record for 312 of 8008 archived messages, their copies are fetched again; run `ossuary extract mail` first if it has not run since the last fetch
 ```
 
 Where the Message-ID cannot show whether a message is archived,

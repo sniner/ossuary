@@ -75,8 +75,9 @@ impl Fetch<'_> {
         if labels.is_empty() {
             return Ok(());
         }
+        let their = if labels.len() == 1 { "its" } else { "their" };
         self.say.line(format_args!(
-            "{}: {}, read for the labels of their messages",
+            "{}: reading {} to tag {their} messages",
             account.name,
             counted(labels.len(), "label folder", "label folders")
         ));
@@ -361,7 +362,7 @@ impl Fetch<'_> {
         state.tally.taken += claims.len();
         if !gone.is_empty() {
             self.say.line(format_args!(
-                "{name}: the label retracted from {} no longer in the folder",
+                "{name}: the label was retracted from {} no longer in the folder",
                 counted(gone.len(), "message", "messages")
             ));
         }

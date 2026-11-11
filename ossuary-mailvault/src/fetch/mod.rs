@@ -67,7 +67,7 @@ use ossuary_core::{
 };
 use serde_json::json;
 
-use crate::config::{Account, Reach};
+use crate::config::{self, Account, Reach};
 use crate::memo::Memo;
 use crate::output::{Say, counted};
 use crate::place;
@@ -144,7 +144,7 @@ impl Refusals {
     }
 }
 
-/// Fetch the accounts into the archive.
+/// Fetch the accounts, read from `accounts_file`, into the archive.
 ///
 /// # Errors
 ///
@@ -152,6 +152,7 @@ impl Refusals {
 /// tally and the run goes on.
 pub fn run(
     archive: &Archive,
+    accounts_file: &config::Source,
     accounts: &[&Account],
     memo: &Memo,
     options: &Options,
@@ -159,6 +160,7 @@ pub fn run(
 ) -> Result<Tally> {
     let fetch = Fetch {
         archive,
+        accounts_file,
         memo,
         options,
         source: Source::parse(crate::SOURCE)?,
@@ -180,9 +182,9 @@ pub fn run(
         && let Err(error) = memo.compact()
     {
         say.line(format_args!(
-                "cache/{}: not compacted ({error:#}); the file keeps its size until a later run compacts it",
-                crate::memo::FILE_NAME
-            ));
+            "{}: not compacted ({error:#}); the next run tries again",
+            memo.file()
+        ));
     }
     Ok(state.tally)
 }
@@ -224,6 +226,9 @@ fn caught_up(archive: &Archive, say: Say) -> Result<Index> {
 /// One fetch in progress: what it works on, and how it speaks.
 struct Fetch<'a> {
     archive: &'a Archive,
+    /// Where the accounts were read from, for a hint that names a
+    /// command reading the same file.
+    accounts_file: &'a config::Source,
     memo: &'a Memo,
     options: &'a Options,
     source: Source,

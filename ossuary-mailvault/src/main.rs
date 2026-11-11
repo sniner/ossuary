@@ -77,11 +77,11 @@ struct Cli {
 
     /// Keep the caches in DIR, not in the archive
     ///
-    /// The caches hold where each folder was left and the index of the
-    /// archive. For keeping them off a network share. DIR is created if
-    /// missing. Use one DIR per archive. A cache outside the archive is
-    /// only used once the archive has a sealed segment; until then
-    /// every folder is fetched in full.
+    /// The caches store the resume point of each folder and the index of
+    /// the archive. Use it to keep them off a network share. DIR is
+    /// created if missing. Use one DIR per archive. A cache outside the
+    /// archive is only used once the archive has a sealed segment; until
+    /// then every folder is fetched in full.
     #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
     cache: Option<PathBuf>,
 
@@ -136,8 +136,8 @@ enum Command {
         #[arg(long)]
         full: bool,
 
-        /// List all messages and fetch only those the archive does not
-        /// hold under the same Message-ID. Run ossuary extract mail first
+        /// List all messages and fetch only those whose Message-ID is not
+        /// in the archive. Run ossuary extract mail first
         #[arg(long, conflicts_with = "full")]
         compare: bool,
 
@@ -150,9 +150,9 @@ enum Command {
     /// Each message is stored with the mailboxes and folders the Python
     /// mailvault recorded for it. Each mailbox needs an account of the
     /// same name in mailvault.toml. A folder that is not in the
-    /// account's folders list is a label and is recorded as mailbox:tag:
-    /// every such folder of a Gmail account, and those under Labels/ of
-    /// any other IMAP account, as Proton Mail Bridge shows labels.
+    /// account's folders list is recorded as a label (mailbox:tag): on a
+    /// Gmail account every such folder, on any other IMAP account those
+    /// under Labels/, where Proton Mail Bridge shows labels.
     Import {
         /// The directory of the Python mailvault archive
         #[arg(value_name = "DIR")]
@@ -235,6 +235,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let memo = opened(&archive, say, "every folder is fetched in full", dry_run)?;
             let tally = fetch::run(
                 &archive,
+                &source,
                 &chosen,
                 &memo,
                 &fetch::Options {
@@ -349,7 +350,7 @@ fn opened(archive: &Archive, say: Say, costs: &str, dry_run: bool) -> Result<Mem
     };
     if held {
         say.line(format_args!(
-            "{}: names no sealed segment of this archive, so it is not used; {costs}",
+            "{}: does not belong to this archive, not used; {costs}",
             path.display()
         ));
     }
@@ -461,7 +462,7 @@ fn closing(tally: &Tally, dry_run: bool) -> String {
             format!("{recorded}; what failed was given up, and only --full fetches it again")
         }
         given_up => format!(
-            "{recorded}; the next run tries what failed again, except {given_up} given up, which only --full fetches again"
+            "{recorded}; the next run tries them again, except {given_up} given up, which only --full fetches"
         ),
     }
 }
@@ -562,7 +563,7 @@ mod tests {
         tally.given_up = 1;
         assert_eq!(
             closing(&tally, false),
-            "2 failed, listed above; everything else was recorded; the next run tries what failed again, except 1 given up, which only --full fetches again"
+            "2 failed, listed above; everything else was recorded; the next run tries them again, except 1 given up, which only --full fetches"
         );
         tally.given_up = 2;
         assert_eq!(

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde_json::json;
 
 use super::bridge::{Identified, InMailbox};
@@ -102,7 +102,7 @@ impl Fetch<'_> {
             Some(folders) => folders.clone(),
             None => match remote
                 .folders()
-                .and_then(|offered| account.unskipped(offered))
+                .and_then(|offered| account.unskipped(offered, self.accounts_file))
             {
                 Ok(folders) => folders,
                 Err(error) => return Ok(Err(error.context(account.name.clone()))),
@@ -139,7 +139,7 @@ impl Fetch<'_> {
             // asks about them in any case.
             if state.tally.failed.len() > failed {
                 self.say.line(format_args!(
-                    "{}: the label folders are left for the next run, because a folder of the account could not be read",
+                    "{}: label folders skipped, the next run reads them",
                     account.name
                 ));
             } else {
@@ -420,7 +420,7 @@ impl Fetch<'_> {
             Err(Stop::Caller(error)) => Err(match closed {
                 Ok(()) => error,
                 Err(more) => {
-                    error.context(format!("and the resume point could not be saved: {more:#}"))
+                    anyhow!("{error:#}; the resume point could not be saved either: {more:#}")
                 }
             }),
         }

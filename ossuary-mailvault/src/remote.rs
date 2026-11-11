@@ -229,7 +229,7 @@ fn flavour(session: &mut Session<Box<dyn Stream>>) -> Result<Flavour> {
         Ok(answer) => answer,
         // Listed and then refused: nothing to learn from this server.
         Err(imap::Error::No(_) | imap::Error::Bad(_)) => return Ok(Flavour::Standard),
-        Err(error) => return Err(error).context("the server did not answer ID"),
+        Err(error) => return Err(error).context("the IMAP ID command failed"),
     };
     Ok(match server_name(&answer) {
         Some(name) if name.starts_with(PROTON) => Flavour::Proton,
@@ -586,7 +586,7 @@ impl Remote {
         for uid in missing {
             let got = if held.contains(&uid) {
                 Got::Refused(anyhow!(
-                    "UID {uid}: the server sent nothing for a message the folder holds"
+                    "UID {uid}: the server sent nothing, though the message is in the folder"
                 ))
             } else {
                 Got::Gone
@@ -1165,7 +1165,7 @@ mod tests {
             got[2],
             (
                 9,
-                "refused: UID 9: the server sent nothing for a message the folder holds"
+                "refused: UID 9: the server sent nothing, though the message is in the folder"
                     .to_string()
             )
         );

@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use super::{Fetch, Marks, Place, Refusals, State, Stored, opening};
 use crate::config::{self, Account};
@@ -55,7 +55,7 @@ impl Fetch<'_> {
         };
         let folders = match &account.folders {
             Some(folders) => folders.clone(),
-            None => match account.unskipped(client.folders()) {
+            None => match account.unskipped(client.folders(), self.accounts_file) {
                 Ok(folders) => folders,
                 Err(error) => return Ok(Err(error.context(account.name.clone()))),
             },
@@ -107,7 +107,7 @@ impl Fetch<'_> {
                 "{name}: no messages listed; no resume point saved"
             )),
             None if resumed => self.say.line(format_args!(
-                "{name}: the server returned no resume point; the next run lists the changes since the last one again"
+                "{name}: the server returned no resume point; the next run lists the same changes again"
             )),
             None => self.say.line(format_args!(
                 "{name}: the server returned no resume point; the next run fetches all messages again"
@@ -157,7 +157,7 @@ impl Fetch<'_> {
             Err(error) => Err(match closed {
                 Ok(()) => error,
                 Err(more) => {
-                    error.context(format!("and the pending list could not be saved: {more:#}"))
+                    anyhow!("{error:#}; the pending list could not be saved either: {more:#}")
                 }
             }),
         }

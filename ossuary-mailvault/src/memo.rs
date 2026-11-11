@@ -52,7 +52,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
@@ -173,6 +173,8 @@ enum Write {
 
 pub struct Memo {
     connection: Connection,
+    /// The file, for messages; `None` for a memo in memory.
+    path: Option<PathBuf>,
     /// The writes of the batch that is open, in the order they were
     /// asked for; `None` when no batch is open.
     batch: RefCell<Option<Vec<Write>>>,
@@ -187,11 +189,11 @@ impl Memo {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)
-                .with_context(|| format!("{}: creating cache/", dir.display()))?;
+                .with_context(|| format!("{}: could not be created", dir.display()))?;
         }
         let connection = Connection::open(path)
             .with_context(|| format!("{}: could not be opened", path.display()))?;
-        Self::with(connection)
+        Self::with(connection, Some(path.to_path_buf()))
     }
 
     /// A memo that holds nothing and is kept in memory, never in a file:
@@ -202,12 +204,13 @@ impl Memo {
     ///
     /// `SQLite` refusing.
     pub fn empty() -> Result<Self> {
-        let connection = Connection::open_in_memory().context("opening a memo in memory")?;
-        Self::with(connection)
+        let connection =
+            Connection::open_in_memory().context("opening a temporary database in memory")?;
+        Self::with(connection, None)
     }
 
     /// The memo on `connection`, its tables made where they are missing.
-    fn with(connection: Connection) -> Result<Self> {
+    fn with(connection: Connection, path: Option<PathBuf>) -> Result<Self> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS resume (
                  account TEXT NOT NULL,
@@ -242,8 +245,19 @@ impl Memo {
         )?;
         Ok(Self {
             connection,
+            path,
             batch: RefCell::new(None),
         })
+    }
+
+    /// The memo's file as a message names it, with a stand-in for a
+    /// memo in memory.
+    #[must_use]
+    pub fn file(&self) -> String {
+        self.path.as_ref().map_or_else(
+            || "the temporary database in memory".to_string(),
+            |path| path.display().to_string(),
+        )
     }
 
     /// The sealed segment the memo recorded when it was last committed:
@@ -324,7 +338,7 @@ impl Memo {
     pub fn begin(&self) -> Result<()> {
         let mut batch = self.batch.borrow_mut();
         if batch.is_some() {
-            bail!("cache/{FILE_NAME}: a batch of writes is already open");
+            bail!("{}: a batch of writes is already open", self.file());
         }
         *batch = Some(Vec::new());
         Ok(())
@@ -340,7 +354,7 @@ impl Memo {
     /// program for longer than the connection waits, most often.
     pub fn commit(&self) -> Result<()> {
         let Some(batch) = self.batch.borrow_mut().take() else {
-            bail!("cache/{FILE_NAME}: no batch of writes is open");
+            bail!("{}: no batch of writes is open", self.file());
         };
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
@@ -483,7 +497,8 @@ impl Memo {
             .map(|state| {
                 serde_json::from_str(&state).with_context(|| {
                     format!(
-                        "{account}:{folder}: the resume point in cache/{FILE_NAME} is not readable; delete the file"
+                        "{account}:{folder}: the resume point in {} is not readable; delete the file",
+                        self.file()
                     )
                 })
             })
@@ -594,7 +609,10 @@ impl Memo {
         for row in rows {
             let (id, detail, attempts) = row?;
             let detail = serde_json::from_str(&detail).with_context(|| {
-                format!("pending message {id}: the detail in cache/{FILE_NAME} is not readable")
+                format!(
+                    "pending message {id}: unreadable entry in {}; delete the file",
+                    self.file()
+                )
             })?;
             pending.push(Pending {
                 id,
@@ -929,13 +947,17 @@ mod tests {
 
     #[test]
     fn a_resume_point_that_is_not_json_is_an_error_not_a_first_fetch() {
-        let (_dir, memo) = memo();
+        let (dir, memo) = memo();
         memo.connection
             .execute("INSERT INTO resume VALUES ('a', 'Inbox', 'not json')", [])
             .unwrap();
         let error = memo.imap_resume("a", "Inbox").unwrap_err();
+        let path = dir.path().join("cache").join(FILE_NAME);
         assert!(
-            format!("{error:#}").contains("a:Inbox: the resume point in cache/mailvault.sqlite is not readable; delete the file"),
+            format!("{error:#}").contains(&format!(
+                "a:Inbox: the resume point in {} is not readable; delete the file",
+                path.display()
+            )),
             "{error:#}"
         );
     }

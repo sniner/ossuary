@@ -159,6 +159,7 @@ fn mailbox(uidvalidity: u32, uids: &[u32]) -> Fake {
 struct Bench {
     _dir: TempDir,
     archive: Archive,
+    accounts_file: config::Source,
     memo: Memo,
     account: Account,
 }
@@ -169,6 +170,7 @@ fn bench() -> Bench {
     let memo = Memo::open(&archive.root().join("cache").join(crate::memo::FILE_NAME)).unwrap();
     Bench {
         _dir: dir,
+        accounts_file: config::Source::Archive(archive.root().to_path_buf()),
         archive,
         memo,
         account: toml::from_str(
@@ -181,6 +183,7 @@ fn bench() -> Bench {
 fn fetcher<'a>(bench: &'a Bench, options: &'a Options) -> Fetch<'a> {
     Fetch {
         archive: &bench.archive,
+        accounts_file: &bench.accounts_file,
         memo: &bench.memo,
         options,
         source: Source::parse(crate::SOURCE).unwrap(),

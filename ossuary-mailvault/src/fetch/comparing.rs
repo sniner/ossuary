@@ -32,14 +32,13 @@ impl Fetch<'_> {
         let comparison = Comparison::new(archived, known);
         let without = comparison.without_message_id();
         if without > 0 {
-            let has = if without == 1 { "has" } else { "have" };
             let fetched = if self.options.dry_run {
                 "would be fetched"
             } else {
                 "are fetched"
             };
             self.say.line(format_args!(
-                "{}: {without} of {} archived messages {has} no Message-ID on record, and their copies on the server {fetched} again; run `ossuary extract mail` first if it has not run since the last fetch",
+                "{}: no Message-ID on record for {without} of {} archived messages, their copies {fetched} again; run `ossuary extract mail` first if it has not run since the last fetch",
                 place.name,
                 comparison.archived()
             ));
@@ -85,7 +84,7 @@ impl Fetch<'_> {
     /// The line that opens another round.
     fn reopened(&self, place: &Place<'_>, more: usize) {
         self.say.line(format_args!(
-            "{}: {} more to fetch: an archived message is listed on the server under another Message-ID",
+            "{}: {} more to fetch in another round",
             place.name,
             counted(more, "message", "messages")
         ));

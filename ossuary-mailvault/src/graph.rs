@@ -563,7 +563,7 @@ impl<'a> Graph<'a> {
     fn get(&mut self, url: &str, prefer: Option<&str>) -> Result<Answer> {
         if !self.owns(url) {
             bail!(
-                "refusing to send the token to {}; only {} is allowed",
+                "not sending the token to {}; only {} is allowed",
                 host_of(url),
                 host_of(&self.base)
             );
@@ -1316,7 +1316,7 @@ mod tests {
         assert!(
             refused
                 .to_string()
-                .contains("refusing to send the token to evil.example.com"),
+                .contains("not sending the token to evil.example.com"),
             "{refused:#}"
         );
         assert_eq!(stub.seen().len(), before, "and nothing was asked anywhere");

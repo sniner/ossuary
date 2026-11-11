@@ -40,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use ossuary_core::{
     Admitted, Algorithm, Archive, Attribute, Sighting, Source, Timestamp, admit, record,
 };
@@ -203,9 +203,9 @@ pub fn run(
                 .and_then(|()| takeover.memo.map_or(Ok(()), Memo::commit));
             return Err(match saved {
                 Ok(()) => error,
-                Err(more) => error.context(format!(
-                    "and the import progress could not be saved: {more:#}"
-                )),
+                Err(more) => {
+                    anyhow!("{error:#}; the import progress could not be saved either: {more:#}")
+                }
             });
         }
         progress.update(
@@ -299,8 +299,8 @@ fn plan(config: &Config, gathered: &Gathered) -> Result<Plan> {
     if !missing.is_empty() {
         bail!(
             "{}: no account for {} from the Python mailvault archive; add an account for each, \
-             or import these by name with --no-auto-labels and the other mailboxes by name \
-             without it",
+             or import those mailboxes by name with --no-auto-labels and the rest in a separate \
+             run",
             config.path.display(),
             missing.join(", ")
         );
@@ -666,10 +666,7 @@ fn read_message(vault: &Path, store_id: &str) -> Result<Vec<u8>> {
         .into_iter()
         .find(|hash| hash.hex_len() == store_id.len())
     else {
-        bail!(
-            "{store_id}: listed in the log, but neither a SHA-256 nor a SHA-384 hash; \
-             if a newer version of the Python mailvault wrote it, update ossuary-mailvault"
-        );
+        bail!("{store_id}: listed in the log, but neither a SHA-256 nor a SHA-384 hash");
     };
     let (path, compressed) = message_path(vault, store_id).with_context(|| {
         format!("{store_id}: listed in the log, but the message file is missing")

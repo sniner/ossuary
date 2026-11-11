@@ -154,8 +154,8 @@ impl Source {
 /// The file `init` writes: an example of each kind of account, every
 /// one commented out, so the file as written fetches nothing.
 pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[account]] table each.
-# The examples below are commented out: remove the "# " in front of the
-# lines of one and fill it in. Keys not shown here are rejected.
+# The examples below are commented out: to use one, remove the "# " at the
+# start of its lines and fill it in. Keys not shown here are rejected.
 #
 # Any key except name, backend, port, tls, folders and skip can be given
 # as KEY_cmd instead: a command that prints the value on its first line,
@@ -188,7 +188,7 @@ pub const STARTER: &str = r##"# Mailboxes for `ossuary mailvault fetch`, one [[a
 # skip = ["Junk"]
 
 # Gmail. All Mail contains every message, and each message's labels are
-# recorded as tags; each label folder would fetch the same messages again.
+# recorded as tags, so the label folders need not be fetched as well.
 # The folder name depends on the account's language, such as
 # "[Google Mail]/Alle Nachrichten" on a German account; `ossuary mailvault
 # folders` lists the names. The password is an app password.
@@ -345,7 +345,7 @@ impl<'de> Deserialize<'de> for Account {
             .map_err(|error| D::Error::custom(format!("{name}: skip: {error}")))?;
         if folders.is_some() && skip.is_some() {
             return Err(D::Error::custom(format!(
-                "{name}: folders and skip cannot both be given; keep folders to fetch only the folders it names, or skip to fetch all folders but those"
+                "{name}: give either folders or skip, not both"
             )));
         }
         let backend = match table.remove("backend") {
@@ -463,17 +463,19 @@ impl Account {
 
     /// The folders to fetch of all those the mailbox has, for an
     /// account without a `folders` list: every one `skip` does not name.
+    /// `source` is where the account was read from; the error names the
+    /// `folders` command that reads the same file.
     ///
     /// # Errors
     ///
     /// A name in `skip` that is not one of `offered`. A misspelt name
     /// would otherwise fetch the folder it was meant to leave out, and
     /// what is fetched stays in the archive.
-    pub fn unskipped(&self, offered: Vec<String>) -> Result<Vec<String>> {
+    pub fn unskipped(&self, offered: Vec<String>, source: &Source) -> Result<Vec<String>> {
         if let Some(missing) = self.skip.iter().find(|name| !offered.contains(name)) {
             bail!(
-                "skip names {missing:?}, which this mailbox does not have, so the account was not fetched; `ossuary mailvault folders {}` lists its folders",
-                self.name
+                "skip lists {missing:?}, which is not a folder of this mailbox; account not fetched; `{}` lists its folders",
+                source.command(&format!("folders {}", self.name))
             );
         }
         Ok(offered
@@ -860,29 +862,35 @@ mod tests {
         )
         .unwrap();
         let account = &config.accounts[0];
+        let source = Source::Archive(PathBuf::from("/archive"));
         let offered = ["INBOX", "Junk", "Sent", "Deleted Messages"].map(String::from);
         assert_eq!(
-            account.unskipped(offered.to_vec()).unwrap(),
+            account.unskipped(offered.to_vec(), &source).unwrap(),
             ["INBOX", "Sent"]
         );
 
-        let refused = account
-            .unskipped(
-                ["INBOX", "junk", "Deleted Messages"]
-                    .map(String::from)
-                    .to_vec(),
-            )
-            .err()
-            .unwrap();
+        let misspelt = ["INBOX", "junk", "Deleted Messages"].map(String::from);
+        let refused = account.unskipped(misspelt.to_vec(), &source).err().unwrap();
         assert!(
-            refused.to_string().contains("skip names \"Junk\""),
+            refused.to_string().contains(
+                "skip lists \"Junk\", which is not a folder of this mailbox; account not fetched; \
+                 `ossuary mailvault folders a` lists its folders"
+            ),
             "a name is matched as written, and one that matches nothing stops the account: {refused:#}"
+        );
+        let named = Source::Named(PathBuf::from("/home/john/mail.toml"));
+        let refused = account.unskipped(misspelt.to_vec(), &named).err().unwrap();
+        assert!(
+            refused.to_string().contains(
+                "`ossuary mailvault folders a --accounts /home/john/mail.toml` lists its folders"
+            ),
+            "the hint reads the same accounts file: {refused:#}"
         );
 
         let config = load("[[account]]\nname = \"a\"\nhost = \"h\"\nuser = \"u\"\n").unwrap();
         assert_eq!(
             config.accounts[0]
-                .unskipped(offered.to_vec())
+                .unskipped(offered.to_vec(), &source)
                 .unwrap()
                 .len(),
             4,
@@ -896,7 +904,7 @@ mod tests {
         .err()
         .unwrap();
         assert!(
-            format!("{refused:#}").contains("folders and skip cannot both be given"),
+            format!("{refused:#}").contains("a: give either folders or skip, not both"),
             "{refused:#}"
         );
     }

@@ -13,6 +13,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   comes first
 - **`ossuary find --missing` with an invalid namespace named an attribute that was not typed**
   (`"Bad!:a"` for `Bad!:`). It now names the term as given
+- **`ossuary mailvault` named `cache/mailvault.sqlite` in its messages also when `--cache DIR` or
+  `OSSUARY_CACHE` put the file elsewhere**, including the one that says to delete it. The
+  messages now name the file where it is
+- **The hint after a `skip` entry that is not a folder of the mailbox now includes `--accounts
+  FILE`** when the accounts came from such a file. Without it, the suggested `ossuary mailvault
+  folders` read the archive's mailvault.toml
 - **`ossuary-extract-pdf` said "reading the document failed" also when it could not write an
   attachment.** It now says "attachments not extracted" or "document information not read"
 
