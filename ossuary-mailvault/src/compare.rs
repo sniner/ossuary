@@ -45,26 +45,20 @@ pub const HEADER: &str = "Message-ID";
 /// small.
 const TRUNCATED_FROM: usize = 128;
 
-/// A Message-ID as both sides compare it: what stands between the first
-/// `<` and the next `>`, or the whole value without brackets, with all
-/// whitespace removed and in lower case. Empty for a value that has
-/// none, which matches nothing.
+/// A Message-ID as both sides compare it: read by the rule
+/// `ossuary-extract-mail` records it by ([`ossuary_extract_mail::message_id`]),
+/// then with all whitespace removed and in lower case. Empty for a value
+/// that has none, which matches nothing.
 ///
 /// Whitespace goes because unfolding a long header can leave a space
 /// inside the value, and case because the Python mailvault ignores it
-/// too. Both sides must go through this one function: a second
-/// normalisation that disagrees on a single malformed value makes
-/// archived messages look missing.
+/// too. Both sides must go through this one function, and the server's
+/// value through the extractor's rule: a reading that disagrees on a
+/// single malformed value makes archived messages look missing.
 #[must_use]
 pub fn key(value: &str) -> String {
-    let inner = match value.find('<') {
-        Some(open) => {
-            let rest = &value[open + 1..];
-            rest.find('>').map_or(rest, |close| &rest[..close])
-        }
-        None => value,
-    };
-    inner
+    ossuary_extract_mail::message_id(value)
+        .unwrap_or_default()
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect::<String>()
@@ -427,6 +421,11 @@ mod tests {
         assert_eq!(key("<abc@example.org"), "abc@example.org", "cut off");
         assert_eq!(key(""), "");
         assert_eq!(key("<>"), "");
+        assert_eq!(
+            key("abc@example.org"),
+            key("<abc@example.org>"),
+            "the archive records the id without brackets, the server lists it with them"
+        );
     }
 
     #[test]

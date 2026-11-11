@@ -1908,6 +1908,7 @@ dependencies = [
  "imap",
  "imap-proto",
  "ossuary-core",
+ "ossuary-extract-mail",
  "rusqlite",
  "rustls",
  "serde",
