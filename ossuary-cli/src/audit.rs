@@ -353,7 +353,7 @@ fn log_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool
     } else if log.findings() == 0 {
         clauses.push("all readable".to_string());
         if log.segments > 0 {
-            clauses.push("one chain from the first segment to the open segment".to_string());
+            clauses.push("one unbroken chain".to_string());
         }
     }
     listing(
