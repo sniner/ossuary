@@ -44,7 +44,7 @@ early, the output stops and the command still exits with success.
 | `extract` | run extractors on files they have not examined yet, see below. `--dry-run` shows what would be recorded for the named files, and writes nothing |
 | `annotate` | add `user:tag` and `user:comment` to recorded files |
 | `retract` | retract values: they are no longer standing, and the record keeps them. Files and `attribute=value` pairs can be mixed; `attribute=..` retracts all standing values of the attribute; `--dry-run` shows what would be retracted |
-| `seal` | seal the archive and print an id for everything it holds: the hash of the last sealed segment, as the only line on stdout. Closes the open segment after checking every sealed segment; no seal is made if that check has findings. Nothing recorded in between, the same id again. `--dry-run` shows what the seal would cover. `--check ID` checks a seal: every segment and file it covers present and unchanged, and the open segment still leading to it; `--fast` only looks for each file instead of reading it. Exits 1 if no seal was made or the seal does not hold |
+| `seal` | seal the archive and print an id that covers its claims and files: the hash of the last sealed segment, as the only line on stdout. Closes the open segment after checking every sealed segment; no seal is made if that check has findings. If nothing was recorded since the last seal, it prints the same id again. `--dry-run` shows what the seal would cover. `--check ID` checks a seal: every segment and file it covers present and unchanged, and the seal still part of the chain; `--fast` only looks for each file instead of reading it. Exits 1 if no seal was made or the seal is not verified |
 | `about` | all claims about one file, oldest first; attributes or a `namespace:` restrict the output |
 | `standing` | the standing values of one file, with retractions applied, where `about` shows every claim. Attributes or a `namespace:` restrict the output; with exactly one attribute, only its values are printed, one per line. Exits 1 if there is no standing value, so a script can test for it |
 | `find` | files that match all terms, shown with the attributes the query selects. A name without a colon is a field of the claim, such as `run`, `source`, `time` or `retract`. Only files that are still present are listed; `--all` searches every claim ever written, retractions included; `--as-of TIME` searches what was recorded up to TIME |
@@ -55,7 +55,7 @@ early, the output stops and the command still exits with success.
 | `get` | one file's content to stdout, or to `--output FILE`. `--path` prints the path of the stored file in the archive instead; in a compressed archive that file may be compressed |
 | `export` | copy files out of the archive under their recorded paths: runs by id, single files by name, in any mix. `--dry-run` shows where each file would be written |
 | `audit` | check the archive: every file against its hash, every claim readable, no segment or referenced file missing. `--fast` only checks that every file is there, not its hash. Exits 1 if there are findings |
-| `maintain describe` | record the size and type of files that have neither, which happens when a run was interrupted after it stored a file and before it recorded it. `ossuary audit` lists such files; `--dry-run` shows them and writes nothing |
+| `maintain describe` | record the size and type of files that lack them, which happens when a run was interrupted after it stored a file and before it recorded it. `ossuary audit` lists such files; `--dry-run` shows them and writes nothing |
 | `maintain weed` | remove files from `derived/` that `content/` also contains, after checking both copies against their hash. `--repair` replaces a damaged file in `content/` with its sound copy from `derived/` and keeps the damaged one aside; `--dry-run` shows what would be removed. Exits 1 if a file was left in both |
 
 `--json` on `about`, `standing`, `find`, `attributes`, `history`, `ls`,
@@ -146,11 +146,11 @@ cannot match it.
 every contract that program offers; `NAME:CONTRACT` runs one of them.
 The archive's `[extract] run` list in `config.toml` uses the same form.
 A bare `ossuary extract` runs that list in rounds until a round finds
-nothing new to examine, so a chain like mail → attachment → text is
-processed in one call. Every examined file is recorded as examined
-(`prov:examined`), whether anything was found or not, so a repeated
-call examines only new files, and an interrupted call continues where
-it stopped. A new extractor version examines all files again.
+nothing new to examine, so a mail, its attachments and the text
+extracted from them are processed in one call. Every examined file is
+recorded as examined (`prov:examined`), whether anything was found or
+not, so a repeated call examines only new files, and an interrupted call
+continues where it stopped. A new extractor version examines all files again.
 
 Naming files runs a single round: the named files are examined once,
 and a named file is passed to the extractor even if it is not of a type
@@ -186,7 +186,7 @@ pass through unchanged. It receives the archive as an absolute path in
 `0` means success, `1` everything else: an archive that cannot be
 opened, a name that matches no file or more than one, a file an
 extractor could not examine, an audit with findings, a seal not made or
-not holding, `standing` with no standing value. Errors are printed on stderr, also with `-q`.
+not verified, `standing` with no standing value. Errors are printed on stderr, also with `-q`.
 
 ## License
 

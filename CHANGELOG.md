@@ -11,6 +11,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name `ossuary-fix chain --accept-loss`.** The message named `ossuary-fix chain` alone, which
   refuses without the flag. For a missing open segment, copying it back from a copy of the archive
   comes first
+- **`ossuary audit` said a damaged segment "does not read"**, and suggested copying back also a
+  segment that is unreadable or does not parse, which a copy does not repair. A damaged segment is
+  now named as damaged; the others are listed with their error
+- **The hint for files in derived/ without claims said to add them again**, which stores a second
+  copy in content/. It now names `ossuary extract`
+- **The help of `ossuary maintain describe` spoke only of files that have neither size nor type.**
+  It also records the one that is missing
 - **`ossuary find --missing` with an invalid namespace named an attribute that was not typed**
   (`"Bad!:a"` for `Bad!:`). It now names the term as given
 - **`ossuary mailvault` named `cache/mailvault.sqlite` in its messages also when `--cache DIR` or

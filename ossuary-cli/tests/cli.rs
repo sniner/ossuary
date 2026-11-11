@@ -271,8 +271,7 @@ fn an_interrupted_seal_is_sound_and_named_by_the_audit() {
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout
-            .contains("a seal stopped before the open segment was back in place; nothing is lost"),
+        stdout.contains("a seal was interrupted; nothing is lost"),
         "{stdout}"
     );
     assert!(stdout.contains("sound"), "{stdout}");
@@ -333,7 +332,7 @@ fn a_file_stored_before_it_was_recorded_gets_its_size_and_type_from_describe() {
     let report = String::from_utf8_lossy(&audit.stdout);
     assert!(audit.status.success(), "an observation, not a finding");
     assert!(
-        report.contains("1 file(s) recorded without size or type"),
+        report.contains("1 file(s) without size or type"),
         "{report}"
     );
 
@@ -483,7 +482,7 @@ fn audit_fast_misses_a_damaged_file_and_says_it_did_not_check() {
     );
     let stderr = String::from_utf8(fast.stderr).unwrap();
     assert!(
-        stderr.contains("--fast, their contents are not read"),
+        stderr.contains("listing every file without reading it (--fast)"),
         "{stderr}"
     );
 

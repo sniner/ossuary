@@ -218,7 +218,7 @@ retracts every current value of an attribute at once. A later `extract
 The hash algorithm is chosen when an archive is created
 (`init --algorithm`), and every file and segment is named by it. To
 move an archive to another algorithm, `ossuary-fix rehash` copies it
-into a new archive: every file is hashed anew, and every claim is
+into a new archive: every file is hashed again, and every claim is
 written there with the new names, with its time, source and run
 unchanged. `config.toml` and `mailvault.toml` are copied along. The
 archive itself is only read.

@@ -359,8 +359,9 @@ sort -u "$out/files" | while read -r file; do
 done
 ```
 
-No output means that the seal holds. The walk stops at a segment that
-is missing or damaged, because what lies before it cannot be followed.
+No output means that the seal is verified. The walk stops at a segment
+that is missing or damaged, because what lies before it cannot be
+followed.
 The claims store has depth 1
 and the content stores depth 2 here, as in every archive created with
 the defaults. For another algorithm, change the prefix and the checksum

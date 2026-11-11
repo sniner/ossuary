@@ -1,6 +1,6 @@
 //! `ossuary maintain`: `weed` removes copies in `derived/` that
-//! `content/` also has, `describe` records size and type of files that
-//! have neither.
+//! `content/` also has, `describe` records the size and type of files
+//! that lack them.
 
 use std::process::ExitCode;
 
@@ -15,15 +15,11 @@ use crate::{Location, finish_interrupted_seal, open};
 /// The maintenance commands.
 #[derive(Subcommand)]
 pub(crate) enum Maintenance {
-    /// Record the size and type of files that have neither
+    /// Record the size and type of files that lack them
     ///
-    /// The size and type of a file are recorded when the file is new to
-    /// the archive. A run that is interrupted after it stored a file and
-    /// before it recorded it leaves the file without both: the next run
-    /// that meets the file finds it stored and records only where it met
-    /// it. Such a file is left out of `ossuary extract`. describe reads
-    /// each of these files in the archive and records what is missing.
-    /// `ossuary audit` lists them.
+    /// A file can lack them after an interrupted run. Such files are left
+    /// out of `ossuary extract`, and `ossuary audit` lists them. describe
+    /// reads each of these files and records what is missing.
     Describe {
         /// Show which files would be described, write nothing
         #[arg(long)]
@@ -41,7 +37,7 @@ pub(crate) enum Maintenance {
     /// kept; --repair moves the damaged file aside, keeping all its
     /// bytes, stores the sound copy in its place and removes the copy in
     /// derived/. If both are damaged, or either cannot be read, both are
-    /// kept: restore the file from a backup of the archive. No recorded
+    /// kept: restore the file from a copy of the archive. No recorded
     /// file is lost at any step. Exits 1 if a file was left in both.
     Weed {
         /// Show what would be removed, write nothing
@@ -87,7 +83,7 @@ fn describe(location: &Location, dry_run: bool, verbose: bool, quiet: bool) -> R
         Undescribing::Found(files) => files,
         Undescribing::Refused(log) => {
             errln!(
-                "not looked for: {} finding(s) in the claims, and a claim that cannot be read may be the one that records a size; `ossuary audit` lists the findings",
+                "no files described: {} finding(s) in claims/; `ossuary audit` lists them",
                 log.findings()
             );
             return Ok(ExitCode::FAILURE);
@@ -108,7 +104,7 @@ fn describe(location: &Location, dry_run: bool, verbose: bool, quiet: bool) -> R
         .collect();
     if dry_run {
         let heading = format!(
-            "{} file(s) would get their size or type recorded; --dry-run, nothing written",
+            "would record the size or type of {} file(s); nothing written",
             files.len()
         );
         listing(&mut out, &heading, &names, verbose)?;
@@ -123,7 +119,7 @@ fn describe(location: &Location, dry_run: bool, verbose: bool, quiet: bool) -> R
     let described = ossuary_core::describe(&archive, &files)?;
     if !described.gone.is_empty() {
         let heading = format!(
-            "{} file(s) were no longer in content/ or derived/ when they were to be read; `ossuary audit` shows what is missing",
+            "{} file(s) no longer in content/ or derived/; `ossuary audit` shows what is missing",
             described.gone.len()
         );
         if !listing(&mut out, &heading, &described.gone, true)? {
@@ -136,7 +132,7 @@ fn describe(location: &Location, dry_run: bool, verbose: bool, quiet: bool) -> R
         say(
             &mut out,
             &format!(
-                "{} file(s) described, {} claim(s) written, run {}; `ossuary extract` now offers them to the extractors",
+                "{} file(s) described, {} claim(s) written, run {}; `ossuary extract` now examines them",
                 described.files, described.claims, described.run
             ),
         )?;
@@ -275,7 +271,7 @@ fn weed_verdict(
     }
     let mut verdict = clauses.join(", ");
     if dry_run {
-        verdict.push_str("; --dry-run, nothing written");
+        verdict.push_str("; nothing written");
     } else if released + repaired > 0 {
         verdict.push_str("; every file is still in content/");
     }
@@ -296,7 +292,7 @@ fn standing_reason(twin: &Twin, repair: bool) -> String {
             "not checked against its hash; left unchanged".to_string()
         }
         (Fixity::Damaged, Fixity::Damaged) => {
-            "damaged in both content/ and derived/; left unchanged, restore it from a backup of the archive"
+            "damaged in both content/ and derived/; left unchanged, restore it from a copy of the archive"
                 .to_string()
         }
         (Fixity::Damaged, Fixity::Sound) if repair => {

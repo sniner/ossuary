@@ -62,18 +62,14 @@ pub fn extract(
     }
     if settlement.ran == 0 {
         outln!(
-            "no extractor ran; none in the [extract] run list of config.toml responded to --identify"
+            "no extractor ran: every entry of the [extract] run list in config.toml was skipped"
         )?;
     }
     // A single working round closes silently — that is every ordinary
     // run, and the verdicts have already told it. Only a real cascade
     // is news.
     if settlement.rounds > 1 && !quiet {
-        errln!(
-            "done after {} rounds, {} examinations in total",
-            settlement.rounds,
-            settlement.examinations
-        );
+        errln!("done after {} rounds", settlement.rounds);
     }
     // The call's own run id, said once for the whole call: every claim
     // it wrote carries it, so a call that examined nothing has none to
@@ -253,7 +249,7 @@ fn render_verdict(source: &Source, tally: &Tally, already: usize, dry_run: bool)
             );
         } else {
             errln!(
-                "{} file(s) could not be examined, each reported above; the next run offers them again",
+                "{} file(s) could not be examined, each reported above; the next `ossuary extract` tries them again",
                 tally.failed
             );
         }

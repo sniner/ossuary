@@ -287,7 +287,7 @@ accountant. At any time later, check the archive against it:
 
 ```console
 $ ossuary seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
-the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 holds: the record up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) and the 131204 file(s) it refers to are present and unchanged
+seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 verified: the claims up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) and the 131204 file(s) they refer to are present and unchanged
 ```
 
 Unlike `audit`, this also finds a change that leaves the archive in
@@ -301,7 +301,7 @@ combined. When nothing was recorded since the last seal, `seal` prints
 the same id again and writes nothing.
 
 What a seal proves and what it does not, where to keep the id, what to
-do when a seal does not hold, and how to have the id timestamped:
+do when a seal is not verified, and how to have the id timestamped:
 [Sealing an archive](docs/sealing.md).
 
 ## Copying the archive to a second place

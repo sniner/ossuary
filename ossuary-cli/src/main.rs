@@ -51,11 +51,11 @@ struct Cli {
 
     /// Keep the index and the other caches in DIR, not in the archive
     ///
-    /// For an archive that cannot be written to, and to keep the caches
-    /// off a network share. DIR is created if missing. Use one DIR per
-    /// archive. A cache outside the archive is only used once the
-    /// archive has a sealed segment, which `ossuary seal` makes; until
-    /// then each command reads the open segment again.
+    /// Use it for an archive that cannot be written to, or to keep the
+    /// caches off a network share. DIR is created if missing. Use one
+    /// DIR per archive. A cache outside the archive is only used once
+    /// the archive has a sealed segment, which `ossuary seal` makes;
+    /// until then each command reads the open segment again.
     #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
     cache: Option<PathBuf>,
 
@@ -99,9 +99,9 @@ enum Command {
     ///
     /// Recorded paths under a named directory where the file no longer
     /// exists are retracted. The content and its other claims are kept,
-    /// and --as-of a time before the run still shows the path. A named
-    /// directory in which no file is found is left alone unless
-    /// --emptied is given. --collect retracts nothing.
+    /// and --as-of a time before the run still shows the path. If no
+    /// file is found in a named directory, its recorded paths are kept
+    /// unless --emptied is given. --collect retracts nothing.
     Ingest {
         /// Files and directories to add
         #[arg(value_name = "PATH", required = true)]
@@ -141,7 +141,8 @@ enum Command {
     /// packed:list`. Without NAME, the extractors listed under
     /// `[extract] run` in the archive's config.toml run. Extraction
     /// repeats in rounds until a round finds nothing new to examine, so
-    /// a chain like mail, attachment, text is processed in one call.
+    /// a mail, its attachments and the text extracted from them are
+    /// processed in one call.
     /// Every file is recorded as examined, whether anything was found or
     /// not, so a repeated call examines only new files; a new extractor
     /// version examines all files again. Files an extractor derives (an
@@ -184,11 +185,11 @@ enum Command {
     /// Add tags and comments to recorded files
     ///
     /// Each --comment and --tag is recorded as a user:comment or user:tag
-    /// claim with source user on every named file. Comments and tags add
-    /// up: a second comment does not replace the first, and `about`
-    /// shows all of them with their time. All names are resolved before
-    /// anything is written, so a mistyped name writes nothing. To tag
-    /// files while ingesting them, use `ingest --tag`; to annotate the
+    /// claim with source user on every named file. Comments and tags
+    /// accumulate: a second comment does not replace the first, and
+    /// `about` shows all of them with their time. If a name is not
+    /// found, nothing is written. To tag files while ingesting them, use
+    /// `ingest --tag`; to annotate the
     /// files a query finds: `ossuary find --id … | xargs ossuary
     /// annotate --tag …`
     Annotate {
@@ -210,21 +211,20 @@ enum Command {
     /// is given by its hex name or a prefix of it. attribute=value
     /// retracts that value from every named file; attribute=.. retracts
     /// every standing value of the attribute. Values are literal, in the
-    /// form `standing` prints them: globs and ranges are rejected, and a
-    /// value that looks like one is written in double quotes. To retract
-    /// from the files a query finds: `ossuary find --id … | xargs
-    /// ossuary retract user:tag=old`.
+    /// form `standing` prints them: globs and ranges are rejected; put a
+    /// value that looks like one in double quotes. To retract from the
+    /// files a query finds: `ossuary find --id … | xargs ossuary retract
+    /// user:tag=old`.
     ///
-    /// Everything is resolved before anything is written: if a pair is
-    /// not standing on one of the named files, nothing is retracted. A
-    /// retraction is a claim with source user, so `about` still shows
-    /// the retracted value, --as-of a time before the retraction still
-    /// returns it, and exporting a run still uses the paths the run
-    /// recorded. Any claim can be retracted, including an extractor's; a
-    /// later `extract --full` or a new extractor version may record it
-    /// again. To restore a value, record it again: your own tags and
-    /// comments with `annotate`, an extractor's claims with `extract
-    /// NAME FILE --full`.
+    /// If a name is not found, or one of the named files does not have a
+    /// pair as a standing value, nothing is retracted. A retraction is a
+    /// claim with source user, so `about` still shows the retracted
+    /// value, --as-of a time before the retraction still returns it, and
+    /// exporting a run still uses the paths the run recorded. Any claim
+    /// can be retracted, including an extractor's; a later `extract
+    /// --full` or a new extractor version may record it again. To
+    /// restore a value, record it again: your own tags and comments with
+    /// `annotate`, an extractor's claims with `extract NAME FILE --full`.
     Retract {
         /// Files and attribute=value pairs, in any order
         #[arg(value_name = "TARGET", required = true)]
@@ -234,32 +234,30 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Seal the archive and print an id for everything it holds
+    /// Seal the archive and print an id that covers its claims and files
     ///
     /// Checks every sealed segment against its hash and the chain they
     /// form, closes the open segment, and prints the id: the hash of the
-    /// last sealed segment. Every segment names the one before it, and
-    /// every claim names its file by hash, so the id covers every claim
-    /// recorded up to it and every file they refer to. Kept outside the
-    /// archive, it shows later whether the archive still holds all of
-    /// that, unchanged: `ossuary seal --check ID`. Run again with
-    /// nothing recorded in between, seal prints the same id.
+    /// last sealed segment. The id covers every claim recorded up to it
+    /// and every file those claims refer to. Keep it outside the
+    /// archive: `ossuary seal --check ID` later shows whether all of
+    /// that is still present and unchanged. If nothing was recorded
+    /// since the last seal, seal prints the same id again.
     ///
-    /// No seal is made while the chain of sealed segments has a
-    /// finding: a damaged or missing segment, a lost open segment, or a
-    /// segment the chain does not reach. `ossuary audit` names it and
-    /// the way to repair it. The id is the only line on stdout. Exits 1
-    /// if no seal was made.
+    /// No seal is made while claims/ has a finding: a damaged or missing
+    /// segment, a missing open segment, or a sealed segment outside the
+    /// chain. `ossuary audit` lists them. The id is the only line on
+    /// stdout. Exits 1 if no seal was made.
     ///
     /// --check ID checks a seal instead: every sealed segment it covers
     /// must be present and match its hash, every file their claims refer
     /// to must be present in content/ or derived/ and match its hash,
-    /// and the open segment must still lead to the seal. Every file is
-    /// read in full, which takes about as long as `audit`; --fast only
-    /// looks for each file, which shows a removed file but not a changed
-    /// one. Any copy of the archive can be checked, a restored backup
-    /// included. The id is taken only in full. Exits 1 if the seal does
-    /// not hold.
+    /// and the seal must still be part of the chain. Every file is read
+    /// in full, which takes about as long as `audit`; --fast only looks
+    /// for each file, which shows a removed file but not a changed one.
+    /// Any copy of the archive can be checked, a restored backup
+    /// included. ID must be given in full. Exits 1 if the seal is not
+    /// verified.
     Seal {
         /// Print the id as a JSON object of the algorithm and the hash
         #[arg(short, long, conflicts_with_all = ["dry_run", "check"])]
@@ -335,16 +333,16 @@ enum Command {
     /// A term is attribute=value, and a file must match every term:
     /// `find file:mime=image/jpeg exif:make=Google` finds files that are
     /// both. In text values, `*` and `?` are wildcards: `find
-    /// file:path=*crete*` finds files from that folder. low..high matches
-    /// a value in the range, and either end may be left open:
-    /// `file:modified=2026-09-01..` is "changed since September",
-    /// `file:size=..4096` "at most 4 KiB". A bare `..` matches any value,
-    /// so attribute=.. requires the attribute to be present. A value in
-    /// double quotes is literal: no wildcards, no range. --missing
-    /// selects files without an attribute (or, ending in `:`, without
-    /// any attribute of the namespace): `find file:mime=image/jpeg
-    /// --missing exif:` finds photos without EXIF data. Only standing
-    /// values are searched.
+    /// file:path=*crete*` finds files whose path contains "crete".
+    /// low..high matches a value in the range, and either end may be
+    /// left open: `file:modified=2026-09-01..` is "changed since
+    /// September", `file:size=..4096` "at most 4 KiB". A bare `..`
+    /// matches any value, so attribute=.. requires the attribute to be
+    /// present. A value in double quotes is literal: no wildcards, no
+    /// range. --missing selects files without an attribute (or, ending
+    /// in `:`, without any attribute of the namespace): `find
+    /// file:mime=image/jpeg --missing exif:` finds photos without EXIF
+    /// data. Only standing values are searched.
     ///
     /// A name without a colon is a field of the claim: subject,
     /// attribute, value, time, source, run, retract. A field term
@@ -483,10 +481,9 @@ enum Command {
     /// /home, not a folder in the current directory. Folders end with a
     /// slash. Each file is on a line of its own, its short name first
     /// (the name `about`, `get` and `export` take), as in `export
-    /// --dry-run`. The listing comes from the record, not from a disk: a
-    /// path is listed until it is retracted, even if the disk is gone. If
-    /// different files were recorded at the same path over time, each
-    /// gets its own line.
+    /// --dry-run`. A recorded path is listed until it is retracted, even
+    /// if the disk it was on is gone. If different files were recorded
+    /// at the same path over time, each gets its own line.
     Ls {
         /// A recorded path (default: /)
         #[arg(value_name = "PLACE")]
@@ -557,9 +554,8 @@ enum Command {
     /// a unique prefix) or a run (its full run id as ingest and extract
     /// print it); both can be mixed. A run exports every file it
     /// recorded, under the path it recorded. Paths are made relative:
-    /// folders shared by all exported files are left out, so files that
-    /// were side by side are exported side by side. If the files come
-    /// from unrelated folders, each group gets its own folder under
+    /// folders shared by all exported files are left out. If the files
+    /// come from unrelated folders, each group gets its own folder under
     /// PATH, named after the deepest folder its files share. A file
     /// given by name is exported to every standing path recorded for
     /// it, a derived file under its recorded names. Content recorded at
@@ -591,32 +587,22 @@ enum Command {
     },
     /// Verify file hashes, claims and the chain of sealed segments
     ///
-    /// Three checks: every file in content/ and derived/ is re-hashed
-    /// and compared with its name; every sealed segment and the open
-    /// segment in claims/ must be readable claim by claim, and every
-    /// segment named as a predecessor must be present; every file the
-    /// claims refer to, as subject or as origin of a derived file, must
-    /// be present in content/ or derived/.
+    /// Checks that every file in content/ and derived/ matches its hash,
+    /// that every segment in claims/ is readable and the sealed segments
+    /// form one unbroken chain, and that every file the claims refer to
+    /// is present in content/ or derived/.
     ///
-    /// The sealed segments form one chain, from the open segment back to
-    /// the first. A segment the chain cannot follow, a lost open segment
-    /// and a segment the chain does not reach are findings as well, each
-    /// with the way to repair it: a copy of the archive, or
-    /// `ossuary-fix chain`. Also reported and not counted: files without
-    /// claims (adding the same file again records them) and files in
-    /// both content/ and derived/ (`ossuary maintain weed` removes the
-    /// copy in derived/).
+    /// Files without claims and files present in both content/ and
+    /// derived/ are reported but not counted as findings.
     ///
-    /// Every file is read in full. --fast only lists the files in
-    /// content/ and derived/ and does not read them, which shows a
-    /// missing file but not a damaged one; the claims and the chain are
+    /// --fast lists the files in content/ and derived/ instead of reading
+    /// them. It finds missing files but not damaged ones. The claims are
     /// checked in full either way.
     ///
-    /// The report counts what it finds and lists up to five names per
-    /// finding; --verbose lists all of them, --json prints one object
-    /// per finding, after a first line {"mode":"fast"} or
-    /// {"mode":"full"}. Exits 0 if the archive is sound, 1 if there are
-    /// findings.
+    /// The report lists up to five names per finding, --verbose lists
+    /// all. --json prints one object per finding, after a first line
+    /// {"mode":"fast"} or {"mode":"full"}. Exits 0 if the archive is
+    /// sound, 1 if there are findings.
     Audit {
         /// Print one JSON object per finding or observation
         #[arg(short, long)]
@@ -895,9 +881,10 @@ fn init(location: &Location, algorithm: Option<&str>) -> Result<ExitCode> {
                 && asked != standing
             {
                 return Err(anyhow!(
-                    "{}: already an archive using {}; the algorithm cannot be changed after creation",
+                    "{}: already an archive using {}; to use {asked}, copy it into a new archive with `ossuary-fix rehash --algorithm {asked} TARGET`",
                     archive.root().display(),
-                    standing.name()
+                    standing.name(),
+                    asked = asked.name()
                 ));
             }
             if archive.complete()? {
@@ -1394,7 +1381,7 @@ pub(crate) fn catch_up(index: &mut Index, archive: &Archive, quiet: bool) -> Res
         // This happens on every command until a segment is sealed, so
         // the line says why and how it ends.
         errln!(
-            "index rebuilt: the cache is kept outside the archive, and the archive has no sealed segment yet that shows the cache to be its own; `ossuary seal` makes one"
+            "index rebuilt; a cache outside the archive is only used once the archive has a sealed segment; `ossuary seal` makes one"
         );
     } else if folded.rebuilt {
         errln!("index rebuilt: {} log segment(s)", folded.segments);

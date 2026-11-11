@@ -35,7 +35,7 @@ pub(crate) fn audit(
     }
     let archive = open(location)?;
     let what = if fast {
-        "listing every file; --fast, their contents are not read"
+        "listing every file without reading it (--fast)"
     } else {
         "checking every file against its hash"
     };
@@ -94,7 +94,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
         listing(
             out,
             &format!(
-                "{} file(s) referenced by the claims but missing",
+                "{} file(s) referenced by the claims but missing; copy them back from a copy of the archive",
                 audit.missing.len()
             ),
             &audit.missing,
@@ -104,15 +104,25 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
     if !missing {
         return Ok(());
     }
-    for (place, unrecorded) in [
-        ("content/", &audit.unrecorded_content),
-        ("derived/", &audit.unrecorded_derived),
+    // A file in derived/ is recorded by the examination that derives it
+    // again; ingest would put a second copy into content/ instead.
+    for (place, unrecorded, move_on) in [
+        (
+            "content/",
+            &audit.unrecorded_content,
+            "ingesting the same files again records their paths, then `ossuary maintain describe` records their size and type",
+        ),
+        (
+            "derived/",
+            &audit.unrecorded_derived,
+            "running `ossuary extract` again records them, then `ossuary maintain describe` records their size",
+        ),
     ] {
         if unrecorded.is_empty() {
             continue;
         }
         let heading = format!(
-            "{} file(s) in {place} without claims; adding the same file again records where it is, and `ossuary maintain describe` then records its size and type",
+            "{} file(s) in {place} without claims; {move_on}",
             unrecorded.len()
         );
         if !listing(out, &heading, unrecorded, verbose)? {
@@ -121,7 +131,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
     }
     if !audit.undescribed.is_empty() {
         let heading = format!(
-            "{} file(s) recorded without size or type, which leaves them out of `ossuary extract`; `ossuary maintain describe` records both",
+            "{} file(s) without size or type, skipped by `ossuary extract`; `ossuary maintain describe` records both",
             audit.undescribed.len()
         );
         let names: Vec<String> = audit
@@ -194,18 +204,21 @@ pub(crate) fn claims_report(out: &mut impl Write, log: &LogAudit, verbose: bool)
     chain_block(out, log, verbose)
 }
 
-/// Where the chain stops short of a first segment, and the segments it
-/// does not reach, each with the way out.
+/// Where the chain stops short of a first segment, a missing open
+/// segment, and the segments outside the chain, each with the way out.
 fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bool> {
     let line = match &log.ends {
-        Ends::First | Ends::NoHead => None,
-        Ends::Missing { segment, missing } => Some(format!(
-            "claims: segment {missing} is missing; {} names it as its predecessor. Copy it back into claims/ from a copy of the archive; if no copy has it, `ossuary-fix chain` closes the gap",
-            named_by(segment)
+        Ends::Missing { missing, .. } => Some(format!(
+            "claims: segment {missing} is missing; copy it back into claims/ from a copy of the archive, or, if no copy has it, run `ossuary-fix chain --accept-loss`"
         )),
-        Ends::Blocked(segment) => Some(format!(
-            "claims: the chain cannot be followed past segment {segment}, which does not read; copy it back into claims/ from a copy of the archive"
+        Ends::Blocked(segment) if log.damaged.contains(segment) => Some(format!(
+            "claims: segment {segment} is damaged; copy it back into claims/ from a copy of the archive"
         )),
+        // Only a damaged segment is repaired by a copy of the archive. An
+        // unreadable one may be a matter of permissions, and one that does
+        // not parse matches its hash, so every copy has the same bytes;
+        // log_block has already named both with their error.
+        Ends::Blocked(_) | Ends::First | Ends::NoHead => None,
     };
     if let Some(line) = line
         && !say(out, &line)?
@@ -215,7 +228,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
     if log.head_lost
         && !say(
             out,
-            "claims: the open segment is missing, and the claims recorded since the last seal are lost with it; `ossuary-fix chain` begins a new open segment after the last sealed one, then repeat the runs since the last seal",
+            "claims: the open segment is missing; copy it back from a copy of the archive, or run `ossuary-fix chain --accept-loss` to start a new one, then repeat the runs since the last seal",
         )?
     {
         return Ok(false);
@@ -223,7 +236,7 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
     if log.seal_pending
         && !say(
             out,
-            "claims: a seal stopped before the open segment was back in place; nothing is lost, and the next run that writes finishes it",
+            "claims: a seal was interrupted; nothing is lost, the next command that writes claims finishes it",
         )?
     {
         return Ok(false);
@@ -232,19 +245,10 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
         return Ok(true);
     }
     let heading = format!(
-        "claims: {} segment(s) that the chain from the open segment does not reach; `ossuary-fix chain` takes them into the chain",
+        "claims: {} sealed segment(s) outside the chain; `ossuary-fix chain` adds them to it",
         log.unreached.len()
     );
     listing(out, &heading, &log.unreached, verbose)
-}
-
-/// Who names a missing segment, in the words of a line.
-fn named_by(segment: &str) -> String {
-    if segment == ossuary_core::HEAD {
-        "the open segment".to_string()
-    } else {
-        format!("segment {segment}")
-    }
 }
 
 /// The last line: which clean outcome it is, or how much is wrong, and
@@ -295,12 +299,11 @@ fn store_block(
     } else if store.unreadable.is_empty() {
         clauses.push("all match their hashes".to_string());
     }
-    listing(
-        out,
-        &format!("{name}: {}", clauses.join(", ")),
-        &store.damaged,
-        verbose,
-    )
+    let mut heading = format!("{name}: {}", clauses.join(", "));
+    if !store.damaged.is_empty() {
+        heading.push_str("; restore the damaged file(s) from a copy of the archive");
+    }
+    listing(out, &heading, &store.damaged, verbose)
 }
 
 /// The log's lines: whatever will not read back is named whole — those

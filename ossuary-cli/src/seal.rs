@@ -33,23 +33,14 @@ pub(crate) fn seal(
     }
     match ossuary_core::seal(&archive, dry_run)? {
         Sealing::Empty => {
-            errln!("the archive holds no claims yet; there is nothing to seal");
+            errln!("no claims recorded yet, nothing to seal");
             Ok(ExitCode::FAILURE)
         }
         Sealing::Refused(log) => {
             let stderr = std::io::stderr();
             let mut err = stderr.lock();
             audit::claims_report(&mut err, &log, verbose)?;
-            if log.findings() == 0 {
-                let heading = format!(
-                    "claims: {} sealed segment(s) that the open segment does not lead to",
-                    log.unreached.len()
-                );
-                audit::listing(&mut err, &heading, &log.unreached, verbose)?;
-            }
-            errln!(
-                "no seal made: a seal now would not cover what is listed above; seal again once that is resolved"
-            );
+            errln!("no seal made; repair what is listed above, then seal again");
             Ok(ExitCode::FAILURE)
         }
         Sealing::Sealed(seal) if dry_run => {
@@ -61,13 +52,10 @@ pub(crate) fn seal(
                 if seal.sealed_now {
                     errln!("open segment sealed");
                 } else {
-                    errln!("nothing recorded since the last seal; the id is the same as then");
+                    errln!("nothing recorded since the last seal; the id is unchanged");
                 }
                 errln!("{}", covers(&seal));
-                errln!(
-                    "the id is the {} hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it",
-                    seal.algorithm.name()
-                );
+                errln!("keep the id outside the archive; `ossuary seal --check ID` checks it");
             }
             if json {
                 let line = serde_json::json!({
@@ -96,12 +84,12 @@ fn covers(seal: &Seal) -> String {
 fn rehearsal(seal: &Seal) -> String {
     if seal.sealed_now {
         format!(
-            "would seal the open segment; {}; --dry-run, nothing written",
+            "would seal the open segment; {}; nothing written",
             covers(seal).replacen("covers", "would cover", 1)
         )
     } else {
         format!(
-            "nothing recorded since the last seal, {}; {}; --dry-run, nothing written",
+            "nothing recorded since the last seal, {}; {}; nothing written",
             seal.segment,
             covers(seal)
         )
@@ -122,31 +110,31 @@ pub(crate) fn check(
     let id = segment.as_str();
     if !quiet {
         errln!("archive {}", archive.root().display());
-        errln!("step 1 of 3: the sealed segments, each one checked against its hash");
+        errln!("step 1 of 3: checking the sealed segments against their hashes");
     }
     let cover = ossuary_core::cover(&archive, &segment)?;
     if !cover.held {
         outln!(
-            "this archive holds no segment {id}, so the seal cannot be checked; it was removed, or the id belongs to another archive"
+            "no segment {id} in this archive, the seal cannot be checked; check that the id is from this archive, or restore claims/ from a copy of the archive"
         )?;
         return Ok(ExitCode::FAILURE);
     }
     if !quiet {
         if fast {
             errln!(
-                "step 2 of 3: the {} file(s) the sealed claims refer to, each one looked for; --fast, their contents are not read",
+                "step 2 of 3: looking for the {} file(s) the sealed claims refer to, without reading them (--fast)",
                 cover.files()
             );
         } else {
             errln!(
-                "step 2 of 3: the {} file(s) the sealed claims refer to, each one read in full",
+                "step 2 of 3: reading the {} file(s) the sealed claims refer to",
                 cover.files()
             );
         }
     }
     let files = ossuary_core::files(&archive, &cover, !fast)?;
     if !quiet {
-        errln!("step 3 of 3: the record since the seal");
+        errln!("step 3 of 3: reading the segments recorded since the seal");
     }
     let since = ossuary_core::since(&archive, &cover)?;
     let checked = SealCheck {
@@ -180,7 +168,7 @@ fn render(out: &mut impl Write, checked: &SealCheck, verbose: bool) -> Result<bo
         && !say(
             out,
             &format!(
-                "recorded since: {} claim(s) in {} sealed segment(s) and the open segment; the seal does not cover them",
+                "recorded since the seal: {} claim(s) in {} sealed segment(s) and the open segment, not covered by it",
                 since.claims, since.segments
             ),
         )?
@@ -188,9 +176,9 @@ fn render(out: &mut impl Write, checked: &SealCheck, verbose: bool) -> Result<bo
         return Ok(false);
     }
     let lists = [
-        (&cover.gone, "sealed segment(s) gone"),
+        (&cover.gone, "sealed segment(s) missing"),
         (&cover.damaged, "sealed segment(s) damaged"),
-        (&files.gone, "file(s) gone"),
+        (&files.gone, "file(s) missing"),
         (&files.damaged, "file(s) damaged"),
     ];
     for (names, what) in lists {
@@ -212,27 +200,27 @@ fn render(out: &mut impl Write, checked: &SealCheck, verbose: bool) -> Result<bo
     }
     let line = match &since.continued {
         Continued::Yes => return Ok(true),
-        Continued::No => "the open segment no longer leads to the seal: the record was cut back to an earlier point, or begun anew, after the seal was made".to_string(),
-        Continued::HeadLost => "the open segment is missing, so the record no longer leads to the seal; `ossuary-fix chain` begins a new one".to_string(),
-        Continued::Blocked(segment) => format!("segment {segment}, recorded since the seal, is missing or does not read, so the record cannot be followed back to the seal; `ossuary audit` names what is wrong with it"),
-        Continued::HeadBroken(error) => format!("the open segment cannot be read: {error}; the record no longer leads to the seal"),
+        Continued::No => "the seal is no longer part of the chain".to_string(),
+        Continued::HeadLost => "the open segment is missing; copy it back from a copy of the archive, or run `ossuary-fix chain --accept-loss` to start a new one, then repeat the runs since the last seal".to_string(),
+        Continued::Blocked(segment) => format!("segment {segment}, recorded since the seal, is missing or cannot be read; `ossuary audit` shows what is wrong with it"),
+        Continued::HeadBroken(error) => format!("the open segment cannot be read: {error}"),
     };
     say(out, &line)
 }
 
-/// The last line of a check: whether the seal holds, as far as it was
-/// checked, or how much is wrong.
+/// The last line of a check: whether the seal is verified, as far as it
+/// was checked, or how much is wrong.
 fn verdict(id: &str, checked: &SealCheck) -> String {
     let SealCheck { cover, files, .. } = checked;
     if !checked.holds() {
         return format!(
-            "the seal {id} does not hold: {} finding(s) above; restore what is named from a backup of the archive, then check again",
+            "seal {id} not verified: {} finding(s) above; restore what is listed from a copy of the archive, then check again",
             checked.findings()
         );
     }
     let record = match &cover.last {
-        Some(last) => format!("the record up to {}", last.as_str()),
-        None => "the record".to_string(),
+        Some(last) => format!("the claims up to {}", last.as_str()),
+        None => "the claims".to_string(),
     };
     let size = format!(
         "{} sealed segment(s), {} claim(s)",
@@ -240,12 +228,12 @@ fn verdict(id: &str, checked: &SealCheck) -> String {
     );
     if files.read {
         format!(
-            "the seal {id} holds: {record} ({size}) and the {} file(s) it refers to are present and unchanged",
+            "seal {id} verified: {record} ({size}) and the {} file(s) they refer to are present and unchanged",
             cover.files()
         )
     } else {
         format!(
-            "the seal {id} holds as far as --fast checks: {record} ({size}) is present and unchanged, and the {} file(s) it refers to are present; their contents were not read",
+            "seal {id} verified as far as --fast checks: {record} ({size}) are present and unchanged, and the {} file(s) they refer to are present; their contents were not read",
             cover.files()
         )
     }

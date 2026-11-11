@@ -320,7 +320,7 @@ the archive held when that segment was sealed. Such a digest is a seal.
 A seal is written like every name in the archive, as the digest in
 bare hex, full length; the algorithm is the one `FORMAT` names. A seal
 checked against an archive with another algorithm names no segment
-there, and does not hold.
+there, and is not verified.
 
 A seal is checked against an archive by walking back from its segment:
 

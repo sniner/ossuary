@@ -60,7 +60,7 @@ anew. A seal finds both.
 
 ## What a seal proves, and what it does not
 
-A seal that holds proves that **everything the archive held when the
+A verified seal proves that **everything the archive held when the
 seal was made is still there, unchanged**: every claim recorded up to
 that moment, and every file those claims refer to. That includes changes
 that leave the archive looking perfectly in order.
@@ -78,7 +78,7 @@ It does **not** prove:
   [Keeping the id](#keeping-the-id).
 * **Anything about what was recorded later.** Files and claims added
   after the seal are not covered. A check counts them as "recorded
-  since" and does not hold them against the seal. It cannot tell a
+  since the seal" and does not check them against it. It cannot tell a
   claim from a later run from one somebody added by hand.
 * **Anything about files without claims.** A file in the archive that
   no claim refers to is not part of the record, and the seal does not
@@ -92,7 +92,7 @@ A seal shows *that* something changed and exactly *which* segments and
 files, but it cannot bring back what is gone. For that you need a backup
 of the archive. Because the seal names every missing or changed file
 precisely, the right copy can be found in a backup, and once it is
-restored the seal holds again. **Seal and backup belong together.**
+restored the seal is verified again. **Seal and backup belong together.**
 
 
 ## Sealing the archive
@@ -103,7 +103,7 @@ archive /srv/archive
 checking every sealed segment against its hash
 open segment sealed
 the seal covers 312 sealed segment(s) with 1308712 claim(s) and every file they refer to
-the id is the sha256 hash of the last sealed segment; keep it outside the archive, `ossuary seal --check ID` checks it
+keep the id outside the archive; `ossuary seal --check ID` checks it
 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 ```
 
@@ -134,7 +134,7 @@ writes nothing:
 
 ```console
 $ ossuary -q seal --dry-run
-would seal the open segment; the seal would cover 312 sealed segment(s) with 1308712 claim(s) and every file they refer to; --dry-run, nothing written
+would seal the open segment; the seal would cover 312 sealed segment(s) with 1308712 claim(s) and every file they refer to; nothing written
 ```
 
 `--json` prints the id as an object of two members, for a script that
@@ -149,23 +149,24 @@ $ ossuary -q seal --json
 
 A seal is not made over a record that is already disturbed, because the
 seal could never be checked, or would cover up a loss. `seal` lists what
-it found, in the words `ossuary audit` uses, and each line names the way
-out:
+it found, in the words `ossuary audit` uses, with the way out where
+there is one:
 
 | What it found | Way out |
 |---|---|
-| A sealed segment is damaged or cannot be read | Copy it back from a copy of the archive and seal again |
-| A sealed segment is missing | Copy it back from a copy of the archive and seal again. If no copy has it, `ossuary-fix chain --accept-loss` closes the chain over it; its claims are lost. Seal again after that |
-| The open segment, the directory in `open/`, is missing | `ossuary-fix chain --accept-loss` begins a new one after the last sealed segment; record the lost claims again if possible, then seal again |
-| A sealed segment that the chain does not reach | `ossuary-fix chain` takes it into the chain; seal again after that |
+| A sealed segment is damaged | Copy it back from a copy of the archive and seal again |
+| A sealed segment cannot be read | The line shows the error; resolve it and seal again |
+| A sealed segment is missing | Copy it back from a copy of the archive and seal again. If no copy has it, `ossuary-fix chain --accept-loss` links the segments on either side of the gap; its claims are lost. Seal again after that |
+| The open segment, the directory in `open/`, is missing | Copy it back from a copy of the archive and seal again. If no copy has it, `ossuary-fix chain --accept-loss` starts a new one after the last sealed segment; the claims recorded since the last seal are lost, so repeat the runs since then. Seal again after that |
+| A sealed segment outside the chain | `ossuary-fix chain` adds it to the chain; seal again after that |
 
 ```console
 $ ossuary seal
 archive /srv/archive
 checking every sealed segment against its hash
 claims: 311 sealed segment(s) and the open segment, 1304544 claim(s), 1 missing
-claims: segment 880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe is missing; segment 7922c85f074e31c04b15931157af38610b09d45cc346e1e686d964649b231ce0 names it as its predecessor. Copy it back into claims/ from a copy of the archive; if no copy has it, `ossuary-fix chain` closes the gap
-no seal made: a seal now would not cover what is listed above; seal again once that is resolved
+claims: segment 880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe is missing; copy it back into claims/ from a copy of the archive, or, if no copy has it, run `ossuary-fix chain --accept-loss`
+no seal made; repair what is listed above, then seal again
 ```
 
 The command exits non-zero and prints no id.
@@ -211,21 +212,21 @@ its own.
 ```console
 $ ossuary --archive /srv/archive seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
 archive /srv/archive
-step 1 of 3: the sealed segments, each one checked against its hash
-step 2 of 3: the 131204 file(s) the sealed claims refer to, each one read in full
-step 3 of 3: the record since the seal
-recorded since: 6311 claim(s) in 2 sealed segment(s) and the open segment; the seal does not cover them
-the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 holds: the record up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) and the 131204 file(s) it refers to are present and unchanged
+step 1 of 3: checking the sealed segments against their hashes
+step 2 of 3: reading the 131204 file(s) the sealed claims refer to
+step 3 of 3: reading the segments recorded since the seal
+recorded since the seal: 6311 claim(s) in 2 sealed segment(s) and the open segment, not covered by it
+seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 verified: the claims up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) and the 131204 file(s) they refer to are present and unchanged
 ```
 
-The last line is the verdict, and it names the time of the record it
-covers, because that is what it is about: the archive still holds what
-it held at that time. The line before it is what the archive recorded
-beyond the seal; the seal says nothing about that.
+The last line is the verdict, and it names the time of the last claim
+the seal covers, because that is what it is about: the archive still
+holds what it held at that time. The line before it is what the archive
+recorded after the seal; the seal says nothing about that.
 
 The check reads every file the seal covers, in full. On a large archive
 on a network share that takes a while, about as long as `ossuary audit`.
-The exit code is zero when the seal holds and non-zero otherwise.
+The exit code is zero when the seal is verified and non-zero otherwise.
 
 **A quick check** with `--fast` checks every sealed segment as before,
 but only looks for each file and does not read it. That takes a
@@ -234,8 +235,8 @@ changed. The verdict says so:
 
 ```console
 $ ossuary -q seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 --fast
-recorded since: 6311 claim(s) in 2 sealed segment(s) and the open segment; the seal does not cover them
-the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 holds as far as --fast checks: the record up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) is present and unchanged, and the 131204 file(s) it refers to are present; their contents were not read
+recorded since the seal: 6311 claim(s) in 2 sealed segment(s) and the open segment, not covered by it
+seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 verified as far as --fast checks: the claims up to 2026-10-22T02:15:07Z (312 sealed segment(s), 1308712 claim(s)) are present and unchanged, and the 131204 file(s) they refer to are present; their contents were not read
 ```
 
 **The id is checked only in full.** The first few characters of an id
@@ -250,32 +251,32 @@ $ ossuary --archive /mnt/restore/archive seal --check 1bbb4b0cc3a691061154ec0a22
 
 The archive's `FORMAT` file names the hash the id is made with, so
 nothing else is needed. An id checked against an archive that uses
-another hash names no segment there, and does not hold.
+another hash names no segment there, and is not verified.
 
-### When a seal does not hold
+### When a seal is not verified
 
 ```console
 $ ossuary -q seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
-1 sealed segment(s) gone:
+1 sealed segment(s) missing:
   880088be7f0533a23c4f7efe001bd2baa69640518c543bbca7910051c64228fe
-1 file(s) gone:
+1 file(s) missing:
   800a3760695414c4e2ff62055f94c7d7acf2ba441314e41d647f679878c81842
-the seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 does not hold: 2 finding(s) above; restore what is named from a backup of the archive, then check again
+seal 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 not verified: 2 finding(s) above; restore what is listed from a copy of the archive, then check again
 ```
 
-A finding is a sealed segment or a file that is gone, or whose content no
-longer matches its name, or that cannot be read. Up to five names are
+A finding is a sealed segment or a file that is missing, or whose
+content no longer matches its name, or that cannot be read. Up to five names are
 listed; `-v` lists all of them. Two questions follow from a finding:
 what happened, and how to get the files back. The second is answered by
 a backup of the archive. Restore the named files, check again, and the
-seal holds again. A file that is damaged in `content/` but has a sound
-copy in `derived/` is held unchanged; `ossuary maintain weed --repair`
-puts the sound copy back.
+seal is verified again. A file that is damaged in `content/` but has a
+sound copy in `derived/` counts as unchanged; `ossuary maintain weed
+--repair` puts the sound copy back.
 
-The check also finds a record that no longer leads to the seal:
+The check also finds a seal that is no longer part of the chain:
 
 ```
-the open segment no longer leads to the seal: the record was cut back to an earlier point, or begun anew, after the seal was made
+the seal is no longer part of the chain
 ```
 
 Everything the seal covers may still be there, but the record was cut
@@ -283,12 +284,12 @@ off after it: the segments recorded after the seal were removed, and the
 open segment was made to name an earlier one. Restore `claims/` and the
 open segment's directory from a backup made after the seal.
 
-If the archive does not hold the seal's segment at all, the check says
+If the archive does not have the seal's segment at all, the check says
 so:
 
 ```console
 $ ossuary -q seal --check 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776
-this archive holds no segment 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776, so the seal cannot be checked; it was removed, or the id belongs to another archive
+no segment 1bbb4b0cc3a691061154ec0a228cb409aa3266c5bb90a7182c9164b02e153776 in this archive, the seal cannot be checked; check that the id is from this archive, or restore claims/ from a copy of the archive
 ```
 
 That is a finding as well: either somebody removed the segment, or the
@@ -321,8 +322,9 @@ Verification: OK
 
 Keep the receipt (`seal.tsr`) and the service's certificates outside the
 archive, for the same reason as the id: the signature protects the
-receipt against being changed, not against being deleted. `seal` names
-the hash on stderr. For an archive in `sha384` or `sha512`, write
+receipt against being changed, not against being deleted. `seal
+--json` names the hash, and so does the archive's `FORMAT` file. For an
+archive in `sha384` or `sha512`, write
 `-sha384` or `-sha512`. `openssl` does not know `blake3`; for an archive
 in `blake3`, have a file holding the id timestamped instead: `printf
 '%s\n' "$id" > seal.txt` and `openssl ts -query -data seal.txt -sha256
@@ -358,7 +360,7 @@ compressed. In an archive whose `FORMAT` names `sha256`, that is
    compressed ends in `.zst` and is checked uncompressed.
 
 If every segment and every file is there and every checksum matches its
-name, the seal holds. [Reading an archive without
+name, the seal is verified. [Reading an archive without
 ossuary](recovery.md#checking-a-seal) does all of this in one script,
 and [the archive format](format.md#the-seal) is the exact description.
 
@@ -376,11 +378,12 @@ and [the archive format](format.md#the-seal) is the exact description.
   there is no list of seals to keep in the archive: the list is the ids
   you kept outside it.
 * **A lost open segment stops the archive.** While its directory is
-  missing, every command that records claims refuses to run until
-  `ossuary-fix chain --accept-loss` has begun a new one. The record
-  cannot start over unnoticed.
+  missing, every command that records claims refuses to run until it is
+  copied back from a copy of the archive or `ossuary-fix chain
+  --accept-loss` has started a new one. The record cannot start over
+  unnoticed.
 * **`ossuary-fix` breaks seals.** It is the one program that rewrites
   sealed segments, and a fix that does renames them. It says from which
-  time on seal ids no longer check. Seal again afterwards, and keep the
-  new id. `ossuary-fix rehash` makes a new archive under another hash,
-  whose seals are new as well.
+  time on seal ids no longer pass `ossuary seal --check`. Seal again
+  afterwards, and keep the new id. `ossuary-fix rehash` makes a new
+  archive under another hash, whose seals are new as well.
