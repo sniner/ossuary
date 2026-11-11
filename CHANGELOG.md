@@ -21,6 +21,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   recorded without angle brackets, and `in-reply-to` and `references` give one value per id. A
   value that cannot be read this way is not recorded and is reported with its message. To rewrite
   the values in an existing archive, run `ossuary-fix unextract` and then `ossuary extract`
+- **`ossuary extract` names the extractor on every line an extractor reports**, in front of the
+  file (`extractor:mail/1 on 04c2d2a6… (cron.eml): …`). Before, only the line that started the
+  pass named it
 
 ### Fixed
 

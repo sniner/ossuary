@@ -120,11 +120,11 @@ The order of the lines does not matter: the complete output is read
 before any of it is checked, so a finding about a file may come before
 the line that announces it. The extractor may write progress and error
 messages to stderr. The orchestrator passes every stderr line on to
-the user, prefixed with the examined file's name and digest (which the
-extractor does not know), and removes the program's name where a line
-begins with it. An extractor can therefore prefix its lines with its
-name for use by hand without the name appearing twice under
-`ossuary extract`. On a non-zero exit, the stderr output becomes the
+the user, prefixed with the extractor's source and the examined file's
+name and digest (which the extractor does not know), and removes the
+program's name where a line begins with it. An extractor can therefore
+prefix its lines with its name for use by hand without the name
+appearing twice under `ossuary extract`. On a non-zero exit, the stderr output becomes the
 reason given for the failed file.
 
 **Exit 0 means the examination happened**, with or without findings;
