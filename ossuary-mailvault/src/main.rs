@@ -527,7 +527,7 @@ mod tests {
         ])
         .unwrap();
 
-        run(cli).unwrap();
+        assert_eq!(run(cli).unwrap(), ExitCode::SUCCESS);
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), config::STARTER);
     }
