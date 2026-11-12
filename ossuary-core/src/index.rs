@@ -4787,6 +4787,41 @@ mod tests {
         assert_eq!(index.find(&terms, &[], Scope::Record).unwrap(), [subject()]);
     }
 
+    /// `docs/format.md` promises that the order of an object's members
+    /// does not matter. The index keeps a value as its JSON text, and
+    /// `serde_json` writes the members sorted only while no crate in the
+    /// build enables its `preserve_order` feature.
+    #[test]
+    fn the_order_of_an_objects_members_makes_no_second_value() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        for (text, time) in [
+            (
+                r#"{"latitude": 48.1, "longitude": 11.5}"#,
+                "2026-09-01T00:00:00Z",
+            ),
+            (
+                r#"{"longitude": 11.5, "latitude": 48.1}"#,
+                "2026-09-02T00:00:00Z",
+            ),
+        ] {
+            let value: Value = serde_json::from_str(text).unwrap();
+            log.append(&say(&subject(), "geo:position", value, time))
+                .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        let attribute = Attribute::parse("geo:position").unwrap();
+        assert_eq!(
+            index
+                .values(&subject(), &attribute, Scope::Held)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     #[test]
     fn under_answers_component_wise() {
         let dir = TempDir::new().unwrap();

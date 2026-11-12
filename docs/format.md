@@ -162,7 +162,11 @@ a file at an earlier time, for example in 2027.
 
 **Value.** A value may be any JSON type; `file:size` is a number, not a
 number in quotes. `null` is not a value, and a claim that is not a
-retraction always has one.
+retraction always has one. The order of an object's members does not
+matter: `{"latitude": 48.1, "longitude": 11.5}` and
+`{"longitude": 11.5, "latitude": 48.1}` are the same value. An object
+leaves out a member it has no value for instead of writing `null`; with
+`null`, it would be a different value from the one without the member.
 
 **Time** is when the claim was recorded, not when the thing it
 describes happened: `exif:date-time-original` above has a value from
