@@ -18,6 +18,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`ossuary-extract-image` records each keyword as a value of its own.** A repeated IPTC dataset
+  (`iptc:keywords`) and the items of an unordered XMP list (`xmp:dc-subject`) were recorded as one
+  list, and `find iptc:keywords=alps` found only images with no other keyword. The items of an
+  ordered XMP list (`xmp:dc-creator`) stay one list, in their order. To rewrite the values in an
+  existing archive, run `ossuary-fix unextract extractor:image-xmp extractor:image-iptc` and then
+  `ossuary extract`
 - **`ossuary-extract-mail` records header values in a form that can be searched.** `mail:date` is
   the time in UTC (`2026-03-10T13:22:05Z`), so `mail:date=2026-03-01..2026-04-01` finds the
   messages of March. Address headers give one value per address, with the address in lower case

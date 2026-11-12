@@ -5,12 +5,16 @@
 //! `Caption/Abstract` becomes `iptc:caption-abstract`, `By-line`
 //! `iptc:by-line`, `Date Created` stays `"20190714"`.
 //!
-//! A dataset said several times — keywords are — stands as a list. The
-//! text is read as UTF-8 where the record declares it (dataset 1:90) or
-//! where the bytes happen to be valid UTF-8, and as Latin-1 otherwise,
-//! which is what writers of the undeclared kind used. Datasets this
+//! A dataset that occurs several times, as keywords do, gives one
+//! finding per occurrence, so that each keyword can be found by itself;
+//! the same value given twice is recorded once. The text is read as
+//! UTF-8 where the record declares it (dataset 1:90) or where the bytes
+//! happen to be valid UTF-8, and as Latin-1 otherwise, which is what
+//! writers of the undeclared kind used. Datasets this
 //! program cannot name, and the binary ones, are left out: numbering
 //! them would freeze a guess.
+
+use std::collections::HashSet;
 
 use serde_json::{Value, json};
 
@@ -122,7 +126,8 @@ fn datasets(block: &[u8]) -> Vec<(String, Value)> {
     let utf8 = entries
         .iter()
         .any(|&(number, dataset, data)| number == 1 && dataset == 90 && data == b"\x1b%G");
-    let mut findings: Vec<(String, Vec<String>)> = Vec::new();
+    let mut findings = Vec::new();
+    let mut seen = HashSet::new();
     for (number, dataset, data) in entries {
         if number != 2 {
             continue;
@@ -141,23 +146,12 @@ fn datasets(block: &[u8]) -> Vec<(String, Value)> {
                 }
             })
             .collect::<String>();
-        if let Some((_, values)) = findings.iter_mut().find(|(known, _)| *known == attribute) {
-            values.push(text);
-        } else {
-            findings.push((attribute, vec![text]));
+        let attribute = format!("iptc:{attribute}");
+        if seen.insert((attribute.clone(), text.clone())) {
+            findings.push((attribute, json!(text)));
         }
     }
     findings
-        .into_iter()
-        .map(|(attribute, mut values)| {
-            let value = if values.len() == 1 {
-                json!(values.remove(0))
-            } else {
-                json!(values)
-            };
-            (format!("iptc:{attribute}"), value)
-        })
-        .collect()
 }
 
 /// One resource of a Photoshop image resource block, by its id: the
@@ -261,11 +255,12 @@ mod tests {
     }
 
     #[test]
-    fn datasets_come_out_by_name_and_repeat_as_a_list() {
+    fn datasets_come_out_by_name_and_a_repeated_one_once_per_value() {
         let record = record(&[
             (5, b"Alps at dawn"),
             (25, b"alps"),
             (25, b"summer"),
+            (25, b"alps"),
             (55, b"20190714"),
             (120, b"The Alps, seen from the south."),
             (116, b"(c) Someone"),
@@ -274,7 +269,8 @@ mod tests {
             datasets(&record),
             vec![
                 ("iptc:object-name".to_string(), json!("Alps at dawn")),
-                ("iptc:keywords".to_string(), json!(["alps", "summer"])),
+                ("iptc:keywords".to_string(), json!("alps")),
+                ("iptc:keywords".to_string(), json!("summer")),
                 ("iptc:date-created".to_string(), json!("20190714")),
                 (
                     "iptc:caption-abstract".to_string(),

@@ -8,12 +8,15 @@
 //! or unordered list of values (`rdf:Seq`, `rdf:Bag`), a choice of
 //! alternatives by language (`rdf:Alt`), or a structure of further
 //! properties, in any combination. This contract flattens it all into
-//! attributes: a list's items each stand as a value of the same
-//! attribute; of alternatives the default language (`x-default`) is
-//! taken, the first one where none is marked; a structure's fields join
-//! the path with a dash, so `Iptc4xmpExt:LocationCreated`'s
-//! `Iptc4xmpExt:City` stands as
-//! `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`. Values are
+//! attributes: each item of an unordered list (`rdf:Bag`) is a value of
+//! its own, so that every keyword in `dc:subject` can be found by
+//! itself; the items of an ordered list (`rdf:Seq`) are one value, a
+//! list in their order or a single item on its own, since the order is
+//! information (the first creator is the first author); of
+//! alternatives the default language (`x-default`) is taken, the first
+//! one where none is marked; a structure's fields join the path with a
+//! dash, so `Iptc4xmpExt:LocationCreated`'s `Iptc4xmpExt:City` stands
+//! as `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`. Values are
 //! the packet's text, untouched: `"5"` stays text, a date keeps its
 //! spelling.
 //!
@@ -22,6 +25,8 @@
 //! `dc` still lands on `xmp:dc-…`, since the namespace URI is what the
 //! two have in common. A namespace this program does not know keeps the
 //! prefix the packet declared for it.
+
+use std::collections::HashSet;
 
 use roxmltree::{Document, Node, NodeType};
 use serde_json::{Value, json};
@@ -76,8 +81,9 @@ const PREFIXES: &[(&str, &str)] = &[
     ("http://ns.adobe.com/xmp/sType/Area#", "stArea"),
 ];
 
-/// The findings of the XMP packets these bytes carry: one attribute
-/// per property, one value bare and several as a list.
+/// The findings of the XMP packets these bytes carry: a finding per
+/// item of an unordered list, and one per property otherwise, one value
+/// bare and several as a list.
 pub fn read(bytes: &[u8]) -> Vec<(String, Value)> {
     let mut findings = Findings::default();
     for packet in packets(bytes) {
@@ -146,30 +152,68 @@ fn packets(bytes: &[u8]) -> Vec<Vec<u8>> {
 
 /// Attributes in the order first met, each with every value said for it.
 #[derive(Default)]
-struct Findings(Vec<(String, Vec<String>)>);
+struct Findings {
+    attributes: Vec<(String, Values)>,
+    /// The items of unordered lists already added, by attribute.
+    seen: HashSet<(String, String)>,
+}
+
+/// The values of one attribute.
+#[derive(Default)]
+struct Values {
+    /// Items of unordered lists, each a finding of its own, without
+    /// repeats.
+    single: Vec<String>,
+    /// Every other value, one finding together: bare when there is one,
+    /// a list in order when there are several.
+    listed: Vec<String>,
+}
+
+/// Where a value stands: as an item of an unordered list (`rdf:Bag`),
+/// or anywhere else.
+#[derive(Clone, Copy)]
+enum Place {
+    Bag,
+    Other,
+}
 
 impl Findings {
-    fn add(&mut self, attribute: &str, value: &str) {
-        if let Some((_, values)) = self.0.iter_mut().find(|(name, _)| name == attribute) {
-            values.push(value.to_string());
-        } else {
-            self.0
-                .push((attribute.to_string(), vec![value.to_string()]));
+    fn add(&mut self, attribute: &str, value: &str, place: Place) {
+        let known = self
+            .attributes
+            .iter()
+            .position(|(name, _)| name == attribute);
+        let position = known.unwrap_or_else(|| {
+            self.attributes
+                .push((attribute.to_string(), Values::default()));
+            self.attributes.len() - 1
+        });
+        let values = &mut self.attributes[position].1;
+        match place {
+            Place::Bag => {
+                if self.seen.insert((attribute.to_string(), value.to_string())) {
+                    values.single.push(value.to_string());
+                }
+            }
+            Place::Other => values.listed.push(value.to_string()),
         }
     }
 
     fn into_findings(self, namespace: &str) -> Vec<(String, Value)> {
-        self.0
-            .into_iter()
-            .map(|(attribute, mut values)| {
-                let value = if values.len() == 1 {
-                    json!(values.remove(0))
-                } else {
-                    json!(values)
-                };
-                (format!("{namespace}:{attribute}"), value)
-            })
-            .collect()
+        let mut findings = Vec::new();
+        for (attribute, values) in self.attributes {
+            let attribute = format!("{namespace}:{attribute}");
+            for value in values.single {
+                findings.push((attribute.clone(), json!(value)));
+            }
+            let mut listed = values.listed;
+            match listed.len() {
+                0 => {}
+                1 => findings.push((attribute, json!(listed.remove(0)))),
+                _ => findings.push((attribute, json!(listed))),
+            }
+        }
+        findings
     }
 
     /// Every property of every `rdf:Description` directly under the
@@ -185,13 +229,14 @@ impl Findings {
                 && node.parent().is_some_and(|parent| is_rdf(&parent, "RDF"))
         });
         for description in descriptions {
-            self.properties(description, "");
+            self.properties(description, "", Place::Other);
         }
     }
 
     /// The fields of a structure: property attributes and property
-    /// elements, each under `path` extended by its own name.
-    fn properties(&mut self, node: Node, path: &str) {
+    /// elements, each under `path` extended by its own name. `place` is
+    /// where the structure stands.
+    fn properties(&mut self, node: Node, path: &str, place: Place) {
         for attribute in node.attributes() {
             let Some(namespace) = attribute.namespace() else {
                 continue;
@@ -202,7 +247,7 @@ impl Findings {
             let Some(name) = attribute_name(&node, path, namespace, attribute.name()) else {
                 continue;
             };
-            self.add(&name, attribute.value());
+            self.add(&name, attribute.value(), place);
         }
         for child in node.children().filter(Node::is_element) {
             let Some(namespace) = child.tag_name().namespace() else {
@@ -215,29 +260,37 @@ impl Findings {
             else {
                 continue;
             };
-            self.value(child, &name);
+            self.value(child, &name, place);
         }
     }
 
-    /// One property's value, whatever shape RDF gave it.
-    fn value(&mut self, node: Node, name: &str) {
+    /// One property's value, whatever shape RDF gave it. `place` is
+    /// where the property stands, and so where its value stands unless
+    /// the value is a list of its own.
+    fn value(&mut self, node: Node, name: &str, place: Place) {
         let elements: Vec<Node> = node.children().filter(Node::is_element).collect();
         if let Some(value) = elements.iter().find(|child| is_rdf(child, "value")) {
             // A qualified value: the value itself, its qualifiers aside.
-            self.value(*value, name);
+            self.value(*value, name, place);
             return;
         }
         if elements.is_empty() {
-            self.properties(node, name);
+            self.properties(node, name, place);
             if let Some(text) = node.text().map(str::trim).filter(|text| !text.is_empty()) {
-                self.add(name, text);
+                self.add(name, text, place);
             }
             return;
         }
         if let [container] = elements.as_slice() {
-            if is_rdf(container, "Bag") || is_rdf(container, "Seq") {
+            if is_rdf(container, "Bag") {
                 for item in container.children().filter(|item| is_rdf(item, "li")) {
-                    self.value(item, name);
+                    self.value(item, name, Place::Bag);
+                }
+                return;
+            }
+            if is_rdf(container, "Seq") {
+                for item in container.children().filter(|item| is_rdf(item, "li")) {
+                    self.value(item, name, Place::Other);
                 }
                 return;
             }
@@ -251,17 +304,17 @@ impl Findings {
                     .find(|item| item.attribute((XML, "lang")) == Some("x-default"))
                     .or(items.first());
                 if let Some(item) = default {
-                    self.value(*item, name);
+                    self.value(*item, name, place);
                 }
                 return;
             }
             if is_rdf(container, "Description") {
-                self.properties(*container, name);
+                self.properties(*container, name, place);
                 return;
             }
         }
         // A structure spelled inline, `rdf:parseType="Resource"` or not.
-        self.properties(node, name);
+        self.properties(node, name, place);
     }
 }
 
@@ -369,25 +422,56 @@ mod tests {
     }
 
     #[test]
-    fn a_bag_is_a_list_and_an_alt_is_its_default_language() {
+    fn a_bag_is_a_value_per_item_a_seq_one_list_and_an_alt_its_default_language() {
         let found = findings(
             r#"<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:subject><rdf:Bag><rdf:li>alps</rdf:li><rdf:li>summer</rdf:li></rdf:Bag></dc:subject>
+    <dc:subject><rdf:Bag>
+      <rdf:li>alps</rdf:li><rdf:li>summer</rdf:li><rdf:li>alps</rdf:li>
+    </rdf:Bag></dc:subject>
     <dc:title><rdf:Alt>
       <rdf:li xml:lang="en">The Alps</rdf:li>
       <rdf:li xml:lang="x-default">Die Alpen</rdf:li>
     </rdf:Alt></dc:title>
-    <dc:creator><rdf:Seq><rdf:li>Someone</rdf:li></rdf:Seq></dc:creator>
+    <dc:creator><rdf:Seq><rdf:li>First</rdf:li><rdf:li>Second</rdf:li></rdf:Seq></dc:creator>
+    <dc:contributor><rdf:Seq><rdf:li>Someone</rdf:li></rdf:Seq></dc:contributor>
    </rdf:Description>"#,
         );
         assert_eq!(
             found,
             vec![
-                ("xmp:dc-subject".to_string(), json!(["alps", "summer"])),
+                ("xmp:dc-subject".to_string(), json!("alps")),
+                ("xmp:dc-subject".to_string(), json!("summer")),
                 ("xmp:dc-title".to_string(), json!("Die Alpen")),
-                ("xmp:dc-creator".to_string(), json!("Someone")),
+                ("xmp:dc-creator".to_string(), json!(["First", "Second"])),
+                ("xmp:dc-contributor".to_string(), json!("Someone")),
             ],
-            "several as a list, one bare, the default language of the alternatives"
+            "each keyword once and by itself, the creators in their order, one bare, the default language of the alternatives"
+        );
+    }
+
+    #[test]
+    fn the_fields_of_structures_in_a_bag_are_values_of_their_own() {
+        let found = findings(
+            r#"<rdf:Description rdf:about=""
+      xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/">
+    <Iptc4xmpExt:LocationShown><rdf:Bag>
+      <rdf:li rdf:parseType="Resource"><Iptc4xmpExt:City>Wien</Iptc4xmpExt:City></rdf:li>
+      <rdf:li rdf:parseType="Resource"><Iptc4xmpExt:City>Graz</Iptc4xmpExt:City></rdf:li>
+    </rdf:Bag></Iptc4xmpExt:LocationShown>
+   </rdf:Description>"#,
+        );
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "xmp:iptc4xmp-ext-location-shown-iptc4xmp-ext-city".to_string(),
+                    json!("Wien")
+                ),
+                (
+                    "xmp:iptc4xmp-ext-location-shown-iptc4xmp-ext-city".to_string(),
+                    json!("Graz")
+                ),
+            ]
         );
     }
 

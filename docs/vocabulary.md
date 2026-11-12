@@ -280,18 +280,24 @@ added when it is first needed.
   becomes `xmp:photoshop-city`. The prefix is the one the XMP
   specification assigns to the namespace, whatever prefix the file
   declared; for a namespace the extractor does not know, the file's
-  prefix is used. Nested XMP is flattened: each item of a list
-  (`rdf:Bag`, `rdf:Seq`) is a value of the property; of language
-  alternatives (`rdf:Alt`), the default (`x-default`) is recorded, or
-  the first one if none is marked; a field of a structure is appended
-  to the name with a dash, so `Iptc4xmpExt:City` in
+  prefix is used. Nested XMP is flattened: each item of an unordered
+  list (`rdf:Bag`) is a value of its own, so `xmp:dc-subject` has one
+  value per keyword; the items of an ordered list (`rdf:Seq`) are one
+  value, a list in their order, as the authors in `xmp:dc-creator`; of
+  language alternatives (`rdf:Alt`), the default (`x-default`) is
+  recorded, or the first one if none is marked; a field of a structure
+  is appended to the name with a dash, so `Iptc4xmpExt:City` in
   `Iptc4xmpExt:LocationCreated` is recorded as
-  `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`; and for a
-  list of structures, the values of each field are collected on the
-  same attribute, in order
+  `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`. In a list of
+  structures, the fields are recorded like items of the list: in an
+  unordered list, each field's value is a value of its own; in an
+  ordered list, the values of each field are collected in one list, in
+  order
 - value: string, the packet's text unchanged (`"5"` and
-  `"2019-07-14T11:02:41+02:00"` as written); a single value on its own,
-  several as a list
+  `"2019-07-14T11:02:41+02:00"` as written). Values that are not items
+  of an unordered list are recorded together: a single value on its
+  own, several as a list. An item given twice in an unordered list is
+  recorded once
 - written by: ossuary-extract-image, under its `xmp` contract
 
 ### iptc:…
@@ -300,12 +306,13 @@ added when it is first needed.
   with the dataset's name in kebab case: `iptc:keywords`,
   `iptc:by-line`, `iptc:caption-abstract`, `iptc:copyright-notice`,
   `iptc:date-created`. A dataset that occurs several times in the
-  record, as keywords do, is recorded with every value. Datasets the
-  extractor has no name for, and binary datasets, are left out
+  record, as keywords do, is recorded as one value per occurrence, so
+  `iptc:keywords` has one value per keyword; the same text given twice
+  is one value. Datasets the extractor has no name for, and binary
+  datasets, are left out
 - value: string, the record's text: a date stays `"20190714"`. Decoded
   as UTF-8 where the record declares UTF-8 or the bytes are valid
-  UTF-8, as Latin-1 otherwise; a single value on its own, several as a
-  list
+  UTF-8, as Latin-1 otherwise
 - written by: ossuary-extract-image, under its `iptc` contract
 
 ### raster:width

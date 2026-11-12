@@ -54,9 +54,10 @@ schema prefix and the property name in kebab case, with the value as
 written in the packet:
 
 ```
-xmp:dc-subject = ["alps", "summer"]
+xmp:dc-subject = "alps"
+xmp:dc-subject = "summer"
 xmp:dc-title = "Die Alpen"
-xmp:dc-creator = "Someone"
+xmp:dc-creator = ["Someone", "Someone Else"]
 xmp:xmp-rating = "5"
 xmp:xmp-create-date = "2019-07-14T11:02:41+02:00"
 xmp:photoshop-city = "Wien"
@@ -65,15 +66,24 @@ xmp:xmp-mm-document-id = "xmp.did:0f3c2a1e-6b7d-4e58-9a10-5c2d8e7f4b21"
 
 Nested RDF structures are flattened:
 
-- A list (`rdf:Bag`, `rdf:Seq`) is recorded with each item as a value of
-  the property.
+- Each item of an unordered list (`rdf:Bag`) is a value of its own:
+  `xmp:dc-subject` has one value per keyword, and
+  `find xmp:dc-subject=alps` finds every image with that keyword. An
+  item given twice is recorded once.
+- The items of an ordered list (`rdf:Seq`) are one value, a list in
+  their order, since the order is part of the information: the first
+  entry of `xmp:dc-creator` is the first author
+  (`find xmp:dc-creator.0=Someone`). A list with one item is recorded
+  as that item, so `find xmp:dc-creator=Someone` finds a sole author.
 - Of language alternatives (`rdf:Alt`), the default language
   (`x-default`) is recorded, or the first entry if none is marked.
 - The fields of a structure are appended to the property name with a
   dash: the city of `Iptc4xmpExt:LocationCreated` becomes
   `xmp:iptc4xmp-ext-location-created-iptc4xmp-ext-city`. In a list of
-  structures, such as the edit history, each field collects the values
-  of all entries, in order.
+  structures, the fields are recorded like items of the list: in an
+  unordered list, each field's value is a value of its own; in an
+  ordered list, such as the edit history, each field collects the
+  values of all entries in one list, in order.
 
 Values are the packet's text: `"5"` is a string, and a date keeps its
 format.
@@ -95,14 +105,17 @@ files) under `iptc:`, with the dataset name in kebab case:
 
 ```
 iptc:object-name = "Squirrel"
-iptc:keywords = ["wildlife", "park"]
+iptc:keywords = "wildlife"
+iptc:keywords = "park"
 iptc:by-line = "Someone"
 iptc:city = "Kiel"
 iptc:date-created = "20060521"
 iptc:copyright-notice = "(c) 2006 by Someone"
 ```
 
-A repeated dataset, such as keywords, is recorded with all its values.
+A repeated dataset, such as keywords, is recorded as one value per
+occurrence, so `find iptc:keywords=park` finds every image with that
+keyword. The same text given twice is recorded once.
 Text is read as UTF-8 if the record declares UTF-8 or the bytes are
 valid UTF-8, and as Latin-1 otherwise. Datasets without a known name and
 binary datasets are not recorded.
