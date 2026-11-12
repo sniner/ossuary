@@ -114,9 +114,11 @@ A value that is an object or a list has parts: `attribute.key` is a
 member of an object, `attribute.N` the element at position N of a list,
 counted from 0. A part takes the same patterns as a value, and a value
 without the part does not match. All terms on parts of one attribute
-must match the same value: `find exif:gps-latitude.0=48/1
-exif:gps-latitude.1=8/1` finds latitudes of 48 degrees and 8 minutes,
-not a file with one latitude of 48 degrees and another of 8 minutes. A
+must match the same value: `find geo:position.latitude=48.1..48.2
+geo:position.longitude=11.5..11.6` finds the photos taken in that
+rectangle around Munich, not a photo with two positions of which one has
+the latitude and the other the longitude. `find
+geo:position.altitude=2000..` finds those taken at 2000 m or higher. A
 part is shown, and selects what is shown, like an attribute.
 `--missing` takes a part as well: the file has no value with that part.
 

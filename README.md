@@ -84,7 +84,7 @@ crate's README describes what it does and what it needs:
 | [`ossuary-mount`](ossuary-mount/README.md) | the archive as a read-only filesystem |
 | [`ossuary-mailvault`](ossuary-mailvault/README.md) | fetches whole mailboxes into the archive over IMAP or MS Graph |
 | [`ossuary-sync`](ossuary-sync/README.md) | copies the archive to a second place and keeps the copy up to date |
-| [`ossuary-extract-image`](ossuary-extract-image/README.md) | image metadata (EXIF, XMP, IPTC) and the pixel format (size, bit depth, color) |
+| [`ossuary-extract-image`](ossuary-extract-image/README.md) | image metadata (EXIF, XMP, IPTC), the GPS position and the pixel format (size, bit depth, color) |
 | [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a mail's headers, and its attachments and nested messages as files of their own |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip file's list of contents, or its unpacked files |
 | [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a PDF's text and document info, or its attachments; needs poppler's `pdftotext` |

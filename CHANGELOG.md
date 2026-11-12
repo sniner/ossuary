@@ -12,9 +12,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sources (`extractor:mail`), only the claims of these extractors are removed. Sealed segments are
   rewritten, so seal ids issued before no longer pass `ossuary seal --check`
 - **`ossuary find` searches parts of a value.** `attribute.key` is a member of an object,
-  `attribute.N` the element at position N of a list: `exif:gps-latitude.0=48/1`. A part takes the
-  same patterns as a value. All terms on parts of one attribute must match the same value. A part
-  can also be shown (`find file:name exif:gps-latitude.0`) and named in `--missing`
+  `attribute.N` the element at position N of a list: `geo:position.altitude=2000..`,
+  `exif:gps-latitude.0=48/1`. A part takes the same patterns as a value. All terms on parts of one
+  attribute must match the same value. A part can also be shown
+  (`find file:name geo:position.latitude`) and named in `--missing`
+- **`ossuary-extract-image` records where a photo was taken as `geo:position`**, computed from the
+  GPS fields of EXIF: latitude and longitude in decimal degrees on WGS 84, negative to the south
+  and west, and the altitude in metres. `find geo:position.latitude=48.1..48.2
+  geo:position.longitude=11.5..11.6` finds the photos taken in that rectangle. No position is
+  recorded when the receiver marked the measurement void or the map datum is not WGS 84; such
+  cases are reported. To add the positions to an existing archive, run
+  `ossuary-fix unextract extractor:image-exif` and then `ossuary extract`
 
 ### Changed
 

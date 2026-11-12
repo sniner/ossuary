@@ -350,9 +350,10 @@ enum Command {
     /// member of an object, attribute.N the element at position N of a
     /// list, counted from 0. A part takes the same patterns as a value.
     /// All terms on parts of one attribute must match the same value:
-    /// `find exif:gps-latitude.0=48/1 exif:gps-latitude.1=8/1` finds
-    /// latitudes of 48 degrees and 8 minutes. A part is shown, and
-    /// selects what is shown, like an attribute.
+    /// `find geo:position.latitude=48.1..48.2
+    /// geo:position.longitude=11.5..11.6` finds the positions in that
+    /// rectangle. A part is shown, and selects what is shown, like an
+    /// attribute.
     ///
     /// A name without a colon is a field of the claim: subject,
     /// attribute, value, time, source, run, retract. A field term

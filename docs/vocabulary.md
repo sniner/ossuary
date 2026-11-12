@@ -40,6 +40,14 @@ read in this form is not recorded. The original form is still in the
 file, which stays in the archive. The entry of each namespace below
 says which values are rewritten this way.
 
+**A value computed from several fields has a namespace of its own.** A
+format's namespace holds what the format contains. When an extractor
+computes a value from several fields, such as a position from the
+degrees, minutes, seconds and hemisphere in EXIF, it records the result
+under a namespace that names no format (`geo:`), in the same form
+whatever format it was read from. The fields stay under the format's
+namespace unchanged.
+
 **Extractors do not interpret.** Which value is "the creation date",
 when EXIF, a mail header and a PDF field each have one, is
 interpretation. Interpretation is query-time policy, and the mapping
@@ -78,6 +86,9 @@ its source.
 - `raster:` describes the pixel grid as the file's header states it, as
   read by `ossuary-extract-image`. The values are numbers to search by,
   each with one fixed meaning: a width is always in pixels
+- `geo:` holds a place on the earth in one form, whatever format states
+  it: `geo:position`, computed by `ossuary-extract-image` from the GPS
+  fields of EXIF. The fields themselves stay under `exif:`
 - `xmp:` holds XMP properties verbatim, as read by
   `ossuary-extract-image`, with the schema's prefix included in the
   name: `xmp:dc-subject`, `xmp:photoshop-city`
@@ -266,7 +277,8 @@ added when it is first needed.
   (`exif:date-time-original`, `exif:f-number`), and the value as the
   format stores it: `"2019:07:14 11:02:41"`, `"28/10"`. Values are never
   normalized here; which field is "the creation date" is a query-time
-  mapping
+  mapping. The same contract records the position the GPS fields give,
+  in decimal degrees, as [`geo:position`](#geoposition)
 - value: text as strings, numbers as numbers, rationals as
   `numerator/denominator`; a single value on its own, several as a list
 - written by: ossuary-extract-image, under its `exif` contract
@@ -353,6 +365,32 @@ added when it is first needed.
   the format names no model, as with a multiband TIFF
 - value: string, one of `gray`, `rgb`, `cmyk`, `indexed`
 - written by: ossuary-extract-image, under its `raster` contract
+
+### geo:position
+
+- meaning: where the content was made, as a point on the earth.
+  Latitude and longitude are in decimal degrees on WGS 84, negative to
+  the south and west; the altitude is in metres, negative below the
+  reference. From EXIF, latitude and longitude are computed from
+  `exif:gps-latitude` and `exif:gps-longitude` (degrees, minutes and
+  seconds) and the hemisphere in `exif:gps-latitude-ref` and
+  `exif:gps-longitude-ref`, the altitude from `exif:gps-altitude` and
+  the sign in `exif:gps-altitude-ref`, above the reference when that
+  field is missing, as EXIF specifies. EXIF does not reliably state
+  whether an altitude is measured from sea level or from the WGS 84
+  ellipsoid; the two differ by up to about 100 m. No position is
+  recorded when one of the fields for latitude and longitude is missing
+  or cannot be read, when `exif:gps-status` is `V` (the measurement is
+  void), or when `exif:gps-map-datum` names a datum other than WGS 84.
+  A position whose altitude cannot be read is recorded without it. The
+  extractor reports each of these cases
+- value: object with the numbers `latitude`, `longitude` and, when
+  known, `altitude`: `{"altitude": 519.5, "latitude": 48.137153,
+  "longitude": 11.576122}`. A member is searched as a part of the value:
+  `geo:position.latitude=48.1..48.2`
+- written by: ossuary-extract-image, under its `exif` contract, beside
+  the fields it is computed from. The claim's source thus names the
+  format a position was read from
 
 ### pdf:…
 

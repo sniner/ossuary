@@ -1,14 +1,15 @@
 # ossuary-extract-image
 
-Records the EXIF, XMP and IPTC metadata of an image, and its dimensions
-and pixel format as stated in the file header.
+Records the EXIF, XMP and IPTC metadata of an image, the position where
+it was taken, and its dimensions and pixel format as stated in the file
+header.
 
 An [extractor](../docs/extractors.md) for ossuary with four contracts. It
 reads an image from stdin and prints the results of one contract:
 
 | Contract | Records |
 |---|---|
-| `exif` | every EXIF field of the primary image |
+| `exif` | every EXIF field of the primary image, and the GPS position in decimal degrees |
 | `xmp` | every property of the XMP packet |
 | `iptc` | every dataset of the IPTC-IIM record |
 | `raster` | width, height, bit depth, alpha channel and colour model |
@@ -46,6 +47,44 @@ Not recorded:
 
 Supported types: `image/jpeg`, `image/tiff`, `image/png`, `image/webp`,
 `image/heif`, `image/heic`, `image/avif`.
+
+### The position
+
+Beside the fields, the `exif` contract records where the image was
+taken as `geo:position`, computed from the GPS fields:
+
+```
+geo:position = {"altitude": 519.5, "latitude": 48.13715277777778, "longitude": 11.576122222222223}
+```
+
+Latitude and longitude are in decimal degrees on WGS 84, negative to the
+south and west. The altitude is in metres, negative below the reference,
+and is left out when the file has none. The EXIF fields stay under
+`exif:` as they are (`exif:gps-latitude = ["48/1", "8/1", "1375/100"]`).
+
+A position is found by its parts, with ranges:
+
+```console
+$ ossuary find geo:position.latitude=48.1..48.2 geo:position.longitude=11.5..11.6
+$ ossuary find geo:position.altitude=2000..
+```
+
+The first command finds the images taken in a rectangle around Munich,
+the second those taken at 2000 m or higher.
+
+No position is recorded when a field for latitude or longitude is
+missing or cannot be read, when the GPS receiver marked the measurement
+void (`exif:gps-status` is `V`), or when the map datum is not WGS 84.
+A position whose altitude cannot be read is recorded without it. Each
+case is reported on stderr, for example:
+
+```
+ossuary-extract-image: geo:position not recorded, exif:gps-map-datum is not WGS 84: TOKYO
+```
+
+EXIF does not reliably state whether an altitude is measured from sea
+level or from the WGS 84 ellipsoid. The two differ by up to about 100 m.
+See [the vocabulary](../docs/vocabulary.md#geoposition).
 
 ## The `xmp` contract
 

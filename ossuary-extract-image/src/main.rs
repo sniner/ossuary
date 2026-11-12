@@ -10,7 +10,10 @@
 //!
 //! `exif` records what EXIF says in EXIF's own terms — tag names
 //! kebab-cased, values as the format spells them — and never
-//! normalizes; that is the vocabulary's query-time business. `xmp` does
+//! normalizes; that is the vocabulary's query-time business. Beside the
+//! fields it records the position their GPS fields give, in decimal
+//! degrees under `geo:position`: a namespace of its own, since the value
+//! is computed from several fields. `xmp` does
 //! the same for the XMP packet, the schema prefix folded into the name,
 //! and `iptc` for the IPTC-IIM record. `raster` records what the file's
 //! header says about its pixel grid — width, height, bits per channel,
@@ -23,6 +26,7 @@
 //! failure.
 
 mod format;
+mod geo;
 mod heif;
 mod iptc;
 mod raster;
@@ -133,16 +137,22 @@ fn examine(contract: Contract) -> ExitCode {
         eprintln!("ossuary-extract-image: reading stdin: {error}");
         return ExitCode::FAILURE;
     }
-    let findings = match contract {
+    let (findings, remarks) = match contract {
         Contract::Exif => extract(&bytes),
-        Contract::Xmp => xmp::read(&bytes),
-        Contract::Iptc => iptc::read(&bytes),
-        Contract::Raster => raster::read(&bytes)
-            .map(|raster| raster.findings())
-            .unwrap_or_default(),
+        Contract::Xmp => (xmp::read(&bytes), Vec::new()),
+        Contract::Iptc => (iptc::read(&bytes), Vec::new()),
+        Contract::Raster => (
+            raster::read(&bytes)
+                .map(|raster| raster.findings())
+                .unwrap_or_default(),
+            Vec::new(),
+        ),
     };
     for (attribute, value) in findings {
         println!("{}", json!({ "attribute": attribute, "value": value }));
+    }
+    for remark in remarks {
+        eprintln!("ossuary-extract-image: {remark}");
     }
     ExitCode::SUCCESS
 }
@@ -171,11 +181,13 @@ const LAYOUT: [exif::Tag; 10] = [
 /// rationals as `numerator/denominator`, one value bare and several as a
 /// list. Opaque byte blobs — `MakerNote` and kin — are not worth quoting,
 /// the file's own layout is no finding, and bytes without readable EXIF
-/// yield nothing at all: that, too, is an answer.
-fn extract(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
+/// yield nothing at all: that, too, is an answer. Beside the fields, the
+/// position the GPS fields give ([`geo`]), with the reports about GPS
+/// fields that could not be used for it.
+fn extract(bytes: &[u8]) -> (Vec<(String, serde_json::Value)>, Vec<String>) {
     let mut cursor = std::io::Cursor::new(bytes);
     let Ok(data) = exif::Reader::new().read_from_container(&mut cursor) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut findings = Vec::new();
     for field in data.fields() {
@@ -195,7 +207,9 @@ fn extract(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
             findings.push((format!("exif:{}", kebab(&field.tag.to_string())), value));
         }
     }
-    findings
+    let (position, remarks) = geo::read(&data);
+    findings.extend(position);
+    (findings, remarks)
 }
 
 /// A field's value in the format's own spelling — deliberately not the
@@ -300,7 +314,7 @@ mod tests {
 
     #[test]
     fn what_exif_says_comes_out_verbatim() {
-        let findings = extract(&sample());
+        let (findings, _) = extract(&sample());
         assert!(
             findings.contains(&(
                 "exif:date-time-original".to_string(),
@@ -326,11 +340,50 @@ mod tests {
         let mut buffer = std::io::Cursor::new(Vec::new());
         writer.write(&mut buffer, false).unwrap();
 
-        let findings = extract(&buffer.into_inner());
+        let (findings, _) = extract(&buffer.into_inner());
         assert!(
             findings.contains(&("exif:f-number".to_string(), json!("28/10"))),
             "the stored fraction, not a prettied decimal; got {findings:?}"
         );
+    }
+
+    #[test]
+    fn the_position_comes_with_the_gps_fields_and_its_reports_aside() {
+        let gps = |tag, value| Field {
+            tag,
+            ifd_num: In::PRIMARY,
+            value,
+        };
+        let degrees = |d| Value::Rational(vec![exif::Rational { num: d, denom: 1 }; 3]);
+        let mut writer = Writer::new();
+        let fields = [
+            gps(Tag::GPSLatitudeRef, Value::Ascii(vec![b"N".to_vec()])),
+            gps(Tag::GPSLatitude, degrees(1)),
+            gps(Tag::GPSLongitudeRef, Value::Ascii(vec![b"E".to_vec()])),
+            gps(Tag::GPSLongitude, degrees(2)),
+        ];
+        for field in &fields {
+            writer.push_field(field);
+        }
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        writer.write(&mut buffer, false).unwrap();
+        let bytes = buffer.into_inner();
+
+        let (findings, remarks) = extract(&bytes);
+        assert!(
+            findings.contains(&(
+                "exif:gps-latitude".to_string(),
+                json!(["1/1", "1/1", "1/1"])
+            )),
+            "the field as stored; got {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|(attribute, _)| attribute == "geo:position"),
+            "and the position beside it; got {findings:?}"
+        );
+        assert_eq!(remarks, Vec::<String>::new());
     }
 
     #[test]
@@ -346,7 +399,7 @@ mod tests {
             .unwrap();
         image.write_data(&[0u8; 4]).unwrap();
 
-        let findings = extract(&out.into_inner());
+        let (findings, _) = extract(&out.into_inner());
         assert!(
             findings.contains(&("exif:software".to_string(), json!("Example Scanner 1.0"))),
             "got {findings:?}"
@@ -368,7 +421,7 @@ mod tests {
 
     #[test]
     fn bytes_without_exif_are_an_empty_answer_not_an_error() {
-        assert_eq!(extract(b"plain words"), Vec::new());
-        assert_eq!(extract(&[]), Vec::new());
+        assert_eq!(extract(b"plain words"), (Vec::new(), Vec::new()));
+        assert_eq!(extract(&[]), (Vec::new(), Vec::new()));
     }
 }
