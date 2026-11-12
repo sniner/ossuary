@@ -11,6 +11,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other claim names. The next `ossuary extract` examines every file again. With one or more
   sources (`extractor:mail`), only the claims of these extractors are removed. Sealed segments are
   rewritten, so seal ids issued before no longer pass `ossuary seal --check`
+- **`ossuary find` searches parts of a value.** `attribute.key` is a member of an object,
+  `attribute.N` the element at position N of a list: `exif:gps-latitude.0=48/1`. A part takes the
+  same patterns as a value. All terms on parts of one attribute must match the same value. A part
+  can also be shown (`find file:name exif:gps-latitude.0`) and named in `--missing`
 
 ### Changed
 

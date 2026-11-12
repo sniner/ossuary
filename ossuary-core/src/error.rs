@@ -47,6 +47,13 @@ pub enum Error {
     )]
     Field(String),
 
+    /// The path after an attribute is not keys and list positions, each
+    /// after a dot.
+    #[error(
+        "not a part of a value: {0:?}; after the attribute, give a key in lower case or a list position, each after a dot, like geo:position.latitude or exif:gps-latitude.0"
+    )]
+    Part(String),
+
     /// A `retract` term asked for something other than true or false.
     #[error("invalid retract value {0:?}; use retract=true or retract=false")]
     Retract(String),

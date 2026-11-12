@@ -36,6 +36,7 @@ mod extract;
 mod index;
 mod ingest;
 mod log;
+mod part;
 mod retract;
 mod seal;
 mod weed;
@@ -64,6 +65,7 @@ pub use log::{
     Contents, GENERATION, Log, OLD_HEAD, Open, SEAL_AT, SEAL_AT_BYTES, Segment, WalkBack, Writable,
     old_open_dirs,
 };
+pub use part::Part;
 pub use retract::retract;
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,

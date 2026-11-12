@@ -64,6 +64,7 @@ use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, V
 use crate::error::{Error, Result};
 use crate::export::Placement;
 use crate::log::{Log, Open, sort_as_sealed};
+use crate::part::Part;
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
@@ -334,6 +335,9 @@ impl Field {
 pub enum Term {
     /// `attribute=pattern`.
     Attribute(Attribute, String),
+    /// `attribute.path=pattern`: a part of a value. All part terms on
+    /// the same attribute must match the same value.
+    Part(Part, String),
     /// `field=pattern`.
     Field(Field, String),
 }
@@ -1437,6 +1441,14 @@ impl Index {
     /// may be satisfied by two different values, where one `low..high`
     /// term speaks about a single value lying between.
     ///
+    /// A part term reads its pattern the same way against one part of a
+    /// value, in the part's JSON spelling; a value without that part does
+    /// not match. All part terms on one attribute must hold on the same
+    /// value: `geo:position.latitude=48.1..48.2` and
+    /// `geo:position.longitude=11.5..11.6` together find a position inside
+    /// both ranges, never the latitude of one position and the longitude
+    /// of another.
+    ///
     /// A field term speaks about the claim that carries a value — who
     /// wrote it, when, in which run — and holds for every attribute term
     /// at once: `run=X file:name=abc` is a name said in run X, and with
@@ -1448,7 +1460,8 @@ impl Index {
     /// term reaches it.
     ///
     /// Each entry of `missing` names an attribute the subject must lack;
-    /// ending in `:` it names a whole namespace. With no terms at all,
+    /// ending in `:` it names a whole namespace, and with a path a part
+    /// that none of the attribute's values has. With no terms at all,
     /// `missing` is asked of every subject the log speaks about.
     ///
     /// Under [`Scope::Present`] and [`Scope::Held`] only *standing*
@@ -1474,14 +1487,15 @@ impl Index {
             .iter()
             .filter_map(|term| match term {
                 Term::Attribute(attribute, pattern) => Some((attribute, pattern.as_str())),
-                Term::Field(..) => None,
+                Term::Part(..) | Term::Field(..) => None,
             })
             .collect();
+        let parts = parts_by_attribute(terms);
         let fields: Vec<(Field, &str)> = terms
             .iter()
             .filter_map(|term| match term {
                 Term::Field(field, pattern) => Some((*field, pattern.as_str())),
-                Term::Attribute(..) => None,
+                Term::Attribute(..) | Term::Part(..) => None,
             })
             .collect();
         // Under the standing scopes a row is a standing value with the
@@ -1503,16 +1517,18 @@ impl Index {
         }
         sql.push_str("SELECT digest FROM subjects WHERE id IN (");
         let mut params: Vec<Sql> = Vec::new();
-        if attributes.is_empty() {
+        if attributes.is_empty() && parts.is_empty() {
             let _ = write!(sql, "SELECT c.subject FROM {rows} WHERE 1");
             for (field, pattern) in &fields {
                 field_clause(&mut sql, &mut params, *field, pattern)?;
             }
         }
-        for (position, (attribute, pattern)) in attributes.iter().enumerate() {
-            if position > 0 {
+        let mut arms = 0;
+        for (attribute, pattern) in &attributes {
+            if arms > 0 {
                 sql.push_str(" INTERSECT ");
             }
+            arms += 1;
             let _ = write!(
                 sql,
                 "SELECT c.subject FROM {rows}
@@ -1520,6 +1536,16 @@ impl Index {
             );
             params.push(Sql::Text(attribute.as_str().to_string()));
             value_clause(&mut sql, &mut params, &format!("{row}.value"), pattern);
+            for (field, pattern) in &fields {
+                field_clause(&mut sql, &mut params, *field, pattern)?;
+            }
+        }
+        for (attribute, asked) in &parts {
+            if arms > 0 {
+                sql.push_str(" INTERSECT ");
+            }
+            arms += 1;
+            part_arm(&mut sql, &mut params, (rows, row), attribute, asked);
             for (field, pattern) in &fields {
                 field_clause(&mut sql, &mut params, *field, pattern)?;
             }
@@ -2206,6 +2232,56 @@ fn counted(count: i64) -> Result<u64> {
         .map_err(|_| Error::Index(rusqlite::Error::IntegralValueOutOfRange(0, count)))
 }
 
+/// The part terms among `terms`, gathered by attribute in the order
+/// first named: the part terms of one attribute are asked of one value.
+fn parts_by_attribute(terms: &[Term]) -> Vec<(&Attribute, Vec<(&Part, &str)>)> {
+    let mut parts: Vec<(&Attribute, Vec<(&Part, &str)>)> = Vec::new();
+    for term in terms {
+        if let Term::Part(part, pattern) = term {
+            let asked = (part, pattern.as_str());
+            match parts
+                .iter_mut()
+                .find(|(attribute, _)| *attribute == part.attribute())
+            {
+                Some((_, gathered)) => gathered.push(asked),
+                None => parts.push((part.attribute(), vec![asked])),
+            }
+        }
+    }
+    parts
+}
+
+/// One arm of a `find`, appended to `sql`: the subjects with a value of
+/// `attribute` that matches every part term in `asked`. `rows` is the
+/// row source of [`Index::find`] and `row` the alias of the row in it;
+/// the caller appends the field conditions.
+fn part_arm(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    (rows, row): (&str, &str),
+    attribute: &Attribute,
+    asked: &[(&Part, &str)],
+) {
+    use rusqlite::types::Value as Sql;
+    // The paths are bound once, as the columns of a one-row table:
+    // `value_clause` writes its column several times and binds only its
+    // own parameters.
+    let columns: Vec<String> = (0..asked.len()).map(|i| format!("? AS p{i}")).collect();
+    let _ = write!(
+        sql,
+        "SELECT c.subject FROM {rows} CROSS JOIN (SELECT {}) AS part
+         WHERE {row}.attribute = (SELECT id FROM attributes WHERE name = ?)",
+        columns.join(", ")
+    );
+    for (part, _) in asked {
+        params.push(Sql::Text(part.json_path()));
+    }
+    params.push(Sql::Text(attribute.as_str().to_string()));
+    for (i, (_, pattern)) in asked.iter().enumerate() {
+        value_clause(sql, params, &format!("({row}.value -> part.p{i})"), pattern);
+    }
+}
+
 /// The pattern of an attribute term, appended to `sql` as a condition
 /// on `column`, a value in the log's JSON spelling: literal in quotes,
 /// glob, range, or exact.
@@ -2419,6 +2495,19 @@ fn lacking(
     use rusqlite::types::Value as Sql;
     let text = |s: &str| Sql::Text(s.to_string());
     for absent in missing {
+        if !absent.ends_with(':') && absent.contains('.') {
+            // A part is missing when no value of the attribute has it.
+            let part = Part::parse(absent)?;
+            let _ = write!(
+                sql,
+                " EXCEPT SELECT subject FROM {rows} CROSS JOIN (SELECT ? AS path) AS part
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = ?)
+                    AND (value -> part.path) IS NOT NULL"
+            );
+            params.push(text(&part.json_path()));
+            params.push(text(part.attribute().as_str()));
+            continue;
+        }
         let _ = write!(
             sql,
             " EXCEPT SELECT subject FROM {rows} WHERE attribute IN (SELECT id FROM attributes WHERE "
@@ -4416,6 +4505,286 @@ mod tests {
             [subject()],
             "the presence question, --missing turned around"
         );
+    }
+
+    fn part(part: &str, pattern: &str) -> Term {
+        Term::Part(Part::parse(part).unwrap(), pattern.to_string())
+    }
+
+    #[test]
+    fn part_terms_on_one_attribute_match_one_value() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        // Munich's latitude with Berlin's longitude, and the other way
+        // round: each half lies in a box around Munich, no position does.
+        let crossed =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let when = "2026-09-01T00:00:00Z";
+        let position =
+            |latitude: f64, longitude: f64| json!({"latitude": latitude, "longitude": longitude});
+        log.append(&say(
+            &subject(),
+            "geo:position",
+            position(48.137_154, 11.576_124),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &crossed,
+            "geo:position",
+            position(48.137_154, 13.404_954),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &crossed,
+            "geo:position",
+            position(52.520_008, 11.576_124),
+            when,
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(
+                    &[
+                        part("geo:position.latitude", "48.1..48.2"),
+                        part("geo:position.longitude", "11.5..11.6"),
+                    ],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            [subject()],
+            "both ranges must hold on the same position"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[part("geo:position.latitude", "48.1..48.2")],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            [crossed.clone(), subject()],
+            "one part term: any position with that latitude"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[
+                        part("geo:position.latitude", "48.1..48.2"),
+                        term("geo:position", ".."),
+                    ],
+                    &[],
+                    Scope::Held
+                )
+                .unwrap(),
+            [crossed, subject()],
+            "a term on the whole value is asked on its own"
+        );
+    }
+
+    #[test]
+    fn a_part_term_reads_its_pattern_like_a_value_term() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let unranked =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let when = "2026-09-01T00:00:00Z";
+        log.append(&say(
+            &subject(),
+            "test:city",
+            json!({"name": "Zürich", "rank": 7, "codes": ["ZH", "8001"]}),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(&unranked, "test:city", json!({"name": "Bern"}), when))
+            .unwrap();
+        index.fold(&log).unwrap();
+        let found = |name: &str, pattern: &str| {
+            index
+                .find(&[part(name, pattern)], &[], Scope::Held)
+                .unwrap()
+        };
+
+        assert_eq!(found("test:city.name", "Z*"), [subject()], "glob");
+        assert_eq!(
+            found("test:city.name", "\"Zürich\""),
+            [subject()],
+            "literal"
+        );
+        assert_eq!(
+            found("test:city.name", "Bern"),
+            std::slice::from_ref(&unranked),
+            "exact text"
+        );
+        assert_eq!(found("test:city.name", "A..C"), [unranked], "text range");
+        assert_eq!(found("test:city.rank", "7"), [subject()], "exact number");
+        assert_eq!(
+            found("test:city.rank", "1..10"),
+            [subject()],
+            "numeric range"
+        );
+        assert_eq!(
+            found("test:city.rank", ".."),
+            [subject()],
+            "the part is there"
+        );
+        assert_eq!(
+            found("test:city.codes.0", "ZH"),
+            [subject()],
+            "a list position"
+        );
+        assert_eq!(
+            found("test:city.codes.2", ".."),
+            [],
+            "past the end of the list"
+        );
+        assert_eq!(
+            found("test:city.name.0", ".."),
+            [],
+            "a position asked of text"
+        );
+    }
+
+    #[test]
+    fn a_missing_part_is_one_no_value_has() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let flat =
+            Subject::parse("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let unplaced =
+            Subject::parse("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
+        let when = "2026-09-01T00:00:00Z";
+        log.append(&say(
+            &subject(),
+            "geo:position",
+            json!({"latitude": 48.1, "longitude": 11.5, "altitude": 519}),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &subject(),
+            "geo:position",
+            json!({"latitude": 48.2, "longitude": 11.6}),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(
+            &flat,
+            "geo:position",
+            json!({"latitude": 48.1, "longitude": 11.5}),
+            when,
+        ))
+        .unwrap();
+        log.append(&say(&unplaced, "file:mime", json!("image/jpeg"), when))
+            .unwrap();
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index
+                .find(&[], &["geo:position.altitude".to_string()], Scope::Held)
+                .unwrap(),
+            [flat.clone(), unplaced],
+            "one position with an altitude is enough to have it"
+        );
+        assert_eq!(
+            index
+                .find(
+                    &[term("geo:position", "..")],
+                    &["geo:position.altitude".to_string()],
+                    Scope::Held
+                )
+                .unwrap(),
+            [flat]
+        );
+        let error = index
+            .find(&[], &["geo:position.Altitude".to_string()], Scope::Held)
+            .unwrap_err();
+        assert!(matches!(error, Error::Part(given) if given == "geo:position.Altitude"));
+    }
+
+    #[test]
+    fn a_field_term_asks_about_the_claim_of_the_value_the_parts_match() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let when = "2026-09-01T00:00:00Z";
+        log.append(&said_in(
+            &subject(),
+            "geo:position",
+            json!({"latitude": 48.1, "longitude": 11.5}),
+            when,
+            &run_x('a'),
+        ))
+        .unwrap();
+        log.append(&said_in(
+            &subject(),
+            "geo:position",
+            json!({"latitude": 52.5, "longitude": 13.4}),
+            when,
+            &run_x('b'),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        let found = |run: char| {
+            index
+                .find(
+                    &[
+                        part("geo:position.latitude", "..50"),
+                        field(Field::Run, run_x(run).as_str()),
+                    ],
+                    &[],
+                    Scope::Held,
+                )
+                .unwrap()
+        };
+
+        assert_eq!(found('a'), [subject()]);
+        assert_eq!(
+            found('b'),
+            [],
+            "run b recorded only the position further north"
+        );
+    }
+
+    #[test]
+    fn a_retracted_value_has_its_parts_found_in_the_record_only() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let position = json!({"latitude": 48.1, "longitude": 11.5});
+        log.append(&say(
+            &subject(),
+            "geo:position",
+            position.clone(),
+            "2026-09-01T00:00:00Z",
+        ))
+        .unwrap();
+        log.append(&unsay(
+            &log,
+            &subject(),
+            "geo:position",
+            Some(&position),
+            "2026-09-02T00:00:00Z",
+            "user",
+            run_x('a'),
+        ))
+        .unwrap();
+        index.fold(&log).unwrap();
+        let terms = [part("geo:position.latitude", "48.1")];
+
+        assert_eq!(index.find(&terms, &[], Scope::Held).unwrap(), []);
+        assert_eq!(index.find(&terms, &[], Scope::Record).unwrap(), [subject()]);
     }
 
     #[test]

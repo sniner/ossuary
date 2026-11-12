@@ -110,6 +110,16 @@ literal, without wildcards or range. `--missing exif:` inverts the
 query: files without EXIF data. Only standing values are searched;
 retracted values are ignored.
 
+A value that is an object or a list has parts: `attribute.key` is a
+member of an object, `attribute.N` the element at position N of a list,
+counted from 0. A part takes the same patterns as a value, and a value
+without the part does not match. All terms on parts of one attribute
+must match the same value: `find exif:gps-latitude.0=48/1
+exif:gps-latitude.1=8/1` finds latitudes of 48 degrees and 8 minutes,
+not a file with one latitude of 48 degrees and another of 8 minutes. A
+part is shown, and selects what is shown, like an attribute.
+`--missing` takes a part as well: the file has no value with that part.
+
 A name without a colon is a field of the claim: `subject`, `attribute`,
 `value`, `time`, `source`, `run`, `retract`. A field term applies to the
 claims behind all attribute terms: `find run=RUN file:name` lists the

@@ -3,6 +3,7 @@
 //! Thin on purpose: parsing, wording and exit codes live here, and nothing
 //! else does — every decision about the archive itself is `ossuary-core`'s.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,8 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
 use ossuary_core::{
-    Algorithm, Archive, Attribute, Digest, Error, Field, Index, Scope, Subject, Sweep, Term, Value,
+    Algorithm, Archive, Attribute, Digest, Error, Field, Index, Part, Scope, Subject, Sweep, Term,
+    Value,
 };
 
 use crate::output::{errln, outln, say};
@@ -344,6 +346,14 @@ enum Command {
     /// file:mime=image/jpeg --missing exif:` finds photos without EXIF
     /// data. Only standing values are searched.
     ///
+    /// A value that is an object or a list has parts: attribute.key is a
+    /// member of an object, attribute.N the element at position N of a
+    /// list, counted from 0. A part takes the same patterns as a value.
+    /// All terms on parts of one attribute must match the same value:
+    /// `find exif:gps-latitude.0=48/1 exif:gps-latitude.1=8/1` finds
+    /// latitudes of 48 degrees and 8 minutes. A part is shown, and
+    /// selects what is shown, like an attribute.
+    ///
     /// A name without a colon is a field of the claim: subject,
     /// attribute, value, time, source, run, retract. A field term
     /// applies to the claims of all attribute terms: `find run=RUN
@@ -382,13 +392,15 @@ enum Command {
     /// --all, a shown value may no longer be standing; `about` shows
     /// which.
     Find {
-        /// attribute=value or field=value; all terms must match. A bare
-        /// attribute, namespace: or field selects what is shown
+        /// attribute=value, attribute.part=value or field=value; all terms
+        /// must match. A bare attribute, part, namespace: or field selects
+        /// what is shown
         #[arg(value_name = "TERM")]
         terms: Vec<String>,
 
         /// Only files without this attribute (or, ending in `:`, without
-        /// any attribute of this namespace); may be repeated
+        /// any attribute of this namespace; with a part, without a value
+        /// that has the part); may be repeated
         #[arg(long, value_name = "ATTRIBUTE")]
         missing: Vec<String>,
 
@@ -1580,13 +1592,15 @@ fn grouped(rows: Vec<(Attribute, Value)>) -> Vec<(String, Vec<Value>)> {
     shown
 }
 
-/// One thing a `find` match shows: an attribute, a whole namespace, or
-/// a field of the claims. The question is the projection — the filters
-/// show themselves until a bare name stands among the terms; then
-/// explicit beats implicit, and only the bare ones show.
+/// One thing a `find` match shows: an attribute, a part of its values,
+/// a whole namespace, or a field of the claims. The question is the
+/// projection — the filters show themselves until a bare name stands
+/// among the terms; then explicit beats implicit, and only the bare
+/// ones show.
 #[derive(Debug, Clone, PartialEq)]
 enum Projection {
     Attribute(Attribute),
+    Part(Part),
     Namespace(String),
     Field(Field),
 }
@@ -1606,7 +1620,11 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Term>, Vec<Projectio
     };
     for word in terms {
         if let Some((name, value)) = word.split_once('=') {
-            if name.contains(':') {
+            if name.contains(':') && name.contains('.') {
+                let part = Part::parse(name)?;
+                remember(Projection::Part(part.clone()), &mut implied);
+                filters.push(Term::Part(part, value.to_string()));
+            } else if name.contains(':') {
                 let attribute = Attribute::parse(name)?;
                 remember(Projection::Attribute(attribute.clone()), &mut implied);
                 filters.push(Term::Attribute(attribute, value.to_string()));
@@ -1628,13 +1646,17 @@ fn question(terms: &[String], id_only: bool) -> Result<(Vec<Term>, Vec<Projectio
             }
             remember(Projection::Namespace(namespace.to_string()), &mut asked);
         } else if word.contains(':') {
-            let attribute = Attribute::parse(word)?;
+            let projection = if word.contains('.') {
+                Projection::Part(Part::parse(word)?)
+            } else {
+                Projection::Attribute(Attribute::parse(word)?)
+            };
             if id_only {
                 return Err(anyhow!(
                     "{word:?} selects what to show, and --id prints only names; drop one of them"
                 ));
             }
-            remember(Projection::Attribute(attribute), &mut asked);
+            remember(projection, &mut asked);
         } else {
             let field = Field::parse(word)?;
             if id_only {
@@ -2064,6 +2086,15 @@ fn gather(
                     shown.push((attribute.as_str().to_string(), values));
                 }
             }
+            Projection::Part(part) => {
+                if shown.iter().any(|(known, _)| known == part.as_str()) {
+                    continue;
+                }
+                let values = parts_of(part, &index.values(subject, part.attribute(), scope)?);
+                if !values.is_empty() {
+                    shown.push((part.as_str().to_string(), values));
+                }
+            }
             Projection::Namespace(namespace) => {
                 // An attribute an earlier projection already shows would
                 // repeat its whole set — its namespace rows are skipped.
@@ -2093,6 +2124,18 @@ fn gather(
         }
     }
     Ok(shown)
+}
+
+/// The part of each value that has it. Two values may have the same
+/// part, as two positions may have the same latitude; it is shown once.
+fn parts_of(part: &Part, values: &[Value]) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    values
+        .iter()
+        .filter_map(|value| part.of(value))
+        .filter(|found| seen.insert(found.to_string()))
+        .cloned()
+        .collect()
 }
 
 /// The name shortened the way git shortens a hash: the shortest prefix,
@@ -2325,6 +2368,60 @@ mod tests {
             [Projection::Attribute(
                 Attribute::parse("file:name").unwrap()
             )]
+        );
+    }
+    #[test]
+    fn a_dot_after_the_attribute_names_a_part() {
+        let latitude = Part::parse("geo:position.latitude").unwrap();
+        let (filters, projections) = question(
+            &words(&["geo:position.latitude=48.1..48.2", "user:tag=crete"]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            filters,
+            [
+                Term::Part(latitude.clone(), "48.1..48.2".to_string()),
+                Term::Attribute(Attribute::parse("user:tag").unwrap(), "crete".to_string()),
+            ]
+        );
+        assert_eq!(
+            projections,
+            [
+                Projection::Part(latitude.clone()),
+                Projection::Attribute(Attribute::parse("user:tag").unwrap()),
+            ],
+            "a part term shows its part"
+        );
+        let (filters, projections) =
+            question(&words(&["user:tag=crete", "geo:position.latitude"]), false).unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(
+            projections,
+            [Projection::Part(latitude)],
+            "a bare part shows the part"
+        );
+        let error = question(&words(&["geo:position.Latitude=1"]), false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with(r#"not a part of a value: "geo:position.Latitude""#),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_part_shared_by_two_values_is_shown_once() {
+        let latitude = Part::parse("geo:position.latitude").unwrap();
+        let values = [
+            serde_json::json!({"latitude": 48.1, "longitude": 11.5}),
+            serde_json::json!({"latitude": 48.1, "longitude": 11.6}),
+            serde_json::json!({"latitude": 52.5, "longitude": 13.4}),
+            serde_json::json!({"longitude": 9.9}),
+        ];
+        assert_eq!(
+            parts_of(&latitude, &values),
+            [serde_json::json!(48.1), serde_json::json!(52.5)]
         );
     }
 }
