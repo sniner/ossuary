@@ -33,8 +33,10 @@ they were.
 
 - **Date**: in UTC, in the form `2026-03-10T13:22:05Z`, so that
   `find mail:date=2026-03-01..2026-04-01` finds the messages of March.
-  A date without a time zone stays local time and is written without
-  one (`2026-03-10T14:22:05`).
+  A date without a time zone, or with one that cannot be read, stays
+  local time and is written without a zone (`2026-03-10T14:22:05`). The
+  form that asctime and date(1) write (`Fri Apr 27 19:41:26 CEST 2007`)
+  is read as well.
 - **Addresses** (`from`, `sender`, `reply-to`, `to`, `cc`, `bcc`): one
   value per address, with the name if there is one. The address is
   written in lower case. `find 'mail:to=*<erika@example.org>'` finds

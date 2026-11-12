@@ -420,9 +420,12 @@ added when it is first needed.
   - `mail:date`: the time in RFC 3339, in UTC
     (`"2026-09-04T10:34:56Z"` for `Fri, 4 Sep 2026 12:34:56 +0200`), so
     that comparing two values as text compares them in time. A date
-    without a zone, or with a zone name that is unknown or stands for
-    more than one zone (`IST`), is written as local time without a zone
-    (`"2026-09-04T12:34:56"`). A missing second is written as `00`
+    without a zone, or with a zone that cannot be read, is written as
+    local time without a zone (`"2026-09-04T12:34:56"`): a zone name
+    that is unknown or stands for more than one zone (`IST`), or an
+    offset that is not one (`+0-200`, `-800`). A missing second is
+    written as `00`. Besides the form of RFC 5322, the form that
+    asctime and date(1) write is read (`Fri Apr 27 19:41:26 CEST 2007`)
   - `mail:from`, `sender`, `reply-to`, `to`, `cc`, `bcc`: one claim per
     address, `"Erika Muster <erika@example.org>"`, or
     `"<erika@example.org>"` for an address without a name. The address

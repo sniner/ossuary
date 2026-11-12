@@ -2,8 +2,13 @@
 //!
 //! A date with a zone is written in UTC with `Z`, because only then does
 //! a text comparison of two values agree with their order in time. A
-//! date without a zone, or with a zone name that is not known, is written
-//! as local time without a suffix: the zone is not invented.
+//! date without a zone, or with a zone that cannot be read (a name that
+//! is not known, an offset that is not one), is written as local time
+//! without a suffix: the zone is not invented.
+//!
+//! Besides the form of RFC 5322, the form of asctime(3) and date(1) is
+//! read, which some programs write into the header:
+//! `Fri Apr 27 19:41:26 CEST 2007`.
 //!
 //! mail-parser's own date parser is not used. It reads an unknown zone
 //! name as `+0000`, rejects a time without seconds, which RFC 5322
@@ -11,8 +16,8 @@
 
 /// The value of a `Date:` header as RFC 3339, or `None` when it is not a
 /// date: `2026-09-04T10:34:56Z` from `Fri, 4 Sep 2026 12:34:56 +0200`,
-/// `2026-09-04T12:34:56` from the same without a zone. A missing second
-/// is written as `00`.
+/// `2026-09-04T12:34:56` from the same without a zone or with `+0-200`.
+/// A missing second is written as `00`.
 pub fn rfc3339(text: &str) -> Option<String> {
     let text = without_comments(text);
     let mut tokens = text
@@ -27,15 +32,26 @@ pub fn rfc3339(text: &str) -> Option<String> {
     {
         tokens.next();
     }
-    let day: u32 = number(tokens.next()?, 1, 2)?;
-    let month = month(tokens.next()?)?;
-    let year = year(tokens.next()?)?;
-    let (hour, minute, second) = time(tokens.next()?)?;
-    let offset = match tokens.next().map(zone) {
-        None | Some(Zone::Unknown) => None,
-        Some(Zone::Offset(minutes)) => Some(minutes),
-        Some(Zone::Invalid) => return None,
+    let first = tokens.next()?;
+    let (day, month, year, (hour, minute, second), zone_token) = if let Some(month) = month(first) {
+        // asctime(3) and date(1): month, day, time, the zone where date(1)
+        // writes one, year.
+        let day: u32 = number(tokens.next()?, 1, 2)?;
+        let time = time(tokens.next()?)?;
+        let after = tokens.next()?;
+        let (zone, year) = match year(after) {
+            Some(year) => (None, year),
+            None => (Some(after), year(tokens.next()?)?),
+        };
+        (day, month, year, time, zone)
+    } else {
+        let day: u32 = number(first, 1, 2)?;
+        let month = month(tokens.next()?)?;
+        let year = year(tokens.next()?)?;
+        let time = time(tokens.next()?)?;
+        (day, month, year, time, tokens.next())
     };
+    let offset = zone_token.and_then(zone);
     if day > days_in_month(year, month) || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
@@ -144,34 +160,26 @@ fn time(token: &str) -> Option<(u32, u32, u32)> {
     parts.next().is_none().then_some((hour, minute, second))
 }
 
-/// What the token after the time says about the zone.
-enum Zone {
-    /// Minutes east of UTC.
-    Offset(i32),
-    /// No zone this reader knows: the time stays without a zone.
-    Unknown,
-    /// A numeric zone that is not one: the date is unreadable.
-    Invalid,
-}
-
-fn zone(token: &str) -> Zone {
+/// The zone as minutes east of UTC, or `None` when the token names no
+/// zone this reader knows: then the time stays without a zone. An offset
+/// is `+hhmm` or `+hh:mm` up to 23:59; anything else in its place (`-800`,
+/// `+0-200`, `+9752`) is no offset.
+fn zone(token: &str) -> Option<i32> {
     let Some(digits) = token.strip_prefix(['+', '-']) else {
-        return named_zone(token).map_or(Zone::Unknown, Zone::Offset);
+        return named_zone(token);
     };
     let digits = digits.replacen(':', "", 1);
-    let hours: Option<i32> = digits.get(..2).and_then(|part| number(part, 2, 2));
-    let minutes: Option<i32> = digits.get(2..).and_then(|part| number(part, 2, 2));
-    match (hours, minutes) {
-        (Some(hours), Some(minutes)) if minutes <= 59 => {
-            let offset = hours * 60 + minutes;
-            Zone::Offset(if token.starts_with('-') {
-                -offset
-            } else {
-                offset
-            })
-        }
-        _ => Zone::Invalid,
+    let hours: i32 = digits.get(..2).and_then(|part| number(part, 2, 2))?;
+    let minutes: i32 = digits.get(2..).and_then(|part| number(part, 2, 2))?;
+    if hours > 23 || minutes > 59 {
+        return None;
     }
+    let offset = hours * 60 + minutes;
+    Some(if token.starts_with('-') {
+        -offset
+    } else {
+        offset
+    })
 }
 
 /// The zones RFC 5322 names (3.3 and 4.3), and the unambiguous names of
@@ -338,6 +346,48 @@ mod tests {
     }
 
     #[test]
+    fn a_zone_that_cannot_be_read_leaves_the_time_without_one() {
+        for zone in [
+            "+0260", "+02", "+2400", "+9752", "+0-200", "-0-200", "+-100", "-800", "-00",
+        ] {
+            assert_eq!(
+                read(&format!("Fri, 4 Sep 2026 12:34:56 {zone}")).as_deref(),
+                Some("2026-09-04T12:34:56"),
+                "{zone:?}"
+            );
+        }
+        assert_eq!(
+            read("Fri, 4 Sep 2026 12:34:56 +2359").as_deref(),
+            Some("2026-09-03T12:35:56Z"),
+            "the largest offset"
+        );
+    }
+
+    #[test]
+    fn the_form_of_asctime_and_date_is_read() {
+        assert_eq!(
+            read("Wed Aug  2 02:09:56 2000").as_deref(),
+            Some("2000-08-02T02:09:56"),
+            "asctime(3) has no zone"
+        );
+        assert_eq!(
+            read("Fri Apr 27 19:41:26 CEST 2007").as_deref(),
+            Some("2007-04-27T17:41:26Z"),
+            "date(1) writes the zone before the year"
+        );
+        assert_eq!(
+            read("Tue May 02 18:27:55 PDT 2000").as_deref(),
+            Some("2000-05-03T01:27:55Z")
+        );
+        assert_eq!(
+            read("Fri Apr 27 19:41:26 XYZ 2007").as_deref(),
+            Some("2007-04-27T19:41:26"),
+            "a zone name that is not known"
+        );
+        assert_eq!(read("Fri Apr 31 19:41:26 2007"), None, "no 31 April");
+    }
+
+    #[test]
     fn the_obsolete_forms_of_rfc_5322_are_read() {
         assert_eq!(
             read("4 Sep 97 12:34 EST").as_deref(),
@@ -370,12 +420,12 @@ mod tests {
             "Thu, 29 Feb 2026 12:34:56 +0200",
             "Fri, 4 Sep 2026 24:00:00 +0200",
             "Fri, 4 Sep 2026 12:61:00 +0200",
-            "Fri, 4 Sep 2026 12:34:56 +0260",
-            "Fri, 4 Sep 2026 12:34:56 +02",
             "Fri, 4 Okt 2026 12:34:56 +0200",
             "Fri, 4 Sep 1880 12:34:56 +0200",
             "Fri, 4 Sep 2026",
             "2026-09-04 12:34:56",
+            "Sun, Feb 17 2002 09:16:22 -0800",
+            "Fri Apr 27 2007",
         ] {
             assert_eq!(read(text), None, "{text:?}");
         }
