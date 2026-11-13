@@ -1,34 +1,33 @@
-//! The mail extractor: an internet message in, its own voice out — and
-//! what it carries handed over as files of their own.
+//! The mail extractor: three contracts in one program.
 //!
-//! Speaks the ossuary extractor protocol (`docs/extractors.md`): called
-//! with `--identify` it says who it is, that it reads `message/rfc822`,
-//! `message/global` and `text/plain`, and that it derives files; called with an output
-//! directory as its argument it reads one file's bytes from stdin and
-//! answers with findings on stdout — the message's own words about
-//! itself, verbatim under `mail:` — while the attachments and nested
-//! messages it unpacks wait in the directory, each announced with the
-//! kind the mail itself declared, the name the mail spelled on the
-//! record as `file:name` and, as a place inside the mail, as an
-//! `@`-led `file:path` — the spelling every inner place has, whatever
-//! holds it.
+//! It implements the ossuary extractor protocol (`docs/extractors.md`).
+//! `--identify` prints one line for each contract:
 //!
-//! text/plain is read deliberately: ingest's sniff cannot tell a mail
-//! from any other text, so every text file passes through here once, and
-//! bytes that are no message are an examination with nothing found —
-//! exit 0, no output, and the receipt keeps them from being offered
-//! again. Bytes that are a message also get a sharper `file:mime` said
-//! onto the record, `message/rfc822` beside the sniffed word — the set
-//! holds both. An mbox — the `From ` separator line with a message
-//! behind it — is a mailbox, not a message: no headers spoken, nothing
-//! unpacked, another format's business — but the recognized kind goes
-//! on the record the same way, `application/mbox`, so a future mailbox
-//! reader finds its work waiting.
+//! - `headers` records the message's headers as `mail:` attributes, in a
+//!   form that can be searched (see `header.rs`).
+//! - `attachments` writes every attachment and every nested message into
+//!   the output directory, each with the type the message declares for it,
+//!   its name as `file:name` and its place in the message as an `@`-led
+//!   `file:path`.
+//! - `text` writes the readable text of the message into the output
+//!   directory as `text.txt` (see `text.rs`).
 //!
-//! The header values are recorded in a form that can be searched (see
-//! `header.rs`). A value that cannot be read in that form is not
+//! Called with a contract's name, and for `attachments` and `text` an
+//! output directory, it reads one file from stdin and prints the findings
+//! of that contract.
+//!
+//! Only `headers` reads text/plain. Ingest cannot tell a mail from other
+//! text, so every text file is examined once by `headers`. For a message
+//! it records `file:mime = message/rfc822` in addition to the detected
+//! type, and with that type the file is offered to the other two
+//! contracts. Bytes that are no message are an examination with nothing
+//! found: exit 0 and no output, under every contract. An mbox (a `From `
+//! separator line followed by a message) is not opened; `headers` records
+//! its type as `application/mbox`.
+//!
+//! A header value that cannot be read in the searchable form is not
 //! recorded and is reported on stderr, one line for each. Only failing
-//! to read stdin or to write a carried file is a failure.
+//! to read stdin or to write a file is a failure.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -41,54 +40,87 @@ use serde_json::json;
 mod date;
 mod header;
 mod mime;
+mod text;
 
-/// The generation of what this extractor writes: the number in its
-/// source, and so the memory of which files it has seen. Raised by hand
+/// The generation of what each contract writes: the number in its
+/// source, which decides whether a file has been examined. Raised by hand
 /// when the findings change, when the same bytes would yield more or
 /// something different than before, and never for a build, a dependency
-/// or a release: a new generation examines every file again, and that
-/// is the only reason to have one.
-const GENERATION: u32 = 1;
+/// or a release: a new generation examines every file again. Each
+/// contract has its own number, so a change to one does not examine the
+/// files again for the others.
+const HEADERS_GENERATION: u32 = 1;
+const ATTACHMENTS_GENERATION: u32 = 1;
+const TEXT_GENERATION: u32 = 1;
+
+/// The types of a message. An attached message has one of them, so the
+/// files the `attachments` contract writes are examined in turn.
+const MESSAGE_TYPES: [&str; 2] = ["message/rfc822", "message/global"];
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.first().map(String::as_str) {
-        Some("--identify") => {
-            println!("{}", identity());
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    match arguments.as_slice() {
+        ["--identify"] => {
+            for line in identities() {
+                println!("{line}");
+            }
             ExitCode::SUCCESS
         }
-        Some(directory) if arguments.len() == 1 && !directory.starts_with('-') => {
-            examine(Path::new(directory))
+        ["headers"] => examine(|bytes| Ok(headers(bytes))),
+        ["attachments", directory] if !directory.starts_with('-') => {
+            examine(|bytes| attachments(bytes, Path::new(directory)).map(Harvest::of))
+        }
+        ["text", directory] if !directory.starts_with('-') => {
+            examine(|bytes| text(bytes, Path::new(directory)).map(Harvest::of))
         }
         _ => {
             eprintln!(
-                "ossuary-extract-mail: expected --identify, or an output directory with the file on stdin"
+                "ossuary-extract-mail: expected --identify, or one of `headers`, `attachments DIR`, `text DIR` with the file on stdin"
             );
             ExitCode::FAILURE
         }
     }
 }
 
-/// The answer to `--identify`. The types include every type a message
-/// extracted here can have, so `ossuary extract` examines it in turn.
-fn identity() -> serde_json::Value {
-    json!({
-        "ossuary-extractor": 1,
-        "source": format!("extractor:mail/{GENERATION}"),
-        "mimes": ["message/rfc822", "message/global", "text/plain"],
-        "derives": true,
-    })
+/// The answer to `--identify`, one line for each contract. `headers`
+/// comes first: `ossuary extract` runs the contracts in this order, and
+/// the other two read a text file only after `headers` has recorded that
+/// it is a message.
+fn identities() -> [serde_json::Value; 3] {
+    [
+        json!({
+            "ossuary-extractor": 1,
+            "contract": "headers",
+            "source": format!("extractor:mail-headers/{HEADERS_GENERATION}"),
+            "mimes": ["message/rfc822", "message/global", "text/plain"],
+        }),
+        json!({
+            "ossuary-extractor": 1,
+            "contract": "attachments",
+            "source": format!("extractor:mail-attachments/{ATTACHMENTS_GENERATION}"),
+            "mimes": MESSAGE_TYPES,
+            "derives": true,
+        }),
+        json!({
+            "ossuary-extractor": 1,
+            "contract": "text",
+            "source": format!("extractor:mail-text/{TEXT_GENERATION}"),
+            "mimes": MESSAGE_TYPES,
+            "derives": true,
+        }),
+    ]
 }
 
-/// One file: stdin to its end, then the harvest — carried files into the
-/// directory, findings onto stdout.
-fn examine(directory: &Path) -> ExitCode {
+/// One file under one contract: stdin to its end, then the lines of
+/// `contract` onto stdout and its remarks onto stderr.
+fn examine(contract: impl FnOnce(&[u8]) -> std::io::Result<Harvest>) -> ExitCode {
     let mut bytes = Vec::new();
     if let Err(error) = std::io::stdin().lock().read_to_end(&mut bytes) {
         eprintln!("ossuary-extract-mail: reading stdin: {error}");
         return ExitCode::FAILURE;
     }
-    match harvest(&bytes, directory) {
+    match contract(&bytes) {
         Ok(harvest) => {
             for line in harvest.lines {
                 println!("{line}");
@@ -113,28 +145,33 @@ struct Harvest {
     remarks: Vec<String>,
 }
 
-/// The whole answer for one file: nothing when the bytes are no message,
-/// otherwise the sharper kind, the message's own headers, and one
-/// announcement per carried file — written into the directory on the
-/// way. The protocol reads the answer whole, so the order of lines is
-/// convenience, not contract.
-fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Harvest> {
-    if looks_like_mbox(bytes) {
-        // A mailbox is not a message and stays shut — but the bytes have
-        // told their kind, and the sharper word goes on the record.
-        return Ok(Harvest {
-            lines: vec![json!({ "attribute": "file:mime", "value": "application/mbox" })],
+impl Harvest {
+    /// A result without remarks.
+    fn of(lines: Vec<serde_json::Value>) -> Harvest {
+        Harvest {
+            lines,
             remarks: Vec::new(),
-        });
+        }
+    }
+}
+
+/// The `headers` contract: nothing when the bytes are no message,
+/// otherwise `file:mime` and the message's own headers. For an mbox, its
+/// `file:mime` alone.
+fn headers(bytes: &[u8]) -> Harvest {
+    if looks_like_mbox(bytes) {
+        return Harvest::of(vec![
+            json!({ "attribute": "file:mime", "value": "application/mbox" }),
+        ]);
     }
     if !looks_like_mail(bytes) {
-        return Ok(Harvest::default());
+        return Harvest::default();
     }
     let root = mime::parse(bytes);
     let mut lines = Vec::new();
     let mut remarks = Vec::new();
-    // The bytes answered as a message from their first byte — a sharper
-    // word than the sniff's text/plain, said onto the same set.
+    // For a file that ingest detected as text/plain this is the type the
+    // other two contracts read.
     lines.push(json!({ "attribute": "file:mime", "value": "message/rfc822" }));
     // mail-parser reads the header section mime.rs found, so the recorded
     // headers and the split agree on where it ends. The section starts at
@@ -156,26 +193,32 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Harvest> {
             }
         }
     }
+    Harvest { lines, remarks }
+}
+
+/// The `attachments` contract: every attachment and every nested message
+/// of a message written into `directory`, and the lines that announce
+/// them. Nothing when the bytes are no message.
+fn attachments(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Value>> {
+    let mut lines = Vec::new();
+    if !looks_like_mail(bytes) {
+        return Ok(lines);
+    }
+    let root = mime::parse(bytes);
     let mut taken = HashSet::new();
-    for part in root.leaves() {
+    for part in root.leaves().filter(|part| part.is_attachment()) {
         let spelled = part.fields.name.as_deref();
-        if spelled.is_none() && !part.is_message() {
-            // A body part without a name is the mail speaking, not the
-            // mail carrying: it stays inside.
-            continue;
-        }
         let wanted = spelled.and_then(|spelled| basename(spelled).map(|name| (name, spelled)));
+        // A nested message without a name still becomes a file, so it
+        // needs a name to be written under.
         let fallback = if part.is_message() {
-            // A forwarded mail is carried content even when nobody named
-            // it — this extractor's own word for it, so it has a name to
-            // stand under at all.
             "message.eml"
         } else {
             "attachment"
         };
         // A name too long for the filesystem, or one nothing is left of,
-        // must not fail the whole mail every run; the file waits under
-        // a name that fits, and the spelled name goes on the record.
+        // must not fail the whole mail on every run. The file is written
+        // under a name that fits, and the name from the mail is recorded.
         let wearable = wanted
             .as_ref()
             .map(|(name, _)| fits(name))
@@ -187,11 +230,9 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Harvest> {
         })?;
         lines.push(json!({ "file": &announced, "mime": kind(part) }));
         if let Some((name, spelled)) = wanted {
-            // The name the mail spelled goes on the record, whether or
-            // not the announcement could wear it: the announced name is
-            // a handle in the directory, and the record never learns it.
-            // The name is the file's; the place is the spelled name
-            // whole with `@` in front, the spelling every inner place has.
+            // The announced name is only a handle in the directory and is
+            // never recorded. Recorded are the name from the mail, and as
+            // the place the full name with `@` in front.
             lines.push(json!({ "file": &announced, "attribute": "file:name", "value": name }));
             lines.push(
                 json!({ "file": &announced, "attribute": "file:path", "value": inner(spelled) }),
@@ -205,7 +246,26 @@ fn harvest(bytes: &[u8], directory: &Path) -> std::io::Result<Harvest> {
             }));
         }
     }
-    Ok(Harvest { lines, remarks })
+    Ok(lines)
+}
+
+/// The name of the file the `text` contract writes.
+const TEXT_FILE: &str = "text.txt";
+
+/// The `text` contract: the text of a message written into `directory`,
+/// and the line that announces it. Nothing when the bytes are no message
+/// or the message has no text.
+fn text(bytes: &[u8], directory: &Path) -> std::io::Result<Vec<serde_json::Value>> {
+    if !looks_like_mail(bytes) {
+        return Ok(Vec::new());
+    }
+    let Some(text) = text::of(&mime::parse(bytes), bytes) else {
+        return Ok(Vec::new());
+    };
+    std::fs::write(directory.join(TEXT_FILE), text).map_err(|error| {
+        std::io::Error::new(error.kind(), format!("writing {TEXT_FILE}: {error}"))
+    })?;
+    Ok(vec![json!({ "file": TEXT_FILE, "mime": "text/plain" })])
 }
 
 /// The attribute name for a header that is recorded, `None` for one that
@@ -374,6 +434,79 @@ mod tests {
 
     use super::*;
 
+    const NOTHING: Vec<serde_json::Value> = Vec::new();
+
+    #[test]
+    fn only_headers_reads_text_and_runs_first() {
+        let identities = identities();
+        let contracts: Vec<_> = identities.iter().map(|line| &line["contract"]).collect();
+        assert_eq!(contracts, ["headers", "attachments", "text"]);
+        let reads_text: Vec<bool> = identities
+            .iter()
+            .map(|line| {
+                line["mimes"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("text/plain"))
+            })
+            .collect();
+        assert_eq!(reads_text, [true, false, false]);
+        assert_eq!(identities[0].get("derives"), None);
+        assert_eq!(identities[1]["derives"], true);
+        assert_eq!(identities[2]["derives"], true);
+    }
+
+    #[test]
+    fn the_text_is_written_as_one_file() {
+        let dir = TempDir::new().unwrap();
+        let mail = concat!(
+            "From: alice@example.com\r\n",
+            "To: bob@example.org\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"cut\"\r\n",
+            "\r\n",
+            "--cut\r\n",
+            "Content-Type: text/plain; charset=iso-8859-1\r\n",
+            "Content-Transfer-Encoding: quoted-printable\r\n",
+            "\r\n",
+            "Gr=FC=DFe,\r\n",
+            "see attached.\r\n",
+            "--cut\r\n",
+            "Content-Type: text/plain; name=\"notes.txt\"\r\n",
+            "\r\n",
+            "attached notes\r\n",
+            "--cut--\r\n",
+        );
+
+        let lines = text(mail.as_bytes(), dir.path()).unwrap();
+
+        assert_eq!(lines, [json!({ "file": "text.txt", "mime": "text/plain" })]);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("text.txt")).unwrap(),
+            "Gr\u{fc}\u{df}e,\nsee attached."
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_message_without_text_gets_no_file() {
+        let dir = TempDir::new().unwrap();
+        let mail = concat!(
+            "From: alice@example.com\r\n",
+            "To: bob@example.org\r\n",
+            "Content-Type: multipart/mixed; boundary=\"cut\"\r\n",
+            "\r\n",
+            "--cut\r\n",
+            "Content-Type: application/pdf; name=\"invoice.pdf\"\r\n",
+            "\r\n",
+            "%PDF-1.4\r\n",
+            "--cut--\r\n",
+        );
+
+        assert_eq!(text(mail.as_bytes(), dir.path()).unwrap(), NOTHING);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn a_mail_is_told_from_prose_by_its_header_section() {
         assert!(looks_like_mail(
@@ -462,7 +595,7 @@ mod tests {
             long = "x".repeat(300)
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
+        let lines = attachments(mail.as_bytes(), dir.path()).unwrap();
 
         let announced = "x".repeat(NAME_AT_MOST);
         assert!(
@@ -510,31 +643,53 @@ mod tests {
             "body\n",
         );
 
-        let lines = harvest(mbox.as_bytes(), dir.path()).unwrap().lines;
-
         assert_eq!(
-            lines,
+            headers(mbox.as_bytes()).lines,
             vec![json!({ "attribute": "file:mime", "value": "application/mbox" })],
-            "the kind alone — no headers spoken, nothing unpacked"
+            "the type alone, no headers"
         );
+        assert_eq!(attachments(mbox.as_bytes(), dir.path()).unwrap(), NOTHING);
+        assert_eq!(text(mbox.as_bytes(), dir.path()).unwrap(), NOTHING);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
     fn bytes_without_a_message_are_an_empty_answer_not_an_error() {
         let dir = TempDir::new().unwrap();
-        assert_eq!(
-            harvest(b"plain words", dir.path()).unwrap().lines,
-            Vec::<serde_json::Value>::new()
-        );
-        assert_eq!(
-            harvest(b"", dir.path()).unwrap().lines,
-            Vec::<serde_json::Value>::new()
-        );
+        for bytes in [&b"plain words"[..], b""] {
+            assert_eq!(headers(bytes).lines, NOTHING);
+            assert_eq!(attachments(bytes, dir.path()).unwrap(), NOTHING);
+            assert_eq!(text(bytes, dir.path()).unwrap(), NOTHING);
+        }
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             0,
             "and nothing lands in the directory"
+        );
+    }
+
+    #[test]
+    fn an_encoded_word_in_a_multi_byte_charset_is_decoded() {
+        let mail = concat!(
+            "From: =?ISO-2022-JP?B?GyRCRnxLXBsoQg==?= <taro@example.jp>\r\n",
+            "To: bob@example.org\r\n",
+            "Subject: =?ISO-2022-JP?B?GyRCRnxLXBsoQg==?=\r\n",
+            "\r\n",
+            "body\r\n",
+        );
+
+        let lines = headers(mail.as_bytes()).lines;
+
+        assert!(
+            lines.contains(&json!({ "attribute": "mail:subject", "value": "\u{65e5}\u{672c}" })),
+            "got {lines:#?}"
+        );
+        assert!(
+            lines.contains(&json!({
+                "attribute": "mail:from",
+                "value": "\u{65e5}\u{672c} <taro@example.jp>",
+            })),
+            "got {lines:#?}"
         );
     }
 
@@ -555,7 +710,7 @@ mod tests {
             "Hello.\r\n",
         );
 
-        let harvest = harvest(mail.as_bytes(), dir.path()).unwrap();
+        let harvest = headers(mail.as_bytes());
         let lines = harvest.lines;
 
         let expect = |line: serde_json::Value| {
@@ -584,9 +739,10 @@ mod tests {
                 .any(|line| line["attribute"] == "mail:received"),
             "the transport's trail stays untold; got {lines:#?}"
         );
-        assert!(
-            !lines.iter().any(|line| line.get("file").is_some()),
-            "a bare body is the mail speaking, not carrying; got {lines:#?}"
+        assert_eq!(
+            attachments(mail.as_bytes(), dir.path()).unwrap(),
+            NOTHING,
+            "a body without a name is no attachment"
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
@@ -615,7 +771,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
+        let lines = attachments(mail.as_bytes(), dir.path()).unwrap();
 
         assert!(
             lines.contains(&json!({ "file": "invoice.pdf", "mime": "application/pdf" })),
@@ -694,7 +850,7 @@ mod tests {
             PHA+5DwvcD4NCg==\r\n\
             --cut--\r\n";
 
-        harvest(mail, dir.path()).unwrap();
+        attachments(mail, dir.path()).unwrap();
 
         let read = |name: &str| std::fs::read(dir.path().join(name)).unwrap();
         assert_eq!(
@@ -743,7 +899,7 @@ mod tests {
         ]
         .concat();
 
-        harvest(&mail, dir.path()).unwrap();
+        attachments(&mail, dir.path()).unwrap();
 
         assert_eq!(
             std::fs::read(dir.path().join("message.eml")).unwrap(),
@@ -778,7 +934,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
+        let lines = attachments(mail.as_bytes(), dir.path()).unwrap();
 
         assert!(
             lines.contains(&json!({ "file": "message.eml", "mime": "message/rfc822" })),
@@ -797,7 +953,7 @@ mod tests {
             "the nested message's own bytes, headers and all; got {carried:?}"
         );
         assert!(
-            harvest(carried.as_bytes(), dir.path()).unwrap().lines.len() > 1,
+            headers(carried.as_bytes()).lines.len() > 1,
             "and what came out reads as a mail in its own right"
         );
     }
@@ -824,7 +980,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
+        let lines = attachments(mail.as_bytes(), dir.path()).unwrap();
 
         assert!(lines.contains(&json!({ "file": "image.png", "mime": "image/png" })));
         assert!(lines.contains(&json!({
@@ -875,7 +1031,7 @@ mod tests {
             "--cut--\r\n",
         );
 
-        let lines = harvest(mail.as_bytes(), dir.path()).unwrap().lines;
+        let lines = attachments(mail.as_bytes(), dir.path()).unwrap();
 
         assert!(lines.contains(&json!({
             "file": "Rechnung.pdf",
@@ -899,10 +1055,10 @@ mod tests {
         );
     }
 
-    /// The files `harvest` writes for `bytes`, by name.
+    /// The files `attachments` writes for `bytes`, by name.
     fn extracted(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
         let dir = TempDir::new().unwrap();
-        harvest(bytes, dir.path()).unwrap();
+        attachments(bytes, dir.path()).unwrap();
         std::fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| {
@@ -1019,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn random_messages_never_fail_the_harvest() {
+    fn random_messages_never_fail_a_contract() {
         for message in mime::random_messages(2_000) {
             let bytes = [
                 &b"From: a@example.org\r\nTo: b@example.org\r\n"[..],
@@ -1027,12 +1183,14 @@ mod tests {
             ]
             .concat();
             let dir = TempDir::new().unwrap();
-            harvest(&bytes, dir.path()).unwrap();
+            headers(&bytes);
+            attachments(&bytes, dir.path()).unwrap();
+            text(&bytes, dir.path()).unwrap();
         }
     }
 
     #[test]
-    fn every_message_written_is_a_type_this_extractor_reads() {
+    fn every_message_written_is_a_type_every_contract_reads() {
         let mail = b"From: a@example.org\r\n\
             To: b@example.org\r\n\
             Content-Type: multipart/mixed; boundary=cut\r\n\
@@ -1048,13 +1206,19 @@ mod tests {
             From: d@example.org\r\nSubject: =C3=BCber\r\n\r\nbody\r\n\
             --cut--\r\n";
         let dir = TempDir::new().unwrap();
-        let lines = harvest(mail, dir.path()).unwrap().lines;
-        let read = identity()["mimes"].as_array().unwrap().clone();
+        let lines = attachments(mail, dir.path()).unwrap();
 
         let written: Vec<_> = lines.iter().filter_map(|line| line.get("mime")).collect();
         assert_eq!(written, ["message/rfc822", "message/global"]);
-        for mime in written {
-            assert!(read.contains(mime), "{mime} is written but not read");
+        for identity in identities() {
+            let read = identity["mimes"].as_array().unwrap();
+            for mime in &written {
+                assert!(
+                    read.contains(mime),
+                    "{mime} is written but not read by {}",
+                    identity["contract"]
+                );
+            }
         }
         assert_eq!(
             std::fs::read(dir.path().join("message-2.eml")).unwrap(),

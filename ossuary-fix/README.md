@@ -130,12 +130,12 @@ they come after everything recorded before the fix.
   maintain describe` records both again, and `ossuary extract` skips the
   file until then. Files in `content/` are not touched. With one or more
   sources, only the claims of these extractors are removed: a source as
-  the claims name it (`extractor:mail/1`), or without its generation
-  (`extractor:mail`) for every generation.
+  the claims name it (`extractor:pdf-text/1`), or without its generation
+  (`extractor:pdf-text`) for every generation.
 
   ```console
   $ ossuary-fix --dry-run unextract
-  extractor:mail/1: 13 claim(s) to remove
+  extractor:pdf-text/1: 13 claim(s) to remove
   1 file(s) in derived/ that no other claim names to remove
   the open segment would be rewritten without the claims of extractors; 1 segment(s) without claims would be removed; 1 unchanged
   every seal id issued so far would no longer pass `ossuary seal --check`

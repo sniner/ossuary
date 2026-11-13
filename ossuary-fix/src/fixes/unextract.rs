@@ -91,7 +91,7 @@ impl Removed {
 
 /// The rewrite that removes the claims of extractors, and what goes with
 /// them. `only` limits it to the sources named: a source with its
-/// generation (`extractor:mail/1`) or without (`extractor:mail`, every
+/// generation (`extractor:pdf-text/1`) or without (`extractor:pdf-text`, every
 /// generation). Empty means every extractor.
 ///
 /// # Errors

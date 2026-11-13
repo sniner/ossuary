@@ -209,8 +209,8 @@ enum Command {
     /// rebuilt by the next command. Make a copy of the archive first.
     Unextract {
         /// Remove only the claims of these extractors: a source as the
-        /// claims name it (extractor:mail/1), or without its generation
-        /// (extractor:mail) for every generation. `--dry-run` lists the
+        /// claims name it (extractor:pdf-text/1), or without its generation
+        /// (extractor:pdf-text) for every generation. `--dry-run` lists the
         /// sources in the archive
         #[arg(value_name = "SOURCE")]
         sources: Vec<String>,

@@ -446,9 +446,10 @@ added when it is first needed.
   A value that cannot be read in this form (a date that is no date, an
   entry of `To:` without an address) is not recorded, and the extractor
   reports it. Transport headers (received, return-path, the x- headers)
-  describe the delivery, not the message, and are not recorded. Named
-  attachments and nested messages are not attributes; they are derived
-  files, linked to the mail by `prov:origin`. Such a part has
+  describe the delivery, not the message, and are not recorded. The
+  text of the message is not an attribute; it is a derived file of type
+  `text/plain`, linked to the mail by `prov:origin`. Named attachments
+  and nested messages are derived files as well. Such a part has
   `mail:content-id`, the part's identifier without angle brackets
   (`"part2@example.com"`), as an HTML part refers to it with
   `cid:part2@example.com`

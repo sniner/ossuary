@@ -64,6 +64,8 @@ pub struct Fields {
     pub content_type: Option<String>,
     /// The `boundary` parameter of the Content-Type.
     pub boundary: Option<String>,
+    /// The `charset` parameter of the Content-Type.
+    pub charset: Option<String>,
     /// The Content-Transfer-Encoding.
     pub encoding: Encoding,
     /// The Content-Disposition `filename`, or else the Content-Type `name`.
@@ -108,6 +110,14 @@ impl Entity {
     /// Whether the entity is an attached message.
     pub fn is_message(&self) -> bool {
         matches!(self.content, Content::Message)
+    }
+
+    /// Whether the entity is extracted as a file of its own: it has a name,
+    /// or it is an attached message. Every other single part is body. The
+    /// `attachments` and `text` contracts both go by this, so no part is
+    /// extracted by both.
+    pub fn is_attachment(&self) -> bool {
+        self.fields.name.is_some() || self.is_message()
     }
 
     /// The entities that are not split further, in the order of the bytes:
@@ -161,6 +171,9 @@ impl Fields {
             }),
             boundary: content_type
                 .and_then(|declared| declared.attribute("boundary"))
+                .map(str::to_string),
+            charset: content_type
+                .and_then(|declared| declared.attribute("charset"))
                 .map(str::to_string),
             encoding: message
                 .content_transfer_encoding()
@@ -1128,6 +1141,7 @@ mod tests {
 
         assert_eq!(root.fields.content_type.as_deref(), Some("text/csv"));
         assert_eq!(root.fields.name.as_deref(), Some("list.csv"));
+        assert_eq!(root.fields.charset.as_deref(), Some("windows-1252"));
         assert_eq!(root.fields.content_id.as_deref(), Some("part@example.org"));
         assert_eq!(root.fields.encoding, Encoding::Base64);
         assert_eq!(

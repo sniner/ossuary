@@ -25,11 +25,11 @@ separate programs, each reading one family of formats. An extractor:
 ## Identify
 
 Called as `ossuary-extract-<name> --identify`, an extractor writes one
-line of JSON to stdout for each contract it offers, and exits 0. Most
-programs offer exactly one:
+line of JSON to stdout for each contract it offers, and exits 0. A
+program with one contract writes one line:
 
 ```json
-{"ossuary-extractor": 1, "source": "extractor:mail/1", "mimes": ["message/rfc822"], "derives": true}
+{"ossuary-extractor": 1, "source": "extractor:audio/1", "mimes": ["audio/flac", "audio/mpeg"]}
 ```
 
 A program may offer several contracts: capabilities with their own
@@ -166,7 +166,7 @@ files, then writes all claims of the examination in one write to the
 log, and last among them one receipt, on the examined file:
 
 ```json
-{"subject": "9f2a…", "attribute": "prov:examined", "value": "extractor:mail/1", "time": "…", "source": "extractor:mail/1"}
+{"subject": "9f2a…", "attribute": "prov:examined", "value": "extractor:mail-headers/1", "time": "…", "source": "extractor:mail-headers/1"}
 ```
 
 The value repeats the source on purpose: the standing set has one

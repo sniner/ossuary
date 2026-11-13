@@ -3,6 +3,34 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **`ossuary-extract-mail` writes the text of a message as a plain text file.** The new contract
+  `text` (`ossuary extract mail:text`) takes the text from the body of the message, plain text
+  before HTML, and stores it as a derived file in UTF-8, linked to the message. `grep` over
+  `derived/` then finds a phrase in a mail whose body is encoded as base64 or quoted-printable
+
+### Changed
+
+- **`ossuary-extract-mail` has three contracts instead of one**: `headers`, `attachments` and
+  `text`, with the sources `extractor:mail-headers/1`, `extractor:mail-attachments/1` and
+  `extractor:mail-text/1`. `ossuary extract mail` runs all three; `mail:headers` or
+  `mail:attachments` runs one, on the command line and under `[extract] run`. An archive that does
+  not need attachments as files of their own can leave that contract out. The receipts under
+  `extractor:mail/1` no longer count: the next `ossuary extract` examines every message again. To
+  remove the claims recorded under the old source first, run
+  `ossuary-fix unextract extractor:mail`
+- **`ossuary-extract-mail` is called with the contract name first** when run by hand:
+  `ossuary-extract-mail headers < message.eml`, `ossuary-extract-mail attachments DIR`
+
+### Fixed
+
+- **`ossuary-extract-mail` reads Chinese, Japanese and Korean charsets.** A subject or name in
+  Big5, GB2312, GBK, GB18030, Shift_JIS, EUC-JP, ISO-2022-JP or EUC-KR was recorded as unreadable
+  characters. The new sources examine every message again, so no extra step is needed
+
 ## [0.22.0] - 2026-11-12
 
 ### Added

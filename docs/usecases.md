@@ -20,8 +20,9 @@ may have arrived as a mail attachment.
 an archive](../README.md#creating-an-archive)) and the mail and PDF
 extractors run over it: `ossuary extract mail` and `ossuary extract
 pdf`, or both listed under `[extract] run` in `config.toml`. The mail
-extractor stores each attachment as a file of its own, and the PDF
-extractor stores the text of each PDF as a plain text file. The
+extractor stores the text of each mail as a plain text file and each
+attachment as a file of its own, and the PDF extractor stores the text
+of each PDF as a plain text file. The
 examples use [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`);
 `grep -rl` works the same way.
 

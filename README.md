@@ -85,7 +85,7 @@ crate's README describes what it does and what it needs:
 | [`ossuary-mailvault`](ossuary-mailvault/README.md) | fetches whole mailboxes into the archive over IMAP or MS Graph |
 | [`ossuary-sync`](ossuary-sync/README.md) | copies the archive to a second place and keeps the copy up to date |
 | [`ossuary-extract-image`](ossuary-extract-image/README.md) | image metadata (EXIF, XMP, IPTC), the GPS position and the pixel format (size, bit depth, color) |
-| [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a mail's headers, and its attachments and nested messages as files of their own |
+| [`ossuary-extract-mail`](ossuary-extract-mail/README.md) | a mail's headers, its text as a text file, and its attachments and nested messages as files of their own |
 | [`ossuary-extract-packed`](ossuary-extract-packed/README.md) | a zip file's list of contents, or its unpacked files |
 | [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a PDF's text and document info, or its attachments; needs poppler's `pdftotext` |
 
@@ -168,23 +168,34 @@ Extractors are separate programs, one per format family. They talk to
 `ossuary` over a [small pipe protocol](docs/extractors.md), so they can
 be written in any language. They never access the archive themselves:
 they get the bytes and return findings, and everything they find is
-recorded with the extractor as the source (`extractor:mail/1`):
+recorded with the extractor as the source (`extractor:mail-headers/1`):
 
 ```console
 $ ossuary extract mail
-2 file(s) waiting for extractor:mail/1
-2 file(s) examined by extractor:mail/1, 12 claim(s) written; 1 derived file(s) added; 1 found nothing
-2 file(s) examined in total, 1 derived file(s) added; run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
+2 file(s) waiting for extractor:mail-headers/1
+2 file(s) examined by extractor:mail-headers/1, 8 claim(s) written; 1 found nothing
+1 file(s) waiting for extractor:mail-attachments/1
+1 file(s) examined by extractor:mail-attachments/1, 6 claim(s) written; 1 derived file(s) added
+1 file(s) waiting for extractor:mail-text/1
+1 file(s) examined by extractor:mail-text/1, 4 claim(s) written; 1 derived file(s) added
+round 2: 1 file(s) waiting for extractor:mail-headers/1
+1 file(s) examined by extractor:mail-headers/1, 1 claim(s) written; 1 found nothing
+done after 2 rounds
+5 file(s) examined in total, 2 derived file(s) added; run c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31
 $ ossuary extract packed:list
 1 file(s) waiting for extractor:packed-list/1
 1 file(s) examined by extractor:packed-list/1, 3 claim(s) written
 1 file(s) examined in total, 0 derived file(s) added; run 8d2f6b1c-4a7e-4c93-b5d0-1e9a3f7c2b64
 ```
 
-The mail extractor read both files detected as text, recognised one of
-them as a mail, recorded its headers and stored its attachment as a
-file of its own. In the plain note it found nothing. That result is
-recorded as well, and neither file is examined again. `packed:list`
+The mail extractor does three things, each under a source of its own.
+`mail-headers` read both files detected as text, recognised one of them
+as a mail and recorded its headers. In the plain note it found nothing.
+That result is recorded as well, and neither file is examined again.
+`mail-attachments` stored the mail's attachment as a file of its own,
+and `mail-text` stored the text of the mail as a plain text file. That
+text file was examined in a second round, like every text file.
+`ossuary extract mail:headers` runs only one of the three. `packed:list`
 recorded a zip file's list of contents without unpacking it. Every
 examined file gets a receipt (`prov:examined`), so a repeated run only
 processes new files, and a new extractor version examines all files
@@ -213,13 +224,15 @@ $ ossuary about e9ed6104
 2026-09-06T15:23:40Z  file:size = 491  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
 2026-09-06T15:23:40Z  file:mime = "text/plain"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
 2026-09-06T15:23:40Z  file:modified = "2026-09-06T15:23:40.89362092Z"  [ingest] [run:315e360b-020e-48be-8f2d-f2002a2ea9b4]
-2026-09-06T15:25:02Z  file:mime = "message/rfc822"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
-2026-09-06T15:25:02Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
-2026-09-06T15:25:02Z  mail:to = "John Doe <john@example.net>"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
-2026-09-06T15:25:02Z  mail:subject = "Quarterly figures"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
-2026-09-06T15:25:02Z  mail:date = "Tue, 10 Mar 2026 14:22:05 +0100"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
-2026-09-06T15:25:02Z  mail:message-id = "<74a2f19c@mail.example.org>"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
-2026-09-06T15:25:02Z  prov:examined = "extractor:mail/1"  [extractor:mail/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  file:mime = "message/rfc822"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:from = "Erika Muster <erika@example.org>"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:to = "John Doe <john@example.net>"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:subject = "Quarterly figures"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:date = "2026-03-10T13:22:05Z"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  mail:message-id = "74a2f19c@mail.example.org"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  prov:examined = "extractor:mail-headers/1"  [extractor:mail-headers/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  prov:examined = "extractor:mail-attachments/1"  [extractor:mail-attachments/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
+2026-09-06T15:25:02Z  prov:examined = "extractor:mail-text/1"  [extractor:mail-text/1] [run:c7a1e2d4-9b3f-4e60-8a15-2f6d0c9b7e31]
 ```
 
 Each line shows the time, the source and the run. Both the detected
