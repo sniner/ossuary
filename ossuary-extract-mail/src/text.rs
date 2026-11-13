@@ -262,6 +262,25 @@ mod tests {
     }
 
     #[test]
+    fn the_type_after_a_date_in_zone_ut_is_read() {
+        // With LF line breaks: after CRLF, mail-parser's three letters
+        // end with the CR and the line break is left.
+        let mail = b"Date: Thu, 27 Aug 2009 15:54:24 UT\n\
+            Content-Type: multipart/alternative; boundary=alt\n\
+            \n\
+            --alt\n\
+            Content-Type: text/html\n\
+            \n\
+            <p>rich</p>\n\
+            --alt\n\
+            Content-Type: text/plain\n\
+            \n\
+            plain\n\
+            --alt--\n";
+        assert_eq!(text(mail).as_deref(), Some("plain"));
+    }
+
+    #[test]
     fn an_alternative_without_plain_text_gives_its_html() {
         let mail = b"Content-Type: multipart/alternative; boundary=alt\r\n\
             \r\n\

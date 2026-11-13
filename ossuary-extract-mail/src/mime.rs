@@ -35,7 +35,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use mail_parser::{MessageParser, MimeHeaders as _};
+use mail_parser::{HeaderName, MessageParser, MimeHeaders as _};
 
 /// Real mail nests a few levels deep. The limit keeps a crafted message
 /// from exhausting the stack.
@@ -157,10 +157,23 @@ impl<'a> Iterator for Leaves<'a> {
     }
 }
 
+/// The parser for a header section: the MIME headers parsed, every
+/// other header kept as its raw text. The extractor reads the values it
+/// records from the raw bytes itself. mail-parser 0.11.8 reads an
+/// obsolete zone name in a date as three characters; after `UT`, the
+/// only one of two letters, an LF line break is the third, and the
+/// header on the next line is read as part of the date and lost.
+pub fn parser() -> MessageParser {
+    MessageParser::new()
+        .with_mime_headers()
+        .header_raw(HeaderName::Date)
+        .header_raw(HeaderName::ResentDate)
+}
+
 impl Fields {
     fn read(header: &[u8]) -> Fields {
         let header = unfolded(header);
-        let Some(message) = MessageParser::default().parse_headers(&header) else {
+        let Some(message) = parser().parse_headers(&header) else {
             return Fields::default();
         };
         let content_type = message.content_type();

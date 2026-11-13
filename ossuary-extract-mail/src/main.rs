@@ -34,7 +34,6 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
-use mail_parser::MessageParser;
 use ossuary_extract_mail::looks_like_mail;
 use serde_json::json;
 
@@ -177,7 +176,7 @@ fn headers(bytes: &[u8]) -> Harvest {
     // mail-parser reads the header section mime.rs found, so the recorded
     // headers and the split agree on where it ends. The section starts at
     // byte 0: the offsets mail-parser reports are offsets into `bytes`.
-    let headers = MessageParser::default().parse_headers(&bytes[root.header.clone()]);
+    let headers = mime::parser().parse_headers(&bytes[root.header.clone()]);
     for header in headers.iter().flat_map(mail_parser::Message::headers) {
         let Some(name) = spoken(header.name.as_str()) else {
             continue;
@@ -629,6 +628,19 @@ mod tests {
             })),
             "got {lines:#?}"
         );
+    }
+
+    #[test]
+    fn the_header_after_a_date_in_zone_ut_is_recorded() {
+        let harvest = headers(
+            b"From: a@example.org\nDate: Thu, 27 Aug 2009 15:54:24 UT\nMessage-Id: <1@example.org>\n\nHi.\n",
+        );
+        for expected in [
+            json!({ "attribute": "mail:date", "value": "2009-08-27T15:54:24Z" }),
+            json!({ "attribute": "mail:message-id", "value": "1@example.org" }),
+        ] {
+            assert!(harvest.lines.contains(&expected), "{:?}", harvest.lines);
+        }
     }
 
     #[test]

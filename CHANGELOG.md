@@ -40,6 +40,9 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`ossuary-extract-mail` no longer loses the header after a date in the zone `UT`.** In a message
+  with LF line breaks, the header on the line after `Date: … UT` was not recorded, mostly the
+  Message-ID; when it was the `Content-Type`, the message's text and attachments were not found
 - **`ossuary-extract-mail` reads Chinese, Japanese and Korean charsets.** A subject or name in
   Big5, GB2312, GBK, GB18030, Shift_JIS, EUC-JP, ISO-2022-JP or EUC-KR was recorded as unreadable
   characters. The new sources examine every message again, so no extra step is needed
