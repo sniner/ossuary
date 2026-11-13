@@ -11,6 +11,19 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `text` (`ossuary extract mail:text`) takes the text from the body of the message, plain text
   before HTML, and stores it as a derived file in UTF-8, linked to the message. `grep` over
   `derived/` then finds a phrase in a mail whose body is encoded as base64 or quoted-printable
+- **`ossuary mailvault add` adds the messages in a directory of files**, one message per file: a
+  backup of a mail server, a Maildir copied out of an archive file. The place of a message is the
+  account name given with `--account` and the directory the file is in. `--seen` records the claims
+  with another time than that of the run, such as the day of the backup
+- **`ossuary-fix replace` puts an intact file in the place of a damaged one.** Both are in the
+  archive: a message fetched without its body, say, and the complete message added from a backup.
+  The damaged file is removed with its claims, and the intact one gets its places, paths, tags and
+  comments. `--same mail:message-id` replaces only if both have the same Message-ID. The
+  [README of ossuary-fix](ossuary-fix/README.md#example-messages-archived-without-their-bodies)
+  shows a whole run
+- **`ossuary-fix remove` removes files from the archive**: the file from content/, every claim
+  about it from the log, and the files extracted from it. Both fixes rewrite sealed segments, so
+  seal ids issued before no longer pass `ossuary seal --check`
 
 ### Changed
 

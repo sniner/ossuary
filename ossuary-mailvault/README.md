@@ -40,6 +40,7 @@ outside the archive (see [Who may write the file](#who-may-write-the-file)).
 | `folders` | lists the folders of the accounts in `mailvault.toml`, one `account:folder` per line |
 | `fetch` | fetches the mailboxes listed in `mailvault.toml` |
 | `import` | imports an archive of the Python mailvault |
+| `add` | adds the messages in a directory of files, one message per file |
 
 ## The mailboxes
 
@@ -439,11 +440,66 @@ share](../docs/deep-dive.md#an-archive-on-a-network-share)). Each of
 these runs records many claims, and every append to an archive on a
 share costs a round trip to the server.
 
+## Adding messages from files
+
+`add` takes messages that are files on a disk: a backup of a mail server
+that no longer runs, a Maildir copied out of an archive file, an export
+of a mail program with one file per message.
+
+```console
+$ ossuary mailvault add /srv/backup/mail-2019 --account backup-2019
+archive /home/john/archive
+adding the messages in /srv/backup/mail-2019 as account backup-2019
+1,204 files in /srv/backup/mail-2019
+1,198 messages stored, 6 already stored; 3,606 claim(s) written, run e63f…
+```
+
+Each file below the directory is stored as a fetched message is, with
+its size and the type `message/rfc822`. Its `mailbox:place` is the name
+given with `--account` and, as the folder, the directory the file is in
+below the directory given, with `/` between the levels:
+
+| File | Place |
+|---|---|
+| `/srv/backup/mail-2019/INBOX/1712.eml` | `backup-2019:INBOX` |
+| `/srv/backup/mail-2019/Archive/2010/88.eml` | `backup-2019:Archive/2010` |
+| `/srv/backup/mail-2019/note.eml` | `backup-2019` |
+
+The account name is yours to choose. It needs no entry in
+`mailvault.toml`, since nothing is fetched from it; the accounts file is
+not read. A message that is already in the archive, fetched from a
+mailbox or added before, is not stored again and gets the new place
+beside those it has. A message that carries the header of Proton Mail
+Bridge gets its `mailbox:id` (see [The Proton id](#the-proton-id)).
+
+The claims are recorded with the time of the run. `--seen TIME` records
+them with another time, such as the day the backup was made, so that
+`--as-of` shows the messages from that day on: an RFC 3339 time, or a
+date, which stands for the start of that day in UTC.
+
+A file is added only if `ossuary extract mail` would read it as a
+message: it begins with a header section that has at least two of the
+headers a message has. Other files are listed on stderr and not added,
+and the exit code is `1`: a README, an index file of the mail server, an
+mbox file, which holds many messages. Files whose names begin with a dot
+are skipped without a word. The directory names are taken as they are,
+in Unicode NFC as a fetch records folder names; `cur` and `new` of a
+Maildir become the last level of the folder name.
+
+`--dry-run` reads the beginning of each file and prints how many
+messages would be added. Nothing is remembered between runs: a second
+run over the same directory stores nothing new and records each place
+again.
+
+To put such messages in the place of damaged ones the archive already
+has, see [`ossuary-fix replace`](../ossuary-fix/README.md#example-messages-archived-without-their-bodies).
+
 ## Exit codes
 
-`0` when everything was fetched or imported. `1` when anything failed,
-and when the archive cannot be opened, the accounts cannot be read, or
-the directory given to `import` is not a Python mailvault archive.
+`0` when everything was fetched, imported or added. `1` when anything
+failed, and when the archive cannot be opened, the accounts cannot be
+read, the directory given to `import` is not a Python mailvault archive,
+or the directory given to `add` has no files.
 
 ## License
 

@@ -484,7 +484,11 @@ added when it is first needed.
   account is renamed later, new sightings record the new name. Places
   accumulate. The claim's time is the time of the sighting: for a
   fetch the time of the fetch, for an import from an archive of the
-  Python tool mailvault the time that archive's log gives for it. Such
+  Python tool mailvault the time that archive's log gives for it. For a
+  message added from a directory of files (`ossuary mailvault add`), the
+  account is the name given on the command line, the folder is the
+  directory the file was in, and the time is that of the run or the one
+  given with `--seen`. Such
   an import records a folder in the account's `folders` list under the
   name written there, which is the name a fetch of that folder records.
   An import records a folder that shows a label (see `mailbox:tag`) as

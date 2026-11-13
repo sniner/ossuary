@@ -2,6 +2,8 @@
 //! This library holds only what other programs of the workspace read by
 //! the same rule as the extractor.
 
+use std::collections::HashSet;
+
 /// A Message-ID or Content-ID without its angle brackets, which RFC 5322
 /// (3.6.4) does not count as part of the id: the first id
 /// [`message_ids`] finds, or, without `<`, the whole value. Whitespace
@@ -46,6 +48,70 @@ pub fn message_ids(text: &str) -> Vec<&str> {
         rest = rest[end..].strip_prefix('>').unwrap_or(&rest[end..]);
     }
     ids
+}
+
+/// Header names that only a message has: the headers the extractor
+/// records, and those the transport adds. A bounce with nothing but
+/// `Received` and `Return-Path` is still a message.
+const MAILLY: [&str; 14] = [
+    "from",
+    "sender",
+    "reply-to",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "date",
+    "message-id",
+    "in-reply-to",
+    "references",
+    "received",
+    "return-path",
+    "delivered-to",
+];
+
+/// Whether the bytes are an internet message from their first byte: a
+/// header section of well-formed fields (names in the alphabet of RFC
+/// 5322, a folded line only after a field) with at least two different
+/// names that only a message has. One is not enough, because any text
+/// can have `Date:` at the start of a line. Bytes that begin with the
+/// `From ` line of an mbox are a mailbox with messages in it, not a
+/// message.
+#[must_use]
+pub fn looks_like_mail(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"From ") {
+        return false;
+    }
+    let mut known: HashSet<&'static str> = HashSet::new();
+    let mut fields = 0usize;
+    for line in bytes.split(|&byte| byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if line[0] == b' ' || line[0] == b'\t' {
+            if fields == 0 {
+                return false;
+            }
+            continue;
+        }
+        let Some(colon) = line.iter().position(|&byte| byte == b':') else {
+            return false;
+        };
+        let name = &line[..colon];
+        if name.is_empty() || !name.iter().all(|byte| (33..=126).contains(byte)) {
+            return false;
+        }
+        if let Ok(name) = std::str::from_utf8(name)
+            && let Some(field) = MAILLY
+                .iter()
+                .find(|mailly| mailly.eq_ignore_ascii_case(name))
+        {
+            known.insert(field);
+        }
+        fields += 1;
+    }
+    known.len() >= 2
 }
 
 #[cfg(test)]

@@ -31,6 +31,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use ossuary_core::{Archive, Error};
 
+mod add;
 mod compare;
 mod config;
 mod fetch;
@@ -176,6 +177,47 @@ enum Command {
         #[arg(long)]
         no_auto_labels: bool,
     },
+    /// Add the messages in a directory of files, one message per file
+    ///
+    /// For messages from a backup or an export of a mailbox. Each file
+    /// below DIR is stored as a fetched message is. Its place
+    /// (mailbox:place) is the account name given and, as the folder, the
+    /// directory the file is in below DIR: a file in DIR/Archive/2010
+    /// gets ACCOUNT:Archive/2010, a file in DIR itself gets ACCOUNT. The
+    /// account needs no entry in mailvault.toml.
+    ///
+    /// A file that the mail extractor would not read as a message is not
+    /// added and is listed. Files whose names begin with a dot are
+    /// skipped. A second run over the same directory stores nothing new
+    /// and records each place again.
+    Add(AddArgs),
+}
+
+/// What `add` takes.
+#[derive(clap::Args)]
+#[allow(
+    clippy::doc_markdown,
+    reason = "help texts; backticks would show in --help"
+)]
+struct AddArgs {
+    /// The directory with the message files
+    #[arg(value_name = "DIR")]
+    dir: PathBuf,
+
+    /// The account name for the places of the messages: letters,
+    /// digits, `.`, `_` and `-`
+    #[arg(long, value_name = "ACCOUNT")]
+    account: String,
+
+    /// Record the claims with this time, not the time of the run, such
+    /// as the day the backup was made: an RFC 3339 time, or a date for
+    /// the start of that day in UTC
+    #[arg(long, value_name = "TIME")]
+    seen: Option<String>,
+
+    /// Show how many messages would be added, write nothing
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn main() -> ExitCode {
@@ -294,7 +336,68 @@ fn run(cli: Cli) -> Result<ExitCode> {
             )?;
             Ok(finish(&tally, dry_run))
         }
+        Command::Add(args) => add(&root, cache, named.as_deref(), &args, say),
     }
+}
+
+/// `add`: the options checked before the archive is written to, then
+/// the run.
+fn add(
+    root: &Path,
+    cache: Option<PathBuf>,
+    named: Option<&Path>,
+    args: &AddArgs,
+    say: Say,
+) -> Result<ExitCode> {
+    let AddArgs {
+        dir,
+        account,
+        seen,
+        dry_run,
+    } = args;
+    if let Some(path) = named {
+        bail!(
+            "--accounts {}: add reads no accounts; the account name is given with --account",
+            path.display()
+        );
+    }
+    if !config::valid_name(account) {
+        bail!("--account {account}: an account name is made of letters, digits, `.`, `_` and `-`");
+    }
+    let seen = seen
+        .as_deref()
+        .map(|given| {
+            ossuary_core::Timestamp::opening(given).map_err(|_| {
+                anyhow!(
+                    "--seen {given}: not a time; give an RFC 3339 time (2019-10-05T12:00:00Z) or a date (2019-10-05)"
+                )
+            })
+        })
+        .transpose()?;
+    let archive = open(root)?;
+    let archive = match cache {
+        Some(dir) => archive.with_cache(dir),
+        None => archive,
+    };
+    say.line(format_args!("archive {}", archive.root().display()));
+    if !dry_run {
+        finish_interrupted_seal(&archive)?;
+    }
+    say.line(format_args!(
+        "adding the messages in {} as account {account}",
+        dir.display()
+    ));
+    let tally = add::run(
+        &archive,
+        dir,
+        &add::Options {
+            account,
+            seen,
+            dry_run: *dry_run,
+        },
+        say,
+    )?;
+    Ok(finish(&tally, *dry_run))
 }
 
 /// The accounts file for a command that works on it alone, `init` and

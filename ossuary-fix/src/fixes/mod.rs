@@ -4,15 +4,18 @@
 //! the words for saying so. A fix that has to change what is sealed is a
 //! function from the archive to a [`Rewrite`](crate::rewrite::Rewrite):
 //! the edit of the segments, and the words. Neither writes anything
-//! itself. `rehash` makes a new archive and writes it.
+//! itself. `rehash` makes a new archive and writes it. `remove` plans a
+//! rewrite and the files to delete from the stores.
 
 pub mod chain;
 pub mod found;
+pub mod lines;
 pub mod list;
 pub mod open;
 pub mod origin;
 pub mod packed;
 pub mod rehash;
+pub mod remove;
 pub mod unextract;
 
 #[cfg(test)]

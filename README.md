@@ -90,9 +90,11 @@ crate's README describes what it does and what it needs:
 | [`ossuary-extract-pdf`](ossuary-extract-pdf/README.md) | a PDF's text and document info, or its attachments; needs poppler's `pdftotext` |
 
 One program is missing from this list on purpose:
-[`ossuary-fix`](ossuary-fix/README.md) repairs 0.x archives after a
-breaking change and is not a regular part of the package. Its README
-describes what it does and when not to use it.
+[`ossuary-fix`](ossuary-fix/README.md) changes what the other programs
+only add to: it converts 0.x archives after a breaking change, and it
+removes files from an archive or replaces damaged ones. It is not a
+regular part of the package. Its README describes what it does and when
+not to use it.
 
 ## Creating an archive
 

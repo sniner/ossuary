@@ -1,6 +1,6 @@
 [package]
 name = "ossuary-fix"
-description = "Repair tool for 0.x archives after a breaking change"
+description = "Repair tool for ossuary archives: converts 0.x archives, removes and replaces files"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

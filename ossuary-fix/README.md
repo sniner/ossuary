@@ -8,9 +8,10 @@ changes the digest of a sealed segment. Some repairs cannot be made that
 way. An attribute name changed between versions, the form of a segment
 header changed, a sealed segment or the open segment was lost and the
 gap in the chain has to be closed, the archive is to move to another
-hash algorithm, or the claims of the extractors are to be removed so
-that the files can be examined anew. `ossuary-fix` makes these changes, each as a
-subcommand. The ossuary programs contain no migration code.
+hash algorithm, the claims of the extractors are to be removed so that
+the files can be examined anew, or a file is to be removed from the
+archive or replaced by another. `ossuary-fix` makes these changes, each
+as a subcommand. The ossuary programs contain no migration code.
 
 A fix reads the whole log and writes only what is missing or in an old
 form. Running it a second time writes nothing. With `--dry-run` it shows
@@ -140,3 +141,169 @@ they come after everything recorded before the fix.
   the open segment would be rewritten without the claims of extractors; 1 segment(s) without claims would be removed; 1 unchanged
   every seal id issued so far would no longer pass `ossuary seal --check`
   ```
+- `remove`: removes files from the archive: each named file from
+  `content/`, and every claim about it from the log. Afterwards no
+  command shows that the file was ever stored. Use it for a file that
+  should not be in the archive. The files are named by their full names,
+  as `ossuary find --id` prints them, on the command line or one per line
+  in a file given with `--list`. Files extracted from a removed file are
+  removed as `unextract` removes them: the claims of the extractors about
+  them, and the file in `derived/` unless another claim names it. A file
+  that was also extracted from a file that stays, or that is in
+  `content/` itself, only loses the claim that it was extracted from the
+  removed one. Removing a file does not keep it out: if it is still in a
+  directory that is ingested or in a mailbox that is fetched, a later run
+  can add it again (`ossuary ingest` once the file has changed or the
+  caches were deleted, `ossuary mailvault fetch --full`).
+
+  ```console
+  $ ossuary find --id file:name=draft.txt
+  ed0f32d539e78005662fbdc31a020c7f7c4b8c389a0b02f00e4b3ba4beb9870a
+  $ ossuary-fix --dry-run remove ed0f32d539e78005662fbdc31a020c7f7c4b8c389a0b02f00e4b3ba4beb9870a
+  7 claim(s) about the file(s) to remove
+  1 file(s) to remove from content/
+  2 segment(s), and the open segment would be rewritten without the claims about the removed files; 1 file(s) would be removed
+  every seal id issued so far would no longer pass `ossuary seal --check`
+  ```
+- `replace`: replaces a file by another file that is already in the
+  archive. Use it when the archive holds a damaged copy and the intact
+  file has been found: a message that was fetched without its body, a
+  download that was cut short. `replace OLD NEW` names one pair;
+  `--list FILE` reads pairs from a file, one per line, the two names
+  separated by a space or a tab. OLD is removed as `remove` removes it.
+  NEW gets the standing claims that say where OLD was seen and what was
+  recorded about it by hand: `file:path`, `file:name`, `file:modified`,
+  `prov:host`, `mailbox:place`, `mailbox:tag`, `mailbox:id`, `user:tag`,
+  `user:comment` and every other attribute that no extractor wrote. Each
+  is written with the time, source and run of the old claim; a value NEW
+  already has is not written again. The size and type of OLD and what
+  the extractors found in it describe its bytes and are not copied; run
+  `ossuary extract` for NEW. Several files can have the same
+  replacement. The fix does not know whether OLD and NEW are the same
+  document. With `--same ATTRIBUTE` it replaces only if both files have
+  the same values of that attribute, `mail:message-id` for example, and
+  writes nothing if one pair does not. [The example
+  below](#example-messages-archived-without-their-bodies) shows a whole
+  run.
+
+Both fixes can be run again with the same names: a file that is already
+gone is counted and skipped.
+
+## Example: messages archived without their bodies
+
+John moved his mail to another provider in 2019. The move copied some
+messages of the folder `Archive/2010` without their bodies, and
+`ossuary mailvault fetch` archived them as the new mailbox has them:
+the headers and nothing else. A backup of the old mail server from
+before the move has the complete messages, one file per message, in
+`/srv/backup/mail-2019`. The archive is to have the complete messages
+in place of the damaged ones.
+
+**1. Add the messages of the backup.** `ossuary mailvault add` stores
+each file as a message and records the directory it was in as its place
+(see [ossuary-mailvault](../ossuary-mailvault/README.md#adding-messages-from-files)).
+`--seen` gives the claims the date of the backup.
+
+```console
+$ cd /home/john/archive
+$ ossuary mailvault add /srv/backup/mail-2019 --account backup-2019 --seen 2019-10-05
+archive /home/john/archive
+adding the messages in /srv/backup/mail-2019 as account backup-2019
+3 files in /srv/backup/mail-2019
+3 messages stored; 9 claim(s) written, run e63f464b-37d0-4a54-b4c2-d96c8b947d59
+```
+
+A message of the backup that the archive did not have at all is now
+simply in the archive. A message that is intact in both is one file
+with two places. A damaged message is in the archive twice, as two
+files:
+
+```console
+$ ossuary extract mail:headers
+$ ossuary find 'mail:message-id=1@example.org' mailbox:place file:size
+c4c22d52
+  mailbox:place=example.org:Archive/2010
+  file:size=152
+dd43448e
+  mailbox:place=backup-2019:Archive.2010
+  file:size=186
+2 file(s)
+```
+
+**2. List the pairs.** The list has one line per damaged file: its full
+name, then the full name of its replacement. For a few files, write it
+by hand with the names `ossuary find --id` prints. For a whole folder,
+join the two listings on the Message-ID:
+
+```console
+$ ossuary find --json 'mailbox:place=example.org:Archive/2010' mail:message-id \
+    | jq -r '[."mail:message-id"[0], .subject] | @tsv' | sort > old.tsv
+$ ossuary find --json 'mailbox:place=backup-2019:Archive.2010' mail:message-id \
+    | jq -r '[."mail:message-id"[0], .subject] | @tsv' | sort > new.tsv
+$ join -t "$(printf '\t')" -o 1.2,2.2 old.tsv new.tsv | awk '$1 != $2' > pairs.txt
+$ cat pairs.txt
+c4c22d52b9d5742f852fe6bc2252b34127f52c7b3fafef27735361879673a5de	dd43448ed7ea3583e43ee5a5b1fdf0ac7ab9c164bdd7cc823e59409637818499
+9eb15a4427ada90d027b47e176205e5fcaa70565a7e5744a9b476930f0ec00bc	437ef63b4e1afce5f5d1310b34a1a4af9c8fa5fb64af2b9ae3407001eef578ef
+```
+
+`awk` leaves out the messages that are one file in both listings. Read
+the list before using it. It pairs every message of the folder whose
+copy in the backup has other bytes, whether it is damaged or only
+differs in a header that a server added. Which of the files are damaged
+is not on record; here they are the ones without a body, the smaller
+file of each pair.
+
+**3. Look at what the fix would do.**
+
+```console
+$ ossuary-fix --dry-run replace --list pairs.txt --same mail:message-id
+mailbox:place: 2 claim(s) to move to the replacement(s)
+user:tag: 1 claim(s) to move to the replacement(s)
+18 other claim(s) about the replaced file(s) to remove
+2 file(s) to remove from content/
+2 segment(s), and the open segment would be rewritten with the replacements in place of the replaced files; 2 file(s) would be removed
+every seal id issued so far would no longer pass `ossuary seal --check`
+```
+
+The two places in the mailbox move to the complete messages, and so
+does a tag John had put on one of the damaged ones. The 18 other claims
+are the sizes and types of the damaged files and what the mail
+extractor read from them. `--same mail:message-id` stops the run if a
+line of the list pairs two different messages:
+
+```console
+ossuary-fix: 1 pair(s) do not have the same mail:message-id, the first is 63196f41… and 6ce3a189…: the values differ; nothing was written
+```
+
+**4. Copy the archive, then run the fix.**
+
+```console
+$ ossuary-fix replace --list pairs.txt --same mail:message-id
+mailbox:place: 2 claim(s) to move to the replacement(s)
+user:tag: 1 claim(s) to move to the replacement(s)
+18 other claim(s) about the replaced file(s) to remove
+2 file(s) to remove from content/
+2 segment(s), and the open segment rewritten with the replacements in place of the replaced files; the query index in cache/ was removed and is rebuilt by the next command; 2 file(s) removed
+every seal id issued so far no longer passes `ossuary seal --check`; run `ossuary seal` and keep the new id instead
+```
+
+The complete message now has the place in the mailbox beside the place
+in the backup, with the time at which the damaged one was fetched:
+
+```console
+$ ossuary about dd43448e mailbox: user:
+2019-10-05T00:00:00Z  mailbox:place = "backup-2019:Archive.2010"  [mailvault] [run:e63f464b-37d0-4a54-b4c2-d96c8b947d59]
+2026-08-02T10:15:00Z  mailbox:place = "example.org:Archive/2010"  [mailvault] [run:f2045009-29c5-426d-887a-ca737222dbde]
+2026-09-14T18:02:11Z  user:tag = "tax"  [user] [run:95d2c8a3-b412-4200-9575-a1791bea53fe]
+```
+
+**5. Finish.** `ossuary extract` examines the new files, and `ossuary
+seal` prints the new seal id.
+
+The mailbox still has the damaged messages. A fetch asks only for
+messages that arrived since the last run and does not see them, and
+`fetch --compare` finds each of them in the archive: the complete
+message has the same Message-ID at the same place. `fetch --full`
+downloads every message and stores the damaged ones again. Keep
+`pairs.txt` and run the same `replace` once more after such a fetch, or
+put the complete messages back into the mailbox.

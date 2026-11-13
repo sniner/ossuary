@@ -25,12 +25,13 @@ mod record;
 mod rewrite;
 
 use std::fmt::Write as _;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
-use ossuary_core::{Algorithm, Archive, Error};
+use ossuary_core::{Algorithm, Archive, Attribute, Error};
 
 use crate::plan::Plan;
 
@@ -215,6 +216,76 @@ enum Command {
         #[arg(value_name = "SOURCE")]
         sources: Vec<String>,
     },
+    /// Remove files from the archive, with every claim about them
+    ///
+    /// Each named file is removed from content/, and every claim about
+    /// it from the log. Use it for a file that should not be in the
+    /// archive: afterwards no command shows that it was ever stored.
+    ///
+    /// Files extracted from a removed file are removed as `unextract`
+    /// removes them: the claims of the extractors about them, and the
+    /// file in derived/ unless another claim names it. A file that was
+    /// also extracted from a file that stays, or that is in content/
+    /// itself, only loses the claim that it was extracted from the
+    /// removed one.
+    ///
+    /// Removing a file does not keep it out. If it is still in a
+    /// directory that is ingested or in a mailbox that is fetched, a
+    /// later run can add it again: `ossuary ingest` once the file has
+    /// changed or the caches were deleted, `ossuary mailvault fetch
+    /// --full`.
+    ///
+    /// The segments from the first one with a removed claim on get new
+    /// names, so seal ids issued for them no longer pass
+    /// `ossuary seal --check`. The query index in cache/ is removed and
+    /// rebuilt by the next command. Make a copy of the archive first.
+    Remove {
+        /// The files to remove, by their full names as `ossuary find
+        /// --id` prints them
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
+        /// Read more names from FILE, one per line
+        #[arg(long, value_name = "FILE")]
+        list: Option<PathBuf>,
+    },
+    /// Replace files by other files that are already in the archive
+    ///
+    /// Use it when the archive holds a damaged copy of a file and the
+    /// intact file has been found: a message that was fetched without
+    /// its body, a download that was cut short. Add the intact file to
+    /// the archive first. OLD is then removed as `remove` removes it,
+    /// and NEW gets the claims that say where OLD was seen and what was
+    /// recorded about it by hand: paths, names, mailbox places and tags,
+    /// user tags and comments. Each is written with the time, source and
+    /// run of the old claim. The size and type of OLD and what the
+    /// extractors found in it describe its bytes and are not copied; run
+    /// `ossuary extract` for NEW.
+    ///
+    /// Several files can have the same replacement. Without --same, the
+    /// fix does not check that OLD and NEW are the same document.
+    ///
+    /// The segments from the first one with a claim about OLD on get new
+    /// names, so seal ids issued for them no longer pass
+    /// `ossuary seal --check`. The query index in cache/ is removed and
+    /// rebuilt by the next command. Make a copy of the archive first.
+    Replace {
+        /// The file to replace, by its full name as `ossuary find --id`
+        /// prints it
+        #[arg(value_name = "OLD", requires = "new")]
+        old: Option<String>,
+        /// The file that replaces it
+        #[arg(value_name = "NEW")]
+        new: Option<String>,
+        /// Read more pairs from FILE: one pair per line, OLD and NEW
+        /// separated by a space or a tab
+        #[arg(long, value_name = "FILE")]
+        list: Option<PathBuf>,
+        /// Replace only if OLD and NEW have the same values of
+        /// ATTRIBUTE, such as mail:message-id; if a pair does not,
+        /// nothing is written
+        #[arg(long, value_name = "ATTRIBUTE")]
+        same: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -306,6 +377,22 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             }
             (sentence, rewrite.seals(cli.dry_run))
         }
+        Command::Remove {
+            ref names,
+            ref list,
+        } => remove(cli, &archive, names, list.as_deref())?,
+        Command::Replace {
+            ref old,
+            ref new,
+            ref list,
+            ref same,
+        } => replace(
+            cli,
+            &archive,
+            old.as_deref().zip(new.as_deref()),
+            list.as_deref(),
+            same.as_deref(),
+        )?,
     };
     println!("{sentence}");
     if let Some(seals) = seals {
@@ -342,6 +429,97 @@ fn lossy(
         );
     }
     Ok((segments(cli, archive, rewrite)?, rewrite.seals(cli.dry_run)))
+}
+
+/// `remove`: the files named on the command line and in the list.
+fn remove(
+    cli: &Cli,
+    archive: &Archive,
+    names: &[String],
+    list: Option<&Path>,
+) -> Result<(String, Option<String>)> {
+    let mut given: Vec<(String, Option<String>)> =
+        names.iter().map(|name| (name.clone(), None)).collect();
+    given.extend(listed(list, false)?);
+    if given.is_empty() {
+        bail!("no file named; name the files to remove, or a file that lists them with --list");
+    }
+    removed(cli, archive, &given, None)
+}
+
+/// `replace`: the pair named on the command line and those in the list.
+fn replace(
+    cli: &Cli,
+    archive: &Archive,
+    pair: Option<(&str, &str)>,
+    list: Option<&Path>,
+    same: Option<&str>,
+) -> Result<(String, Option<String>)> {
+    let mut given: Vec<(String, Option<String>)> = pair
+        .iter()
+        .map(|(old, new)| ((*old).to_string(), Some((*new).to_string())))
+        .collect();
+    given.extend(listed(list, true)?);
+    if given.is_empty() {
+        bail!("no file named; name OLD and NEW, or a file that lists the pairs with --list");
+    }
+    let same = same
+        .map(|name| {
+            Attribute::parse(name)
+                .map_err(|_| anyhow!("--same {name}: not an attribute, such as mail:message-id"))
+        })
+        .transpose()?;
+    removed(cli, archive, &given, same.as_ref())
+}
+
+/// The names in the file given with --list, none without one.
+fn listed(list: Option<&Path>, replacing: bool) -> Result<Vec<(String, Option<String>)>> {
+    let Some(path) = list else {
+        return Ok(Vec::new());
+    };
+    let text = fs::read_to_string(path).with_context(|| format!("{}: reading", path.display()))?;
+    fixes::remove::listed(&text, replacing).with_context(|| path.display().to_string())
+}
+
+/// A fix that removes files: what it found printed first, the extracted
+/// files removed before the segments are rewritten and the named files
+/// after, as `fixes::remove` explains.
+fn removed(
+    cli: &Cli,
+    archive: &Archive,
+    given: &[(String, Option<String>)],
+    same: Option<&Attribute>,
+) -> Result<(String, Option<String>)> {
+    let pairs = fixes::remove::pairs(archive, given)?;
+    let (rewrite, taken) = fixes::remove::plan(archive, &pairs, same)?;
+    for line in taken.lines() {
+        println!("{line}");
+    }
+    if !cli.dry_run {
+        taken.remove_derived(archive)?;
+    }
+    let mut sentence = segments(cli, archive, &rewrite)?;
+    if !cli.dry_run {
+        taken.remove_content(archive)?;
+    }
+    let files = taken.files();
+    if files > 0 {
+        // A run that stopped after the rewrite left only files to remove.
+        if !rewrite.changes() {
+            sentence = "the log has no claims about these files".to_string();
+        }
+        // Writing to a String does not fail.
+        let _ = write!(
+            sentence,
+            "; {files} file(s) {}",
+            if cli.dry_run {
+                "would be removed"
+            } else {
+                "removed"
+            }
+        );
+    }
+    Ok((sentence, rewrite.seals(cli.dry_run)))
 }
 
 /// The archive rehashed into a new one, and the line that says so.

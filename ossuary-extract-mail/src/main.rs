@@ -35,6 +35,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use mail_parser::MessageParser;
+use ossuary_extract_mail::looks_like_mail;
 use serde_json::json;
 
 mod date;
@@ -274,69 +275,6 @@ fn spoken(name: &str) -> Option<&'static str> {
     header::RECORDED
         .into_iter()
         .find(|known| known.eq_ignore_ascii_case(name))
-}
-
-/// Header names that only a mail carries — the gate's yardstick. The
-/// spoken headers plus the transport's own: a bounce with nothing but
-/// received and return-path is still a mail.
-const MAILLY: [&str; 14] = [
-    "from",
-    "sender",
-    "reply-to",
-    "to",
-    "cc",
-    "bcc",
-    "subject",
-    "date",
-    "message-id",
-    "in-reply-to",
-    "references",
-    "received",
-    "return-path",
-    "delivered-to",
-];
-
-/// Whether these bytes read as an internet message from their first
-/// byte: a header section of well-formed fields — names in RFC 5322's
-/// own alphabet, folds only after a field — holding at least two
-/// distinct names only mail uses. One is not enough: any prose may
-/// mention `Date:` at the start of a line; two of them, from byte zero,
-/// is a mail. Bytes opening with mbox's `From ` line are a mailbox
-/// holding messages, not a message.
-fn looks_like_mail(bytes: &[u8]) -> bool {
-    if bytes.starts_with(b"From ") {
-        return false;
-    }
-    let mut known: HashSet<&'static str> = HashSet::new();
-    let mut fields = 0usize;
-    for line in bytes.split(|&byte| byte == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.is_empty() {
-            break;
-        }
-        if line[0] == b' ' || line[0] == b'\t' {
-            if fields == 0 {
-                return false;
-            }
-            continue;
-        }
-        let Some(colon) = line.iter().position(|&byte| byte == b':') else {
-            return false;
-        };
-        let name = &line[..colon];
-        if name.is_empty() || !name.iter().all(|byte| (33..=126).contains(byte)) {
-            return false;
-        }
-        if let Ok(name) = std::str::from_utf8(name)
-            && let Some(field) = MAILLY
-                .iter()
-                .find(|mailly| mailly.eq_ignore_ascii_case(name))
-        {
-            known.insert(field);
-        }
-        fields += 1;
-    }
-    known.len() >= 2
 }
 
 /// Whether these bytes open as an mbox: the `From ` separator line
