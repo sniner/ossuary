@@ -383,7 +383,8 @@ and [the archive format](format.md#the-seal) is the exact description.
   --accept-loss` has started a new one. The record cannot start over
   unnoticed.
 * **`ossuary-fix` breaks seals.** It is the one program that rewrites
-  sealed segments, and a fix that does renames them. It says from which
-  time on seal ids no longer pass `ossuary seal --check`. Seal again
+  sealed segments, and a fix that does renames them. It says how many
+  of the last segments are renamed and names the first of them; their
+  seal ids no longer pass `ossuary seal --check`. Seal again
   afterwards, and keep the new id. `ossuary-fix rehash` makes a new
   archive under another hash, whose seals are new as well.

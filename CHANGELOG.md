@@ -11,6 +11,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refused it with "recorded no files", because a fetched message has no file path. `export` writes
   such a message to `ACCOUNT/FOLDER/<hex name>.eml`, once for each folder it is in, also when the
   message is named by its hex name
+- **`ossuary-fix` no longer names a wrong time for the seal ids a rewrite breaks.** It printed the
+  time of the earliest claim in the renamed segments, which is years too early when claims were
+  dated back with `mailvault add --seen`. It now says how many of the last segments are renamed and
+  names the first of them
 
 ## [0.23.0] - 2026-11-14
 

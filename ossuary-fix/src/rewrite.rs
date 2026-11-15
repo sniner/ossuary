@@ -90,8 +90,6 @@ struct Step {
     old: Digest,
     new: Digest,
     text: String,
-    /// The `time` of the segment's first claim, as written.
-    first: Option<String>,
 }
 
 /// The header as it is written: the known members first, in the order
@@ -201,7 +199,6 @@ impl Rewrite {
                     old: old.clone(),
                     new,
                     text,
-                    first: first_time(segment),
                 });
             }
         }
@@ -317,20 +314,31 @@ impl Rewrite {
     /// it renames or removes sealed segments: a seal is a segment's name,
     /// and every one renamed stops checking. The segments renamed are
     /// the first one changed and every one after it, so the line names
-    /// the time of the earliest first claim among them.
+    /// how many of the chain's last segments that is, and the first of
+    /// them. No time: a segment does not record when it was written, and
+    /// the `time` of its claims may be dated back (`mailvault add
+    /// --seen`).
     #[must_use]
     pub fn seals(&self, dry_run: bool) -> Option<String> {
         if self.steps.is_empty() && self.dropped.is_empty() {
             return None;
         }
-        let since = self
-            .steps
-            .iter()
-            .filter_map(|step| step.first.as_deref())
-            .min();
-        let (which, pass) = match since {
-            Some(time) if self.unchanged > 0 => (format!("seal ids issued since {time}"), "pass"),
-            _ => ("every seal id issued so far".to_string(), "passes"),
+        let (which, pass) = if self.unchanged == 0 {
+            ("every seal id issued so far".to_string(), "passes")
+        } else {
+            let changed = self.steps.len() + self.dropped.len();
+            let total = changed + self.unchanged;
+            // The steps are in chain order, so the first is where the
+            // renaming begins.
+            let from = self
+                .steps
+                .first()
+                .map(|step| format!(", from {} on,", step.old))
+                .unwrap_or_default();
+            (
+                format!("the seal ids of the last {changed} of {total} segment(s){from}"),
+                "pass",
+            )
         };
         if dry_run {
             Some(format!(
@@ -631,7 +639,10 @@ mod tests {
         assert_eq!(
             plan.seals(true).as_deref(),
             Some(
-                "seal ids issued since 2026-09-02T00:00:00Z would no longer pass `ossuary seal --check`"
+                format!(
+                    "the seal ids of the last 2 of 3 segment(s), from {second} on, would no longer pass `ossuary seal --check`"
+                )
+                .as_str()
             )
         );
 

@@ -24,8 +24,9 @@ and every segment after it is rewritten to name it. The query index in
 `cache/` is removed first, the new files are written to `claims/`, and
 the old ones are removed; the next command rebuilds the index. A seal id
 is the name of a segment, so a seal id issued for a renamed segment no
-longer passes `ossuary seal --check`; the fix prints since when seal ids
-are affected, and `ossuary seal` prints the new id. Make a copy of the
+longer passes `ossuary seal --check`; the fix prints how many of the
+last segments are renamed and the name of the first of them, and
+`ossuary seal` prints the new id. Make a copy of the
 archive before running such a fix.
 An archive written by a version before a change in the header is not
 read by the current version until the fix has run: every command stops
