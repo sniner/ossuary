@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The text `ossuary-extract-mail` writes for a message begins with its From, To, Cc, Date and
+  Subject**, one line each, followed by the text of the body. `grep` over `derived/` then also finds
+  a message by its subject or its sender, and a message with an empty body gets a text file as
+  well. The names have no colon, so the text file is not taken for a message itself. For texts
+  written before, run `ossuary-fix unextract` and `ossuary extract`
+
 ## [0.24.0] - 2026-11-15
 
 ### Changed

@@ -126,10 +126,28 @@ derived file of type `text/plain`, with `prov:origin` pointing to the
 message. `grep` and other programs can search this file, where the
 message itself may be encoded as base64 or quoted-printable.
 
-- The text comes from the body parts: parts without a name, of type
-  `text/plain` or `text/html`. Attachments are not part of it, also not
-  an attached text file. A nested message gets a text file of its own
-  when it is examined in turn.
+The file begins with the From, To, Cc, Date and Subject of the message,
+then a blank line and the text of the body:
+
+```
+From     Erika Mustermann <erika@example.com>
+To       Max Mustermann <max@example.org>
+Date     Fri, 4 Sep 2026 12:34:56 +0200
+Subject  Invoice 4711
+
+Dear Max,
+...
+```
+
+- Each header the message has is one line, in this order, a header
+  that occurs twice is two lines, and an empty header is left out. The
+  value is decoded and on one line.
+- The names have no colon, so the file is not a message itself and
+  `headers` records nothing for it.
+- The text below the headers comes from the body parts: parts without
+  a name, of type `text/plain` or `text/html`. Attachments are not part
+  of it, also not an attached text file. A nested message gets a text
+  file of its own when it is examined in turn.
 - Where a message has the same content as plain text and as HTML
   (`multipart/alternative`), the plain text is used. If there is none,
   or it is blank, the HTML is used.
@@ -140,10 +158,11 @@ message itself may be encoded as base64 or quoted-printable.
   charset it declares, and a byte that cannot be read is replaced with
   U+FFFD. A part that declares no charset, or one that is not known, is
   read as UTF-8 if it is valid UTF-8, and as windows-1252 otherwise.
-- Headers are not part of the text; they are recorded as attributes.
-  Quoted text and signatures are kept as they are.
+- Quoted text and signatures are kept as they are.
 
-A message without text, or with only whitespace, gets no text file.
+A message without text in its body still gets a text file with its
+headers. A message without any of these headers and without text, or
+with only whitespace, gets no text file.
 
 ## Malformed mails
 

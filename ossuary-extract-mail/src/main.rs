@@ -10,7 +10,8 @@
 //!   its name as `file:name` and its place in the message as an `@`-led
 //!   `file:path`.
 //! - `text` writes the readable text of the message into the output
-//!   directory as `text.txt` (see `text.rs`).
+//!   directory as `text.txt`, below its From, To, Cc, Date and Subject
+//!   (see `text.rs`).
 //!
 //! Called with a contract's name, and for `attachments` and `text` an
 //! output directory, it reads one file from stdin and prints the findings
@@ -418,19 +419,25 @@ mod tests {
         let lines = text(mail.as_bytes(), dir.path()).unwrap();
 
         assert_eq!(lines, [json!({ "file": "text.txt", "mime": "text/plain" })]);
+        let written = std::fs::read_to_string(dir.path().join("text.txt")).unwrap();
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("text.txt")).unwrap(),
-            "Gr\u{fc}\u{df}e,\nsee attached."
+            written,
+            "From     alice@example.com\nTo       bob@example.org\n\nGr\u{fc}\u{df}e,\nsee attached."
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            headers(written.as_bytes()).lines,
+            NOTHING,
+            "the text is neither a message nor a mailbox"
+        );
     }
 
     #[test]
     fn a_message_without_text_gets_no_file() {
         let dir = TempDir::new().unwrap();
         let mail = concat!(
-            "From: alice@example.com\r\n",
-            "To: bob@example.org\r\n",
+            "Message-ID: <1@example.com>\r\n",
+            "Received: by mx.example.org\r\n",
             "Content-Type: multipart/mixed; boundary=\"cut\"\r\n",
             "\r\n",
             "--cut\r\n",
