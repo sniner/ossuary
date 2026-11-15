@@ -571,8 +571,10 @@ enum Command {
     /// come from unrelated folders, each group gets its own folder under
     /// PATH, named after the deepest folder its files share. A file
     /// given by name is exported to every standing path recorded for
-    /// it, a derived file under its recorded names. Content recorded at
-    /// several paths is exported to each of them. Existing files in PATH
+    /// it, a derived file under its recorded names. A message fetched
+    /// from a mailbox is exported as ACCOUNT/FOLDER/HEXNAME.eml, once
+    /// for each folder it is in. Content recorded at several paths is
+    /// exported to each of them. Existing files in PATH
     /// are never overwritten: a file with the same content counts as
     /// exported, a file with different content is reported as a failure
     /// and left unchanged. A destination inside the archive is refused.

@@ -1830,9 +1830,11 @@ impl Index {
     /// Every sighting one run put on the record, with where it saw the
     /// file: one pair per place, the same content seen at two places in
     /// one run answering twice. An ingest sighting answers with its
-    /// `file:path`; a sighting without one — a derived file never sat
-    /// anywhere — answers with its `file:name`, every name the run
-    /// spelled. Empty when no claim carries the run.
+    /// `file:path`, a fetched message with its `mailbox:place`. A
+    /// sighting with neither (a derived file never sat anywhere) answers
+    /// with its `file:name`, every name the run spelled. Of these, a
+    /// subject answers with the first kind it has, in that order. Empty
+    /// when no claim carries the run.
     ///
     /// This asks the history, not the standing set: a run's record stays
     /// its record, later retractions notwithstanding.
@@ -1844,45 +1846,50 @@ impl Index {
     /// sworn away.
     pub fn run_sightings(&self, run: &Run) -> Result<Vec<(Subject, Placement)>> {
         let mut statement = self.connection.prepare(
-            "SELECT DISTINCT su.digest, a.name, json_extract(c.value, '$')
+            "SELECT DISTINCT su.digest,
+                    CASE a.name WHEN 'file:path' THEN 0 WHEN 'mailbox:place' THEN 1 ELSE 2 END,
+                    json_extract(c.value, '$')
              FROM claims c
              JOIN subjects su ON su.id = c.subject
              JOIN attributes a ON a.id = c.attribute
              WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
                AND c.retract = 0
-               AND a.name IN ('file:path', 'file:name')
+               AND a.name IN ('file:path', 'mailbox:place', 'file:name')
                AND json_type(c.value) = 'text'
-             ORDER BY su.digest, a.name DESC, c.value",
+             ORDER BY su.digest, 2, c.value",
         )?;
         let rows = statement.query_map(params![run.as_str()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, u8>(1)?,
                 row.get::<_, String>(2)?,
             ))
         })?;
         let mut sightings: Vec<(Subject, Placement)> = Vec::new();
-        let mut current: Option<(Subject, bool)> = None;
+        let mut current: Option<(Subject, u8)> = None;
         for row in rows {
-            let (digest, attribute, spelled) = row?;
+            let (digest, rank, spelled) = row?;
+            // The rows of a subject come best kind first, so its first
+            // row sets the kind it answers with.
             let subject = match &current {
-                Some((subject, _)) if subject.as_str() == digest => subject.clone(),
+                Some((subject, best)) if subject.as_str() == digest => {
+                    if rank != *best {
+                        continue;
+                    }
+                    subject.clone()
+                }
                 _ => {
                     let subject = Subject::parse(&digest)?;
-                    current = Some((subject.clone(), false));
+                    current = Some((subject.clone(), rank));
                     subject
                 }
             };
-            // Paths are ordered before names, so the first path of a
-            // subject is met before any of its names; a subject with a
-            // path answers with its paths alone.
-            let placed = current.as_ref().is_some_and(|(_, placed)| *placed);
-            if attribute == "file:path" {
-                current = Some((subject.clone(), true));
-                sightings.push((subject, Placement::Path(spelled)));
-            } else if !placed {
-                sightings.push((subject, Placement::Name(spelled)));
-            }
+            let placement = match rank {
+                0 => Placement::Path(spelled),
+                1 => Placement::Mailbox(spelled),
+                _ => Placement::Name(spelled),
+            };
+            sightings.push((subject, placement));
         }
         Ok(sightings)
     }
@@ -5163,6 +5170,49 @@ mod tests {
             index.run_sightings(&run_x('e')).unwrap(),
             [(subject(), Placement::Name("invoice.pdf".to_string()))],
             "a derived file never sat anywhere, so its name answers"
+        );
+    }
+
+    #[test]
+    fn a_fetched_message_answers_with_its_mailbox_places() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let time = Timestamp::parse("2026-09-01T10:00:00Z").unwrap();
+        let source = Source::parse("mailvault").unwrap();
+        for (attribute, value) in [
+            ("mailbox:place", "example.org:INBOX"),
+            ("mailbox:place", "example.org:Archive"),
+            ("file:name", "message.eml"),
+        ] {
+            log.append(
+                &Claim::assert(
+                    subject(),
+                    Attribute::parse(attribute).unwrap(),
+                    json!(value),
+                    time.clone(),
+                    source.clone(),
+                    run_x('f'),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        index.fold(&log).unwrap();
+
+        assert_eq!(
+            index.run_sightings(&run_x('f')).unwrap(),
+            [
+                (
+                    subject(),
+                    Placement::Mailbox("example.org:Archive".to_string())
+                ),
+                (
+                    subject(),
+                    Placement::Mailbox("example.org:INBOX".to_string())
+                ),
+            ],
+            "a message answers with every folder the run saw it in, and its places win over a name"
         );
     }
 

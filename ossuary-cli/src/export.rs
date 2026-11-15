@@ -112,8 +112,11 @@ pub(crate) fn export(
 /// before anything is written: a mistake in the third of five ids must
 /// not leave a half-written export.
 fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
-    let file_path = Attribute::parse("file:path")?;
-    let file_name = Attribute::parse("file:name")?;
+    let kinds = Kinds {
+        path: Attribute::parse("file:path")?,
+        mailbox: Attribute::parse("mailbox:place")?,
+        name: Attribute::parse("file:name")?,
+    };
     let mut pairs: Vec<(Subject, Placement)> = Vec::new();
     for id in ids {
         if Run::spelled(id) {
@@ -140,10 +143,10 @@ fn gather(index: &Index, ids: &[String]) -> Result<Vec<(Subject, Placement)>> {
             let Some(subject) = resolve(index, id)? else {
                 return Err(anyhow!("no subject begins with {id:?}; nothing exported"));
             };
-            let standing = places(index, &subject, &file_path, &file_name)?;
+            let standing = places(index, &subject, &kinds)?;
             if standing.is_empty() {
                 return Err(anyhow!(
-                    "{subject} has no recorded path or name, nothing exported; `ossuary get {subject} --output FILE` writes it to a file of your choice"
+                    "{subject} has no recorded path, mailbox folder or name, nothing exported; `ossuary get {subject} --output FILE` writes it to a file of your choice"
                 ));
             }
             pairs.extend(standing.into_iter().map(|place| (subject.clone(), place)));
@@ -228,31 +231,39 @@ fn deliver(archive: &Archive, plan: &[Placed], destination: &Path) -> Delivery {
     delivery
 }
 
+/// The attributes that record where a file stood, in the order
+/// [`places`] tries them.
+struct Kinds {
+    path: Attribute,
+    mailbox: Attribute,
+    name: Attribute,
+}
+
 /// Every place still standing on one subject's record: all its
-/// standing `file:path` values — or, where none stands, all its
-/// standing `file:name`s, the fallback a run's sightings make too.
+/// standing `file:path` values; where none stands, all its standing
+/// `mailbox:place`s; where none of those stands either, all its
+/// standing `file:name`s. A run's sightings make the same choice.
 /// Deliberately *all* of them, not a chosen one: which of several
 /// standing values matters is the reader's policy, and an export that
 /// silently preferred the newest place would leave a hole in the tree
 /// the caller actually asked about. A retracted place no longer
 /// stands, and no longer lands.
-fn places(
-    index: &Index,
-    subject: &Subject,
-    file_path: &Attribute,
-    file_name: &Attribute,
-) -> Result<Vec<Placement>> {
+fn places(index: &Index, subject: &Subject, kinds: &Kinds) -> Result<Vec<Placement>> {
     let spelled = |values: Vec<ossuary_core::Value>| -> Vec<String> {
         values
             .iter()
             .filter_map(|value| value.as_str().map(str::to_string))
             .collect()
     };
-    let paths = spelled(index.values(subject, file_path, Scope::Held)?);
+    let paths = spelled(index.values(subject, &kinds.path, Scope::Held)?);
     if !paths.is_empty() {
         return Ok(paths.into_iter().map(Placement::Path).collect());
     }
-    let names = spelled(index.values(subject, file_name, Scope::Held)?);
+    let folders = spelled(index.values(subject, &kinds.mailbox, Scope::Held)?);
+    if !folders.is_empty() {
+        return Ok(folders.into_iter().map(Placement::Mailbox).collect());
+    }
+    let names = spelled(index.values(subject, &kinds.name, Scope::Held)?);
     Ok(names.into_iter().map(Placement::Name).collect())
 }
 

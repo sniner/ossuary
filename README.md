@@ -436,7 +436,9 @@ export DIR` exports the result of a query. Each file is written to
 *every* current path on its record, so nothing the query matched is
 left out. Existing files at the destination are never overwritten: a
 file with the same content counts as done, a file with different
-content is reported as a failure and left untouched.
+content is reported as a failure and left untouched. A message fetched
+from a mailbox has no path; it is written to
+`ACCOUNT/FOLDER/<hex name>.eml`, once for each folder it is in.
 
 ## How it works
 

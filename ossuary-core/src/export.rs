@@ -15,8 +15,8 @@ use std::path::{Component, Path, PathBuf};
 use crate::claim::Subject;
 
 /// Where a file stood, as far as the record tells: a full path some
-/// sighting recorded, or a bare name — a derived file that never sat
-/// anywhere.
+/// sighting recorded, a mailbox folder a message was fetched from, or a
+/// bare name (a derived file that never sat anywhere).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Placement {
     /// A recorded `file:path` — absolute, in its host's own spelling,
@@ -26,6 +26,9 @@ pub enum Placement {
     Path(String),
     /// A recorded `file:name` — all a derived file without a path has.
     Name(String),
+    /// A recorded `mailbox:place`, `account:folder`. A message has no
+    /// file name of its own, so it is exported as `<digest>.eml`.
+    Mailbox(String),
 }
 
 /// One file of an export: which content, and where it lands.
@@ -48,7 +51,8 @@ pub struct Placed {
 /// groups stay apart under the destination. A single group needs no
 /// such folder, which is also what makes one exported file land as its
 /// bare name. Named placements have no relations to keep and land
-/// flat.
+/// flat. A message lands under `<account>/<folder>/<digest>.eml`, the
+/// whole folder kept: there is no meaningless ground above an account.
 ///
 /// A pair said twice is laid out once; the same subject under two
 /// placements is honestly two files. Targets are built from the paths'
@@ -60,7 +64,7 @@ pub struct Placed {
 pub fn lay_out(pairs: &[(Subject, Placement)]) -> Vec<Placed> {
     let mut seen: HashSet<(&Subject, &Placement)> = HashSet::new();
     let mut pathed: Vec<Pathed> = Vec::new();
-    let mut named: Vec<(Subject, String)> = Vec::new();
+    let mut flat: Vec<Placed> = Vec::new();
     for (subject, placement) in pairs {
         if !seen.insert((subject, placement)) {
             continue;
@@ -76,8 +80,21 @@ pub fn lay_out(pairs: &[(Subject, Placement)]) -> Vec<Placed> {
             }
             Placement::Name(name) => {
                 if let Some(bare) = parts(name).pop() {
-                    named.push((subject.clone(), bare));
+                    flat.push(Placed {
+                        subject: subject.clone(),
+                        target: PathBuf::from(bare),
+                    });
                 }
+            }
+            Placement::Mailbox(place) => {
+                // The account name holds no colon, so the first one ends it.
+                let (account, folder) = place.split_once(':').unwrap_or((place, ""));
+                let mut target: PathBuf = parts(account).into_iter().chain(parts(folder)).collect();
+                target.push(format!("{}.eml", subject.as_str()));
+                flat.push(Placed {
+                    subject: subject.clone(),
+                    target,
+                });
             }
         }
     }
@@ -101,12 +118,7 @@ pub fn lay_out(pairs: &[(Subject, Placement)]) -> Vec<Placed> {
             });
         }
     }
-    for (subject, name) in named {
-        placed.push(Placed {
-            subject,
-            target: PathBuf::from(name),
-        });
-    }
+    placed.extend(flat);
     placed.sort_by(|a, b| (&a.target, &a.subject).cmp(&(&b.target, &b.subject)));
     placed
 }
@@ -269,6 +281,35 @@ mod tests {
             targets(&placed),
             ["@odd.txt", "dir/a.txt", "other/a.txt"],
             "two entries named alike in different folders stay apart; a name led by @ keeps its own"
+        );
+    }
+
+    #[test]
+    fn a_message_lands_under_its_account_and_folder() {
+        let message = subject("3d");
+        let placed = lay_out(&[
+            (
+                message.clone(),
+                Placement::Mailbox("example.org:Archive/2024".to_string()),
+            ),
+            (
+                message.clone(),
+                Placement::Mailbox("example.org:INBOX".to_string()),
+            ),
+            (
+                subject("6a"),
+                Placement::Mailbox("other:../../etc".to_string()),
+            ),
+        ]);
+        let digest = message.as_str();
+        assert_eq!(
+            targets(&placed),
+            [
+                format!("example.org/Archive/2024/{digest}.eml"),
+                format!("example.org/INBOX/{digest}.eml"),
+                format!("other/etc/{}.eml", subject("6a").as_str()),
+            ],
+            "one file per folder, and a folder cannot climb out of the destination"
         );
     }
 

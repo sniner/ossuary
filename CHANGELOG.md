@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ossuary extract` and `ossuary export` accept the run id of an `ossuary mailvault` run.** Both
+  refused it with "recorded no files", because a fetched message has no file path. `export` writes
+  such a message to `ACCOUNT/FOLDER/<hex name>.eml`, once for each folder it is in, also when the
+  message is named by its hex name
+
 ## [0.23.0] - 2026-11-14
 
 ### Added
