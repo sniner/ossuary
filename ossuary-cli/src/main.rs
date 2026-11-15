@@ -433,16 +433,17 @@ enum Command {
         #[arg(long)]
         with_origin: bool,
     },
-    /// List all attributes with standing values
+    /// List all attributes in the archive
     ///
     /// One attribute per line, sorted, without values, in the form
     /// `find` takes: `ossuary find $(ossuary attributes mail:)` shows
     /// everything recorded about mail. NAMESPACEs, written with their
     /// colon like `exif:`, restrict the list. An attribute whose values
-    /// were all retracted is not listed; `about` still shows its claims.
-    /// --count prefixes each attribute with the number of files that
-    /// have it, so `sort -rn` ranks them; --json prints one object per
-    /// attribute with name and count.
+    /// were all retracted is listed as well. --count prefixes each
+    /// attribute with the number of files that have a current value of
+    /// it, so `sort -rn` ranks them; --json prints one object per
+    /// attribute with name and count. Counting reads the whole index and
+    /// takes longer on a large archive.
     Attributes {
         /// Only these namespaces, written with their colon, like
         /// `exif:`; may be repeated
@@ -2004,7 +2005,21 @@ fn attributes(
     }
     let archive = open(location)?;
     let index = index_at(&archive, as_of, quiet)?;
-    let mut words = index.attributes()?;
+    // Counting reads every standing claim; only the forms that show the
+    // count pay for it.
+    let mut words: Vec<(Attribute, Option<u64>)> = if count || json {
+        index
+            .attribute_counts()?
+            .into_iter()
+            .map(|(attribute, files)| (attribute, Some(files)))
+            .collect()
+    } else {
+        index
+            .attributes()?
+            .into_iter()
+            .map(|attribute| (attribute, None))
+            .collect()
+    };
     if !wanted.is_empty() {
         words.retain(|(attribute, _)| wanted.contains(&attribute.namespace()));
     }
@@ -2019,13 +2034,13 @@ fn attributes(
                 .collect::<Vec<_>>()
                 .join(" or ");
             match (as_of, wanted.is_empty()) {
-                (Some(time), true) => errln!("no standing attributes as of {time}"),
-                (Some(time), false) => errln!("no standing attributes in {named} as of {time}"),
+                (Some(time), true) => errln!("no attributes as of {time}"),
+                (Some(time), false) => errln!("no attributes in {named} as of {time}"),
                 (None, true) => {
-                    errln!("no standing attributes; add files with `ossuary ingest DIR`");
+                    errln!("no attributes; add files with `ossuary ingest DIR`");
                 }
                 (None, false) => errln!(
-                    "no standing attributes in {named}; `ossuary attributes` without a namespace lists all"
+                    "no attributes in {named}; `ossuary attributes` without a namespace lists all"
                 ),
             }
         }
@@ -2035,18 +2050,16 @@ fn attributes(
     // `uniq -c` speaks — so `sort -rn` ranks the answer.
     let width = words
         .iter()
-        .map(|(_, files)| files.to_string().len())
+        .filter_map(|(_, files)| files.map(|files| files.to_string().len()))
         .max()
         .unwrap_or(0);
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     for (attribute, files) in &words {
-        let line = if json {
-            output::attribute_line(attribute, *files)
-        } else if count {
-            format!("{files:>width$}  {}", attribute.as_str())
-        } else {
-            attribute.as_str().to_string()
+        let line = match files {
+            Some(files) if json => output::attribute_line(attribute, *files),
+            Some(files) => format!("{files:>width$}  {}", attribute.as_str()),
+            None => attribute.as_str().to_string(),
         };
         if !say(&mut out, &line)? {
             return Ok(ExitCode::SUCCESS);

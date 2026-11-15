@@ -154,7 +154,7 @@ runs a file was written in.
 
 ### Which attributes are in use
 
-`attributes` lists every attribute that has current claims, sorted. A
+`attributes` lists every attribute in the archive, sorted. A
 namespace narrows the list:
 
 ```console

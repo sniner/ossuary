@@ -48,7 +48,7 @@ early, the output stops and the command still exits with success.
 | `about` | all claims about one file, oldest first; attributes or a `namespace:` restrict the output |
 | `standing` | the standing values of one file, with retractions applied, where `about` shows every claim. Attributes or a `namespace:` restrict the output; with exactly one attribute, only its values are printed, one per line. Exits 1 if there is no standing value, so a script can test for it |
 | `find` | files that match all terms, shown with the attributes the query selects. A name without a colon is a field of the claim, such as `run`, `source`, `time` or `retract`. Only files that are still present are listed; `--all` searches every claim ever written, retractions included; `--as-of TIME` searches what was recorded up to TIME |
-| `attributes` | all attributes with standing values, sorted, one per line: the attribute names a query can use. Namespaces like `exif:` restrict the list; `--count` prefixes each attribute with the number of files that have it |
+| `attributes` | all attributes in the archive, sorted, one per line: the attribute names a query can use. Namespaces like `exif:` restrict the list; `--count` prefixes each attribute with the number of files that have it |
 | `history` | all runs, oldest first: when each run ended, its id, what it wrote, and the sources of its claims. These are the times `--as-of` accepts and the ids `export`, `extract` and `--as-of` take |
 | `ls`, `tree` | the recorded files and folders at a path, one level (`ls`) or everything below it (`tree`) |
 | `id` | the name a file would have in the archive, and whether the archive already contains it. Nothing is added |
@@ -143,14 +143,16 @@ single `low..high` term must be matched by one value.
 `--id` prints only the full names, for piping into `about`, `get`,
 `annotate` or `export`.
 
-`attributes` lists the names a query can use: every attribute with
-standing values, sorted, one per line, without values. `find` takes
-these names to select what is shown, so `ossuary find $(ossuary
-attributes mail:)` shows everything recorded about mail. Namespaces
-restrict the list; `--count` prefixes each attribute with the number of
-files that have it, as `uniq -c` does, so `sort -rn` ranks them. An
-attribute whose values were all retracted is not listed, since `find`
-cannot match it.
+`attributes` lists the names a query can use: every attribute in the
+archive, sorted, one per line, without values. `find` takes these names
+to select what is shown, so `ossuary find $(ossuary attributes mail:)`
+shows everything recorded about mail. Namespaces restrict the list. An
+attribute whose values were all retracted is listed as well; `find
+--all` matches it. `--count` prefixes each attribute with the number of
+files that have a current value of it, as `uniq -c` does, so `sort -rn`
+ranks them; 0 for an attribute whose values were all retracted.
+Counting reads the whole index, so `--count` and `--json` take longer
+on a large archive.
 
 ### Extracting
 

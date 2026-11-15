@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **`ossuary attributes` lists every attribute in the archive** and counts files only for
+  `--count` and `--json`. It used to count them on every call, which took a minute on a network
+  share. An attribute whose values were all retracted is now listed too, with a count of 0
+
 ## [0.24.1] - 2026-11-15
 
 ### Changed

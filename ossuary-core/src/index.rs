@@ -1176,22 +1176,39 @@ impl Index {
         Ok(subjects)
     }
 
-    /// Every attribute standing on the record, each with the number of
-    /// files it stands on — sorted by attribute, as of the last
-    /// [`fold`](Index::fold), the open head included. The words a
-    /// question can be asked in: what [`find`](Index::find) can name is
-    /// exactly what answers here, and an attribute every value of which
-    /// was retracted is not among them.
+    /// Every attribute a claim was made under, sorted, as of the last
+    /// [`fold`](Index::fold), the open head included. An attribute whose
+    /// values were all retracted is among them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`; the row-to-attribute error cannot
+    /// happen for rows a fold wrote, but is propagated.
+    pub fn attributes(&self) -> Result<Vec<Attribute>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT name FROM attributes ORDER BY name")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut attributes = Vec::new();
+        for row in rows {
+            attributes.push(Attribute::parse(&row?)?);
+        }
+        Ok(attributes)
+    }
+
+    /// The [`attributes`](Index::attributes), each with the number of
+    /// files that have a standing value of it: 0 for an attribute whose
+    /// values were all retracted. Counting reads every standing claim,
+    /// so it takes as long as the record is large.
     ///
     /// # Errors
     ///
     /// [`Error::Index`] from `SQLite`; the row-to-attribute errors cannot
-    /// happen for rows a fold wrote, but are propagated rather than
-    /// sworn away.
-    pub fn attributes(&self) -> Result<Vec<(Attribute, u64)>> {
+    /// happen for rows a fold wrote, but are propagated.
+    pub fn attribute_counts(&self) -> Result<Vec<(Attribute, u64)>> {
         let mut statement = self.connection.prepare(
             "SELECT a.name, COUNT(DISTINCT st.subject)
-             FROM standing st JOIN attributes a ON a.id = st.attribute
+             FROM attributes a LEFT JOIN standing st ON st.attribute = a.id
              GROUP BY a.id ORDER BY a.name",
         )?;
         let rows = statement.query_map([], |row| {
@@ -4201,7 +4218,7 @@ mod tests {
     }
 
     #[test]
-    fn attributes_names_the_standing_words_and_counts_their_files() {
+    fn attributes_names_every_attribute_and_counts_its_files() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         let mut index = index_in(&dir);
@@ -4231,17 +4248,31 @@ mod tests {
         .unwrap();
         index.fold(&log).unwrap();
 
-        let spelled: Vec<(String, u64)> = index
+        let names: Vec<String> = index
             .attributes()
+            .unwrap()
+            .into_iter()
+            .map(|attribute| attribute.as_str().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["exif:make", "file:mime", "user:tag"],
+            "sorted, and an attribute retracted everywhere is listed"
+        );
+        let counted: Vec<(String, u64)> = index
+            .attribute_counts()
             .unwrap()
             .into_iter()
             .map(|(attribute, files)| (attribute.as_str().to_string(), files))
             .collect();
         assert_eq!(
-            spelled,
-            [("file:mime".to_string(), 2), ("user:tag".to_string(), 1)],
-            "sorted by attribute; files are counted, not values — two tags on \
-             one file are one file; a word retracted everywhere is gone"
+            counted,
+            [
+                ("exif:make".to_string(), 0),
+                ("file:mime".to_string(), 2),
+                ("user:tag".to_string(), 1)
+            ],
+            "files are counted, not values: two tags on one file are one file"
         );
     }
 
