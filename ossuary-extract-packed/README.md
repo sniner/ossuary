@@ -44,8 +44,8 @@ the filesystem is shortened. In either case the file name from the zip
 is recorded as `file:name`.
 
 A zip file does not declare file types, so each entry's type is detected
-the same way ingest detects it: magic bytes first, then a check for
-UTF-8 text. Entries are streamed to disk, not loaded into memory.
+from the unpacked file, the same way ingest detects it. Entries are
+streamed to disk, not loaded into memory.
 
 ## Documents in zip format
 

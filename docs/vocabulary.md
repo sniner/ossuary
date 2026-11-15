@@ -215,18 +215,23 @@ added when it is first needed.
 
 ### file:mime
 
-- meaning: the type of the bytes. Ingest detects it from magic bytes
-  and a UTF-8 check for plain text, and records
-  `application/octet-stream` when neither identifies the type. The type
-  of a derived file is announced by the extractor that wrote the bytes
-  and is not detected. An extractor that recognizes a format from its
-  content records the more specific type: a mail detected as
-  `text/plain` gets `message/rfc822`, a mailbox `application/mbox`, and
-  a zip that is an epub or an Office document gets its declared type.
-  All these values are in the set
+- meaning: the type of the bytes. Ingest detects it from the content
+  with the crate `file-format`: `text/plain` for text,
+  `application/x-empty` for an empty file, `application/octet-stream`
+  when the format is not recognized. The type of a derived file is
+  announced by the extractor that wrote the bytes; when the bytes are
+  new to the archive, the detected type is recorded beside it if it
+  differs and is not `application/octet-stream`. A mail may declare a
+  PDF as `application/octet-stream`; the detected `application/pdf`
+  then offers it to the PDF extractor. An extractor that recognizes a
+  format from its content records the more specific type: a mail
+  detected as `text/plain` gets `message/rfc822`, a mailbox
+  `application/mbox`, and a zip that is an epub or an Office document
+  gets its declared type. All these values are in the set
 - value: string, a MIME type
 - written by: ingest, when the blob is first stored; `ossuary extract`,
-  with the type the deriving extractor announced; ossuary-extract-mail
+  with the type the deriving extractor announced and, for bytes new to
+  the archive, the detected type; ossuary-extract-mail
   and ossuary-extract-packed, for formats they recognized;
   `ossuary mailvault`, which records `message/rfc822` on every sighting
   because it knows the file is a message. That knowledge does not come

@@ -8,33 +8,36 @@
 //! The first step, [`admit`], is about the bytes alone: they stream
 //! into the content store under the name their own content gives them —
 //! never held whole in memory — and on the way through, their length
-//! is counted and their kind sniffed. What came of it is the
+//! is counted. Bytes new to the store are then read again from the
+//! start to detect their kind. What came of it is the
 //! [`Admitted`] answer: the subject, whether the bytes were new, how
-//! long they were, what they looked like.
+//! long they were, what they are.
 //!
 //! The second step, [`record`], is about the record: the taker's own
 //! facts under its source, the user's tags under theirs, the run all of
 //! it arrived in — and, on the bytes' first day only, the facts any
-//! content has: its size and its kind as the sniff saw it. A walk over
-//! unknown files has nothing but the sniff; a fetcher knows it is
+//! content has: its size and its kind as detected. A walk over
+//! unknown files has nothing but the detected kind; a fetcher knows it is
 //! holding a message, and its word on the kind is a taker's fact like
 //! any other: said on every sighting, whether or not the bytes are new.
 //!
 //! Bytes the store already holds get the taker's facts and nothing
 //! else. Another place they sat, another mailbox they were seen in, is
-//! new knowledge; their size and their sniffed kind describe the
+//! new knowledge; their size and their detected kind describe the
 //! content, the log has them from the first day, and saying a
 //! deterministic thing twice adds nothing. What a taker knows of the
 //! kind is not deterministic in the bytes — it may be the one thing the
-//! sniff got wrong.
+//! detection got wrong.
 
-use std::io::Read;
+use std::io::{Read, Seek};
+
+use file_format::FileFormat;
 
 use immure::Store;
 use serde_json::json;
 
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::log::Log;
 
 /// What [`admit`] answers: the bytes are in, and this is what was seen
@@ -47,7 +50,9 @@ pub struct Admitted {
     subject: Subject,
     new: bool,
     size: u64,
-    kind: String,
+    /// `None` for bytes the store already held: their kind is on the
+    /// record since their first day.
+    kind: Option<String>,
 }
 
 impl Admitted {
@@ -69,12 +74,11 @@ impl Admitted {
         self.size
     }
 
-    /// What the bytes look like: magic bytes first, a UTF-8 look for
-    /// plain text second, and `application/octet-stream` when nothing
-    /// answers.
+    /// What the bytes are, detected from their content; `None` when the
+    /// store already held them and nothing was detected.
     #[must_use]
-    pub fn kind(&self) -> &str {
-        &self.kind
+    pub fn kind(&self) -> Option<&str> {
+        self.kind.as_deref()
     }
 
     /// The same bytes for another sighting in the same call. The store
@@ -119,22 +123,52 @@ pub struct Sighting<'a> {
 
 /// Stream `bytes` into `content` and answer what was seen of them. The
 /// bytes never stand whole in memory: the store hashes as it writes,
-/// and the length and the sniff are observed in passing.
+/// and the length is counted in passing. Bytes new to the store are
+/// read a second time to detect their kind, which needs to seek; for
+/// bytes the store already held, the kind is not needed and not
+/// detected.
 ///
 /// # Errors
 ///
 /// [`Error::Store`](crate::Error::Store) when the store will not take
-/// the bytes — a reader that fails reads as that.
-pub fn admit(content: &Store, bytes: impl Read) -> Result<Admitted> {
-    let mut observed = Observed::over(bytes);
-    let (status, entry) = content.add_reader(&mut observed)?;
+/// the bytes (a reader that fails reads as that), and [`Error::Io`]
+/// when the second read fails.
+pub fn admit(content: &Store, mut bytes: impl Read + Seek) -> Result<Admitted> {
+    let mut counted = Counted::over(&mut bytes);
+    let (status, entry) = content.add_reader(&mut counted)?;
+    let size = counted.length;
+    let kind = if status.is_new() {
+        Some(detect(&mut bytes).map_err(|source| Error::Io {
+            context: "detecting the file type".to_string(),
+            source,
+        })?)
+    } else {
+        None
+    };
     Ok(Admitted {
         subject: Subject::parse(entry.digest().as_str())?,
         new: status.is_new(),
-        size: observed.length,
-        kind: observed.mime(),
+        size,
+        kind,
     })
 }
+
+/// What the bytes are, from their content: a format the `file-format`
+/// crate recognizes, `text/plain` for text, `application/x-empty` for
+/// no bytes at all, and [`UNKNOWN_KIND`] when nothing answers. Reads
+/// from the start whatever the position, and seeks: an Office document
+/// or a zip is told apart by its directory at the end.
+///
+/// # Errors
+///
+/// Whatever reading or seeking `bytes` answers.
+pub(crate) fn detect(mut bytes: impl Read + Seek) -> std::io::Result<String> {
+    bytes.rewind()?;
+    Ok(FileFormat::from_reader(bytes)?.media_type().to_string())
+}
+
+/// What [`detect`] answers for bytes it does not recognize.
+pub(crate) const UNKNOWN_KIND: &str = "application/octet-stream";
 
 /// Put an admission on the record: the taker's facts, the tags, the
 /// kind in the taker's words where it has them — and for bytes new to
@@ -173,7 +207,7 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<Vec
             said.run,
         )?);
     }
-    // Size and sniffed kind describe the content, not the sighting: the
+    // Size and detected kind describe the content, not the sighting: the
     // log has them from the blob's first day, and they never say
     // anything new. The taker's word on the kind is the taker's, and
     // goes with every sighting.
@@ -189,7 +223,7 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<Vec
     }
     let kind = match said.mime {
         Some(told) => Some(told),
-        None if admitted.new => Some(admitted.kind.as_str()),
+        None if admitted.new => admitted.kind.as_deref(),
         None => None,
     };
     if let Some(kind) = kind {
@@ -234,120 +268,30 @@ pub(crate) fn known_attribute(attribute: &'static str) -> Attribute {
     Attribute::parse(attribute).expect("a known attribute")
 }
 
-/// How much of a file's head the magic-byte sniff sees — the same 8 KiB
-/// infer's own file reading takes, comfortably past every offset its
-/// matchers look at.
-pub(crate) const SNIFF: usize = 8192;
-
-/// A reader that watches bytes on their way into the store: the head for
-/// the sniff, a running UTF-8 check for the text fallback, the length.
-/// Everything [`mime`](Observed::mime) will need, observed in passing —
-/// which is what lets a file stream in without standing whole in memory.
-pub(crate) struct Observed<R> {
+/// A reader that counts the bytes on their way into the store.
+pub(crate) struct Counted<R> {
     inner: R,
-    head: Vec<u8>,
-    text: Utf8Watch,
     pub(crate) length: u64,
 }
 
-impl<R: Read> Observed<R> {
-    pub(crate) fn over(inner: R) -> Observed<R> {
-        Observed {
-            inner,
-            head: Vec::with_capacity(SNIFF),
-            text: Utf8Watch::new(),
-            length: 0,
-        }
-    }
-
-    /// What the bytes say they are: magic bytes first, a UTF-8 look for
-    /// plain text second, and the honest shrug when nothing answers. The
-    /// sniff reads the head, the UTF-8 look judged the whole stream.
-    pub(crate) fn mime(&self) -> String {
-        infer::get(&self.head)
-            .map(|kind| kind.mime_type().to_string())
-            .or_else(|| (self.length > 0 && self.text.holds()).then(|| "text/plain".to_string()))
-            .unwrap_or_else(|| "application/octet-stream".to_string())
+impl<R: Read> Counted<R> {
+    pub(crate) fn over(inner: R) -> Counted<R> {
+        Counted { inner, length: 0 }
     }
 }
 
-impl<R: Read> Read for Observed<R> {
+impl<R: Read> Read for Counted<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let count = self.inner.read(buf)?;
-        let passed = &buf[..count];
-        if self.head.len() < SNIFF {
-            let room = SNIFF - self.head.len();
-            self.head
-                .extend_from_slice(&passed[..room.min(passed.len())]);
-        }
-        self.text.feed(passed);
         self.length += count as u64;
         Ok(count)
     }
 }
 
-/// Whether everything fed through so far could be one valid UTF-8 text —
-/// the whole-stream judgement, kept across chunk borders: a multi-byte
-/// character split between two reads must not read as junk.
-pub(crate) struct Utf8Watch {
-    sound: bool,
-    /// The bytes at a chunk's end that began a character whose end had
-    /// not arrived yet — at most three, a character being four at the
-    /// longest.
-    pending: [u8; 4],
-    pended: usize,
-}
-
-impl Utf8Watch {
-    pub(crate) fn new() -> Utf8Watch {
-        Utf8Watch {
-            sound: true,
-            pending: [0; 4],
-            pended: 0,
-        }
-    }
-
-    pub(crate) fn feed(&mut self, chunk: &[u8]) {
-        if !self.sound {
-            return;
-        }
-        let mut rest = chunk;
-        // First finish the character the last chunk began: one byte at a
-        // time until it is whole or proven junk — four bytes always
-        // decide, so this ends within three steps and the buffer holds.
-        while self.pended > 0 && !rest.is_empty() {
-            self.pending[self.pended] = rest[0];
-            self.pended += 1;
-            rest = &rest[1..];
-            match std::str::from_utf8(&self.pending[..self.pended]) {
-                Ok(_) => self.pended = 0,
-                Err(error) if error.error_len().is_some() => {
-                    self.sound = false;
-                    return;
-                }
-                Err(_) => {}
-            }
-        }
-        match std::str::from_utf8(rest) {
-            Ok(_) => {}
-            Err(error) if error.error_len().is_some() => self.sound = false,
-            Err(error) => {
-                let tail = &rest[error.valid_up_to()..];
-                self.pending[..tail.len()].copy_from_slice(tail);
-                self.pended = tail.len();
-            }
-        }
-    }
-
-    /// Whether the whole stream read as text. A character still waiting
-    /// for its end when the stream ends is junk, not text.
-    pub(crate) fn holds(&self) -> bool {
-        self.sound && self.pended == 0
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use immure::Algorithm;
     use tempfile::TempDir;
 
@@ -379,7 +323,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (content, _) = archive(&dir);
 
-        let first = admit(&content, &b"From: a@example.org\r\n\r\nhello"[..]).unwrap();
+        let first = admit(
+            &content,
+            Cursor::new(&b"From: a@example.org\r\n\r\nhello"[..]),
+        )
+        .unwrap();
         assert_eq!(
             first.subject.as_str(),
             Algorithm::Sha256
@@ -388,28 +336,43 @@ mod tests {
         );
         assert!(first.new);
         assert_eq!(first.size, 28);
-        assert_eq!(first.kind, "text/plain");
+        assert_eq!(first.kind(), Some("text/plain"));
 
-        let again = admit(&content, &b"From: a@example.org\r\n\r\nhello"[..]).unwrap();
+        let again = admit(
+            &content,
+            Cursor::new(&b"From: a@example.org\r\n\r\nhello"[..]),
+        )
+        .unwrap();
         assert!(!again.new, "the store answers for what it holds");
         assert_eq!(again.subject, first.subject);
     }
 
     #[test]
-    fn the_kind_is_sniffed_three_ways() {
+    fn the_kind_is_detected_from_the_content() {
         let dir = TempDir::new().unwrap();
         let (content, _) = archive(&dir);
         let kinds: Vec<String> = [
             &b"plain words"[..],
+            &b"BMW, Mercedes and Audi"[..],
+            &b"-----BEGIN PGP SIGNATURE-----\n\niQEz\n-----END PGP SIGNATURE-----\n"[..],
             &[0xFF, 0xD8, 0xFF, 0xE0][..],
             &[0x00, 0xFF, 0x00][..],
+            &b""[..],
         ]
         .into_iter()
-        .map(|bytes| admit(&content, bytes).unwrap().kind)
+        .map(|bytes| admit(&content, Cursor::new(bytes)).unwrap().kind.unwrap())
         .collect();
         assert_eq!(
             kinds,
-            ["text/plain", "image/jpeg", "application/octet-stream"]
+            [
+                "text/plain",
+                "text/plain",
+                "application/pgp-signature",
+                "image/jpeg",
+                UNKNOWN_KIND,
+                "application/x-empty"
+            ],
+            "a text starting with BM is no bitmap"
         );
     }
 
@@ -428,7 +391,11 @@ mod tests {
             Timestamp::parse("2019-05-01T08:00:00Z").unwrap(),
             Timestamp::parse("2023-01-01T00:00:00Z").unwrap(),
         );
-        let admitted = admit(&content, &b"From: a@example.org\r\n\r\nhello"[..]).unwrap();
+        let admitted = admit(
+            &content,
+            Cursor::new(&b"From: a@example.org\r\n\r\nhello"[..]),
+        )
+        .unwrap();
         let (inbox, archive_folder) = (place("INBOX"), place("Archive"));
         let sighting = |facts, time| Sighting {
             source: &source,
@@ -475,7 +442,11 @@ mod tests {
             Attribute::parse("mailbox:place").unwrap(),
             json!("example.org:INBOX"),
         )];
-        let admitted = admit(&content, &b"From: a@example.org\r\n\r\nhello"[..]).unwrap();
+        let admitted = admit(
+            &content,
+            Cursor::new(&b"From: a@example.org\r\n\r\nhello"[..]),
+        )
+        .unwrap();
 
         let written = record(
             &log,
@@ -533,9 +504,9 @@ mod tests {
         let first = vec![(Attribute::parse("mailbox:place").unwrap(), json!("a:INBOX"))];
         let second = vec![(Attribute::parse("mailbox:place").unwrap(), json!("b:INBOX"))];
 
-        let admitted = admit(&content, &b"hello"[..]).unwrap();
+        let admitted = admit(&content, Cursor::new(&b"hello"[..])).unwrap();
         record(&log, &admitted, &said(&first)).unwrap();
-        let again = admit(&content, &b"hello"[..]).unwrap();
+        let again = admit(&content, Cursor::new(&b"hello"[..])).unwrap();
         let written = record(&log, &again, &said(&second)).unwrap();
 
         assert_eq!(
@@ -562,9 +533,9 @@ mod tests {
             tags: &[],
             time: None,
         };
-        let first = admit(&content, &b"hello"[..]).unwrap();
+        let first = admit(&content, Cursor::new(&b"hello"[..])).unwrap();
         record(&log, &first, &told).unwrap();
-        let again = admit(&content, &b"hello"[..]).unwrap();
+        let again = admit(&content, Cursor::new(&b"hello"[..])).unwrap();
         let written = record(&log, &again, &told).unwrap();
 
         assert_eq!(
@@ -589,7 +560,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (content, log) = archive(&dir);
         let source = source();
-        let admitted = admit(&content, &[0xFF, 0xD8, 0xFF, 0xE0][..]).unwrap();
+        let admitted = admit(&content, Cursor::new(&[0xFF, 0xD8, 0xFF, 0xE0][..])).unwrap();
         record(
             &log,
             &admitted,
@@ -618,7 +589,7 @@ mod tests {
         let (content, log) = archive(&dir);
         let source = Source::parse("ingest").unwrap();
         let tags = vec!["holiday".to_string()];
-        let admitted = admit(&content, &b"hello"[..]).unwrap();
+        let admitted = admit(&content, Cursor::new(&b"hello"[..])).unwrap();
 
         record(
             &log,
@@ -645,30 +616,5 @@ mod tests {
             "user",
             "the human asserts, the taker is the pen"
         );
-    }
-
-    #[test]
-    fn the_utf8_watch_reads_across_chunk_borders() {
-        let mut split = Utf8Watch::new();
-        for byte in "grüße, öl".as_bytes() {
-            // Byte by byte: every multi-byte character is torn apart.
-            split.feed(std::slice::from_ref(byte));
-        }
-        assert!(split.holds());
-
-        let mut torn = Utf8Watch::new();
-        torn.feed(&[0xC3]);
-        assert!(
-            !torn.holds(),
-            "a character begun and never finished is junk"
-        );
-        torn.feed(&[0xA4]);
-        assert!(torn.holds(), "finished, it is the text it always was");
-
-        let mut junk = Utf8Watch::new();
-        junk.feed(&[b'a', 0xFF, b'b']);
-        assert!(!junk.holds());
-        junk.feed(b"all text from here on");
-        assert!(!junk.holds(), "junk once is junk for good");
     }
 }

@@ -4,15 +4,15 @@
 //! file that one run stored and a later run recorded has claims and
 //! neither of the two; the audit lists such files (see `audit`). The
 //! bytes are in the store, so both can be recorded from them at any time:
-//! each file is read once, its length counted and its type detected the
-//! way an ingest detects it.
+//! each file is read once from the store, its length counted and its type
+//! detected the way an ingest detects it.
 //!
 //! The claims carry the source `maintain`. No run that took the file in
 //! recorded them, and the source says so.
 
 use serde_json::json;
 
-use crate::accession::{Observed, known_attribute};
+use crate::accession::{detect, known_attribute};
 use crate::archive::Archive;
 use crate::audit::{Audit, LogAudit, Undescribed, audit_log, audit_store};
 use crate::claim::{Claim, Run, Source, Subject, Timestamp};
@@ -96,11 +96,22 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
             gone.push(file.digest.as_str().to_string());
             continue;
         };
-        let mut observed = Observed::over(reader);
-        std::io::copy(&mut observed, &mut std::io::sink()).map_err(|source| Error::Io {
-            context: format!("{}: reading the stored file", file.digest),
-            source,
-        })?;
+        // The store answers with a stream, decompressed where the store
+        // compresses; detection has to seek, so the bytes are spooled
+        // into a temporary file first.
+        let io = |context: &str| {
+            let context = format!("{}: {context}", file.digest);
+            move |source| Error::Io { context, source }
+        };
+        let mut reader = reader;
+        let mut spool = tempfile::tempfile().map_err(io("creating a temporary file"))?;
+        let length =
+            std::io::copy(&mut reader, &mut spool).map_err(io("reading the stored file"))?;
+        let kind = if file.lacks_mime {
+            Some(detect(&mut spool).map_err(io("detecting the file type"))?)
+        } else {
+            None
+        };
         let subject = Subject::parse(file.digest.as_str())?;
         let say = |attribute: &'static str, value| {
             Claim::assert(
@@ -113,10 +124,10 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
             )
         };
         if file.lacks_size {
-            claims.push(say("file:size", json!(observed.length))?);
+            claims.push(say("file:size", json!(length))?);
         }
-        if file.lacks_mime {
-            claims.push(say("file:mime", json!(observed.mime()))?);
+        if let Some(kind) = kind {
+            claims.push(say("file:mime", json!(kind))?);
         }
         described += 1;
     }
@@ -145,7 +156,7 @@ mod tests {
 
     /// One arrival of `bytes` at `path`, as ingest records it.
     fn arrive(archive: &Archive, bytes: &[u8], path: &str) -> Subject {
-        let admitted = admit(archive.content(), bytes).unwrap();
+        let admitted = admit(archive.content(), std::io::Cursor::new(bytes)).unwrap();
         let facts = [(Attribute::parse("file:path").unwrap(), json!(path))];
         record(
             archive.log(),
@@ -185,7 +196,11 @@ mod tests {
         arrive(&archive, b"whole from the start", "/home/john/whole.txt");
         // The run that stored these bytes stopped before it recorded
         // them; the next one finds them in the store.
-        admit(archive.content(), &b"stored, then met again"[..]).unwrap();
+        admit(
+            archive.content(),
+            std::io::Cursor::new(&b"stored, then met again"[..]),
+        )
+        .unwrap();
         let late = arrive(&archive, b"stored, then met again", "/home/john/late.txt");
         assert!(standing(&archive, &late, "file:size").is_empty());
 

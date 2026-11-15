@@ -12,7 +12,8 @@
 //! hands them over as [`Derivation`]s, and each becomes content of its
 //! own — bytes into the derived store, and onto the record what is known
 //! about them: their kind and name in the extractor's words, their
-//! origin, and on the bytes' first day their size. The derived store,
+//! origin, and on the bytes' first day their size and the kind detected
+//! from their content. The derived store,
 //! not the content store: what was taken in and what a tool made of it
 //! do not share a rank, and keeping them apart keeps every future
 //! cleanup out of the originals by topology, not by care. The one
@@ -32,6 +33,7 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
+use crate::accession::{UNKNOWN_KIND, detect};
 use crate::archive::Archive;
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
@@ -50,8 +52,9 @@ pub struct Derivation {
     /// never learns it. A name the content was known by is a finding
     /// the extractor says as `file:name`, when there is one.
     pub name: String,
-    /// The announced MIME type — what `file:mime` will say. The one who
-    /// wrote the bytes is not guessed at.
+    /// The announced MIME type, recorded as `file:mime`. For bytes new
+    /// to the archive, the type detected from the content is recorded
+    /// beside it when the two differ.
     pub mime: String,
     /// Where the bytes wait to be taken in. Read here, never removed:
     /// the directory is the caller's to clean up.
@@ -195,12 +198,12 @@ fn take(
                 derivation.name
             )));
         }
-        // The size describes the content and is said on the bytes' first
-        // day, the way ingest says it — and ingest already said it for
-        // everything content/ holds. Kind and origin belong to this
-        // derivation: another extractor, another mail may know the
-        // same bytes under other words, and every word stands in the
-        // set.
+        // The size and the detected type describe the content and are
+        // said on the bytes' first day, the way ingest says them; ingest
+        // already said them for everything content/ holds. The
+        // announced type and the origin belong to this derivation:
+        // another extractor, another mail may know the same bytes under
+        // other words, and every word stands in the set.
         if status.is_new() {
             let attribute = known_attribute("file:size");
             claims.push(claim(
@@ -211,6 +214,23 @@ fn take(
                 source,
                 run,
             )?);
+            // The announced type comes from the examined file, and a mail
+            // declares what its sender's program thought: a PDF as
+            // application/octet-stream, a JPEG as application/pdf. The
+            // detected type goes beside it, so the extractor for the
+            // real format is offered the file. A detection that
+            // recognizes nothing adds nothing to the announced word.
+            let detected = detect(fs::File::open(&derivation.path).map_err(io)?).map_err(io)?;
+            if detected != UNKNOWN_KIND && detected != derivation.mime {
+                claims.push(claim(
+                    &subject,
+                    &known_attribute("file:mime"),
+                    &json!(detected),
+                    time,
+                    source,
+                    run,
+                )?);
+            }
             new = true;
         }
     }
@@ -573,6 +593,51 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "the derived file was not examined, only made"
+        );
+    }
+
+    #[test]
+    fn a_new_derived_file_gets_its_detected_kind_beside_the_announced_one() {
+        let dir = TempDir::new().unwrap();
+        let (archive, mut index) = archive(&dir);
+        let mail = take(&archive, &dir, "letter", b"From: a@example.com");
+        let scratch = TempDir::new().unwrap();
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        let unknown = [0x00, 0xFF, 0x00, 0xFE];
+        // A sender's program declared the photo a PDF, and the other
+        // part only as bytes.
+        let derivations = [
+            derivation(&scratch, "photo.jpg", "application/pdf", &jpeg),
+            derivation(&scratch, "blob", "application/octet-stream", &unknown),
+        ];
+        record_examination(&archive, &mail, &[], &derivations, &source(), &run()).unwrap();
+
+        index.fold(archive.log()).unwrap();
+        let kinds = |bytes: &[u8]| {
+            let subject =
+                Subject::parse(archive.content().algorithm().hash(bytes).as_str()).unwrap();
+            let mut kinds = index
+                .values(
+                    &subject,
+                    &Attribute::parse("file:mime").unwrap(),
+                    Scope::Held,
+                )
+                .unwrap();
+            kinds.sort_by_key(ToString::to_string);
+            kinds
+        };
+        assert_eq!(
+            kinds(&jpeg),
+            [
+                serde_json::json!("application/pdf"),
+                serde_json::json!("image/jpeg")
+            ],
+            "the announced word stays, the detected one goes beside it"
+        );
+        assert_eq!(
+            kinds(&unknown),
+            [serde_json::json!("application/octet-stream")],
+            "a detection that recognizes nothing adds nothing"
         );
     }
 

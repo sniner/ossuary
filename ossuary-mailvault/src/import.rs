@@ -415,7 +415,7 @@ impl Takeover<'_> {
                 return Ok(None);
             }
         };
-        let admitted = admit(self.archive.content(), &bytes[..])?;
+        let admitted = admit(self.archive.content(), std::io::Cursor::new(&bytes[..]))?;
         if admitted.is_new() {
             tally.stored += 1;
         } else {

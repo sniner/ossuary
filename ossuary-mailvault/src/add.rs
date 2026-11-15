@@ -108,7 +108,7 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
         if options.dry_run {
             tally.would += 1;
         } else {
-            let admitted = admit(archive.content(), &bytes[..])?;
+            let admitted = admit(archive.content(), std::io::Cursor::new(&bytes[..]))?;
             if admitted.is_new() {
                 tally.stored += 1;
             } else {

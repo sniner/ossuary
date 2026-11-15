@@ -38,7 +38,7 @@ reader that can list the contents and can unpack:
 
 ```json
 {"ossuary-extractor": 1, "contract": "list", "source": "extractor:packed-list/1", "mimes": ["application/zip"]}
-{"ossuary-extractor": 1, "contract": "unpack", "source": "extractor:packed-unpack/1", "mimes": ["application/zip"], "derives": true}
+{"ossuary-extractor": 1, "contract": "unpack", "source": "extractor:packed-unpack/2", "mimes": ["application/zip"], "derives": true}
 ```
 
 - `ossuary-extractor`: the protocol version the extractor implements,
@@ -103,9 +103,10 @@ writes zero or more lines, one JSON object each, in three shapes:
   [vocabulary](vocabulary.md).
 - The second shape announces a derived file: `file` is its name in the
   directory (a bare name, without a path), and `mime` is its type, as
-  stated by the program that wrote the bytes instead of detected from
-  them. The name is only a handle: the other lines use it to refer to
-  the file, and it is never recorded. A name the content actually had,
+  stated by the program that wrote the bytes or by the format it came
+  from, such as the content type of a mail part. The name is only a
+  handle: the other lines use it to refer to the file, and it is never
+  recorded. A name the content actually had,
   such as an attachment's or a zip entry's own name, is a `file:name`
   finding of the third shape, reported whenever the format gives one;
   extracted text has no name and gets none. Only announced files are
@@ -150,7 +151,9 @@ because it is the digest of the file's bytes. Each announced file is
 stored in the archive's derived store, as content like any other, with
 the claims that are known about it: `file:mime` as announced,
 `prov:origin` naming the examined file, and, for bytes the store did not
-hold before, `file:size`. No name is invented: a derived file has a
+hold before, `file:size` and the type detected from the bytes as a
+second `file:mime`, when it differs from the announced one and is not
+`application/octet-stream`. No name is invented: a derived file has a
 `file:name` only if the extractor reported one. Bytes the content store
 already holds (an attachment that was also saved and ingested as a
 file) are not copied into the derived store. The claims are written all

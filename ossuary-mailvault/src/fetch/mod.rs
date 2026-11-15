@@ -413,7 +413,7 @@ impl Fetch<'_> {
         id: Option<&str>,
         state: &mut State,
     ) -> Result<Subject> {
-        let admitted = admit(self.archive.content(), bytes)?;
+        let admitted = admit(self.archive.content(), std::io::Cursor::new(bytes))?;
         let mut facts = vec![(self.place.clone(), json!(place.name))];
         for tag in marks.map(|marks| marks.tags).unwrap_or_default() {
             facts.push((self.tag.clone(), json!(tag)));

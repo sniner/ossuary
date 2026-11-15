@@ -5,6 +5,19 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **File types are detected with the crate `file-format` instead of `infer`.** `infer` recognizes
+  some formats by two bytes, so a text starting with "BM" was recorded as a bitmap and a PGP
+  signature as a certificate, and Office files were only `application/x-ole-storage`. Text is now
+  `text/plain`, Word, Excel and PowerPoint files and PGP signatures get their own types, and an
+  empty file is `application/x-empty`. This applies to `ingest`, `ossuary maintain describe` and
+  the entries `ossuary-extract-packed` unpacks; the `unpack` contract examines zip files again
+- **`ossuary extract` also records the detected type of a derived file**, beside the type the
+  extractor announced, when the bytes are new to the archive. A mail that declares a PDF as
+  `application/octet-stream` or a photo as `application/pdf` no longer hides the file from the PDF
+  or image extractor. For files derived before, run `ossuary-fix unextract` and `ossuary extract`
+
 ### Fixed
 
 - **`ossuary extract` and `ossuary export` accept the run id of an `ossuary mailvault` run.** Both

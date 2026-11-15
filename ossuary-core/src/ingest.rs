@@ -901,7 +901,6 @@ impl Walk<'_> {
 mod tests {
     use immure::Algorithm;
 
-    use crate::accession::SNIFF;
     use crate::claim::Claim;
     use tempfile::TempDir;
 
@@ -1951,26 +1950,21 @@ mod tests {
     }
 
     #[test]
-    fn the_text_fallback_judges_the_whole_file_not_the_sniff_head() {
-        // Text for longer than the sniff head sees, then one raw byte:
-        // only a whole-stream look can refuse the text/plain fallback.
-        let dir = TempDir::new().unwrap();
-        let mut bytes = vec![b'a'; SNIFF + 1024];
-        bytes.push(0xFF);
+    fn the_type_comes_from_the_content() {
+        let pdf = TempDir::new().unwrap();
         assert_eq!(
-            recorded_mime(&dir, &bytes),
-            json!("application/octet-stream")
+            recorded_mime(
+                &pdf,
+                b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+            ),
+            json!("application/pdf")
         );
-    }
-
-    #[test]
-    fn a_text_larger_than_the_sniff_head_is_still_text() {
-        // A multi-byte character straddling the head's edge: the truncated
-        // head is no longer valid UTF-8, the whole stream is.
-        let dir = TempDir::new().unwrap();
-        let mut bytes = vec![b'a'; SNIFF - 1];
-        bytes.extend_from_slice("ä und noch viel mehr Text".as_bytes());
-        assert_eq!(recorded_mime(&dir, &bytes), json!("text/plain"));
+        // Two bytes `BM` open a bitmap; here they open a line of text.
+        let text = TempDir::new().unwrap();
+        assert_eq!(
+            recorded_mime(&text, b"BMW, Mercedes and Audi\n"),
+            json!("text/plain")
+        );
     }
 
     /// The record as it stands: an index folded from the log, thrown

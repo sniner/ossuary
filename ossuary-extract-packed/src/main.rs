@@ -35,9 +35,8 @@
 //! `file:name` always, since the announced one is a handle the record
 //! never learns, and every file's full entry path as its `@`-led
 //! `file:path`. A zip declares no kinds, so each announcement carries
-//! the same magic-bytes-then-UTF-8 look ingest would take, taken on the
-//! way out: an entry streams into its file, never through memory
-//! whole, and one that unpacks to more than [`UNPACKED_AT_MOST`] stays
+//! the kind detected from the unpacked file, the way ingest detects it.
+//! An entry streams into its file, never through memory whole, and one that unpacks to more than [`UNPACKED_AT_MOST`] stays
 //! inside — a zip bomb is a deterministic reason, not a failure to try
 //! again. An entry that will not come out — encrypted, damaged, a
 //! spelling with no file name in it, too large — stays inside, and the
@@ -64,16 +63,12 @@ use zip::ZipArchive;
 /// is the only reason to have one. Two contracts, two numbers: what
 /// `list` learns to see says nothing about `unpack`.
 const LIST_GENERATION: u32 = 1;
-const UNPACK_GENERATION: u32 = 1;
+const UNPACK_GENERATION: u32 = 2;
 
 /// The most an entry may unpack to. A zip bomb's whole point is bytes
 /// out of nowhere; beyond this, the entry stays inside with the reason
 /// on the record.
 const UNPACKED_AT_MOST: u64 = 1 << 30;
-
-/// How much of an entry's beginning the kind is read from: what
-/// `infer` needs, and then some.
-const HEAD: usize = 8 * 1024;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -326,13 +321,12 @@ fn unpack<R: Read + Seek>(
         let opened = std::fs::File::create(&target).map_err(|error| {
             std::io::Error::new(error.kind(), format!("writing {announced}: {error}"))
         })?;
-        // The entry streams into its file, the look at its kind taken on
-        // the way; one byte past the bound tells too large from exactly
-        // as large.
-        let mut look = Look::new(opened);
-        let copied = std::io::copy(&mut file.by_ref().take(at_most + 1), &mut look);
+        // The entry streams into its file; one byte past the bound tells
+        // too large from exactly as large.
+        let mut out = Counted::new(opened);
+        let copied = std::io::copy(&mut file.by_ref().take(at_most + 1), &mut out);
         match copied {
-            Ok(_) if look.written > at_most => {
+            Ok(_) if out.written > at_most => {
                 let _ = std::fs::remove_file(&target);
                 lines.push(stays_inside(
                     &spelled,
@@ -343,7 +337,7 @@ fn unpack<R: Read + Seek>(
             Ok(_) => {}
             Err(error) => {
                 let _ = std::fs::remove_file(&target);
-                if look.failed {
+                if out.failed {
                     // The directory would not take it: this run's
                     // trouble, not the entry's.
                     return Err(std::io::Error::new(
@@ -355,7 +349,12 @@ fn unpack<R: Read + Seek>(
                 continue;
             }
         }
-        lines.push(json!({ "file": &announced, "mime": look.kind() }));
+        // A zip declares no kinds, so the kind is detected from the
+        // unpacked file, the way ingest detects it.
+        let kind = file_format::FileFormat::from_file(&target).map_err(|error| {
+            std::io::Error::new(error.kind(), format!("reading {announced}: {error}"))
+        })?;
+        lines.push(json!({ "file": &announced, "mime": kind.media_type() }));
         // The name the zip spelled goes on the record, whether or not
         // the announcement could wear it: the announced name is a
         // handle in the directory, and the record never learns it.
@@ -367,75 +366,28 @@ fn unpack<R: Read + Seek>(
     Ok(lines)
 }
 
-/// The writer an entry streams through on its way into its file: the
-/// beginning kept for the magic bytes, the whole watched for being
-/// UTF-8, so the kind is known once the copy is done without the bytes
-/// ever being held together.
-struct Look<W: Write> {
+/// The writer an entry streams through on its way into its file,
+/// counting what it took.
+struct Counted<W: Write> {
     inner: W,
-    head: Vec<u8>,
-    /// Still UTF-8 as far as written.
-    text: bool,
-    /// The tail of the last chunk that was an incomplete sequence — a
-    /// character cut by the chunk boundary, judged with the next chunk.
-    carry: Vec<u8>,
     written: u64,
     /// Whether it was the file, not the entry, that failed.
     failed: bool,
 }
 
-impl<W: Write> Look<W> {
+impl<W: Write> Counted<W> {
     fn new(inner: W) -> Self {
-        Look {
+        Counted {
             inner,
-            head: Vec::with_capacity(HEAD),
-            text: true,
-            carry: Vec::new(),
             written: 0,
             failed: false,
         }
     }
-
-    /// What the bytes say they are — a zip declares no kinds, so this
-    /// is the look ingest would take: magic bytes first, a UTF-8 look
-    /// for plain text second, and the honest shrug when nothing
-    /// answers.
-    fn kind(&self) -> String {
-        infer::get(&self.head)
-            .map(|kind| kind.mime_type().to_string())
-            .or_else(|| {
-                (self.written > 0 && self.text && self.carry.is_empty())
-                    .then(|| "text/plain".to_string())
-            })
-            .unwrap_or_else(|| "application/octet-stream".to_string())
-    }
-
-    /// Whether the bytes so far, this chunk included, are still UTF-8 —
-    /// an incomplete sequence at the chunk's end carried over, not
-    /// judged yet.
-    fn still_text(&mut self, chunk: &[u8]) -> bool {
-        let mut bytes = std::mem::take(&mut self.carry);
-        bytes.extend_from_slice(chunk);
-        let Err(error) = std::str::from_utf8(&bytes) else {
-            return true;
-        };
-        if error.error_len().is_some() {
-            return false;
-        }
-        self.carry = bytes[error.valid_up_to()..].to_vec();
-        true
-    }
 }
 
-impl<W: Write> Write for Look<W> {
+impl<W: Write> Write for Counted<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let taken = self.inner.write(buf).inspect_err(|_| self.failed = true)?;
-        let chunk = &buf[..taken];
-        let room = HEAD - self.head.len();
-        self.head.extend_from_slice(&chunk[..chunk.len().min(room)]);
-        if self.text {
-            self.text = self.still_text(chunk);
-        }
         self.written += taken as u64;
         Ok(taken)
     }
@@ -820,12 +772,12 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_streams_out_with_its_kind_read_on_the_way() {
+    fn an_entry_streams_out_and_its_kind_is_detected_from_the_file() {
         let dir = TempDir::new().unwrap();
         // A character cut by the copy's chunk boundary is still text;
-        // a byte that is no UTF-8 far past the head is not.
-        let straddling = format!("{}ä{}", "a".repeat(HEAD - 1), "b".repeat(100));
-        let mut spoiled = "c".repeat(HEAD + 800).into_bytes();
+        // a byte that is no UTF-8 is not.
+        let straddling = format!("{}ä{}", "a".repeat(8191), "b".repeat(100));
+        let mut spoiled = "c".repeat(9000).into_bytes();
         spoiled.push(0xff);
         let bytes = packed(&[
             ("straddling.txt", straddling.as_bytes()),
@@ -839,7 +791,7 @@ mod tests {
         assert!(
             lines.contains(&json!({ "file": "spoiled.bin", "mime": "application/octet-stream" }))
         );
-        assert!(lines.contains(&json!({ "file": "empty", "mime": "application/octet-stream" })));
+        assert!(lines.contains(&json!({ "file": "empty", "mime": "application/x-empty" })));
         assert_eq!(
             std::fs::read(dir.path().join("straddling.txt")).unwrap(),
             straddling.as_bytes()
