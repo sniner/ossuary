@@ -41,6 +41,7 @@ use crate::claim::{Attribute, Source, Subject, Value};
 use crate::error::{Error, Result};
 use crate::extract::{Derivation, Examined, record_examination};
 use crate::index::{Index, Scope};
+use crate::recorder::Recorder;
 
 /// One thing the orchestration did or found, told as it happens. The
 /// observer decides what becomes of it; the variants only say what is.
@@ -313,6 +314,9 @@ pub fn examine(
             derived += outcome.derived;
         }
     }
+    if !dry_run {
+        archive.flush()?;
+    }
     Ok(Settlement {
         clean: !troubled,
         ran: runs.len(),
@@ -534,56 +538,29 @@ fn run_one(
         .then(|| scratch_parent(archive, invocation.temp_dir))
         .transpose()?;
 
-    // What this pass examines: the worklist, unless files were named.
-    // Named files skip the mime dispatch — naming is more deliberate
-    // than a pattern — and, without --full, sit out when their receipt
-    // already stands. Under --full the receipts of earlier calls are
-    // ignored and the invocation's own memo takes their place.
-    let mut already = 0usize;
-    let worklist: Vec<Subject> = if subjects.is_empty() {
-        let waiting: Vec<Subject> = if invocation.full {
-            index
-                .of_kind(&identity.mimes)?
-                .into_iter()
-                .filter(|subject| !invocation.examined.contains(&memo_key(subject, source)))
-                .collect()
-        } else {
-            index.worklist(&identity.mimes, source)?
-        };
-        if waiting.is_empty() {
-            if round == 1 {
-                invocation.observer.event(Event::Idle {
-                    source,
-                    full: invocation.full,
-                });
-            }
-            return Ok(Outcome {
-                clean: true,
-                examined: 0,
-                derived: 0,
-            });
-        }
-        invocation.observer.event(Event::Waiting {
-            source,
-            count: waiting.len(),
-            round,
+    let Some((worklist, already)) = examinees(invocation, index, run, subjects, round)? else {
+        return Ok(Outcome {
+            clean: true,
+            examined: 0,
+            derived: 0,
         });
-        waiting
-    } else {
-        let examinees;
-        (examinees, already) = named(index, subjects, source, invocation.full)?;
-        if !examinees.is_empty() {
-            invocation.observer.event(Event::Named {
-                source,
-                count: examinees.len(),
-            });
-        }
-        examinees
     };
 
     let mut tally = Tally::default();
+    // The examinations of the pass are written in batches, the last one
+    // before the verdict and before the run stops at a file: what the
+    // verdict counts and what the stop says is recorded is in the log.
+    let mut recorder = Recorder::for_archive(archive);
     for subject in worklist {
-        let failure = match attempt(invocation, run, &subject, scratch.as_deref(), &mut tally) {
+        let attempted = attempt(
+            invocation,
+            &mut recorder,
+            run,
+            &subject,
+            scratch.as_deref(),
+            &mut tally,
+        );
+        let failure = match attempted {
             Ok(remarks) => {
                 relay(invocation, index, source, &subject, &remarks)?;
                 continue;
@@ -602,6 +579,9 @@ fn run_one(
                 });
             }
             Failure::Stop(error) => {
+                // Writing the batch failing is the trouble to report: the
+                // examinations before this file are not recorded then.
+                recorder.write()?;
                 invocation.observer.event(Event::Verdict {
                     source,
                     tally: &tally,
@@ -617,6 +597,7 @@ fn run_one(
         }
     }
 
+    recorder.write()?;
     invocation.observer.event(Event::Verdict {
         source,
         tally: &tally,
@@ -629,11 +610,65 @@ fn run_one(
     })
 }
 
+/// What one pass examines, and how many named files sat out: the
+/// worklist, unless files were named. `None` when the worklist is empty.
+///
+/// Named files skip the mime dispatch — naming is more deliberate than a
+/// pattern — and, without --full, sit out when their receipt already
+/// stands. Under --full the receipts of earlier calls are ignored and the
+/// invocation's own memo takes their place.
+fn examinees(
+    invocation: &mut Invocation,
+    index: &Index,
+    run: &Run,
+    subjects: &[String],
+    round: usize,
+) -> Result<Option<(Vec<Subject>, usize)>> {
+    let Run {
+        identity, source, ..
+    } = run;
+    if !subjects.is_empty() {
+        let (examinees, already) = named(index, subjects, source, invocation.full)?;
+        if !examinees.is_empty() {
+            invocation.observer.event(Event::Named {
+                source,
+                count: examinees.len(),
+            });
+        }
+        return Ok(Some((examinees, already)));
+    }
+    let waiting: Vec<Subject> = if invocation.full {
+        index
+            .of_kind(&identity.mimes)?
+            .into_iter()
+            .filter(|subject| !invocation.examined.contains(&memo_key(subject, source)))
+            .collect()
+    } else {
+        index.worklist(&identity.mimes, source)?
+    };
+    if waiting.is_empty() {
+        if round == 1 {
+            invocation.observer.event(Event::Idle {
+                source,
+                full: invocation.full,
+            });
+        }
+        return Ok(None);
+    }
+    invocation.observer.event(Event::Waiting {
+        source,
+        count: waiting.len(),
+        round,
+    });
+    Ok(Some((waiting, 0)))
+}
+
 /// One file through the extractor, rehearsed under --dry-run and recorded
 /// otherwise, and counted in the tally. Answers what the extractor said on
 /// stderr.
 fn attempt(
     invocation: &mut Invocation,
+    recorder: &mut Recorder<'_>,
     run: &Run,
     subject: &Subject,
     scratch: Option<&Path>,
@@ -649,10 +684,9 @@ fn attempt(
     }
     let (written, remarks) = examine_one(
         invocation.archive,
-        &run.program,
-        run.identity.contract.as_deref(),
+        recorder,
+        run,
         subject,
-        &run.source,
         &invocation.run_id,
         scratch,
     )?;
@@ -859,18 +893,30 @@ fn scratch_parent(archive: &Archive, temp_dir: Option<&Path>) -> Result<PathBuf>
 /// then — when this contract derives — the directory.
 fn examine_one(
     archive: &Archive,
-    program: &str,
-    contract: Option<&str>,
+    recorder: &mut Recorder<'_>,
+    run: &Run,
     subject: &Subject,
-    source: &Source,
     run_id: &crate::claim::Run,
     scratch_parent: Option<&Path>,
 ) -> std::result::Result<(Examined, String), Failure> {
-    let (Harvest { findings, derived }, _scratch, remarks) =
-        try_one(archive, program, contract, subject, scratch_parent)?;
+    let (Harvest { findings, derived }, _scratch, remarks) = try_one(
+        archive,
+        &run.program,
+        run.identity.contract.as_deref(),
+        subject,
+        scratch_parent,
+    )?;
     // Everything the extractor said has passed the grammar by now, so
     // what fails from here on is the archive being written.
-    let written = record_examination(archive, subject, &findings, &derived, source, run_id)?;
+    let written = record_examination(
+        archive,
+        recorder,
+        subject,
+        &findings,
+        &derived,
+        &run.source,
+        run_id,
+    )?;
     Ok((written, remarks))
 }
 

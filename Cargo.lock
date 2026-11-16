@@ -1343,9 +1343,9 @@ dependencies = [
 
 [[package]]
 name = "immure"
-version = "0.3.3"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c8b3efa64a91f142cef9d5a7a8ebcf80a6510a9646d0900b160df5c6476d9a"
+checksum = "518710798e81278e5afc19208061e363662a348f9803ae1a8da4471b71a9fb44"
 dependencies = [
  "blake3",
  "rustix",
@@ -1929,6 +1929,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "filebridge",
+ "immure",
  "ossuary-core",
  "serde_json",
  "tempfile",

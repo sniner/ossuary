@@ -26,7 +26,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use immure::{Algorithm, Digest, Store};
+use immure::{Algorithm, Digest, Flush, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, Config};
@@ -283,6 +283,45 @@ impl Archive {
         self
     }
 
+    /// Flush what is written into the archive only at
+    /// [`flush`](Archive::flush), for a run that writes many files and can
+    /// be repeated. By default the stores flush in batches, and a claim is
+    /// written only once the files it names are flushed.
+    ///
+    /// A crash of the system before the flush can leave files that do not
+    /// hold what their names say, and claims about them; `ossuary audit`
+    /// finds them. A process that stops any other way loses nothing. The
+    /// claims store is flushed as before: sealing deletes the bundles it
+    /// took in.
+    ///
+    #[must_use]
+    pub fn flush_at_end(mut self) -> Archive {
+        self.content = self.content.with_flush(Flush::OnRequest);
+        self.derived = self.derived.with_flush(Flush::OnRequest);
+        self.log.flush_at_end();
+        self
+    }
+
+    /// Whether the archive flushes only at [`flush`](Archive::flush).
+    #[must_use]
+    pub fn flushes_at_end(&self) -> bool {
+        self.log.flushes_at_end()
+    }
+
+    /// Flush everything written into the archive and not flushed yet: the
+    /// open batches of the stores, and under
+    /// [`flush_at_end`](Archive::flush_at_end) every file and bundle
+    /// written since. For the end of a command that writes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] when a file cannot be flushed.
+    pub fn flush(&self) -> Result<()> {
+        self.content.flush()?;
+        self.derived.flush()?;
+        self.log.flush()
+    }
+
     /// Whether the caches are kept outside the archive.
     #[must_use]
     pub fn cache_is_outside(&self) -> bool {
@@ -479,6 +518,7 @@ fn claims_store(root: &Path, algorithm: Algorithm, depth: usize) -> immure::Buil
         .depth(depth)
         .algorithm(algorithm)
         .compress(true)
+        .flush(Flush::Each)
 }
 
 #[cfg(test)]
@@ -552,6 +592,7 @@ mod tests {
             "one word for both — what one holds is as sensitive as the other"
         );
         let (_, entry) = archive.content().add(b"hello world").unwrap();
+        archive.flush().unwrap();
         assert!(entry.is_compressed(), "new entries take the settings' form");
     }
 

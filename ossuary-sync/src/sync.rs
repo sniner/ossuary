@@ -276,6 +276,7 @@ pub fn prepare(archive: &Archive, remote: &dyn Remote, marked: bool) -> Result<(
             .with_context(|| format!("{}: reading", path.display()))?
             .len();
         remote.create(MARK, &mut file, size)?;
+        remote.flush()?;
     }
     for store in [archive.content(), archive.derived(), archive.log().store()] {
         remote.make_dir(&relative(archive.root(), store.root())?)?;
@@ -286,7 +287,8 @@ pub fn prepare(archive: &Archive, remote: &dyn Remote, marked: bool) -> Result<(
 /// Copy every file the plan lists, each copy checked against its name
 /// first: `seal` reads segments, not files, and a damaged file would
 /// otherwise reach the copy under a name its bytes do not have. A file
-/// counts as copied when at least one of its copies here is sound.
+/// counts as copied when at least one of its copies here is sound. The
+/// copies are flushed together, in batches and once more at the end.
 ///
 /// # Errors
 ///
@@ -329,6 +331,7 @@ pub fn copy_files(
         }
         done(index + 1);
     }
+    remote.flush()?;
     Ok(copied)
 }
 
@@ -348,7 +351,7 @@ pub fn copy_segments(archive: &Archive, remote: &dyn Remote, segments: &[Piece])
         }
         send(remote, segment)?;
     }
-    Ok(())
+    remote.flush()
 }
 
 /// Make the copy's open segment the one after `seal`: the directory
@@ -479,6 +482,7 @@ mod tests {
 
     fn take(archive: &Archive, bytes: &[u8], at: &str) -> Digest {
         let (_, entry) = archive.content().add(bytes).unwrap();
+        archive.flush().unwrap();
         let claim = Claim::assert(
             Subject::parse(entry.digest().as_str()).unwrap(),
             Attribute::parse("file:size").unwrap(),
@@ -729,6 +733,7 @@ mod tests {
         let archive = archive(&dir);
         let first = take(&archive, b"first", "2026-09-01T00:00:00Z");
         archive.derived().add(b"first").unwrap();
+        archive.flush().unwrap();
         let (path, target) = target(&dir);
 
         let (_, copied) = sync(&archive, &target).unwrap();

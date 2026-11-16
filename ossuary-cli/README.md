@@ -31,6 +31,16 @@ and a repeated `ossuary ingest` reads every file again and records where
 it lies a second time. An archive seals by itself after 1000 appends,
 and `ossuary seal` does it at once.
 
+The files a command writes are flushed to the disk in batches of 100,
+and the claims about them are written after them, so a crash of the
+computer loses at most the last batch, and the next run does it again.
+`--flush-at-end` flushes only once, when the command ends: for a command
+that writes many files and can be run again, such as `ossuary extract`
+over a whole archive. A crash of the computer before the end can then
+leave damaged files and claims about them, which `ossuary audit` finds.
+Stopping the command any other way, with Ctrl-C for example, loses
+nothing. External commands do not take the option.
+
 Results go to stdout, progress messages to stderr, so `ossuary find --id
 … | …` pipes only the results. If the reading end of a pipe is closed
 early, the output stops and the command still exits with success.
@@ -164,7 +174,8 @@ nothing new to examine, so a mail, its attachments and the text
 extracted from them are processed in one call. Every examined file is
 recorded as examined (`prov:examined`), whether anything was found or
 not, so a repeated call examines only new files, and an interrupted call
-continues where it stopped. A new extractor version examines all files again.
+continues where it stopped; the files of its last batch are examined
+again. A new extractor version examines all files again.
 
 Naming files runs a single round: the named files are examined once,
 and a named file is passed to the extractor even if it is not of a type

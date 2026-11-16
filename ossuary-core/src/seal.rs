@@ -457,6 +457,7 @@ mod tests {
 
     fn take(archive: &Archive, bytes: &[u8], at: &str) -> Digest {
         let (_, entry) = archive.content().add(bytes).unwrap();
+        archive.flush().unwrap();
         let claim = Claim::assert(
             Subject::parse(entry.digest().as_str()).unwrap(),
             Attribute::parse("file:size").unwrap(),
@@ -709,6 +710,7 @@ mod tests {
         let archive = archive(&dir);
         let twin = take(&archive, b"twin", "2026-09-01T00:00:00Z");
         archive.derived().add(b"twin").unwrap();
+        archive.flush().unwrap();
         let seal = sealed(seal(&archive, false).unwrap());
         let path = archive.content().find(&twin).unwrap().unwrap();
         writable(&path);

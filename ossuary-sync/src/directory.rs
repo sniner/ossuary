@@ -1,18 +1,21 @@
 //! A directory as the place a copy lies: a local disk, or a share
 //! mounted over NFS, SMB, sshfs or rclone.
 //!
-//! A file is written the way immure writes an entry: into a temporary
-//! file under the store's `tmp/`, synced, made read-only, renamed into
-//! place, and the directory synced after the rename. The temporary file
-//! lies in the store of its destination, so the rename stays within one
-//! filesystem, and its name is one that `Store::prune_temp_files`
-//! recognises after an interrupted run. A file in the root (`FORMAT`)
-//! has its temporary file beside it.
+//! A file is written the way immure writes an entry in a batch: into a
+//! temporary file under the store's `tmp/`, and with the others of its
+//! batch flushed, made read-only, renamed into place, the directories
+//! flushed after the renames. The device writes out its cache once per
+//! batch, not once per file. The temporary file lies in the store of its
+//! destination, so the rename stays within one filesystem, and its name is
+//! one that `Store::prune_temp_files` recognises after an interrupted run.
+//! A file in the root (`FORMAT`) has its temporary file beside it.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -21,10 +24,15 @@ use crate::remote::{Created, Remote};
 /// Serial numbers for temporary names, unique within this process.
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
+/// How many files a directory puts in place together.
+const BATCH: usize = immure::DEFAULT_BATCH.get();
+
 /// A directory that holds a copy of an archive, or will.
 #[derive(Debug)]
 pub struct Directory {
     root: PathBuf,
+    /// Files written and not in place yet, each with where it goes.
+    pending: Mutex<Vec<(Temp, PathBuf)>>,
 }
 
 impl Directory {
@@ -64,7 +72,13 @@ impl Directory {
         }
         Ok(Directory {
             root: root.to_path_buf(),
+            pending: Mutex::default(),
         })
+    }
+
+    /// The files not in place yet, whatever a panicking thread left there.
+    fn pending(&self) -> MutexGuard<'_, Vec<(Temp, PathBuf)>> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Where `path` lies under the root.
@@ -103,11 +117,50 @@ impl Remote for Directory {
                 return Err(error).with_context(|| format!("{}: reading", dest.display()));
             }
         }
+        if self.pending().iter().any(|(_, held)| held == &dest) {
+            return Ok(Created::Known);
+        }
         let mut temp = Temp::create_in(&self.temp_dir(path))?;
-        io::copy(from, &mut temp.file)
-            .with_context(|| format!("{}: writing", temp.path.display()))?;
-        temp.persist(&dest, true)?;
+        if let Some(file) = temp.file.as_mut() {
+            io::copy(from, file).with_context(|| format!("{}: writing", temp.path.display()))?;
+        }
+        // Closed until the batch is flushed: a batch holds more files than
+        // a process may keep open.
+        temp.file = None;
+        let full = {
+            let mut pending = self.pending();
+            pending.push((temp, dest));
+            pending.len() >= BATCH
+        };
+        if full {
+            self.flush()?;
+        }
         Ok(Created::New)
+    }
+
+    fn flush(&self) -> Result<()> {
+        let batch = std::mem::take(&mut *self.pending());
+        if batch.is_empty() {
+            return Ok(());
+        }
+        // The bytes are on the device before any of them has its name.
+        let mut last = None;
+        for (temp, _) in &batch {
+            let file = File::open(&temp.path)
+                .with_context(|| format!("{}: opening to flush", temp.path.display()))?;
+            immure::send_to_device(&file)
+                .with_context(|| format!("{}: flushing to device", temp.path.display()))?;
+            last = Some(file);
+        }
+        if let Some(file) = &last {
+            immure::flush_device(file).context("flushing the device")?;
+        }
+        let mut dirs = BTreeSet::new();
+        for (temp, dest) in batch {
+            dirs.insert(temp.place(&dest, true)?);
+        }
+        sync_dirs(&dirs);
+        Ok(())
     }
 
     fn make_dir(&self, path: &str) -> Result<()> {
@@ -149,9 +202,11 @@ impl Remote for Directory {
 
 /// A temporary file that removes itself unless it was renamed into
 /// place.
+#[derive(Debug)]
 struct Temp {
     path: PathBuf,
-    file: File,
+    /// Open while it is written.
+    file: Option<File>,
     persisted: bool,
 }
 
@@ -168,7 +223,7 @@ impl Temp {
                 Ok(file) => {
                     return Ok(Temp {
                         path,
-                        file,
+                        file: Some(file),
                         persisted: false,
                     });
                 }
@@ -181,16 +236,14 @@ impl Temp {
         }
     }
 
-    /// Sync the file, make it read-only if asked, and rename it to
-    /// `dest`, making the directories `dest` needs.
-    fn persist(mut self, dest: &Path, read_only: bool) -> Result<()> {
-        self.file
-            .sync_all()
-            .with_context(|| format!("{}: flushing to device", self.path.display()))?;
+    /// Make the file read-only if asked, and rename it to `dest`, making
+    /// the directories `dest` needs. Answers the directory it went into,
+    /// for the caller to flush. The file is flushed by then.
+    fn place(mut self, dest: &Path, read_only: bool) -> Result<PathBuf> {
         if read_only {
             // As immure does for an entry. A share that does not keep the
             // mode refuses it, and that costs the file nothing.
-            if let Ok(metadata) = self.file.metadata() {
+            if let Ok(metadata) = fs::metadata(&self.path) {
                 let mut permissions = metadata.permissions();
                 permissions.set_readonly(true);
                 fs::set_permissions(&self.path, permissions).ok();
@@ -202,8 +255,7 @@ impl Temp {
         fs::create_dir_all(dir).with_context(|| format!("{}: creating", dir.display()))?;
         fs::rename(&self.path, dest).with_context(|| format!("{}: writing", dest.display()))?;
         self.persisted = true;
-        sync_dir(dir);
-        Ok(())
+        Ok(dir.to_path_buf())
     }
 }
 
@@ -217,12 +269,21 @@ impl Drop for Temp {
     }
 }
 
-/// Flush a directory entry after a rename. Some filesystems refuse to
-/// sync a directory; the file itself is synced by then, and only the
-/// last rename may be lost in a crash.
-fn sync_dir(dir: &Path) {
-    if let Ok(handle) = File::open(dir) {
-        handle.sync_all().ok();
+/// Flush the directory entries after the renames of a batch: each handed
+/// to the device, the device flushed once. Some filesystems refuse to
+/// sync a directory; the files themselves are synced by then, and only
+/// the last renames may be lost in a crash.
+fn sync_dirs(dirs: &BTreeSet<PathBuf>) {
+    let mut last = None;
+    for dir in dirs {
+        if let Ok(handle) = File::open(dir)
+            && immure::send_to_device(&handle).is_ok()
+        {
+            last = Some(handle);
+        }
+    }
+    if let Some(handle) = last {
+        immure::flush_device(&handle).ok();
     }
 }
 
@@ -266,6 +327,8 @@ mod tests {
 
         assert_eq!(created, Created::New);
         let path = dir.path().join("content/ab/cd/abcd");
+        assert!(!path.exists(), "in place with the batch");
+        target.flush().unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"bytes");
         assert!(fs::metadata(&path).unwrap().permissions().readonly());
         let leftovers: Vec<_> = fs::read_dir(dir.path().join("content/tmp"))
@@ -279,6 +342,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let target = target(&dir);
         target.create("FORMAT", &mut &b"first"[..], 5).unwrap();
+        assert_eq!(
+            target.create("FORMAT", &mut &b"again"[..], 5).unwrap(),
+            Created::Known,
+            "held in the batch"
+        );
+        target.flush().unwrap();
 
         let created = target.create("FORMAT", &mut &b"second"[..], 6).unwrap();
 

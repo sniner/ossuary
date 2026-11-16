@@ -27,7 +27,9 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use ossuary_core::{Archive, Attribute, Sighting, Source, Timestamp, admit, record};
+use ossuary_core::{
+    Archive, Attribute, Recorder, Sighting, Source, Timestamp, admit, sighting_claims,
+};
 use ossuary_extract_mail::looks_like_mail;
 use serde_json::json;
 use unicode_normalization::UnicodeNormalization as _;
@@ -90,6 +92,7 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
     }
     let total = files.len();
     let mut progress = say.progress();
+    let mut recorder = Recorder::for_archive(archive);
     for (index, found) in files.iter().enumerate() {
         let bytes = match read(&found.path, options.dry_run) {
             Ok(bytes) if looks_like_mail(&bytes) => bytes,
@@ -118,8 +121,7 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
             if let Some(proton) = proton::id_of(&bytes) {
                 facts.push((id.clone(), json!(proton)));
             }
-            tally.claims += record(
-                log,
+            let claims = sighting_claims(
                 &admitted,
                 &Sighting {
                     source: &source,
@@ -129,8 +131,10 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
                     tags: &[],
                     time: options.seen.as_ref(),
                 },
-            )?
-            .len();
+                log.store().algorithm(),
+            )?;
+            tally.claims += claims.len();
+            recorder.push(claims)?;
         }
         let done = index + 1;
         progress.update(
@@ -139,6 +143,8 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
         );
     }
     progress.finish();
+    recorder.write()?;
+    archive.flush()?;
     if apart {
         log.seal()?;
     }

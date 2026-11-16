@@ -61,6 +61,17 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
     cache: Option<PathBuf>,
 
+    /// Flush written files to the disk only at the end of the command
+    ///
+    /// For a command that writes many files and can be run again, such as
+    /// an extract over a whole archive. By default files are flushed in
+    /// batches of 100, and the claims about them are written only after
+    /// that. With this option, a crash of the computer before the end can
+    /// leave damaged files and claims about them; run `ossuary audit`
+    /// afterwards. Stopping the command any other way loses nothing.
+    #[arg(long, global = true)]
+    flush_at_end: bool,
+
     /// Print only results and errors
     #[arg(short, long, global = true)]
     quiet: bool,
@@ -655,6 +666,8 @@ fn main() -> ExitCode {
 pub(crate) struct Location {
     pub(crate) archive: PathBuf,
     pub(crate) cache: Option<PathBuf>,
+    /// Whether the archive flushes only at the end of the command.
+    pub(crate) flush_at_end: bool,
 }
 
 #[allow(
@@ -666,6 +679,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let location = Location {
         archive: cli.archive,
         cache: cli.cache,
+        flush_at_end: cli.flush_at_end,
     };
     match cli.command {
         Command::Init { algorithm } => init(&location, algorithm.as_deref()),
@@ -826,6 +840,11 @@ fn outside(location: &Location, pieces: &[OsString]) -> Result<ExitCode> {
         ));
     };
     let name = name.to_string_lossy();
+    if location.flush_at_end {
+        return Err(anyhow!(
+            "--flush-at-end applies to ossuary's own commands, not to `ossuary {name}`; run it without the option"
+        ));
+    }
     let program = format!("ossuary-{name}");
     let root = &location.archive;
     let archive = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
@@ -854,9 +873,14 @@ pub(crate) fn open(location: &Location) -> Result<Archive> {
         ),
         other => anyhow::Error::from(other),
     })?;
-    Ok(match &location.cache {
+    let archive = match &location.cache {
         Some(dir) => archive.with_cache(dir),
         None => archive,
+    };
+    Ok(if location.flush_at_end {
+        archive.flush_at_end()
+    } else {
+        archive
     })
 }
 

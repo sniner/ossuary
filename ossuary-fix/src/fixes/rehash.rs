@@ -87,7 +87,9 @@ pub fn rehash(
         });
     }
 
-    let rehashed = Archive::create(target, algorithm)?;
+    // A new archive, made again from the start when a run stops: flushed
+    // once at the end, not file by file.
+    let rehashed = Archive::create(target, algorithm)?.flush_at_end();
     for name in CONFIGURATION {
         let from = archive.root().join(name);
         if from.is_file() {
@@ -135,14 +137,14 @@ pub fn rehash(
             target.display()
         );
     }
-    // Every append is flushed, and the head is sealed only between
-    // appends: chunks keep the flushes few and the segments near the size
-    // at which the log seals them.
+    // The head is sealed only between appends: chunks keep the segments
+    // near the size at which the log seals them.
     let renamed: Vec<Claim> = renamed.into_iter().flatten().collect();
     for chunk in renamed.chunks(1024) {
         rehashed.log().append_all(chunk)?;
         done.claims += chunk.len();
     }
+    rehashed.flush()?;
     rehashed.log().seal()?;
     done.dropped = dropped;
     let memo = archive.root().join(MEMO);
@@ -270,6 +272,7 @@ mod tests {
         let archive = Archive::create(dir.path().join("old"), Algorithm::Sha256).unwrap();
         let (_, mail) = archive.content().add(b"a mail").unwrap();
         let (_, attachment) = archive.derived().add(b"its attachment").unwrap();
+        archive.flush().unwrap();
         say(&archive, mail.digest().as_str(), "file:size", json!(6));
         archive.log().seal().unwrap();
         say(

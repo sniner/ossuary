@@ -16,6 +16,7 @@ pub fn archive(dir: &TempDir) -> Archive {
 /// One claim about a file of its own, recorded at `at`.
 pub fn claim(archive: &Archive, at: &str) -> Claim {
     let (_, entry) = archive.content().add(at.as_bytes()).unwrap();
+    archive.flush().unwrap();
     Claim::assert(
         Subject::parse(entry.digest().as_str()).unwrap(),
         Attribute::parse("file:size").unwrap(),

@@ -50,7 +50,11 @@
 //! Either way each message goes in through the archive's two-step
 //! accession with its place — account and folder — as the one fact
 //! the fetcher has to tell about it. The resume point moves forward
-//! only over what has landed or is on the pending list. It lives in
+//! only over what has landed or is on the pending list. The claims of
+//! the messages are written in batches, after the messages are flushed,
+//! and the memo is committed only after the claims it covers are on the
+//! device: also when the archive flushes only at the end, which it then
+//! does with every commit. It lives in
 //! `cache/`: losing it costs one whole fetch of the folder, never a
 //! claim.
 //!
@@ -58,12 +62,13 @@
 //! a folder that will not open are named in the tally, and the run
 //! goes on to the next. The archive or the memo refusing ends the run.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 use ossuary_core::{
-    Archive, Attribute, Claim, ClaimId, Index, Scope, Sighting, Source, Subject, Timestamp, Value,
-    admit, record,
+    Archive, Attribute, BATCH, Claim, ClaimId, Index, Recorder, Scope, Sighting, Source, Subject,
+    Timestamp, Value, admit, sighting_claims,
 };
 use serde_json::json;
 
@@ -115,8 +120,9 @@ impl<'a> Place<'a> {
     }
 }
 
-/// How many messages land between two commits of the resume point.
-const COMMIT_EVERY: usize = 25;
+/// How many messages land between two commits of the resume point: one
+/// batch of claims.
+const COMMIT_EVERY: usize = BATCH;
 
 /// How many runs may fail to fetch a pending message before it is
 /// given up.
@@ -160,6 +166,7 @@ pub fn run(
 ) -> Result<Tally> {
     let fetch = Fetch {
         archive,
+        recorder: RefCell::new(Recorder::for_archive(archive)),
         accounts_file,
         memo,
         options,
@@ -175,6 +182,8 @@ pub fn run(
             state.tally.failed.push(format!("{error:#}"));
         }
     }
+    fetch.recorder.borrow_mut().write()?;
+    archive.flush()?;
     // The pending lists of this run are mostly deleted again by now;
     // without this the file keeps their size. A file that stays large
     // costs nothing but space, so this does not fail the run.
@@ -226,6 +235,9 @@ fn caught_up(archive: &Archive, say: Say) -> Result<Index> {
 /// One fetch in progress: what it works on, and how it speaks.
 struct Fetch<'a> {
     archive: &'a Archive,
+    /// The claims of the messages landed since the last commit of the
+    /// memo, written in batches.
+    recorder: RefCell<Recorder<'a>>,
     /// Where the accounts were read from, for a hint that names a
     /// command reading the same file.
     accounts_file: &'a config::Source,
@@ -421,8 +433,7 @@ impl Fetch<'_> {
         if let Some(id) = id {
             facts.push((self.id.clone(), json!(id)));
         }
-        let written = record(
-            self.archive.log(),
+        let written = sighting_claims(
             &admitted,
             &Sighting {
                 source: &self.source,
@@ -432,9 +443,11 @@ impl Fetch<'_> {
                 tags: &[],
                 time: None,
             },
+            self.archive.log().store().algorithm(),
         )?;
         state.tally.claims += written.len();
         state.standing.wrote(&self.tag, &written);
+        self.hold(written)?;
         if admitted.is_new() {
             state.tally.stored += 1;
         } else {
@@ -467,9 +480,8 @@ impl Fetch<'_> {
                 tally.run.clone(),
             )?);
         }
-        self.archive.log().append_all(&claims)?;
         tally.claims += claims.len();
-        Ok(())
+        self.hold(claims)
     }
 
     /// Under `--compare`, note which subject the message fetched under
@@ -526,10 +538,9 @@ impl Fetch<'_> {
                 tally.run.clone(),
             )?);
         }
-        self.archive.log().append_all(&claims)?;
         tally.claims += claims.len();
         tally.taken += claims.len();
-        Ok(())
+        self.hold(claims)
     }
 
     /// A message on the folder's pending list that the server refused
@@ -574,9 +585,37 @@ impl Fetch<'_> {
     /// bytes dedup.
     fn commit_every(&self, done: usize) -> Result<()> {
         if done.is_multiple_of(COMMIT_EVERY) {
-            self.memo.commit_for(self.archive)?;
+            self.commit_memo()?;
             self.memo.begin()?;
         }
         Ok(())
+    }
+
+    /// Hand claims to the recorder, as one item.
+    fn hold(&self, claims: Vec<Claim>) -> Result<()> {
+        self.recorder.borrow_mut().push(claims)?;
+        Ok(())
+    }
+
+    /// Write the claims held, so that the index can read them: before a
+    /// folder that reads the index.
+    fn write_held(&self) -> Result<()> {
+        self.recorder.borrow_mut().write()?;
+        Ok(())
+    }
+
+    /// Commit the memo, with the claims of the messages it covers written
+    /// and on the device first: the resume point never passes a message a
+    /// crash of the system can still take. An archive that flushes only at
+    /// the end is flushed here all the same.
+    fn commit_memo(&self) -> Result<()> {
+        {
+            let mut recorder = self.recorder.borrow_mut();
+            recorder.write()?;
+            if !recorder.durable() {
+                self.archive.flush()?;
+            }
+        }
+        self.memo.commit_for(self.archive)
     }
 }

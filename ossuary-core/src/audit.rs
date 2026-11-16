@@ -601,6 +601,7 @@ mod tests {
     /// smallest thing the audit calls whole.
     fn take(archive: &Archive, bytes: &[u8]) -> Subject {
         let (_, entry) = archive.content().add(bytes).unwrap();
+        archive.flush().unwrap();
         let subject = Subject::parse(entry.digest().as_str()).unwrap();
         record(archive, &subject, "file:size", json!(bytes.len()));
         subject
@@ -979,6 +980,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"in both stores");
         archive.derived().add(b"in both stores").unwrap();
+        archive.flush().unwrap();
 
         let audit = run_reading(&archive, false);
 
@@ -1017,6 +1019,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"recorded");
         let (_, stray) = archive.content().add(b"stray").unwrap();
+        archive.flush().unwrap();
 
         let audit = run(&archive);
 
@@ -1035,10 +1038,12 @@ mod tests {
         record(&archive, &whole, "file:mime", json!("text/plain"));
         // Stored by a run that stopped, recorded by the next one.
         let (_, entry) = archive.content().add(b"stored, then met again").unwrap();
+        archive.flush().unwrap();
         let later = Subject::parse(entry.digest().as_str()).unwrap();
         record(&archive, &later, "file:path", json!("/home/john/a.txt"));
         // A derived file always has its type from the extractor.
         let (_, entry) = archive.derived().add(b"derived, size missing").unwrap();
+        archive.flush().unwrap();
         let derived = Subject::parse(entry.digest().as_str()).unwrap();
         record(&archive, &derived, "file:mime", json!("text/plain"));
 
@@ -1064,6 +1069,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         let (_, entry) = archive.derived().add(b"a derived file").unwrap();
+        archive.flush().unwrap();
         let subject = Subject::parse(entry.digest().as_str()).unwrap();
         record(&archive, &subject, "file:mime", json!("text/plain"));
 
@@ -1087,6 +1093,7 @@ mod tests {
             .derived()
             .add(b"an attachment, later taken in")
             .unwrap();
+        archive.flush().unwrap();
 
         let audit = run(&archive);
 
@@ -1108,6 +1115,7 @@ mod tests {
         let archive = archive(&dir);
         take(&archive, b"sound where it was won");
         let (_, derived) = archive.derived().add(b"sound where it was won").unwrap();
+        archive.flush().unwrap();
         let content = archive
             .content()
             .find(derived.digest())

@@ -23,10 +23,12 @@
 //! wherever it lies, and an original needs no second-class copy.
 //!
 //! An examination is recorded whole or not at all: the derived files are
-//! stored first, then every claim goes into the log in one write, the
-//! receipt last among them. A failure before that write leaves no claim;
-//! derived bytes it already stored are found again by the next run, which
-//! offers the file anew.
+//! stored first, then every claim goes to the [`Recorder`], the receipt
+//! last among them. The recorder writes the claims of many examinations
+//! together, once the derived files they name are flushed. A failure
+//! before the claims are handed over leaves no claim; derived bytes it
+//! already stored are found again by the next run, which offers the file
+//! anew.
 
 use std::fs;
 use std::path::PathBuf;
@@ -37,6 +39,7 @@ use crate::accession::{UNKNOWN_KIND, detect};
 use crate::archive::Archive;
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
+use crate::recorder::Recorder;
 
 /// The receipt attribute: this blob was examined by the claim's source,
 /// which the value names again.
@@ -66,7 +69,7 @@ pub struct Derivation {
 /// What one examination put on the record.
 #[derive(Debug)]
 pub struct Examined {
-    /// Claims appended to the log, the receipt included.
+    /// Claims handed to the recorder, the receipt included.
     pub claims: usize,
     /// Derived files whose bytes were new to the derived store.
     pub stored: usize,
@@ -80,7 +83,7 @@ pub struct Examined {
 
 /// One file's examination onto the record: each derived file into the
 /// derived store, then every finding, what is known about each derived
-/// file, and the receipt as claims in one write to the log.
+/// file, and the receipt as claims, handed to `recorder` as one item.
 ///
 /// A derived file is content with a record like any other, and the log
 /// says so: its `file:mime` in the extractor's words, its
@@ -115,10 +118,13 @@ pub struct Examined {
 ///
 /// [`Error::NullValue`] for a `null` among the findings, [`Error::Io`] on
 /// a derived file that will not read, and whatever storing a derived file
-/// or appending to the log can answer. A failure writes no claim, so the
-/// file has no receipt and is examined again.
+/// or writing the recorder's batch can answer. A failure before the claims
+/// are handed over writes no claim, so the file has no receipt and is
+/// examined again. A failure writing the batch leaves every examination of
+/// the batch without its receipt.
 pub fn record_examination(
     archive: &Archive,
+    recorder: &mut Recorder<'_>,
     subject: &Subject,
     findings: &[(Attribute, Value)],
     derivations: &[Derivation],
@@ -149,9 +155,10 @@ pub fn record_examination(
         source,
         run,
     )?);
-    archive.log().append_all(&claims)?;
+    let count = claims.len();
+    recorder.push(claims)?;
     Ok(Examined {
-        claims: claims.len(),
+        claims: count,
         stored,
         known,
     })
@@ -277,6 +284,29 @@ mod tests {
     use crate::index::Index;
     use crate::index::Scope;
 
+    /// One examination onto the record, written at once.
+    fn recorded(
+        archive: &Archive,
+        subject: &Subject,
+        findings: &[(Attribute, Value)],
+        derivations: &[Derivation],
+        source: &Source,
+        run: &Run,
+    ) -> Result<Examined> {
+        let mut recorder = Recorder::for_archive(archive);
+        let examined = record_examination(
+            archive,
+            &mut recorder,
+            subject,
+            findings,
+            derivations,
+            source,
+            run,
+        )?;
+        recorder.write()?;
+        Ok(examined)
+    }
+
     /// The run anchor tests stamp; any string does, the archive keeps
     /// the caller's word.
     fn run() -> Run {
@@ -342,7 +372,7 @@ mod tests {
             "the jpeg waits, the text was never its business"
         );
 
-        let written = record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
+        let written = recorded(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         assert_eq!(written.claims, 1, "nothing found is still one receipt");
         index.fold(archive.log()).unwrap();
         assert_eq!(
@@ -359,7 +389,7 @@ mod tests {
         let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
 
-        record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
+        recorded(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         index.fold(archive.log()).unwrap();
 
         assert_eq!(
@@ -444,7 +474,7 @@ mod tests {
         let (archive, mut index) = archive(&dir);
         let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
-        record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
+        recorded(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         index.fold(archive.log()).unwrap();
         assert_eq!(index.worklist(&mimes, &source()).unwrap(), []);
         assert!(index.examined(&jpeg, &source()).unwrap());
@@ -475,7 +505,7 @@ mod tests {
         let jpeg = take(&archive, &dir, "a.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let mimes = vec!["image/jpeg".to_string()];
 
-        record_examination(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
+        recorded(&archive, &jpeg, &[], &[], &source(), &run()).unwrap();
         index.fold(archive.log()).unwrap();
 
         let newer = Source::parse("extractor:exif/3.0").unwrap();
@@ -496,8 +526,7 @@ mod tests {
             Attribute::parse("exif:date-time-original").unwrap(),
             serde_json::json!("2019:07:14 11:02:41"),
         )];
-        let written =
-            record_examination(&archive, &jpeg, &findings, &[], &source(), &run()).unwrap();
+        let written = recorded(&archive, &jpeg, &findings, &[], &source(), &run()).unwrap();
         assert_eq!(written.claims, 2);
 
         index.fold(archive.log()).unwrap();
@@ -531,8 +560,7 @@ mod tests {
             serde_json::json!("<part2@example.com>"),
         ));
 
-        let written =
-            record_examination(&archive, &mail, &[], &[attachment], &source(), &run()).unwrap();
+        let written = recorded(&archive, &mail, &[], &[attachment], &source(), &run()).unwrap();
         assert_eq!(written.stored, 1, "the bytes were new to the store");
         assert_eq!(written.known, 0);
         assert_eq!(
@@ -610,7 +638,7 @@ mod tests {
             derivation(&scratch, "photo.jpg", "application/pdf", &jpeg),
             derivation(&scratch, "blob", "application/octet-stream", &unknown),
         ];
-        record_examination(&archive, &mail, &[], &derivations, &source(), &run()).unwrap();
+        recorded(&archive, &mail, &[], &derivations, &source(), &run()).unwrap();
 
         index.fold(archive.log()).unwrap();
         let kinds = |bytes: &[u8]| {
@@ -651,7 +679,7 @@ mod tests {
 
         // The same attachment falls out of two different mails, under two
         // different names.
-        let written = record_examination(
+        let written = recorded(
             &archive,
             &first,
             &[],
@@ -666,7 +694,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(written.stored, 1);
-        let written = record_examination(
+        let written = recorded(
             &archive,
             &second,
             &[],
@@ -712,7 +740,7 @@ mod tests {
         let saved = take(&archive, &dir, "invoice.pdf", b"%PDF-saved");
         let scratch = TempDir::new().unwrap();
 
-        let written = record_examination(
+        let written = recorded(
             &archive,
             &mail,
             &[],
@@ -773,7 +801,7 @@ mod tests {
             findings: Vec::new(),
         };
 
-        let result = record_examination(&archive, &mail, &[], &[gone], &source(), &run());
+        let result = recorded(&archive, &mail, &[], &[gone], &source(), &run());
         assert!(result.is_err());
 
         index.fold(archive.log()).unwrap();
@@ -803,7 +831,7 @@ mod tests {
         let derived = archive.root().join("derived");
         let saved = std::fs::metadata(&derived).unwrap().permissions();
         std::fs::set_permissions(&derived, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let result = record_examination(&archive, &mail, &findings, &[pdf], &source(), &run());
+        let result = recorded(&archive, &mail, &findings, &[pdf], &source(), &run());
         std::fs::set_permissions(&derived, saved).unwrap();
 
         assert!(result.is_err(), "the derived store refused the file");

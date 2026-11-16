@@ -171,6 +171,7 @@ impl Fetch<'_> {
             }
         };
         if mailbox.flavour() != Flavour::Standard || self.options.compare {
+            self.write_held()?;
             state.standing.refresh(self.archive, self.say)?;
         }
         Ok(Some(opened))
@@ -410,7 +411,7 @@ impl Fetch<'_> {
             )?;
         }
         // What landed before the trouble stays remembered either way.
-        let closed = self.memo.commit_for(self.archive);
+        let closed = self.commit_memo();
         match outcome {
             Ok(_) => closed,
             Err(Stop::Server(error)) => {

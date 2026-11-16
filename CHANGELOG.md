@@ -5,7 +5,22 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--flush-at-end`** flushes what a command writes to the disk only when the command ends, for
+  a large run that can be repeated, such as `ossuary extract` over a whole archive. A crash of the
+  computer before the end can leave damaged files and claims about them; `ossuary audit` finds
+  them. Stopping the command any other way loses nothing
+
 ### Changed
+
+- **Files are flushed to the disk in batches of 100**, no longer one at a time, by
+  `ossuary extract`, `ossuary ingest`, `ossuary mailvault fetch`, `import` and `add`,
+  `ossuary sync` into a directory and `ossuary-fix rehash`. The claims about the files are written
+  after them, one bundle per batch. On macOS every file and every bundle of claims used to cost two
+  flushes of the disk's cache, which made a large extract slow and wore the SSD. A command that is
+  interrupted, or a crash of the computer, loses at most the last batch, and the next run does it
+  again
 
 - **`ossuary attributes` lists every attribute in the archive** and counts files only for
   `--count` and `--json`. It used to count them on every call, which took a minute on a network

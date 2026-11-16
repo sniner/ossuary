@@ -37,15 +37,28 @@ pub trait Remote: Send + Sync {
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>>;
 
     /// Write a file that must not exist yet, from `from`, which yields
-    /// `size` bytes. A reader sees the file complete or not at all, and
-    /// once this returns `New` the file is stored as durably as the place
-    /// can store it. `from` is read as it is sent, never whole: a file
-    /// can be larger than memory.
+    /// `size` bytes. A reader sees the file complete or not at all. A
+    /// place may hold files back and put them in place in batches; once
+    /// [`flush`](Remote::flush) returns, every file this returned `New`
+    /// for is stored as durably as the place can store it. `from` is read
+    /// as it is sent, never whole: a file can be larger than memory.
     ///
     /// # Errors
     ///
     /// When the file cannot be written. Nothing is left under `path`.
     fn create(&self, path: &str, from: &mut dyn Read, size: u64) -> Result<Created>;
+
+    /// Put in place what [`create`](Remote::create) held back, stored as
+    /// durably as the place can store it. Nothing to do for a place that
+    /// writes every file at once.
+    ///
+    /// # Errors
+    ///
+    /// When a file cannot be written. Files not put in place by then are
+    /// not at the place.
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Make the directory at `path`, and the ones above it, if there is
     /// none. A copy needs every store directory an archive has, an empty

@@ -13,10 +13,12 @@
 //! [`Admitted`] answer: the subject, whether the bytes were new, how
 //! long they were, what they are.
 //!
-//! The second step, [`record`], is about the record: the taker's own
-//! facts under its source, the user's tags under theirs, the run all of
-//! it arrived in — and, on the bytes' first day only, the facts any
-//! content has: its size and its kind as detected. A walk over
+//! The second step, [`sighting_claims`], is about the record: the
+//! taker's own facts under its source, the user's tags under theirs, the
+//! run all of it arrived in — and, on the bytes' first day only, the
+//! facts any content has: its size and its kind as detected. The taker
+//! hands the claims to a [`Recorder`](crate::Recorder), which writes them
+//! once the bytes are flushed. A walk over
 //! unknown files has nothing but the detected kind; a fetcher knows it is
 //! holding a message, and its word on the kind is a taker's fact like
 //! any other: said on every sighting, whether or not the bytes are new.
@@ -33,18 +35,17 @@ use std::io::{Read, Seek};
 
 use file_format::FileFormat;
 
-use immure::Store;
+use immure::{Algorithm, Store};
 use serde_json::json;
 
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
-use crate::log::Log;
 
 /// What [`admit`] answers: the bytes are in, and this is what was seen
 /// of them on the way.
 ///
-/// Only [`admit`] makes one: what [`record`] writes about the bytes is
-/// what the store saw of them, never a caller's word.
+/// Only [`admit`] makes one: the claims [`sighting_claims`] makes about the
+/// bytes come from what the store saw of them, never from a caller's word.
 #[derive(Debug)]
 pub struct Admitted {
     subject: Subject,
@@ -82,7 +83,7 @@ impl Admitted {
     }
 
     /// The same bytes for another sighting in the same call. The store
-    /// had them by then, so [`record`] does not write their size twice.
+    /// had them by then, so [`sighting_claims`] does not claim their size twice.
     #[must_use]
     pub fn again(&self) -> Admitted {
         Admitted {
@@ -95,7 +96,7 @@ impl Admitted {
 }
 
 /// What a taker says about the bytes it brings — one sighting of the
-/// content, which [`record`] writes beside the archive's own facts.
+/// content, which [`sighting_claims`] records beside the archive's own facts.
 #[derive(Debug)]
 pub struct Sighting<'a> {
     /// Who is taking in — `ingest`, or a tool's own name.
@@ -170,18 +171,25 @@ pub(crate) fn detect(mut bytes: impl Read + Seek) -> std::io::Result<String> {
 /// What [`detect`] answers for bytes it does not recognize.
 pub(crate) const UNKNOWN_KIND: &str = "application/octet-stream";
 
-/// Put an admission on the record: the taker's facts, the tags, the
-/// kind in the taker's words where it has them — and for bytes new to
-/// the store their size, and the sniffed kind where the taker had no
-/// word. Every claim of one call carries one moment, the sighting's
-/// own or now, and one run.
-/// Answers the claims that went in, each with the id it has in the log,
+/// The claims of an admission: the taker's facts, the tags, the kind in
+/// the taker's words where it has them, and for bytes new to the store
+/// their size, and the sniffed kind where the taker had no word. Every
+/// claim of one call carries one moment, the sighting's own or now, and
+/// one run. Each comes with the id it gets in the log under `algorithm`,
 /// so that a retraction in the same run can name one.
+///
+/// Nothing is written here: the caller hands the claims to a
+/// [`Recorder`](crate::Recorder), which writes them once the stored
+/// bytes are flushed.
 ///
 /// # Errors
 ///
-/// Whatever building or appending a claim can answer.
-pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<Vec<Claim>> {
+/// Whatever building a claim can answer.
+pub fn sighting_claims(
+    admitted: &Admitted,
+    said: &Sighting<'_>,
+    algorithm: Algorithm,
+) -> Result<Vec<Claim>> {
     let time = said.time.cloned().unwrap_or_else(Timestamp::now);
     let word = Source::parse("user")?;
     let subject = &admitted.subject;
@@ -236,8 +244,6 @@ pub fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<Vec
             said.run,
         )?);
     }
-    log.append_all(&claims)?;
-    let algorithm = log.store().algorithm();
     Ok(claims
         .into_iter()
         .map(|claim| claim.identified(algorithm))
@@ -292,10 +298,17 @@ impl<R: Read> Read for Counted<R> {
 mod tests {
     use std::io::Cursor;
 
-    use immure::Algorithm;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::log::Log;
+
+    /// The claims of an admission, written at once.
+    fn record(log: &Log, admitted: &Admitted, said: &Sighting<'_>) -> Result<Vec<Claim>> {
+        let claims = sighting_claims(admitted, said, log.store().algorithm())?;
+        log.append_all(&claims)?;
+        Ok(claims)
+    }
 
     static RUN: std::sync::LazyLock<Run> =
         std::sync::LazyLock::new(|| Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap());

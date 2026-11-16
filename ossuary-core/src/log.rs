@@ -75,8 +75,10 @@
 //! outside the archive shows it (see `seal`).
 //!
 //! An append is flushed to the device before it returns, so a claim that
-//! an append reported as written survives a crash. Everything sealed is
-//! durable the way the store promises. Reading is strict: a line that does
+//! an append reported as written survives a crash, unless the log was
+//! told to flush only at the end ([`Log::flush_at_end`]): then at
+//! [`Log::flush`]. A segment is flushed before the bundles it took in are
+//! deleted, whichever way the log flushes. Reading is strict: a line that does
 //! not read as a claim stops the reader rather than being quietly dropped.
 
 use std::collections::BTreeSet;
@@ -86,7 +88,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use immure::{Algorithm, Digest, Store};
+use immure::{Algorithm, Digest, Flush, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::claim::{Claim, ClaimId};
@@ -387,6 +389,9 @@ pub struct Log {
     store: Store,
     root: PathBuf,
     written: Mutex<Option<Written>>,
+    /// When a bundle is flushed: as it is appended, or with
+    /// [`flush`](Log::flush).
+    bundles: Flush,
 }
 
 /// What this process knows of the open segment it appends to, so that an
@@ -397,7 +402,10 @@ pub struct Log {
 /// again by the next append.
 #[derive(Debug)]
 struct Written {
-    dir: PathBuf,
+    /// The bundles of the open segment as this process writes them, its
+    /// directory the store's root. Kept so that bundles not flushed yet
+    /// are flushed together.
+    store: Store,
     bundles: usize,
     bytes: u64,
 }
@@ -411,6 +419,39 @@ impl Log {
             store,
             root: root.into(),
             written: Mutex::default(),
+            bundles: Flush::Each,
+        }
+    }
+
+    /// Flush bundles only at [`flush`](Log::flush), for a run that writes
+    /// many and can be repeated. A crash of the system before then can lose
+    /// them, or leave one that does not read. Sealing still flushes the
+    /// segment before it deletes the bundles it holds.
+    pub fn flush_at_end(&mut self) {
+        self.bundles = Flush::OnRequest;
+    }
+
+    /// Whether bundles are flushed only at [`flush`](Log::flush).
+    #[must_use]
+    pub fn flushes_at_end(&self) -> bool {
+        self.bundles == Flush::OnRequest
+    }
+
+    /// Flush the bundles this process appended and did not flush yet.
+    /// Nothing to do unless [`flush_at_end`](Log::flush_at_end) was asked
+    /// for.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] when a bundle cannot be flushed.
+    pub fn flush(&self) -> Result<()> {
+        let store = {
+            let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+            written.as_ref().map(|written| written.store.clone())
+        };
+        match store {
+            Some(store) => Ok(store.flush()?),
+            None => Ok(()),
         }
     }
 
@@ -536,7 +577,7 @@ impl Log {
             text.push('\n');
         }
         loop {
-            let (dir, bundles, bytes) = if let Some(known) = self.known() {
+            let (store, bundles, bytes) = if let Some(known) = self.known() {
                 known
             } else {
                 let dir = self.open_dir_to_write()?;
@@ -545,15 +586,14 @@ impl Log {
                     Err(immure::Error::RootMissing(_)) => continue,
                     Err(error) => return Err(error.into()),
                 };
-                self.learn(&dir, bundles);
-                (dir, bundles, 0)
+                (self.learn(&dir, bundles), bundles, 0)
             };
             if bundles >= SEAL_AT || bytes >= SEAL_AT_BYTES {
                 self.seal()?;
                 self.forget_written();
                 continue;
             }
-            match self.bundle_store(&dir).add(text.as_bytes()) {
+            match store.add(text.as_bytes()) {
                 Ok(_) => {
                     self.note_written(text.len() as u64);
                     return Ok(());
@@ -567,22 +607,25 @@ impl Log {
     }
 
     /// The open segment this process appends to, as far as it knows: the
-    /// directory, its count of bundles, and the bytes it added.
-    fn known(&self) -> Option<(PathBuf, usize, u64)> {
+    /// bundles it writes there, their count, and the bytes it added.
+    fn known(&self) -> Option<(Store, usize, u64)> {
         let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         written
             .as_ref()
-            .map(|written| (written.dir.clone(), written.bundles, written.bytes))
+            .map(|written| (written.store.clone(), written.bundles, written.bytes))
     }
 
     /// Begin counting for `dir`, which a listing showed to hold `bundles`.
-    fn learn(&self, dir: &Path, bundles: usize) {
+    /// Answers the store this process writes its bundles there with.
+    fn learn(&self, dir: &Path, bundles: usize) -> Store {
+        let store = self.bundle_store_flushing(dir, self.bundles);
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         *written = Some(Written {
-            dir: dir.to_path_buf(),
+            store: store.clone(),
             bundles,
             bytes: 0,
         });
+        store
     }
 
     /// One more bundle of `bytes` in the directory counted for.
@@ -608,7 +651,7 @@ impl Log {
     #[cfg(test)]
     fn written_to(&self, dir: &Path) -> u64 {
         match self.known() {
-            Some((known, _, bytes)) if known == dir => bytes,
+            Some((known, _, bytes)) if known.root() == dir => bytes,
             _ => 0,
         }
     }
@@ -1041,7 +1084,7 @@ impl Log {
             // file written here goes with step 5.
             return Ok(None);
         }
-        self.store.add(text.as_bytes())?;
+        self.store_segment(text.as_bytes())?;
         let listed: BTreeSet<Digest> = names.into_iter().collect();
         self.finish_sealed(&sealed, Some(&listed))?;
         Ok(Some(Segment { digest }))
@@ -1103,8 +1146,16 @@ impl Log {
         let Some(bytes) = self.segment_file(sealed, digest) else {
             return Err(Error::SealUnfinished(sealed.to_path_buf()));
         };
-        self.store.add(&bytes)?;
+        self.store_segment(&bytes)?;
         Ok(true)
+    }
+
+    /// Put a segment into the claims store, flushed whatever the store's
+    /// own setting: the bundles it holds are deleted next.
+    fn store_segment(&self, bytes: &[u8]) -> Result<()> {
+        self.store.add(bytes)?;
+        self.store.flush()?;
+        Ok(())
     }
 
     /// The bytes of the segment file in `dir` that has `digest`, when
@@ -1228,11 +1279,17 @@ impl Log {
     /// The bundle store in `dir`: entries named by digest, `.jsonl`, never
     /// compressed, and never making the directory.
     fn bundle_store(&self, dir: &Path) -> Store {
+        self.bundle_store_flushing(dir, Flush::Each)
+    }
+
+    /// As [`bundle_store`](Log::bundle_store), flushing the way `flush` says.
+    fn bundle_store_flushing(&self, dir: &Path, flush: Flush) -> Store {
         Store::builder(dir)
             .suffix(BUNDLE_SUFFIX)
             .depth(0)
             .algorithm(self.store.algorithm())
             .create_root(false)
+            .flush(flush)
             .build()
             .expect("a bundle store of depth 0 builds")
     }

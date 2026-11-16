@@ -149,6 +149,7 @@ mod tests {
     /// Store `bytes` and record their size: one file, one claim.
     fn take(archive: &Archive, bytes: &[u8], at: &str) -> Digest {
         let (_, entry) = archive.content().add(bytes).unwrap();
+        archive.flush().unwrap();
         let digest = entry.digest().clone();
         let size = claim(&digest, "file:size", json!(bytes.len()), at);
         archive.log().append(&size).unwrap();

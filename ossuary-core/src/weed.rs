@@ -127,6 +127,9 @@ pub fn weed(archive: &Archive, twin: &Twin, repair: bool) -> Result<Weeded> {
     if stored.digest() != &twin.digest {
         return Err(Error::TwinChanged(twin.digest.as_str().to_string()));
     }
+    // The copy in content/ is on the device before the one in derived/,
+    // the only sound one until then, goes.
+    content.flush()?;
     derived.remove(&twin.digest)?;
     Ok(Weeded::Repaired {
         aside: aside.path().to_path_buf(),
@@ -152,6 +155,7 @@ mod tests {
     fn twin(archive: &Archive, bytes: &[u8]) -> Digest {
         let (_, entry) = archive.content().add(bytes).unwrap();
         archive.derived().add(bytes).unwrap();
+        archive.flush().unwrap();
         let claim = Claim::assert(
             Subject::parse(entry.digest().as_str()).unwrap(),
             Attribute::parse("file:size").unwrap(),
@@ -191,6 +195,7 @@ mod tests {
         let archive = archive(&dir);
         archive.content().add(b"an original").unwrap();
         archive.derived().add(b"a derived file").unwrap();
+        archive.flush().unwrap();
 
         assert!(twins(&archive).unwrap().is_empty());
     }

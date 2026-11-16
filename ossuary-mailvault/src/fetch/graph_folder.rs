@@ -113,7 +113,7 @@ impl Fetch<'_> {
                 "{name}: the server returned no resume point; the next run fetches all messages again"
             )),
         }
-        self.memo.commit_for(self.archive)
+        self.commit_memo()
     }
 
     /// Every message on the folder's pending list, one request each,
@@ -141,7 +141,7 @@ impl Fetch<'_> {
         let outcome = self.graph_each(place, &pending, client, state);
         // What came off the list before the trouble stays off it
         // either way.
-        let closed = self.memo.commit_for(self.archive);
+        let closed = self.commit_memo();
         match outcome {
             Ok(landed) => {
                 closed?;
@@ -242,6 +242,7 @@ impl Fetch<'_> {
         let place = Place::new(&account.name, folder);
         let name = &place.name;
         // Categories are taken back against the record.
+        self.write_held()?;
         state.standing.refresh(self.archive, self.say)?;
         let Some(id) = client.resolve(folder).map(str::to_string) else {
             state.tally.failed.push(format!(

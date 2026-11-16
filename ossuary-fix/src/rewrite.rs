@@ -246,7 +246,11 @@ impl Rewrite {
         // standing over renamed segments would fold them a second time.
         forget(archive)?;
         let log = archive.log();
-        let store = log.store();
+        // The new segments are flushed together, before anything old is
+        // removed.
+        let store = log
+            .store()
+            .with_flush(ossuary_core::Flush::Batch(immure::DEFAULT_BATCH));
         for step in &self.steps {
             let (_, entry) = store.add(step.text.as_bytes())?;
             if entry.digest() != &step.new {
@@ -257,6 +261,7 @@ impl Rewrite {
                 );
             }
         }
+        store.flush()?;
         if let Some(text) = &self.head {
             // The open segment anew: its directory begun after the segment
             // the text names, its claims as one bundle.

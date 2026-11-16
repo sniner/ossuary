@@ -52,7 +52,7 @@ impl Fetch<'_> {
         self.memo.begin()?;
         self.memo
             .remove_compared(place.account, place.folder, ids)?;
-        self.memo.commit_for(self.archive)
+        self.commit_memo()
     }
 
     /// After the last round: what the Message-ID settled needs no row
@@ -166,7 +166,7 @@ impl Fetch<'_> {
                     uid: top,
                 },
             )?;
-            self.memo.commit_for(self.archive)?;
+            self.commit_memo()?;
             if wanted.is_empty() {
                 break;
             }
@@ -290,7 +290,7 @@ impl Fetch<'_> {
                     .iter()
                     .map(|(message, _)| (message.id.as_str(), &message.tags)),
             )?;
-            self.memo.commit_for(self.archive)?;
+            self.commit_memo()?;
             only = more
                 .wanted
                 .into_iter()

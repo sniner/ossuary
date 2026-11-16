@@ -357,9 +357,9 @@ impl Fetch<'_> {
                 state.tally.run.clone(),
             )?);
         }
-        self.archive.log().append_all(&claims)?;
         state.tally.claims += claims.len();
         state.tally.taken += claims.len();
+        self.hold(claims)?;
         if !gone.is_empty() {
             self.say.line(format_args!(
                 "{name}: the label was retracted from {} no longer in the folder",
@@ -400,6 +400,6 @@ impl Fetch<'_> {
                 uid: top,
             },
         )?;
-        self.memo.commit_for(self.archive)
+        self.commit_memo()
     }
 }

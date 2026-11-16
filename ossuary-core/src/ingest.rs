@@ -36,12 +36,13 @@ use immure::Store;
 use rusqlite::{Connection, params};
 use serde_json::json;
 
-use crate::accession::{Sighting, admit, known_attribute, record};
+use crate::accession::{Sighting, admit, known_attribute, sighting_claims};
 use crate::claim::{Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::config::Excludes;
 use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::log::Log;
+use crate::recorder::Recorder;
 
 /// What one ingest run did.
 #[derive(Debug)]
@@ -164,6 +165,7 @@ where
     let mut remembering = sweep
         .memory
         .map(|memory| Remembering::new(memory, sweep.host, log));
+    let mut recorder = Recorder::new(log, &[content]);
     for path in &gathered.files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
@@ -191,11 +193,18 @@ where
                 } else {
                     result.known += 1;
                 }
-                result.claims += claims;
-                if let (Some(remembering), Some(Observation::Changed(size, mtime))) =
-                    (remembering.as_mut(), seen)
-                {
-                    remembering.note(path, size, mtime)?;
+                result.claims += claims.len();
+                let written = recorder.push(claims)?;
+                if let Some(remembering) = remembering.as_mut() {
+                    if let Some(Observation::Changed(size, mtime)) = seen {
+                        remembering.note(path, size, mtime);
+                    }
+                    // The memory follows the claims once they are on the
+                    // device, never ahead of them: a file it calls
+                    // unchanged is not read again.
+                    if written && recorder.durable() {
+                        remembering.write(std::iter::empty())?;
+                    }
                 }
             }
             Err(error) => result.failed.push((path.clone(), error)),
@@ -216,9 +225,12 @@ where
             result.run.clone(),
         )?);
     }
-    log.append_all(&retractions)?;
     result.claims += retractions.len();
     result.gone += retractions.len();
+    recorder.push(retractions)?;
+    recorder.write()?;
+    content.flush()?;
+    log.flush()?;
     if let Some(remembering) = remembering {
         remembering.finish(gone.iter().map(|(path, _, _)| path.as_path()))?;
     }
@@ -536,7 +548,7 @@ fn take(
     run: &Run,
     source: &Source,
     tags: &[String],
-) -> Result<(bool, usize)> {
+) -> Result<(bool, Vec<Claim>)> {
     let file = fs::File::open(path).map_err(|source| Error::Io {
         context: "reading".to_string(),
         source,
@@ -557,8 +569,7 @@ fn take(
         facts.push((known_attribute("file:modified"), json!(modified)));
     }
     let admitted = admit(content, file)?;
-    let claims = record(
-        log,
+    let claims = sighting_claims(
         &admitted,
         &Sighting {
             source,
@@ -568,8 +579,9 @@ fn take(
             tags,
             time: None,
         },
+        log.store().algorithm(),
     )?;
-    Ok((admitted.is_new(), claims.len()))
+    Ok((admitted.is_new(), claims))
 }
 
 /// The moment the filesystem reported, spelled as the RFC 3339 instant it
@@ -711,15 +723,14 @@ impl IngestMemory {
     }
 }
 
-/// How many sightings one run collects before it writes them to the
-/// memory. A run that stops loses at most this many: their files are read
-/// again by the next run, and their sightings recorded a second time.
-const REMEMBER_EVERY: usize = 100;
-
 /// What one run adds to the memory, written in steps.
 ///
-/// A sighting is noted after its claims are in the log, so every step is
-/// right by itself and nothing has to be undone when the run stops. The
+/// A step is written after the claims of its sightings are on the
+/// device, one step per batch of claims, so every step is right by itself
+/// and nothing has to be undone when the run stops. A run that stops
+/// loses at most the sightings of one batch: their files are read again
+/// by the next run, and their sightings recorded a second time. When the
+/// archive flushes only at the end, the memory is written only then. The
 /// database is locked only while a step is written, not while files are
 /// read: a second run on the same archive gets its turn, and a run that
 /// takes hours keeps what it has done when it is interrupted.
@@ -742,13 +753,9 @@ impl<'a> Remembering<'a> {
         }
     }
 
-    /// Note a sighting that just went on the record.
-    fn note(&mut self, path: &Path, size: i64, mtime: i64) -> Result<()> {
+    /// Note a sighting whose claims were handed to the recorder.
+    fn note(&mut self, path: &Path, size: i64, mtime: i64) {
         self.noted.push((path.to_path_buf(), size, mtime));
-        if self.noted.len() >= REMEMBER_EVERY {
-            self.write(std::iter::empty())?;
-        }
-        Ok(())
     }
 
     /// Write what is still noted, and forget the places whose sightings
@@ -1661,13 +1668,15 @@ mod tests {
         let other = IngestMemory::open(&path).unwrap();
         let file = |n: usize| PathBuf::from(format!("/tree/{n}.txt"));
 
+        let step = 3;
         let mut remembering = Remembering::new(&memory, "atlas.example.net", &log);
-        for n in 0..REMEMBER_EVERY {
-            remembering.note(&file(n), 1, 1).unwrap();
+        for n in 0..step {
+            remembering.note(&file(n), 1, 1);
         }
+        remembering.write(std::iter::empty()).unwrap();
         // The run goes on. What it has noted so far is in the file, and
         // a second run can write.
-        remembering.note(&file(REMEMBER_EVERY), 1, 1).unwrap();
+        remembering.note(&file(step), 1, 1);
         assert!(
             other
                 .unchanged("atlas.example.net", &file(0), 1, 1)
@@ -1676,7 +1685,7 @@ mod tests {
         );
         assert!(
             !other
-                .unchanged("atlas.example.net", &file(REMEMBER_EVERY), 1, 1)
+                .unchanged("atlas.example.net", &file(step), 1, 1)
                 .unwrap(),
             "the next one waits for its step"
         );
@@ -1688,7 +1697,7 @@ mod tests {
 
         assert!(
             other
-                .unchanged("atlas.example.net", &file(REMEMBER_EVERY), 1, 1)
+                .unchanged("atlas.example.net", &file(step), 1, 1)
                 .unwrap()
         );
         assert!(

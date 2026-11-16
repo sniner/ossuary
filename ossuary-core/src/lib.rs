@@ -37,11 +37,12 @@ mod index;
 mod ingest;
 mod log;
 mod part;
+mod recorder;
 mod retract;
 mod seal;
 mod weed;
 
-pub use accession::{Admitted, Sighting, admit, record};
+pub use accession::{Admitted, Sighting, admit, sighting_claims};
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
 pub use audit::{
@@ -58,7 +59,7 @@ pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
 pub use export::{Placed, Placement, lay_out};
 pub use extract::{Derivation, EXAMINED, Examined, record_examination};
-pub use immure::{Algorithm, Digest, Store};
+pub use immure::{Algorithm, Digest, Flush, Store};
 pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
 pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{
@@ -66,6 +67,7 @@ pub use log::{
     old_open_dirs,
 };
 pub use part::Part;
+pub use recorder::{BATCH, Recorder};
 pub use retract::retract;
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,

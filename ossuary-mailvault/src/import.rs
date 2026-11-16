@@ -42,7 +42,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ossuary_core::{
-    Admitted, Algorithm, Archive, Attribute, Sighting, Source, Timestamp, admit, record,
+    Admitted, Algorithm, Archive, Attribute, Recorder, Sighting, Source, Timestamp, admit,
+    sighting_claims,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -433,13 +434,18 @@ impl Takeover<'_> {
     /// Write the claims of a batch into a segment of their own, sorted by
     /// time, then remember what was recorded and commit the memo. One
     /// sighting per message and time: the first of a message also records
-    /// the size of new bytes.
+    /// the size of new bytes. The messages are flushed before their claims
+    /// are written, and the claims before the memo is committed, also when
+    /// the archive flushes only at the end: the memo must not say a message
+    /// was imported that a crash of the system can still take.
     fn settle(&self, batch: &mut Vec<Pending>, tally: &mut Tally) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
         let log = self.archive.log();
         log.seal()?;
+        let mut recorder = Recorder::for_archive(self.archive);
+        let algorithm = log.store().algorithm();
         let now = Timestamp::now();
         let mut sightings: Vec<(Timestamp, usize, Vec<&String>)> = Vec::new();
         for (index, pending) in batch.iter().enumerate() {
@@ -497,8 +503,7 @@ impl Takeover<'_> {
             if first && let Some(id) = &pending.id {
                 facts.push((self.id.clone(), json!(id)));
             }
-            tally.claims += record(
-                log,
+            let claims = sighting_claims(
                 admitted,
                 &Sighting {
                     source: &self.source,
@@ -508,8 +513,14 @@ impl Takeover<'_> {
                     tags: &[],
                     time: Some(time),
                 },
-            )?
-            .len();
+                algorithm,
+            )?;
+            tally.claims += claims.len();
+            recorder.push(claims)?;
+        }
+        recorder.write()?;
+        if !recorder.durable() {
+            self.archive.flush()?;
         }
         log.seal()?;
         if let Some(memo) = self.memo {

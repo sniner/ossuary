@@ -132,6 +132,7 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
         described += 1;
     }
     log.append_all(&claims)?;
+    log.flush()?;
     Ok(Described {
         files: described,
         claims: claims.len(),
@@ -145,7 +146,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::accession::{Sighting, admit, record};
+    use crate::accession::{Sighting, admit, sighting_claims};
     use crate::claim::{Attribute, Value};
     use crate::index::Scope;
     use immure::Algorithm;
@@ -158,8 +159,7 @@ mod tests {
     fn arrive(archive: &Archive, bytes: &[u8], path: &str) -> Subject {
         let admitted = admit(archive.content(), std::io::Cursor::new(bytes)).unwrap();
         let facts = [(Attribute::parse("file:path").unwrap(), json!(path))];
-        record(
-            archive.log(),
+        let claims = sighting_claims(
             &admitted,
             &Sighting {
                 source: &Source::parse("ingest").unwrap(),
@@ -169,8 +169,11 @@ mod tests {
                 tags: &[],
                 time: None,
             },
+            Algorithm::Sha256,
         )
         .unwrap();
+        archive.flush().unwrap();
+        archive.log().append_all(&claims).unwrap();
         admitted.subject().clone()
     }
 
@@ -224,6 +227,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
         let (_, entry) = archive.derived().add(b"%PDF-1.4 derived").unwrap();
+        archive.flush().unwrap();
         let subject = Subject::parse(entry.digest().as_str()).unwrap();
         archive
             .log()
