@@ -66,10 +66,10 @@ struct Cli {
     /// By default only the record of what was stored is flushed to the
     /// disk, not the stored files. After a crash of the computer or a
     /// power loss, a file stored shortly before can then be empty or cut
-    /// short; `ossuary audit` reports such a file. Use this option when
-    /// the originals are removed after the run. Files are then flushed in
-    /// batches of 1,000 files, 256 MiB or 30 seconds, and recorded after
-    /// that.
+    /// short; `ossuary audit --since TIME` reports such a file. Use this
+    /// option when the originals are removed after the run. Files are
+    /// then flushed in batches of 1,000 files, 256 MiB or 30 seconds, and
+    /// recorded after that.
     #[arg(long, global = true)]
     flush: bool,
 
@@ -624,12 +624,16 @@ enum Command {
     /// derived/ are reported but not counted as findings.
     ///
     /// --fast lists the files in content/ and derived/ instead of reading
-    /// them. It finds missing files but not damaged ones. The claims are
-    /// checked in full either way.
+    /// them. It finds missing files but not damaged ones. --since TIME
+    /// reads only the files written since TIME and lists the others: the
+    /// check after a crash of the computer or a power loss, which can
+    /// damage only files stored shortly before. The claims are checked in
+    /// full either way.
     ///
     /// The report lists up to five names per finding, --verbose lists
     /// all. --json prints one object per finding, after a first line
-    /// {"mode":"fast"} or {"mode":"full"}. Exits 0 if the archive is
+    /// {"mode":"fast"}, {"mode":"full"} or {"mode":"since","since":TIME}.
+    /// Exits 0 if the archive is
     /// sound, 1 if there are findings.
     Audit {
         /// Print one JSON object per finding or observation
@@ -639,6 +643,11 @@ enum Command {
         /// List the files in content/ and derived/ without reading them
         #[arg(long)]
         fast: bool,
+
+        /// Read only the files written since TIME: an RFC 3339 time like
+        /// 2026-01-01T12:00:00Z, or a date
+        #[arg(long, value_name = "TIME", conflicts_with = "fast")]
+        since: Option<String>,
     },
     /// Repair and clean up the archive
     #[command(subcommand)]
@@ -820,7 +829,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             as_of.as_deref(),
             quiet,
         ),
-        Command::Audit { json, fast } => audit::audit(&location, json, fast, cli.verbose, quiet),
+        Command::Audit { json, fast, since } => {
+            audit::audit(&location, json, fast, since.as_deref(), cli.verbose, quiet)
+        }
         Command::Maintain(task) => maintain::run(&location, &task, cli.verbose, quiet),
         Command::Outside(pieces) => outside(&location, &pieces),
     }

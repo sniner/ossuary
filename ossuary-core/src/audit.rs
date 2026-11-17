@@ -49,16 +49,25 @@
 //! still re-hashed and read claim by claim, because the presence check
 //! needs every claim.
 //!
+//! An audit since a moment reads only the entries written at or after
+//! it, by the time the filesystem keeps for each file, and lists the
+//! rest. An archive does not flush the files it stores, so a crash of
+//! the system can leave an entry empty or cut short, and only among
+//! those written shortly before it.
+//!
 //! The whole pass works from the truth tiers alone: stores, segments,
 //! head. The cache is never consulted — an audit is the tool for the day
 //! nothing else is trusted, so it leans on nothing the archive could
 //! rebuild from what is being audited.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use immure::{Digest, Store};
 
-use crate::claim::{Claim, Subject, Value};
+use crate::claim::{Claim, Subject, Timestamp, Value};
 use crate::error::Result;
 use crate::log::Log;
 
@@ -77,6 +86,11 @@ pub struct StoreAudit {
     /// was read, and `damaged` and `unreadable` are empty for that
     /// reason.
     pub read: bool,
+    /// The moment from which on entries were read, in an audit that reads
+    /// only the entries written at or after one.
+    pub since: Option<Timestamp>,
+    /// Entries read and re-hashed.
+    pub verified: usize,
     /// Entries the walk met.
     pub checked: usize,
     /// Entries whose bytes are no longer what their names say.
@@ -92,6 +106,8 @@ pub struct StoreAudit {
     /// twice. Keyed by the name as the claims spell it, with the digest
     /// it was walked under beside it.
     held: BTreeMap<String, Digest>,
+    /// The names read, in an audit that reads only some.
+    read_names: BTreeSet<String>,
 }
 
 impl StoreAudit {
@@ -106,6 +122,15 @@ impl StoreAudit {
             troubles.insert(name.as_str(), Fixity::Unreadable(error.clone()));
         }
         troubles
+    }
+
+    /// How the entry `name` fared, given the store's `troubles`.
+    fn fixity(&self, troubles: &BTreeMap<&str, Fixity>, name: &str) -> Fixity {
+        if self.read || self.read_names.contains(name) {
+            troubles.get(name).cloned().unwrap_or(Fixity::Sound)
+        } else {
+            Fixity::Unchecked
+        }
     }
 }
 
@@ -170,21 +195,59 @@ impl Twin {
 /// at all; what a single entry has to answer for lands in the report
 /// instead.
 pub fn audit_store(store: &Store, read: bool) -> Result<StoreAudit> {
+    walk_store(store, if read { Reading::All } else { Reading::None })
+}
+
+/// Audit one blob store, reading only the entries written at or after
+/// `since`: those whose file was last modified then, by the filesystem's
+/// time. The others are listed, as in an audit that reads none. An entry
+/// whose time cannot be told is read.
+///
+/// # Errors
+///
+/// As [`audit_store`].
+pub fn audit_store_since(store: &Store, since: &Timestamp) -> Result<StoreAudit> {
+    walk_store(store, Reading::Since(since))
+}
+
+/// Which entries a walk over a store reads.
+#[derive(Clone, Copy)]
+enum Reading<'a> {
+    All,
+    None,
+    Since(&'a Timestamp),
+}
+
+fn walk_store(store: &Store, reading: Reading<'_>) -> Result<StoreAudit> {
     let mut report = StoreAudit {
-        read,
+        read: matches!(reading, Reading::All),
+        since: match reading {
+            Reading::Since(since) => Some(since.clone()),
+            _ => None,
+        },
+        verified: 0,
         checked: 0,
         damaged: Vec::new(),
         unreadable: Vec::new(),
         held: BTreeMap::new(),
+        read_names: BTreeSet::new(),
     };
     for entry in store.entries() {
         let entry = entry?;
         let name = entry.digest().as_str().to_string();
         report.checked += 1;
         report.held.insert(name.clone(), entry.digest().clone());
-        if !read {
-            continue;
+        match reading {
+            Reading::All => {}
+            Reading::None => continue,
+            Reading::Since(since) => {
+                if written(entry.path()).is_some_and(|time| time < *since) {
+                    continue;
+                }
+                report.read_names.insert(name.clone());
+            }
         }
+        report.verified += 1;
         match store.verify(&entry) {
             Ok(true) => {}
             Ok(false) => report.damaged.push(name),
@@ -192,6 +255,17 @@ pub fn audit_store(store: &Store, read: bool) -> Result<StoreAudit> {
         }
     }
     Ok(report)
+}
+
+/// When the file at `path` was last modified. `None` when the filesystem
+/// does not say, or says a time no timestamp can spell.
+fn written(path: &Path) -> Option<Timestamp> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let seconds = match modified.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).ok()?,
+        Err(before) => -i64::try_from(before.duration().as_secs()).ok()?,
+    };
+    Timestamp::from_unix(seconds).ok()
 }
 
 /// The claim log read back whole: every sealed segment, the open head,
@@ -506,21 +580,14 @@ impl Audit {
         };
         let content_troubles = content.troubles();
         let derived_troubles = derived.troubles();
-        let fixity = |store: &StoreAudit, troubles: &BTreeMap<&str, Fixity>, name: &str| {
-            if store.read {
-                troubles.get(name).cloned().unwrap_or(Fixity::Sound)
-            } else {
-                Fixity::Unchecked
-            }
-        };
         let twins = content
             .held
             .iter()
             .filter(|(name, _)| derived.held.contains_key(*name))
             .map(|(name, digest)| Twin {
                 digest: digest.clone(),
-                content: fixity(&content, &content_troubles, name),
-                derived: fixity(&derived, &derived_troubles, name),
+                content: content.fixity(&content_troubles, name),
+                derived: derived.fixity(&derived_troubles, name),
             })
             .collect();
         let undescribed = log
@@ -571,6 +638,13 @@ impl Audit {
     #[must_use]
     pub fn read(&self) -> bool {
         self.content.read && self.derived.read
+    }
+
+    /// The moment from which on files were read, after an audit that
+    /// read only the files written at or after one.
+    #[must_use]
+    pub fn since(&self) -> Option<&Timestamp> {
+        self.content.since.as_ref().or(self.derived.since.as_ref())
     }
 }
 
@@ -647,6 +721,42 @@ mod tests {
         permissions.set_readonly(false);
         std::fs::set_permissions(path, permissions).unwrap();
         std::fs::write(path, bytes).unwrap();
+    }
+
+    /// Give the file at `path` a time of its last change long ago.
+    fn age(path: &std::path::Path) {
+        let old = UNIX_EPOCH + std::time::Duration::from_secs(946_684_800);
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(old).unwrap();
+    }
+
+    #[test]
+    fn an_audit_since_a_moment_reads_only_the_files_written_since() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let old = take(&archive, b"stored long ago");
+        let young = take(&archive, b"stored just now");
+        let path = |subject: &Subject| {
+            let digest = Digest::parse(subject.as_str()).unwrap();
+            archive.content().find(&digest).unwrap().unwrap()
+        };
+        tamper(&path(&old), b"cut sho");
+        tamper(&path(&young), b"cut sho");
+        age(&path(&old));
+        let since = Timestamp::parse("2020-01-01T00:00:00Z").unwrap();
+
+        let audit = Audit::assemble(
+            audit_store_since(archive.content(), &since).unwrap(),
+            audit_store_since(archive.derived(), &since).unwrap(),
+            audit_log(archive.log()).unwrap(),
+        );
+
+        assert_eq!(audit.content.checked, 2);
+        assert_eq!(audit.content.verified, 1);
+        assert_eq!(audit.content.damaged, [young.as_str().to_string()]);
+        assert_eq!(audit.since(), Some(&since));
+        assert!(!audit.read(), "not every file was read");
+        assert!(audit.missing.is_empty(), "the old file is still listed");
     }
 
     #[test]

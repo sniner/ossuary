@@ -91,10 +91,11 @@ struct Cli {
     /// By default only the record of what was stored is flushed to the
     /// disk, not the stored messages. After a crash of the computer or a
     /// power loss, a message stored shortly before can then be empty or
-    /// cut short; `ossuary audit` reports such a message. Use this option
-    /// when the messages are removed from the server or the imported
-    /// archive after the run. Messages are then flushed in batches of
-    /// 1,000 messages, 256 MiB or 30 seconds, and recorded after that.
+    /// cut short; `ossuary audit --since TIME` reports such a message.
+    /// Use this option when the messages are removed from the server or
+    /// the imported archive after the run. Messages are then flushed in
+    /// batches of 1,000 messages, 256 MiB or 30 seconds, and recorded
+    /// after that.
     #[arg(long, global = true)]
     flush: bool,
 

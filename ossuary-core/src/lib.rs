@@ -48,7 +48,7 @@ pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
 pub use audit::{
     Audit, Ends, Fixity, HEAD, LINKS, LogAudit, StoreAudit, Twin, Undescribed, audit_log,
-    audit_store,
+    audit_store, audit_store_since,
 };
 pub use claim::{
     Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value, Written, standing_ids_in,

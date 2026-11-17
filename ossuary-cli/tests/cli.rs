@@ -452,6 +452,53 @@ fn a_run_inside_the_archive_names_it_by_its_absolute_path() {
 }
 
 #[test]
+fn audit_since_reads_the_files_written_since_and_says_what_it_left_out() {
+    let (_dir, archive) = archive_with_a_file();
+    let name = name_of_the_note(&archive);
+    let found = run(ossuary(&archive).args(["get", "--path", &name]));
+    let path = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim_end());
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "the test plays the corruption"
+    )]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    std::fs::write(&path, b"cut sho").unwrap();
+
+    let later = run(ossuary(&archive).args(["audit", "--since", "2999-01-01"]));
+
+    assert!(later.status.success(), "{later:?}");
+    let stdout = String::from_utf8(later.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "content/: 1 file(s), 0 written since 2999-01-01T00:00:00Z, all of those match their hashes"
+        ),
+        "{stdout}"
+    );
+    let verdict = stdout.lines().last().unwrap();
+    assert!(
+        verdict.starts_with("sound as far as --since checks:")
+            && verdict.contains("older files were not checked against their hashes"),
+        "{verdict}"
+    );
+
+    let earlier = run(ossuary(&archive).args(["audit", "--since", "2000-01-01", "--json"]));
+
+    assert_eq!(earlier.status.code(), Some(1), "{earlier:?}");
+    let stdout = String::from_utf8(earlier.stdout).unwrap();
+    let mut lines = stdout.lines();
+    assert_eq!(
+        lines.next(),
+        Some("{\"mode\":\"since\",\"since\":\"2000-01-01T00:00:00Z\"}")
+    );
+    assert!(lines.next().unwrap().contains("\"finding\":\"damaged\""));
+
+    let both = run(ossuary(&archive).args(["audit", "--fast", "--since", "2000-01-01"]));
+    assert_eq!(both.status.code(), Some(2), "{both:?}");
+}
+
+#[test]
 fn audit_fast_misses_a_damaged_file_and_says_it_did_not_check() {
     let (_dir, archive) = archive_with_a_file();
     let name = name_of_the_note(&archive);

@@ -5,14 +5,21 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ossuary audit --since TIME`** checks the hash of the files written since TIME and only the
+  presence of the others: the check after a crash of the computer or a power loss, which can
+  damage only files stored shortly before. TIME is a time like `2026-01-01T12:00:00Z` or a date.
+  With `--json` the first line is `{"mode":"since","since":TIME}`
+
 ### Changed
 
 - **Stored files are no longer flushed to the disk, only the claims about them.** A command that
   stores many files caused one or two flushes per file on a network share, on Windows and on some
   local filesystems, which wears flash storage. The claims are written in bundles of about 4 MiB, or
   every 30 seconds, and each bundle is flushed. After a crash of the computer or a power loss, a
-  file stored shortly before can be empty or cut short although it is recorded; `ossuary audit`
-  reports such a file. A command that is stopped loses nothing it stored, and the next run
+  file stored shortly before can be empty or cut short although it is recorded;
+  `ossuary audit --since TIME` reports such a file. A command that is stopped loses nothing it stored, and the next run
   records the rest
 - **`--flush` replaces `--lazy-flush`**: with it, stored files are flushed as before, in batches
   of 1,000 files, 256 MiB or 30 seconds, and recorded after that. Use it when the originals are

@@ -37,8 +37,9 @@ about 4 MiB, or every 30 seconds, and each bundle is flushed. When a
 command is stopped, with Ctrl-C for example, the claims it had not
 written yet are not recorded, and the next run stores those files again.
 After a crash of the computer or a power loss, a file stored shortly
-before can be empty or cut short although it is recorded; `ossuary
-audit` reports such a file.
+before can be empty or cut short although it is recorded. `ossuary
+audit --since TIME`, with a time before the crash, reads the files
+written since then and reports such a file.
 
 With `--flush` the stored files are flushed too, in batches of 1,000
 files, 256 MiB or 30 seconds, and recorded after that. Use it when the
@@ -69,7 +70,7 @@ early, the output stops and the command still exits with success.
 | `id` | the name a file would have in the archive, and whether the archive already contains it. Nothing is added |
 | `get` | one file's content to stdout, or to `--output FILE`. `--path` prints the path of the stored file in the archive instead; in a compressed archive that file may be compressed |
 | `export` | copy files out of the archive under their recorded paths: runs by id, single files by name, in any mix. `--dry-run` shows where each file would be written |
-| `audit` | check the archive: every file against its hash, every claim readable, no segment or referenced file missing. `--fast` only checks that every file is there, not its hash. Exits 1 if there are findings |
+| `audit` | check the archive: every file against its hash, every claim readable, no segment or referenced file missing. `--fast` only checks that every file is there, not its hash. `--since TIME` checks the hash of the files written since TIME, a time like `2026-01-01T12:00:00Z` or a date, and only the presence of the others. Exits 1 if there are findings |
 | `maintain describe` | record the size and type of files that lack them, which happens when a run was interrupted after it stored a file and before it recorded it. `ossuary audit` lists such files; `--dry-run` shows them and writes nothing |
 | `maintain tidy` | remove temporary files that interrupted commands left in the `tmp/` directories of the archive. Only files older than 24 hours are removed, because a younger one may belong to a running command; `--all` removes those too, `--dry-run` shows how many would be removed |
 | `maintain weed` | remove files from `derived/` that `content/` also contains, after checking both copies against their hash. `--repair` replaces a damaged file in `content/` with its sound copy from `derived/` and keeps the damaged one aside; `--dry-run` shows what would be removed. Exits 1 if a file was left in both |

@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use ossuary_core::{Audit, Ends, Fixity, LogAudit, StoreAudit};
+use ossuary_core::{Audit, Ends, Fixity, LogAudit, StoreAudit, Timestamp};
 
 use crate::output::{errln, say};
 use crate::{Location, open};
@@ -25,6 +25,7 @@ pub(crate) fn audit(
     location: &Location,
     json: bool,
     fast: bool,
+    since: Option<&str>,
     verbose: bool,
     quiet: bool,
 ) -> Result<ExitCode> {
@@ -33,21 +34,39 @@ pub(crate) fn audit(
             "--json already lists every finding; drop --verbose"
         ));
     }
+    let since = since
+        .map(|given| {
+            Timestamp::opening(given).map_err(|_| {
+                anyhow!(
+                    "{given:?} is not a valid time; give an RFC 3339 time like 2026-01-01T12:00:00Z, or a date"
+                )
+            })
+        })
+        .transpose()?;
     let archive = open(location)?;
     let what = if fast {
-        "listing every file without reading it (--fast)"
+        "listing every file without reading it (--fast)".to_string()
+    } else if let Some(since) = &since {
+        format!(
+            "checking the files written since {} against their hashes",
+            since.as_str()
+        )
     } else {
-        "checking every file against its hash"
+        "checking every file against its hash".to_string()
+    };
+    let store = |store| match &since {
+        Some(since) => ossuary_core::audit_store_since(store, since),
+        None => ossuary_core::audit_store(store, !fast),
     };
     if !quiet {
         errln!("archive {}", archive.root().display());
         errln!("step 1 of 3: content/, {what}");
     }
-    let content = ossuary_core::audit_store(archive.content(), !fast)?;
+    let content = store(archive.content())?;
     if !quiet {
         errln!("step 2 of 3: derived/, {what}");
     }
-    let derived = ossuary_core::audit_store(archive.derived(), !fast)?;
+    let derived = store(archive.derived())?;
     if !quiet {
         errln!("step 3 of 3: claims/, reading every sealed segment and the open segment");
     }
@@ -254,6 +273,19 @@ fn chain_block(out: &mut impl Write, log: &LogAudit, verbose: bool) -> Result<bo
 /// The last line: which clean outcome it is, or how much is wrong, and
 /// after a quick audit what it did not check.
 fn verdict(audit: &Audit) -> String {
+    if let Some(since) = audit.since() {
+        let since = since.as_str();
+        return if audit.is_sound() {
+            format!(
+                "sound as far as --since checks: every file written since {since} matches its hash, every claim is readable, no segment or referenced file is missing; older files were {NOT_READ}"
+            )
+        } else {
+            format!(
+                "not sound: {} finding(s); files written before {since} were {NOT_READ}",
+                audit.findings()
+            )
+        };
+    }
     match (audit.is_sound(), audit.read()) {
         (true, true) => "sound; every file matches its hash, every claim is readable, no segment or referenced file is missing".to_string(),
         (true, false) => format!(
@@ -279,7 +311,7 @@ fn store_block(
     if store.checked == 0 {
         return say(out, &format!("{name}: empty"));
     }
-    if !store.read {
+    if !store.read && store.since.is_none() {
         return say(
             out,
             &format!("{name}: {} file(s), {NOT_READ} (--fast)", store.checked),
@@ -290,14 +322,26 @@ fn store_block(
             return Ok(false);
         }
     }
-    let mut clauses = vec![format!("{} file(s)", store.checked)];
+    let mut clauses = vec![match &store.since {
+        Some(since) => format!(
+            "{} file(s), {} written since {}",
+            store.checked,
+            store.verified,
+            since.as_str()
+        ),
+        None => format!("{} file(s)", store.checked),
+    }];
     if !store.unreadable.is_empty() {
         clauses.push(format!("{} unreadable", store.unreadable.len()));
     }
     if !store.damaged.is_empty() {
         clauses.push(format!("{} damaged", store.damaged.len()));
     } else if store.unreadable.is_empty() {
-        clauses.push("all match their hashes".to_string());
+        clauses.push(if store.since.is_some() {
+            "all of those match their hashes".to_string()
+        } else {
+            "all match their hashes".to_string()
+        });
     }
     let mut heading = format!("{name}: {}", clauses.join(", "));
     if !store.damaged.is_empty() {
@@ -406,8 +450,12 @@ pub(crate) fn listing(
 fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     use serde_json::json;
 
-    let mode = if audit.read() { "full" } else { "fast" };
-    let mut lines: Vec<serde_json::Value> = vec![json!({"mode": mode})];
+    let mode = match (audit.since(), audit.read()) {
+        (Some(since), _) => json!({"mode": "since", "since": since.as_str()}),
+        (None, true) => json!({"mode": "full"}),
+        (None, false) => json!({"mode": "fast"}),
+    };
+    let mut lines: Vec<serde_json::Value> = vec![mode];
     for (place, store) in [("content", &audit.content), ("derived", &audit.derived)] {
         for subject in &store.damaged {
             lines.push(json!({"finding": "damaged", "store": place, "subject": subject}));
