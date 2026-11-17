@@ -803,6 +803,24 @@ impl IngestMemory {
         Ok(())
     }
 
+    /// Forget these paths, on whichever host they were seen: the next run
+    /// reads the files there again.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Index`] from `SQLite`.
+    pub fn forget_paths(&self, paths: &[&str]) -> Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        {
+            let mut statement = transaction.prepare_cached("DELETE FROM seen WHERE path = ?1")?;
+            for path in paths {
+                statement.execute(params![path])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Remember a sighting that just went on the record.
     fn record(&self, host: &str, path: &Path, size: i64, mtime: i64) -> Result<()> {
         let mut statement = self.connection.prepare_cached(

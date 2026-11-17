@@ -124,6 +124,11 @@ impl StoreAudit {
         troubles
     }
 
+    /// The digest the entry `name` was walked under.
+    pub(crate) fn digest(&self, name: &str) -> Option<&Digest> {
+        self.held.get(name)
+    }
+
     /// How the entry `name` fared, given the store's `troubles`.
     fn fixity(&self, troubles: &BTreeMap<&str, Fixity>, name: &str) -> Fixity {
         if self.read || self.read_names.contains(name) {

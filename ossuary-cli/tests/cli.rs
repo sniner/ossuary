@@ -499,6 +499,60 @@ fn audit_since_reads_the_files_written_since_and_says_what_it_left_out() {
 }
 
 #[test]
+fn a_damaged_file_is_set_aside_and_the_next_ingest_stores_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("archive");
+    let source = dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("note.txt"), b"a note worth keeping").unwrap();
+    assert!(run(ossuary(&archive).arg("init")).status.success());
+    assert!(
+        run(ossuary(&archive).arg("ingest").arg(&source))
+            .status
+            .success()
+    );
+    let name = name_of_the_note(&archive);
+    let found = run(ossuary(&archive).args(["get", "--path", &name]));
+    let path = PathBuf::from(String::from_utf8(found.stdout).unwrap().trim_end());
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "the test plays the corruption"
+    )]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    std::fs::write(&path, b"").unwrap();
+
+    let audit = run(ossuary(&archive).arg("audit"));
+    let report = String::from_utf8(audit.stdout).unwrap();
+    assert!(report.contains("`ossuary maintain set-aside`"), "{report}");
+
+    let dry = run(ossuary(&archive).args(["maintain", "set-aside", "--dry-run"]));
+    let report = String::from_utf8(dry.stdout).unwrap();
+    assert!(
+        report.contains("1 damaged; would be moved aside, nothing written"),
+        "{report}"
+    );
+    assert!(path.is_file());
+
+    let aside = run(ossuary(&archive).args(["maintain", "set-aside"]));
+    assert!(aside.status.success(), "{aside:?}");
+    let report = String::from_utf8(aside.stdout).unwrap();
+    assert!(report.contains("1 damaged and moved aside"), "{report}");
+    assert!(
+        report.contains("`ossuary ingest DIR` on the directories they are in stores them again"),
+        "{report}"
+    );
+    assert!(report.contains("note.txt"), "{report}");
+    assert!(!path.exists());
+
+    let again = run(ossuary(&archive).arg("ingest").arg(&source));
+    assert!(again.status.success(), "{again:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"a note worth keeping");
+    assert!(run(ossuary(&archive).arg("audit")).status.success());
+}
+
+#[test]
 fn audit_fast_misses_a_damaged_file_and_says_it_did_not_check() {
     let (_dir, archive) = archive_with_a_file();
     let name = name_of_the_note(&archive);

@@ -12,6 +12,13 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   damage only files stored shortly before. TIME is a time like `2026-01-01T12:00:00Z` or a date.
   With `--json` the first line is `{"mode":"since","since":TIME}`
 
+- **`ossuary maintain set-aside`** moves damaged files aside so that the originals can be stored
+  again: each is renamed in place, with `.corrupt` added to its name, and nothing is deleted.
+  It then names the command that stores each file again, by where the file came from:
+  `ossuary ingest`, `ossuary mailvault fetch --full` or `ossuary extract --full`. `--since TIME`
+  checks only the files written since TIME. `ossuary audit` names this command when it finds a
+  damaged file
+
 ### Changed
 
 - **Stored files are no longer flushed to the disk, only the claims about them.** A command that
@@ -19,7 +26,8 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   local filesystems, which wears flash storage. The claims are written in bundles of about 4 MiB, or
   every 30 seconds, and each bundle is flushed. After a crash of the computer or a power loss, a
   file stored shortly before can be empty or cut short although it is recorded;
-  `ossuary audit --since TIME` reports such a file. A command that is stopped loses nothing it stored, and the next run
+  `ossuary audit --since TIME` reports such a file, and `ossuary maintain set-aside` moves it
+  aside so that it can be stored again. A command that is stopped loses nothing it stored, and the next run
   records the rest
 - **`--flush` replaces `--lazy-flush`**: with it, stored files are flushed as before, in batches
   of 1,000 files, 256 MiB or 30 seconds, and recorded after that. Use it when the originals are

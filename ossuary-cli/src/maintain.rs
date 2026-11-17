@@ -1,16 +1,17 @@
 //! `ossuary maintain`: `weed` removes copies in `derived/` that
 //! `content/` also has, `describe` records the size and type of files
-//! that lack them, `tidy` removes temporary files of interrupted commands.
+//! that lack them, `tidy` removes temporary files of interrupted commands,
+//! `set-aside` moves damaged files aside so that they can be stored again.
 
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use ossuary_core::{Fixity, TEMP_MIN_AGE, Twin, Undescribing, Weeded};
+use ossuary_core::{Aside, Fixity, TEMP_MIN_AGE, Twin, Undescribing, Weeded};
 
-use crate::audit::listing;
+use crate::audit::{listing, since_time};
 use crate::output::{errln, human_bytes, say};
-use crate::{Location, finish_interrupted_seal, open};
+use crate::{Location, catch_up, finish_interrupted_seal, open};
 
 /// The maintenance commands.
 #[derive(Subcommand)]
@@ -65,6 +66,26 @@ pub(crate) enum Maintenance {
         #[arg(long)]
         all: bool,
     },
+    /// Move damaged files aside so that they can be stored again
+    ///
+    /// A file that is empty or cut short, after a crash of the computer
+    /// or a power loss, still has its place in the archive, and adding
+    /// the original again stores nothing. set-aside checks the files in
+    /// content/ and derived/ against their hashes and renames each
+    /// damaged one in place, with .corrupt added to its name. Nothing is
+    /// deleted, and what is recorded about the file stays. Then it names
+    /// the command that stores each file again: `ossuary ingest` for a
+    /// file with a recorded path, `ossuary mailvault fetch --full` for a
+    /// mail message, `ossuary extract --full` for a derived file.
+    SetAside {
+        /// Show which files would be moved aside, write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Check only the files written since TIME: an RFC 3339 time
+        /// like 2026-01-01T12:00:00Z, or a date
+        #[arg(long, value_name = "TIME")]
+        since: Option<String>,
+    },
 }
 
 /// Run one maintenance task.
@@ -78,7 +99,157 @@ pub(crate) fn run(
         Maintenance::Describe { dry_run } => describe(location, *dry_run, verbose, quiet),
         Maintenance::Weed { dry_run, repair } => weed(location, *dry_run, *repair, verbose, quiet),
         Maintenance::Tidy { dry_run, all } => tidy(location, *dry_run, *all, quiet),
+        Maintenance::SetAside { dry_run, since } => {
+            set_aside(location, *dry_run, since.as_deref(), verbose, quiet)
+        }
     }
+}
+
+/// `maintain set-aside`: move every damaged file aside, and name the
+/// command that stores it again.
+fn set_aside(
+    location: &Location,
+    dry_run: bool,
+    since: Option<&str>,
+    verbose: bool,
+    quiet: bool,
+) -> Result<ExitCode> {
+    let since = since.map(since_time).transpose()?;
+    let archive = open(location)?;
+    if !quiet {
+        errln!("archive {}", archive.root().display());
+    }
+    let mut index = archive.index()?;
+    catch_up(&mut index, &archive, quiet)?;
+    if !quiet {
+        match &since {
+            Some(since) => errln!(
+                "checking the files in content/ and derived/ written since {} against their hashes",
+                since.as_str()
+            ),
+            None => errln!("checking every file in content/ and derived/ against its hash"),
+        }
+    }
+    let done = ossuary_core::set_aside(&archive, &index, since.as_ref(), dry_run)?;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut unreadable = 0;
+    for (place, store) in [("content/", &done.content), ("derived/", &done.derived)] {
+        for (digest, error) in &store.unreadable {
+            unreadable += 1;
+            if !say(
+                &mut out,
+                &format!("{place}: could not read {digest}: {error}"),
+            )? {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+    let exit = if unreadable == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    let read = done.content.verified + done.derived.verified;
+    if done.files.is_empty() {
+        say(
+            &mut out,
+            &format!("{read} file(s) checked, none damaged; nothing moved aside"),
+        )?;
+        return Ok(exit);
+    }
+    let all: Vec<&Aside> = done.files.iter().collect();
+    let heading = if dry_run {
+        format!(
+            "{read} file(s) checked, {} damaged; would be moved aside, nothing written",
+            all.len()
+        )
+    } else {
+        format!(
+            "{read} file(s) checked, {} damaged and moved aside; each is kept in its directory with .corrupt added to its name",
+            all.len()
+        )
+    };
+    if !listing(&mut out, &heading, &names(&all), verbose)? {
+        return Ok(exit);
+    }
+    if !ways_back(&mut out, &all, verbose)? {
+        return Ok(exit);
+    }
+    let next = if dry_run {
+        "run `ossuary maintain set-aside` without --dry-run first"
+    } else {
+        "after that, `ossuary audit --fast` lists the files that are still missing"
+    };
+    say(&mut out, next)?;
+    Ok(exit)
+}
+
+/// The names of `files`, for a listing.
+fn names(files: &[&Aside]) -> Vec<String> {
+    files
+        .iter()
+        .map(|file| file.digest.as_str().to_string())
+        .collect()
+}
+
+/// For the files set aside, the command that stores each again: by where
+/// the record says it came from. `Ok(false)` means the reader left.
+fn ways_back(out: &mut impl std::io::Write, all: &[&Aside], verbose: bool) -> Result<bool> {
+    let ingested: Vec<String> = all
+        .iter()
+        .filter(|file| !file.derived)
+        .flat_map(|file| file.paths.iter().cloned())
+        .collect();
+    let from_files = all
+        .iter()
+        .filter(|file| !file.derived && !file.paths.is_empty())
+        .count();
+    if from_files > 0 {
+        let heading = format!(
+            "{from_files} of them added with `ossuary ingest`; `ossuary ingest DIR` on the directories they are in stores them again. Recorded at"
+        );
+        if !listing(out, &heading, &ingested, verbose)? {
+            return Ok(false);
+        }
+    }
+    let mail = all.iter().filter(|file| !file.derived && file.mail).count();
+    if mail > 0
+        && !say(
+            out,
+            &format!(
+                "{mail} of them mail message(s); `ossuary mailvault fetch --full` fetches them again"
+            ),
+        )?
+    {
+        return Ok(false);
+    }
+    let derived = all.iter().filter(|file| file.derived).count();
+    if derived > 0
+        && !say(
+            out,
+            &format!(
+                "{derived} of them derived file(s); `ossuary extract --full` creates them again"
+            ),
+        )?
+    {
+        return Ok(false);
+    }
+    let other: Vec<&Aside> = all
+        .iter()
+        .copied()
+        .filter(|file| !file.derived && !file.mail && file.paths.is_empty())
+        .collect();
+    if !other.is_empty() {
+        let heading = format!(
+            "{} of them without a recorded path or mailbox; the command that added them stores them again",
+            other.len()
+        );
+        if !listing(out, &heading, &names(&other), verbose)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// `maintain tidy`: remove the temporary files of interrupted commands.

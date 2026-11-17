@@ -34,15 +34,7 @@ pub(crate) fn audit(
             "--json already lists every finding; drop --verbose"
         ));
     }
-    let since = since
-        .map(|given| {
-            Timestamp::opening(given).map_err(|_| {
-                anyhow!(
-                    "{given:?} is not a valid time; give an RFC 3339 time like 2026-01-01T12:00:00Z, or a date"
-                )
-            })
-        })
-        .transpose()?;
+    let since = since.map(since_time).transpose()?;
     let archive = open(location)?;
     let what = if fast {
         "listing every file without reading it (--fast)".to_string()
@@ -92,6 +84,15 @@ pub(crate) fn audit(
     }
 }
 
+/// The moment `--since` names.
+pub(crate) fn since_time(given: &str) -> Result<Timestamp> {
+    Timestamp::opening(given).map_err(|_| {
+        anyhow!(
+            "{given:?} is not a valid time; give an RFC 3339 time like 2026-01-01T12:00:00Z, or a date"
+        )
+    })
+}
+
 /// The whole report, for a reader. A closed pipe ends the answer early
 /// and calmly — the exit code still carries the verdict.
 fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
@@ -113,7 +114,7 @@ fn render(out: &mut impl Write, audit: &Audit, verbose: bool) -> Result<()> {
         listing(
             out,
             &format!(
-                "{} file(s) referenced by the claims but missing; copy them back from a copy of the archive",
+                "{} file(s) referenced by the claims but missing; copy them back from a copy of the archive, or add the originals again: `ossuary about ID` shows where a file came from",
                 audit.missing.len()
             ),
             &audit.missing,
@@ -345,7 +346,9 @@ fn store_block(
     }
     let mut heading = format!("{name}: {}", clauses.join(", "));
     if !store.damaged.is_empty() {
-        heading.push_str("; restore the damaged file(s) from a copy of the archive");
+        heading.push_str(
+            "; `ossuary maintain set-aside` moves the damaged file(s) aside and names the command that stores each again, or restore them from a copy of the archive",
+        );
     }
     listing(out, &heading, &store.damaged, verbose)
 }

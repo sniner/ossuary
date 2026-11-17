@@ -24,6 +24,7 @@
 mod accession;
 mod annotate;
 mod archive;
+mod aside;
 mod audit;
 mod claim;
 mod config;
@@ -46,6 +47,7 @@ mod weed;
 pub use accession::{Admitted, Sighting, admit, sighting_claims};
 pub use annotate::annotate;
 pub use archive::{Archive, is_archive};
+pub use aside::{Aside, SetAside, set_aside};
 pub use audit::{
     Audit, Ends, Fixity, HEAD, LINKS, LogAudit, StoreAudit, Twin, Undescribed, audit_log,
     audit_store, audit_store_since,
