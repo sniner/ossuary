@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The open segment is sealed once a command has written 16 MiB of claims to it**, up from
+  1 MiB. A run that records many files sealed after almost every batch before
+
 ## [0.26.0] - 2026-11-17
 
 ### Added

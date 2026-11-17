@@ -128,7 +128,7 @@ pub const SEAL_AT: usize = 1000;
 /// `stat` per bundle; each writer knows what it wrote itself, so each
 /// bounds its own share, and the open segment stays below writers times
 /// this plus the count above.
-pub const SEAL_AT_BYTES: u64 = 1 << 20;
+pub const SEAL_AT_BYTES: u64 = 16 << 20;
 
 /// How long a writer or reader without an open segment waits for the seal
 /// under way to produce one, before a writer finishes the seal itself and
@@ -1987,14 +1987,14 @@ mod tests {
     }
 
     #[test]
-    fn an_append_that_has_itself_written_a_mebibyte_seals_first() {
+    fn an_append_that_has_itself_written_the_byte_limit_seals_first() {
         let dir = TempDir::new().unwrap();
         let log = log_in(&dir);
         // One bundle of about half the bytes, twice: the count stays far
         // below SEAL_AT, the bytes of this process do not.
         let half = |prefix: &str| -> Vec<Claim> {
             (0..2000)
-                .map(|n| claim(&format!("{prefix}{n:0>160}"), "2026-09-05T12:00:00Z"))
+                .map(|n| claim(&format!("{prefix}{n:0>4200}"), "2026-09-05T12:00:00Z"))
                 .collect()
         };
         log.append_all(&half("a")).unwrap();
