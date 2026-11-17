@@ -67,7 +67,7 @@ pub use log::{
     old_open_dirs,
 };
 pub use part::Part;
-pub use recorder::{BATCH, Recorder};
+pub use recorder::{BATCH, BATCH_BYTES, Recorder};
 pub use retract::retract;
 pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,

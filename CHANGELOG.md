@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A batch of files that could not be flushed was recorded anyway**: when the disk was full or a
+  network share went away while `ossuary ingest`, `ossuary extract` or `ossuary mailvault fetch`,
+  `import` or `add` flushed a batch, up to 99 files of that batch were not stored, but the claims
+  about them were written afterwards. `ingest` then treated these files as unchanged and did not
+  read them again, and `mailvault fetch` and `import` did not fetch or import these messages
+  again. Now the command stops with the error, writes no claims for the batch, and the next run
+  does the batch again. `ossuary audit` reports files that are missing from an archive written
+  with 0.25.0
+
+### Changed
+
+- **A batch of files is also flushed once it holds 64 MiB**, so that large files do not wait for
+  the hundredth file of their batch
+
 ## [0.25.0] - 2026-11-16
 
 ### Added

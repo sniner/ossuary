@@ -134,7 +134,14 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
                 log.store().algorithm(),
             )?;
             tally.claims += claims.len();
-            recorder.push(claims)?;
+            recorder.push(
+                claims,
+                if admitted.is_new() {
+                    admitted.size()
+                } else {
+                    0
+                },
+            )?;
         }
         let done = index + 1;
         progress.update(

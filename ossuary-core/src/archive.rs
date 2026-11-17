@@ -24,6 +24,7 @@
 //! knows are all present — and be read wrong with confidence.
 
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use immure::{Algorithm, Digest, Flush, Store};
@@ -285,8 +286,9 @@ impl Archive {
 
     /// Flush what is written into the archive only at
     /// [`flush`](Archive::flush), for a run that writes many files and can
-    /// be repeated. By default the stores flush in batches, and a claim is
-    /// written only once the files it names are flushed.
+    /// be repeated. By default a writer flushes the stores in batches (see
+    /// [`Recorder`](crate::Recorder)), and a claim is written only once the
+    /// files it names are flushed.
     ///
     /// A crash of the system before the flush can leave files that do not
     /// hold what their names say, and claims about them; `ossuary audit`
@@ -508,6 +510,11 @@ fn blob_store(
         .depth(depth)
         .algorithm(algorithm)
         .compress(compress)
+        // No batch ends by itself. The writer ends it: a `Recorder` before
+        // it writes claims, `Archive::flush` at the end of a command. A
+        // flush that fails is then reported where the claims are held, not
+        // by the `add` of some later file.
+        .flush(Flush::Batch(NonZeroUsize::MAX))
 }
 
 /// How generation 1 lays out the claims store: only segments, compressed —

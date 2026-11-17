@@ -359,7 +359,7 @@ impl Fetch<'_> {
         }
         state.tally.claims += claims.len();
         state.tally.taken += claims.len();
-        self.hold(claims)?;
+        self.hold(claims, 0)?;
         if !gone.is_empty() {
             self.say.line(format_args!(
                 "{name}: the label was retracted from {} no longer in the folder",

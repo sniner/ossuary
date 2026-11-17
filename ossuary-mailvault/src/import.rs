@@ -42,8 +42,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ossuary_core::{
-    Admitted, Algorithm, Archive, Attribute, Recorder, Sighting, Source, Timestamp, admit,
-    sighting_claims,
+    Admitted, Algorithm, Archive, Attribute, BATCH_BYTES, Recorder, Sighting, Source, Timestamp,
+    admit, sighting_claims,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -65,7 +65,8 @@ const MARK_LINE: &str = "mailvault archive format 1";
 const LOG_VERSIONS: [u32; 2] = [1, 2];
 
 /// How many messages are admitted before their claims are written into a
-/// segment of their own and the memo is committed.
+/// segment of their own and the memo is committed. Fewer when they added
+/// [`BATCH_BYTES`] to the archive.
 const BATCH: usize = 500;
 
 /// The hashes the Python mailvault names messages in. Their digests
@@ -179,6 +180,8 @@ pub fn run(
     let mut progress = say.progress();
     let mut done = 0;
     let mut batch = Vec::new();
+    // The bytes the messages of the batch added to the archive.
+    let mut stored = 0u64;
     if let Some(memo) = takeover.memo {
         memo.begin()?;
     }
@@ -186,10 +189,14 @@ pub fn run(
         done += 1;
         let step = match takeover.take(store_id, places, options.dry_run, &mut tally) {
             Ok(Some(pending)) => {
+                if pending.admitted.is_new() {
+                    stored += pending.admitted.size();
+                }
                 batch.push(pending);
-                if batch.len() < BATCH {
+                if batch.len() < BATCH && stored < BATCH_BYTES {
                     Ok(())
                 } else {
+                    stored = 0;
                     takeover.settle(&mut batch, &mut tally)
                 }
             }
@@ -516,7 +523,7 @@ impl Takeover<'_> {
                 algorithm,
             )?;
             tally.claims += claims.len();
-            recorder.push(claims)?;
+            recorder.push(claims, 0)?;
         }
         recorder.write()?;
         if !recorder.durable() {

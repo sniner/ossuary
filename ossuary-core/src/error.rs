@@ -80,6 +80,12 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] immure::Error),
 
+    /// A [`Recorder`](crate::Recorder) was asked to hold or write claims
+    /// after a write of its claims had failed. The error of that write was
+    /// reported when it happened.
+    #[error("the claims of the last files were not recorded because writing to the archive failed")]
+    NotRecorded,
+
     /// The index said no — and an index is a cache: when it is broken
     /// rather than merely refusing, deleting it loses nothing that a fold
     /// does not restore.

@@ -137,12 +137,14 @@ pub fn record_examination(
         claims.push(claim(subject, attribute, value, &time, source, run)?);
     }
     let mut stored = 0;
+    let mut stored_bytes = 0u64;
     let mut known = 0;
     for derivation in derivations {
         let (told, new) = take(archive, subject, derivation, &time, source, run)?;
         claims.extend(told);
-        if new {
+        if let Some(size) = new {
             stored += 1;
+            stored_bytes += size;
         } else {
             known += 1;
         }
@@ -156,7 +158,7 @@ pub fn record_examination(
         run,
     )?);
     let count = claims.len();
-    recorder.push(claims)?;
+    recorder.push(claims, stored_bytes)?;
     Ok(Examined {
         claims: count,
         stored,
@@ -166,7 +168,7 @@ pub fn record_examination(
 
 /// One derived file: bytes into the derived store, unless content/
 /// already holds them as an original. Answers the claims to record about
-/// it, and whether its bytes were new to the derived store.
+/// it, and the size of its bytes when they were new to the derived store.
 fn take(
     archive: &Archive,
     origin: &Subject,
@@ -174,7 +176,7 @@ fn take(
     time: &Timestamp,
     source: &Source,
     run: &Run,
-) -> Result<(Vec<Claim>, bool)> {
+) -> Result<(Vec<Claim>, Option<u64>)> {
     let content = archive.content();
     let derived = archive.derived();
     let mut claims = Vec::new();
@@ -196,7 +198,7 @@ fn take(
     // may choose, and content/ wins: bytes once taken in need no
     // second-class copy, the claims below stand either way. This asks
     // the store itself, truth asking truth; the index has no say here.
-    let mut new = false;
+    let mut new = None;
     if !content.contains(&digest)? {
         let (status, entry) = derived.add_reader(fs::File::open(&derivation.path).map_err(io)?)?;
         if entry.digest().as_str() != digest.as_str() {
@@ -238,7 +240,7 @@ fn take(
                     run,
                 )?);
             }
-            new = true;
+            new = Some(size);
         }
     }
     let told = [

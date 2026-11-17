@@ -447,7 +447,14 @@ impl Fetch<'_> {
         )?;
         state.tally.claims += written.len();
         state.standing.wrote(&self.tag, &written);
-        self.hold(written)?;
+        self.hold(
+            written,
+            if admitted.is_new() {
+                admitted.size()
+            } else {
+                0
+            },
+        )?;
         if admitted.is_new() {
             state.tally.stored += 1;
         } else {
@@ -481,7 +488,7 @@ impl Fetch<'_> {
             )?);
         }
         tally.claims += claims.len();
-        self.hold(claims)
+        self.hold(claims, 0)
     }
 
     /// Under `--compare`, note which subject the message fetched under
@@ -540,7 +547,7 @@ impl Fetch<'_> {
         }
         tally.claims += claims.len();
         tally.taken += claims.len();
-        self.hold(claims)
+        self.hold(claims, 0)
     }
 
     /// A message on the folder's pending list that the server refused
@@ -591,9 +598,10 @@ impl Fetch<'_> {
         Ok(())
     }
 
-    /// Hand claims to the recorder, as one item.
-    fn hold(&self, claims: Vec<Claim>) -> Result<()> {
-        self.recorder.borrow_mut().push(claims)?;
+    /// Hand claims to the recorder, as one item that added `stored` bytes
+    /// to the archive.
+    fn hold(&self, claims: Vec<Claim>, stored: u64) -> Result<()> {
+        self.recorder.borrow_mut().push(claims, stored)?;
         Ok(())
     }
 

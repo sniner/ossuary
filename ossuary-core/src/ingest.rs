@@ -187,14 +187,14 @@ where
             &source,
             sweep.tags,
         ) {
-            Ok((new, claims)) => {
-                if new {
+            Ok((stored, claims)) => {
+                if stored.is_some() {
                     result.stored += 1;
                 } else {
                     result.known += 1;
                 }
                 result.claims += claims.len();
-                let written = recorder.push(claims)?;
+                let written = recorder.push(claims, stored.unwrap_or(0))?;
                 if let Some(remembering) = remembering.as_mut() {
                     if let Some(Observation::Changed(size, mtime)) = seen {
                         remembering.note(path, size, mtime);
@@ -227,7 +227,7 @@ where
     }
     result.claims += retractions.len();
     result.gone += retractions.len();
-    recorder.push(retractions)?;
+    recorder.push(retractions, 0)?;
     recorder.write()?;
     content.flush()?;
     log.flush()?;
@@ -548,7 +548,7 @@ fn take(
     run: &Run,
     source: &Source,
     tags: &[String],
-) -> Result<(bool, Vec<Claim>)> {
+) -> Result<(Option<u64>, Vec<Claim>)> {
     let file = fs::File::open(path).map_err(|source| Error::Io {
         context: "reading".to_string(),
         source,
@@ -581,7 +581,7 @@ fn take(
         },
         log.store().algorithm(),
     )?;
-    Ok((admitted.is_new(), claims))
+    Ok((admitted.is_new().then(|| admitted.size()), claims))
 }
 
 /// The moment the filesystem reported, spelled as the RFC 3339 instant it
