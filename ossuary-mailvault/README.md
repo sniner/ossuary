@@ -239,6 +239,8 @@ ossuary therefore records the id Proton gives each message, the header
 `X-Pm-Internal-Id`, as `mailbox:id` (`proton:` and the id). A message whose
 id is in the archive is not downloaded again, after a renumbering, with
 `--full` or with `--compare`; only its place is recorded if it is missing.
+`--compare` downloads it all the same when its file is no longer in the
+archive.
 With `--compare` the folder is listed like with `--full` and compared by
 Proton id, so `ossuary extract mail` is not needed for it. An import of an
 archive of the Python tool mailvault records the id of every message that
@@ -310,6 +312,12 @@ of every folder instead:
 For a Proton Mail account both download only the messages whose Proton id
 is not in the archive, and the rest of this section does not apply to it
 (see [The Proton id](#the-proton-id)).
+
+`--compare` also downloads a message that is on record but whose file is
+no longer in the archive, with every kind of account. That is the way to
+get a message back after `ossuary maintain set-aside` has moved a damaged
+file aside: the message is stored under the same name, and what is
+recorded about it stays valid.
 
 ```console
 $ ossuary extract mail

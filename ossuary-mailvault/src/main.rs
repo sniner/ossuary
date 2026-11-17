@@ -151,7 +151,8 @@ enum Command {
         full: bool,
 
         /// List all messages and fetch only those whose Message-ID is not
-        /// in the archive. Run ossuary extract mail first
+        /// in the archive, or whose file is no longer in it. Run ossuary
+        /// extract mail first
         #[arg(long, conflicts_with = "full")]
         compare: bool,
 

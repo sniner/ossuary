@@ -147,6 +147,7 @@ impl Fetch<'_> {
     fn proton_record<'s>(&'s self, standing: &'s Standing) -> proton::Record<'s> {
         proton::Record {
             index: standing.index(),
+            content: self.options.compare.then(|| self.archive.content()),
             id: &self.id,
             place: &self.place,
         }

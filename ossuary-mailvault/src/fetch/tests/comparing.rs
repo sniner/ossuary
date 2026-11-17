@@ -153,3 +153,24 @@ fn a_dry_run_of_compare_counts_and_writes_nothing() {
     assert_eq!(point(&bench), Some(at(7, 1)), "the point stays");
     assert!(imap_pending(&bench).is_empty());
 }
+
+#[test]
+fn compare_fetches_again_a_message_whose_file_the_archive_no_longer_holds() {
+    let bench = bench();
+    let one = mail(1, "<one@example.org>");
+    let two = mail(2, "<two@example.org>");
+    let mut inbox = holding(7, &[(1, &one), (2, &two)]);
+    fetch(&bench, &mut inbox, false, false);
+    extracted(&bench, &one, "<one@example.org>");
+    extracted(&bench, &two, "<two@example.org>");
+    set_aside(&bench, &one);
+    assert!(!in_content(&bench, &one));
+
+    let tally = compare(&bench, &mut inbox, false);
+
+    assert_eq!((tally.stored, tally.matched), (1, 1));
+    assert!(tally.failed.is_empty(), "{:?}", tally.failed);
+    assert!(in_content(&bench, &one), "under the name the claims use");
+    let again = compare(&bench, &mut inbox, false);
+    assert_eq!(again.stored, 0);
+}

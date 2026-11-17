@@ -3,7 +3,10 @@
 //!
 //! The archive's side comes from the index: every message with a
 //! standing `mailbox:place` of the folder, and the `mail:message-id`
-//! that `ossuary extract mail` recorded on it. The server's side is the
+//! that `ossuary extract mail` recorded on it. A message counts only
+//! while the archive holds its file: one whose file is gone, set aside
+//! as damaged for example, is fetched again, and the same bytes get the
+//! name the claims already use. The server's side is the
 //! Message-ID the listing reports. Neither is reliable on its own:
 //! Microsoft 365 reports a Message-ID that differs from the one in the
 //! message for some messages, and one for messages that have none; two
@@ -31,7 +34,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use ossuary_core::{Attribute, Index, Scope, Term};
+use ossuary_core::{Attribute, Digest, Index, Scope, Store, Subject, Term};
 
 /// The attribute `ossuary extract mail` records the Message-ID under.
 pub const MESSAGE_ID: &str = "mail:message-id";
@@ -44,6 +47,16 @@ pub const HEADER: &str = "Message-ID";
 /// the threshold lies well below, and only keeps the prefix search
 /// small.
 const TRUNCATED_FROM: usize = 128;
+
+/// Whether `content` holds the file of `subject`.
+///
+/// # Errors
+///
+/// The store refusing.
+pub fn held(content: &Store, subject: &Subject) -> Result<bool> {
+    let digest = Digest::parse(subject.as_str())?;
+    Ok(content.find(&digest)?.is_some())
+}
 
 /// A Message-ID as both sides compare it: read by the rule
 /// `ossuary-extract-mail` records it by ([`ossuary_extract_mail::message_id`]),
@@ -90,18 +103,22 @@ pub struct Archived {
 
 impl Archived {
     /// The messages the index holds at `place` (an `account:folder`
-    /// value of `mailbox:place`), with their Message-IDs.
+    /// value of `mailbox:place`) and `content` holds the file of, with
+    /// their Message-IDs.
     ///
     /// # Errors
     ///
-    /// The index refusing.
-    pub fn read(index: &Index, place: &Attribute, name: &str) -> Result<Self> {
+    /// The index or the store refusing.
+    pub fn read(index: &Index, content: &Store, place: &Attribute, name: &str) -> Result<Self> {
         let message_id = Attribute::parse(MESSAGE_ID)?;
         // Quoted: the folder name is meant literally, also where it
         // contains `*` or `..`.
         let term = Term::Attribute(place.clone(), format!("\"{name}\""));
         let mut keys = HashMap::new();
         for subject in index.find(&[term], &[], Scope::Held)? {
+            if !held(content, &subject)? {
+                continue;
+            }
             // A message with two Message-ID headers gets the first in
             // sort order; one that does not match costs a download.
             let key = index

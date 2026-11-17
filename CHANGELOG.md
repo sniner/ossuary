@@ -15,12 +15,16 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`ossuary maintain set-aside`** moves damaged files aside so that the originals can be stored
   again: each is renamed in place, with `.corrupt` added to its name, and nothing is deleted.
   It then names the command that stores each file again, by where the file came from:
-  `ossuary ingest`, `ossuary mailvault fetch --full` or `ossuary extract --full`. `--since TIME`
+  `ossuary ingest`, `ossuary mailvault fetch --compare` or `ossuary extract --full`. `--since TIME`
   checks only the files written since TIME. `ossuary audit` names this command when it finds a
   damaged file
 
 ### Changed
 
+- **`ossuary mailvault fetch --compare` also fetches a message whose file is no longer in the
+  archive**, although the message is on record: after `ossuary maintain set-aside` moved a
+  damaged file aside, for example. Before, a message counted as archived by its Message-ID, or
+  by its Proton id, alone
 - **Stored files are no longer flushed to the disk, only the claims about them.** A command that
   stores many files caused one or two flushes per file on a network share, on Windows and on some
   local filesystems, which wears flash storage. The claims are written in bundles of about 4 MiB, or

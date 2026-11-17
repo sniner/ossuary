@@ -15,7 +15,7 @@
 //! downloaded again, and its place goes to the file that has the id.
 
 use anyhow::Result;
-use ossuary_core::{Attribute, Index, Scope, Subject, Term, Value};
+use ossuary_core::{Attribute, Index, Scope, Store, Subject, Term, Value};
 
 use crate::remote::header_value;
 
@@ -129,12 +129,17 @@ pub fn receivers(
 /// carry an id, whether a file has a place, whether it has a value.
 pub struct Record<'a> {
     pub index: &'a Index,
+    /// Under `--compare`, the store of the messages: a file carries an
+    /// id only while the store holds it, so a message whose file is
+    /// gone is fetched again.
+    pub content: Option<&'a Store>,
     pub id: &'a Attribute,
     pub place: &'a Attribute,
 }
 
 impl Record<'_> {
-    /// The files that carry `id`, whether placed or not.
+    /// The files that carry `id`, whether placed or not; under
+    /// `--compare` those of them the store holds.
     ///
     /// # Errors
     ///
@@ -142,7 +147,17 @@ impl Record<'_> {
     pub fn holders(&self, id: &str) -> Result<Vec<Subject>> {
         // Quoted: the id is meant literally.
         let term = Term::Attribute(self.id.clone(), format!("\"{id}\""));
-        Ok(self.index.find(&[term], &[], Scope::Held)?)
+        let mut holders = self.index.find(&[term], &[], Scope::Held)?;
+        if let Some(content) = self.content {
+            let mut held = Vec::with_capacity(holders.len());
+            for subject in holders {
+                if crate::compare::held(content, &subject)? {
+                    held.push(subject);
+                }
+            }
+            holders = held;
+        }
+        Ok(holders)
     }
 
     /// The files among `holders` that `attribute` = `value` goes to,

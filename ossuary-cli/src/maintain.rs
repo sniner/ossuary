@@ -75,8 +75,8 @@ pub(crate) enum Maintenance {
     /// damaged one in place, with .corrupt added to its name. Nothing is
     /// deleted, and what is recorded about the file stays. Then it names
     /// the command that stores each file again: `ossuary ingest` for a
-    /// file with a recorded path, `ossuary mailvault fetch --full` for a
-    /// mail message, `ossuary extract --full` for a derived file.
+    /// file with a recorded path, `ossuary mailvault fetch --compare` for
+    /// a mail message, `ossuary extract --full` for a derived file.
     SetAside {
         /// Show which files would be moved aside, write nothing
         #[arg(long)]
@@ -218,7 +218,7 @@ fn ways_back(out: &mut impl std::io::Write, all: &[&Aside], verbose: bool) -> Re
         && !say(
             out,
             &format!(
-                "{mail} of them mail message(s); `ossuary mailvault fetch --full` fetches them again"
+                "{mail} of them mail message(s); `ossuary mailvault fetch --compare` fetches them again"
             ),
         )?
     {

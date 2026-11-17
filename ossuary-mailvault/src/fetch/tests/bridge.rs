@@ -380,3 +380,34 @@ fn the_label_folders_wait_when_a_folder_of_the_account_failed() {
         assert_eq!(state.tally.failed.len(), usize::from(failing));
     }
 }
+
+#[test]
+fn compare_on_proton_fetches_again_a_message_whose_file_is_gone_and_full_does_not() {
+    let bench = bench();
+    let (one, two) = (built(1, "a"), built(2, "a"));
+    run_folders(
+        &bench,
+        &mut [("All Mail", &mut proton(7, &[(1, &one), (2, &two)]))],
+        &options(false, false),
+    );
+    set_aside(&bench, &one);
+
+    let mut folder = proton(7, &[(1, &one), (2, &two)]);
+    run_folders(
+        &bench,
+        &mut [("All Mail", &mut folder)],
+        &options(true, false),
+    );
+    assert!(folder.fetched.is_empty(), "--full goes by the record alone");
+    assert!(!in_content(&bench, &one));
+
+    let compare = Options {
+        full: false,
+        compare: true,
+        dry_run: false,
+    };
+    let mut folder = proton(7, &[(1, &one), (2, &two)]);
+    run_folders(&bench, &mut [("All Mail", &mut folder)], &compare);
+    assert_eq!(folder.fetched, [1]);
+    assert!(in_content(&bench, &one));
+}

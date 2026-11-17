@@ -27,7 +27,12 @@ impl Fetch<'_> {
     /// runs fetched from it, and a word when some archived messages
     /// have no Message-ID on record.
     fn comparison(&self, place: &Place<'_>, standing: &Standing) -> Result<Comparison> {
-        let archived = Archived::read(standing.index(), &self.place, &place.name)?;
+        let archived = Archived::read(
+            standing.index(),
+            self.archive.content(),
+            &self.place,
+            &place.name,
+        )?;
         let known = self.memo.compared(place.account, place.folder)?;
         let comparison = Comparison::new(archived, known);
         let without = comparison.without_message_id();

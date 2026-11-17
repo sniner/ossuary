@@ -249,6 +249,25 @@ fn holding(uidvalidity: u32, messages: &[(u32, &[u8])]) -> Fake {
     fake
 }
 
+/// Take the name from the file of `bytes`, as `ossuary maintain
+/// set-aside` does for a damaged one.
+fn set_aside(bench: &Bench, bytes: &[u8]) {
+    let content = bench.archive.content();
+    let path = content
+        .find(&Algorithm::Sha256.hash(bytes))
+        .unwrap()
+        .unwrap();
+    content
+        .quarantine(&content.entry_at(&path).unwrap())
+        .unwrap();
+}
+
+/// Whether the archive holds the file of `bytes`.
+fn in_content(bench: &Bench, bytes: &[u8]) -> bool {
+    let digest = Algorithm::Sha256.hash(bytes);
+    bench.archive.content().find(&digest).unwrap().is_some()
+}
+
 /// The Message-ID on the record, as `ossuary extract mail` writes it.
 fn extracted(bench: &Bench, bytes: &[u8], message_id: &str) {
     let claim = Claim::assert(
