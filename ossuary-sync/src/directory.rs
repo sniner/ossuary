@@ -4,8 +4,9 @@
 //! A file is written the way immure writes an entry in a batch: into a
 //! temporary file under the store's `tmp/`, and with the others of its
 //! batch flushed, made read-only, renamed into place, the directories
-//! flushed after the renames. The device writes out its cache once per
-//! batch, not once per file. The temporary file lies in the store of its
+//! flushed after the renames. The device is flushed once per step of a
+//! batch where the platform has a way to (`immure::flush_together`), not
+//! once per file. The temporary file lies in the store of its
 //! destination, so the rename stays within one filesystem, and its name is
 //! one that `Store::prune_temp_files` recognises after an interrupted run.
 //! A file in the root (`FORMAT`) has its temporary file beside it.
@@ -25,7 +26,7 @@ use crate::remote::{Created, Remote};
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// How many files a directory puts in place together.
-const BATCH: usize = immure::DEFAULT_BATCH.get();
+const BATCH: usize = 1000;
 
 /// A directory that holds a copy of an archive, or will.
 #[derive(Debug)]
@@ -144,17 +145,8 @@ impl Remote for Directory {
             return Ok(());
         }
         // The bytes are on the device before any of them has its name.
-        let mut last = None;
-        for (temp, _) in &batch {
-            let file = File::open(&temp.path)
-                .with_context(|| format!("{}: opening to flush", temp.path.display()))?;
-            immure::send_to_device(&file)
-                .with_context(|| format!("{}: flushing to device", temp.path.display()))?;
-            last = Some(file);
-        }
-        if let Some(file) = &last {
-            immure::flush_device(file).context("flushing the device")?;
-        }
+        immure::flush_together(batch.iter().map(|(temp, _)| &temp.path))
+            .context("flushing the copied files to the device")?;
         let mut dirs = BTreeSet::new();
         for (temp, dest) in batch {
             dirs.insert(temp.place(&dest, true)?);
@@ -269,21 +261,18 @@ impl Drop for Temp {
     }
 }
 
-/// Flush the directory entries after the renames of a batch: each handed
-/// to the device, the device flushed once. Some filesystems refuse to
-/// sync a directory; the files themselves are synced by then, and only
-/// the last renames may be lost in a crash.
+/// Flush the directory entries after the renames of a batch, together.
+/// Some filesystems refuse to open or sync a directory; then each is tried
+/// by itself. The files themselves are synced by then, and only the last
+/// renames may be lost in a crash.
 fn sync_dirs(dirs: &BTreeSet<PathBuf>) {
-    let mut last = None;
-    for dir in dirs {
-        if let Ok(handle) = File::open(dir)
-            && immure::send_to_device(&handle).is_ok()
-        {
-            last = Some(handle);
-        }
+    if immure::flush_together(dirs).is_ok() {
+        return;
     }
-    if let Some(handle) = last {
-        immure::flush_device(&handle).ok();
+    for dir in dirs {
+        if let Ok(handle) = File::open(dir) {
+            immure::sync_file(&handle).ok();
+        }
     }
 }
 

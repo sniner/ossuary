@@ -19,6 +19,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   slow run, such as a fetch from a mail server, still saves its progress every 30 seconds. When
   a command is stopped or the computer crashes, the last batch is not recorded, and the next run
   does it again
+- **On Linux a batch is flushed with one flush of the whole filesystem** when the archive lies on
+  ext4, XFS, Btrfs, F2FS or ZFS, no longer file by file. `ossuary ingest` of 3,000 small files on
+  Btrfs took 26 s with 0.24.1 and takes half a second now. This also flushes what other programs
+  wrote to that filesystem at the moment. An archive on a network share keeps the flush per file
 - **`ossuary mailvault fetch` saves its resume point with every batch** instead of every 100
   messages
 
