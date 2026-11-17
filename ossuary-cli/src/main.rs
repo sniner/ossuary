@@ -61,16 +61,17 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
     cache: Option<PathBuf>,
 
-    /// Flush written files to the disk less often
+    /// Flush every stored file to the disk
     ///
-    /// For a command that writes very many files, such as an extract over
-    /// a whole archive. By default files are flushed in batches of 1,000
-    /// files, 256 MiB or 30 seconds, and the claims about them are written
-    /// after that. With this option a batch is 10,000 files or 1 GiB. When
-    /// the command is stopped or the computer crashes, the last batch is
-    /// not recorded, and the next run does it again.
+    /// By default only the record of what was stored is flushed to the
+    /// disk, not the stored files. After a crash of the computer or a
+    /// power loss, a file stored shortly before can then be empty or cut
+    /// short; `ossuary audit` reports such a file. Use this option when
+    /// the originals are removed after the run. Files are then flushed in
+    /// batches of 1,000 files, 256 MiB or 30 seconds, and recorded after
+    /// that.
     #[arg(long, global = true)]
-    lazy_flush: bool,
+    flush: bool,
 
     /// Print only results and errors
     #[arg(short, long, global = true)]
@@ -666,8 +667,8 @@ fn main() -> ExitCode {
 pub(crate) struct Location {
     pub(crate) archive: PathBuf,
     pub(crate) cache: Option<PathBuf>,
-    /// Whether the archive is written in larger batches.
-    pub(crate) lazy_flush: bool,
+    /// Whether stored files are flushed to the disk.
+    pub(crate) flush: bool,
 }
 
 #[allow(
@@ -679,7 +680,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let location = Location {
         archive: cli.archive,
         cache: cli.cache,
-        lazy_flush: cli.lazy_flush,
+        flush: cli.flush,
     };
     match cli.command {
         Command::Init { algorithm } => init(&location, algorithm.as_deref()),
@@ -840,9 +841,9 @@ fn outside(location: &Location, pieces: &[OsString]) -> Result<ExitCode> {
         ));
     };
     let name = name.to_string_lossy();
-    if location.lazy_flush {
+    if location.flush {
         return Err(anyhow!(
-            "--lazy-flush before `{name}` applies to ossuary's own commands; `ossuary mailvault` has the option itself (`ossuary mailvault --lazy-flush …`), other external commands do not use it"
+            "--flush before `{name}` applies to ossuary's own commands; `ossuary mailvault` has the option itself (`ossuary mailvault --flush …`), other external commands do not use it"
         ));
     }
     let program = format!("ossuary-{name}");
@@ -877,8 +878,8 @@ pub(crate) fn open(location: &Location) -> Result<Archive> {
         Some(dir) => archive.with_cache(dir),
         None => archive,
     };
-    Ok(if location.lazy_flush {
-        archive.lazy_flush()
+    Ok(if location.flush {
+        archive.flush_files()
     } else {
         archive
     })

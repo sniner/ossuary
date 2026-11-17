@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn a_file_waiting_in_a_batch_is_what_a_killed_command_leaves() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = archive(&dir).flush_files();
         archive.content().add(b"in the open batch").unwrap();
 
         // What tidy counts is exactly what a store writes before a flush.

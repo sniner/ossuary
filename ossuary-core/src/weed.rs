@@ -128,8 +128,16 @@ pub fn weed(archive: &Archive, twin: &Twin, repair: bool) -> Result<Weeded> {
         return Err(Error::TwinChanged(twin.digest.as_str().to_string()));
     }
     // The copy in content/ is on the device before the one in derived/,
-    // the only sound one until then, goes.
+    // the only sound one until then, goes. A store that never flushes
+    // has named the copy already and leaves the flush to this.
     content.flush()?;
+    if content.flushes() == immure::Flush::Never {
+        let paths = std::iter::once(stored.path()).chain(stored.path().parent());
+        immure::flush_together(paths).map_err(|source| Error::Io {
+            context: format!("{}: flushing", stored.path().display()),
+            source,
+        })?;
+    }
     derived.remove(&twin.digest)?;
     Ok(Weeded::Repaired {
         aside: aside.path().to_path_buf(),

@@ -1,24 +1,27 @@
-//! Claims held back until the files they name are flushed.
+//! Claims held in memory and written to the log in bundles.
 //!
 //! A writer that stores files and records claims about them (ingest, an
 //! extractor run, a fetch) hands each item's claims to a [`Recorder`]. The
-//! recorder writes them to the log as one bundle per batch, after the
-//! stores have flushed the files those claims name: a claim is never on
-//! the device before the file it is about, and the log gets one bundle per
-//! batch instead of one per file. A [`Batch`] says when a batch ends: after
-//! a number of items, after a number of stored bytes, or after a time,
-//! whichever comes first.
+//! recorder writes them to the log as one bundle per batch, flushed, and
+//! the log gets one bundle per batch instead of one per file. A [`Batch`]
+//! says when a batch ends.
 //!
-//! The stores of an archive do not flush by themselves (see
-//! [`Archive`](crate::Archive)), so the recorder decides when a batch ends,
-//! and a flush that fails is reported by [`Recorder::write`] and nowhere
-//! else. After such a failure the recorder writes nothing more: the files
-//! of its claims may be missing, and a caller that goes on to save a resume
-//! point gets the error again instead.
+//! An archive does not flush the files in its content and derived stores
+//! (see [`Archive`](crate::Archive)): they have their names at once, and
+//! only the claims are flushed. A crash of the system can then leave a
+//! file that is empty or cut short under a claim that is on the device.
+//! An audit finds it, and the same bytes stored again repair it. A
+//! process that is killed loses only the claims it held, and the next run
+//! does that batch again.
 //!
-//! A crash of the system, or a process that is killed, loses the batch
-//! that was not written: its files have no names yet and its claims were
-//! never in the log. The next run does that batch again.
+//! An archive that flushes its files ([`Archive::flush_files`](crate::Archive::flush_files))
+//! holds them without a name until the recorder ends the batch: the
+//! stores flush, then the claims are written, so a claim is never on the
+//! device before the file it is about. A flush that fails is reported by
+//! [`Recorder::write`] and nowhere else. After such a failure the recorder
+//! writes nothing more: the files of its claims may be missing, and a
+//! caller that goes on to save a resume point gets the error again
+//! instead.
 
 use std::time::{Duration, Instant};
 
@@ -34,6 +37,8 @@ use crate::log::Log;
 /// that is interrupted repeats more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Batch {
+    /// Bytes of the claims held, as the lines the log stores.
+    pub claims: u64,
     /// Items held.
     pub items: usize,
     /// Bytes the items held added to the stores: a batch of large files
@@ -46,23 +51,28 @@ pub struct Batch {
 }
 
 impl Batch {
-    /// What an archive uses unless told otherwise.
+    /// What an archive uses unless told otherwise. No file waits for the
+    /// end of the batch, so only the claims and the time count.
     pub const DEFAULT: Batch = Batch {
+        claims: 4 << 20,
+        items: usize::MAX,
+        bytes: u64::MAX,
+        age: Some(Duration::from_secs(30)),
+    };
+
+    /// For an archive that flushes its files (see
+    /// [`Archive::flush_files`](crate::Archive::flush_files)): the files
+    /// of a batch have no names until it ends.
+    pub const FLUSH: Batch = Batch {
+        claims: u64::MAX,
         items: 1000,
         bytes: 256 << 20,
         age: Some(Duration::from_secs(30)),
     };
 
-    /// For a run that writes very many files (see
-    /// [`Archive::lazy_flush`](crate::Archive::lazy_flush)).
-    pub const LAZY: Batch = Batch {
-        items: 10_000,
-        bytes: 1 << 30,
-        age: None,
-    };
-
-    fn is_full(&self, items: usize, bytes: u64, since: Option<Instant>) -> bool {
-        items >= self.items
+    fn is_full(&self, claims: u64, items: usize, bytes: u64, since: Option<Instant>) -> bool {
+        claims >= self.claims
+            || items >= self.items
             || bytes >= self.bytes
             || matches!((self.age, since), (Some(age), Some(since)) if since.elapsed() >= age)
     }
@@ -76,6 +86,8 @@ pub struct Recorder<'a> {
     stores: Vec<&'a Store>,
     batch: Batch,
     claims: Vec<Claim>,
+    /// The bytes of the claims held, as lines.
+    lines: u64,
     items: usize,
     /// The bytes the items held stored.
     stored: u64,
@@ -95,6 +107,7 @@ impl<'a> Recorder<'a> {
             stores: stores.to_vec(),
             batch: log.batch(),
             claims: Vec::new(),
+            lines: 0,
             items: 0,
             stored: 0,
             since: None,
@@ -121,11 +134,17 @@ impl<'a> Recorder<'a> {
         if self.failed {
             return Err(Error::NotRecorded);
         }
+        for claim in &claims {
+            self.lines = self.lines.saturating_add(claim.to_line().len() as u64 + 1);
+        }
         self.claims.extend(claims);
         self.items += 1;
         self.stored = self.stored.saturating_add(stored);
         self.since.get_or_insert_with(Instant::now);
-        if !self.batch.is_full(self.items, self.stored, self.since) {
+        if !self
+            .batch
+            .is_full(self.lines, self.items, self.stored, self.since)
+        {
             return Ok(false);
         }
         self.write()?;
@@ -133,8 +152,8 @@ impl<'a> Recorder<'a> {
     }
 
     /// Write the claims held: the stores flush the files written so far,
-    /// then the claims go into the log as one bundle, flushed. Nothing to
-    /// do when nothing is held.
+    /// where the archive flushes its files, then the claims go into the
+    /// log as one bundle, flushed. Nothing to do when nothing is held.
     ///
     /// # Errors
     ///
@@ -155,6 +174,7 @@ impl<'a> Recorder<'a> {
             return written;
         }
         self.claims.clear();
+        self.lines = 0;
         self.items = 0;
         self.stored = 0;
         self.since = None;
@@ -188,6 +208,11 @@ mod tests {
         Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap()
     }
 
+    /// An archive that flushes its files, as under `--flush`.
+    fn flushing(dir: &TempDir) -> Archive {
+        archive(dir).flush_files()
+    }
+
     /// Bytes into the content store and the one claim about them.
     fn item(archive: &Archive, bytes: &[u8]) -> (std::path::PathBuf, Vec<Claim>) {
         let (_, entry) = archive.content().add(bytes).unwrap();
@@ -206,10 +231,10 @@ mod tests {
     #[test]
     fn claims_wait_for_a_full_batch() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = flushing(&dir);
         let mut recorder = Recorder::for_archive(&archive);
 
-        let full = Batch::DEFAULT.items;
+        let full = Batch::FLUSH.items;
         for n in 1..full {
             let (_, claims) = item(&archive, format!("file {n}").as_bytes());
             assert!(!recorder.push(claims, 0).unwrap());
@@ -231,7 +256,7 @@ mod tests {
     #[test]
     fn the_files_are_in_place_before_their_claims_are_written() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = flushing(&dir);
         let mut recorder = Recorder::for_archive(&archive);
         let (path, claims) = item(&archive, b"named with its batch");
         assert!(!path.exists());
@@ -248,11 +273,11 @@ mod tests {
     #[test]
     fn large_items_are_written_before_the_batch_is_full() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = flushing(&dir);
         let mut recorder = Recorder::for_archive(&archive);
 
         let (_, claims) = item(&archive, b"a large file");
-        assert!(!recorder.push(claims, Batch::DEFAULT.bytes - 1).unwrap());
+        assert!(!recorder.push(claims, Batch::FLUSH.bytes - 1).unwrap());
         let (path, claims) = item(&archive, b"one byte more");
         assert!(recorder.push(claims, 1).unwrap());
 
@@ -261,9 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn the_stores_of_an_archive_wait_for_the_recorder() {
+    fn the_stores_of_a_flushing_archive_wait_for_the_recorder() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = flushing(&dir);
         let mut paths = Vec::new();
         for n in 0..=immure::DEFAULT_BATCH.get() {
             let (path, _) = item(&archive, format!("file {n}").as_bytes());
@@ -287,7 +312,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = flushing(&dir);
         let mut recorder = Recorder::for_archive(&archive);
         let (path, claims) = item(&archive, b"its shard refuses the rename");
         recorder.push(claims, 0).unwrap();
@@ -310,7 +335,7 @@ mod tests {
     #[test]
     fn a_batch_that_is_old_enough_is_written_with_the_next_item() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir);
+        let archive = flushing(&dir);
         let mut recorder = Recorder::for_archive(&archive);
         recorder.batch.age = Some(Duration::from_millis(20));
 
@@ -325,18 +350,38 @@ mod tests {
     }
 
     #[test]
-    fn a_lazy_archive_holds_larger_batches() {
+    fn a_file_has_its_name_before_its_claims_are_written() {
         let dir = TempDir::new().unwrap();
-        let archive = archive(&dir).lazy_flush();
+        let archive = archive(&dir);
         let mut recorder = Recorder::for_archive(&archive);
 
-        for n in 0..Batch::DEFAULT.items {
-            let (_, claims) = item(&archive, format!("file {n}").as_bytes());
-            assert!(!recorder.push(claims, 0).unwrap());
-        }
+        let (path, claims) = item(&archive, b"named at once");
+        assert!(path.is_file());
+        assert!(!recorder.push(claims, 13).unwrap());
 
-        assert!(archive.log().head().unwrap().is_empty());
+        assert!(archive.log().head().unwrap().is_empty(), "held");
         recorder.write().unwrap();
-        assert_eq!(archive.log().head().unwrap().len(), Batch::DEFAULT.items);
+        assert_eq!(archive.log().head().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn claims_are_written_once_their_lines_reach_the_limit() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let mut recorder = Recorder::for_archive(&archive);
+        let (_, claims) = item(&archive, b"one claim");
+        let line = claims[0].to_line().len() as u64 + 1;
+        recorder.batch.claims = 3 * line;
+
+        // The number of items and the bytes they stored do not count.
+        assert!(!recorder.push(claims.clone(), 1 << 40).unwrap());
+        assert!(!recorder.push(claims.clone(), 1 << 40).unwrap());
+        assert!(recorder.push(claims.clone(), 0).unwrap());
+
+        assert_eq!(recorder.held(), 0);
+        assert!(
+            !recorder.push(claims, 0).unwrap(),
+            "counted from zero again"
+        );
     }
 }

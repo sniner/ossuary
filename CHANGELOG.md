@@ -7,6 +7,17 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Stored files are no longer flushed to the disk, only the claims about them.** A command that
+  stores many files caused one or two flushes per file on a network share, on Windows and on some
+  local filesystems, which wears flash storage. The claims are written in bundles of about 4 MiB, or
+  every 30 seconds, and each bundle is flushed. After a crash of the computer or a power loss, a
+  file stored shortly before can be empty or cut short although it is recorded; `ossuary audit`
+  reports such a file. A command that is stopped loses nothing it stored, and the next run
+  records the rest
+- **`--flush` replaces `--lazy-flush`**: with it, stored files are flushed as before, in batches
+  of 1,000 files, 256 MiB or 30 seconds, and recorded after that. Use it when the originals are
+  removed after the run. `ossuary mailvault` has the option too, written after its name:
+  `ossuary mailvault --flush fetch`
 - **The open segment is sealed once a command has written 16 MiB of claims to it**, up from
   1 MiB. A run that records many files sealed after almost every batch before
 

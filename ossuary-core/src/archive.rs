@@ -285,19 +285,30 @@ impl Archive {
         self
     }
 
-    /// Flush less often, for a run that writes very many files: writers
-    /// end a batch after [`Batch::LAZY`] instead of [`Batch::DEFAULT`]. A
-    /// run that is interrupted, or a crash of the system, loses the batch
-    /// that was not written, and the next run does it again.
+    /// Flush the files written into the content and derived stores, as
+    /// well as the claims: a file gets its name only after its bytes are
+    /// on the device, and writers end a batch after [`Batch::FLUSH`]. For
+    /// a caller that removes its sources after the run. Without this a
+    /// crash of the system can leave a file that is empty or cut short;
+    /// an audit finds it.
     #[must_use]
-    pub fn lazy_flush(mut self) -> Archive {
-        self.log.set_batch(Batch::LAZY);
+    pub fn flush_files(mut self) -> Archive {
+        // No batch of a store ends by itself. The writer ends it: a
+        // `Recorder` before it writes claims, `Archive::flush` at the end
+        // of a command. A flush that fails is then reported where the
+        // claims are held, not by the `add` of some later file.
+        let flush = Flush::Batch(NonZeroUsize::MAX);
+        self.content = self.content.with_flush(flush);
+        self.derived = self.derived.with_flush(flush);
+        self.log.set_batch(Batch::FLUSH);
         self
     }
 
     /// Flush every file written into the content and derived stores that
     /// has no name yet. For the end of a command that writes files without
-    /// a [`Recorder`](crate::Recorder), which flushes them itself.
+    /// a [`Recorder`](crate::Recorder), which flushes them itself. Nothing
+    /// to do unless the archive flushes its files
+    /// ([`flush_files`](Archive::flush_files)).
     ///
     /// # Errors
     ///
@@ -494,11 +505,8 @@ fn blob_store(
         .depth(depth)
         .algorithm(algorithm)
         .compress(compress)
-        // No batch ends by itself. The writer ends it: a `Recorder` before
-        // it writes claims, `Archive::flush` at the end of a command. A
-        // flush that fails is then reported where the claims are held, not
-        // by the `add` of some later file.
-        .flush(Flush::Batch(NonZeroUsize::MAX))
+        // Only the claims are flushed, see `Archive::flush_files`.
+        .flush(Flush::Never)
 }
 
 /// How generation 1 lays out the claims store: only segments, compressed —

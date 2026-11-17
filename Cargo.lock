@@ -1343,9 +1343,9 @@ dependencies = [
 
 [[package]]
 name = "immure"
-version = "0.4.3"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07d5faa2aae29138064d68df39600fcebe419463257d50c8a65446d7fc4287ab"
+checksum = "157738733c52069c56df485aef4f8704db29039857a230f4f3f5a904a9750003"
 dependencies = [
  "blake3",
  "rustix",
