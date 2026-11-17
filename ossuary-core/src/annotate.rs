@@ -65,7 +65,6 @@ pub fn annotate(
         }
     }
     log.append_all(&claims)?;
-    log.flush()?;
     Ok(Written {
         claims: claims.len(),
         run,

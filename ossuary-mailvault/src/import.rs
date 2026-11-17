@@ -42,8 +42,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ossuary_core::{
-    Admitted, Algorithm, Archive, Attribute, BATCH_BYTES, Recorder, Sighting, Source, Timestamp,
-    admit, sighting_claims,
+    Admitted, Algorithm, Archive, Attribute, Recorder, Sighting, Source, Timestamp, admit,
+    sighting_claims,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -66,7 +66,7 @@ const LOG_VERSIONS: [u32; 2] = [1, 2];
 
 /// How many messages are admitted before their claims are written into a
 /// segment of their own and the memo is committed. Fewer when they added
-/// [`BATCH_BYTES`] to the archive.
+/// as many bytes to the archive as a batch of its writers may.
 const BATCH: usize = 500;
 
 /// The hashes the Python mailvault names messages in. Their digests
@@ -180,8 +180,10 @@ pub fn run(
     let mut progress = say.progress();
     let mut done = 0;
     let mut batch = Vec::new();
-    // The bytes the messages of the batch added to the archive.
+    // The bytes the messages of the batch added to the archive, and how
+    // many a batch may add.
     let mut stored = 0u64;
+    let bytes = archive.log().batch().bytes;
     if let Some(memo) = takeover.memo {
         memo.begin()?;
     }
@@ -193,7 +195,7 @@ pub fn run(
                     stored += pending.admitted.size();
                 }
                 batch.push(pending);
-                if batch.len() < BATCH && stored < BATCH_BYTES {
+                if batch.len() < BATCH && stored < bytes {
                     Ok(())
                 } else {
                     stored = 0;
@@ -442,9 +444,9 @@ impl Takeover<'_> {
     /// time, then remember what was recorded and commit the memo. One
     /// sighting per message and time: the first of a message also records
     /// the size of new bytes. The messages are flushed before their claims
-    /// are written, and the claims before the memo is committed, also when
-    /// the archive flushes only at the end: the memo must not say a message
-    /// was imported that a crash of the system can still take.
+    /// are written, and the claims before the memo is committed: the memo
+    /// must not say a message was imported that a crash of the system can
+    /// still take.
     fn settle(&self, batch: &mut Vec<Pending>, tally: &mut Tally) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -526,9 +528,6 @@ impl Takeover<'_> {
             recorder.push(claims, 0)?;
         }
         recorder.write()?;
-        if !recorder.durable() {
-            self.archive.flush()?;
-        }
         log.seal()?;
         if let Some(memo) = self.memo {
             for pending in batch.iter() {

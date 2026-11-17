@@ -132,7 +132,6 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
         described += 1;
     }
     log.append_all(&claims)?;
-    log.flush()?;
     Ok(Described {
         files: described,
         claims: claims.len(),

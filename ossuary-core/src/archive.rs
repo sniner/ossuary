@@ -35,6 +35,7 @@ use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::ingest::IngestMemory;
 use crate::log::{GENERATION, Log};
+use crate::recorder::Batch;
 
 /// The mark's name in the archive root.
 const MARK: &str = "FORMAT";
@@ -284,36 +285,19 @@ impl Archive {
         self
     }
 
-    /// Flush what is written into the archive only at
-    /// [`flush`](Archive::flush), for a run that writes many files and can
-    /// be repeated. By default a writer flushes the stores in batches (see
-    /// [`Recorder`](crate::Recorder)), and a claim is written only once the
-    /// files it names are flushed.
-    ///
-    /// A crash of the system before the flush can leave files that do not
-    /// hold what their names say, and claims about them; `ossuary audit`
-    /// finds them. A process that stops any other way loses nothing. The
-    /// claims store is flushed as before: sealing deletes the bundles it
-    /// took in.
-    ///
+    /// Flush less often, for a run that writes very many files: writers
+    /// end a batch after [`Batch::LAZY`] instead of [`Batch::DEFAULT`]. A
+    /// run that is interrupted, or a crash of the system, loses the batch
+    /// that was not written, and the next run does it again.
     #[must_use]
-    pub fn flush_at_end(mut self) -> Archive {
-        self.content = self.content.with_flush(Flush::OnRequest);
-        self.derived = self.derived.with_flush(Flush::OnRequest);
-        self.log.flush_at_end();
+    pub fn lazy_flush(mut self) -> Archive {
+        self.log.set_batch(Batch::LAZY);
         self
     }
 
-    /// Whether the archive flushes only at [`flush`](Archive::flush).
-    #[must_use]
-    pub fn flushes_at_end(&self) -> bool {
-        self.log.flushes_at_end()
-    }
-
-    /// Flush everything written into the archive and not flushed yet: the
-    /// open batches of the stores, and under
-    /// [`flush_at_end`](Archive::flush_at_end) every file and bundle
-    /// written since. For the end of a command that writes.
+    /// Flush every file written into the content and derived stores that
+    /// has no name yet. For the end of a command that writes files without
+    /// a [`Recorder`](crate::Recorder), which flushes them itself.
     ///
     /// # Errors
     ///
@@ -321,7 +305,7 @@ impl Archive {
     pub fn flush(&self) -> Result<()> {
         self.content.flush()?;
         self.derived.flush()?;
-        self.log.flush()
+        Ok(())
     }
 
     /// Whether the caches are kept outside the archive.

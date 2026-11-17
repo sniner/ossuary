@@ -202,7 +202,7 @@ where
                     // The memory follows the claims once they are on the
                     // device, never ahead of them: a file it calls
                     // unchanged is not read again.
-                    if written && recorder.durable() {
+                    if written {
                         remembering.write(std::iter::empty())?;
                     }
                 }
@@ -230,7 +230,6 @@ where
     recorder.push(retractions, 0)?;
     recorder.write()?;
     content.flush()?;
-    log.flush()?;
     if let Some(remembering) = remembering {
         remembering.finish(gone.iter().map(|(path, _, _)| path.as_path()))?;
     }
@@ -729,8 +728,7 @@ impl IngestMemory {
 /// device, one step per batch of claims, so every step is right by itself
 /// and nothing has to be undone when the run stops. A run that stops
 /// loses at most the sightings of one batch: their files are read again
-/// by the next run, and their sightings recorded a second time. When the
-/// archive flushes only at the end, the memory is written only then. The
+/// by the next run, and their sightings recorded a second time. The
 /// database is locked only while a step is written, not while files are
 /// read: a second run on the same archive gets its turn, and a run that
 /// takes hours keeps what it has done when it is interrupted.

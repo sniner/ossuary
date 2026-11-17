@@ -23,6 +23,9 @@ use serde_json::Value;
 const CONFIGURATION: [&str; 2] = ["config.toml", "mailvault.toml"];
 const MEMO: &str = "cache/mailvault.sqlite";
 
+/// How many files are copied into the new archive between two flushes.
+const FLUSH_EVERY: usize = 1000;
+
 /// What a rehash did, or would do.
 #[derive(Debug, Default)]
 pub struct Rehashed {
@@ -87,9 +90,7 @@ pub fn rehash(
         });
     }
 
-    // A new archive, made again from the start when a run stops: flushed
-    // once at the end, not file by file.
-    let rehashed = Archive::create(target, algorithm)?.flush_at_end();
+    let rehashed = Archive::create(target, algorithm)?;
     for name in CONFIGURATION {
         let from = archive.root().join(name);
         if from.is_file() {
@@ -199,6 +200,11 @@ fn rehash_store(
             continue;
         }
         stored += 1;
+        // The new archive is made again from the start when a run stops,
+        // so large batches lose nothing worth keeping.
+        if stored % FLUSH_EVERY == 0 {
+            to.flush()?;
+        }
         names.insert(
             digest.as_str().to_string(),
             entry.digest().as_str().to_string(),

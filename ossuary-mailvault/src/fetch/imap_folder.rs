@@ -353,8 +353,8 @@ impl Fetch<'_> {
     }
 
     /// The fetches of [`read_folder`](Self::read_folder): the pending UIDs, then
-    /// the others above the point, committed every [`COMMIT_EVERY`](super::COMMIT_EVERY)
-    /// messages.
+    /// the others above the point, committed with every batch of claims
+    /// (see [`commit_every`](Self::commit_every)).
     fn imap_walk(
         &self,
         place: &Place<'_>,
@@ -381,7 +381,7 @@ impl Fetch<'_> {
         // A message whose Proton id is on record gets its place without a
         // download, and the point passes it as if it had landed.
         let known = std::mem::take(&mut walk.identified.known);
-        for (settled, (uid, receivers)) in known.iter().enumerate() {
+        for (uid, receivers) in &known {
             self.assert_on(receivers, &self.place, &json!(place.name), &mut state.tally)?;
             self.memo
                 .remove_pending(place.account, place.folder, &uid.to_string())?;
@@ -389,7 +389,7 @@ impl Fetch<'_> {
                 self.memo.advance_imap(place.account, place.folder, point)?;
             }
             state.tally.identified += 1;
-            self.commit_every(settled + 1)?;
+            self.commit_every()?;
         }
         let each: &mut Each<'_> = &mut |uid, got| self.imap_got(place, uid, got, walk, state);
         let mut outcome = mailbox.fetch(&retry, each);
@@ -482,7 +482,7 @@ impl Fetch<'_> {
             self.memo.advance_imap(place.account, place.folder, point)?;
         }
         walk.done += 1;
-        self.commit_every(walk.done)?;
+        self.commit_every()?;
         walk.progress.update(
             walk.done,
             &format!("{name}: {} of {} fetched", walk.done, walk.total),

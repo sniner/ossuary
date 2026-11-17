@@ -75,11 +75,10 @@
 //! outside the archive shows it (see `seal`).
 //!
 //! An append is flushed to the device before it returns, so a claim that
-//! an append reported as written survives a crash, unless the log was
-//! told to flush only at the end ([`Log::flush_at_end`]): then at
-//! [`Log::flush`]. A segment is flushed before the bundles it took in are
-//! deleted, whichever way the log flushes. Reading is strict: a line that does
-//! not read as a claim stops the reader rather than being quietly dropped.
+//! an append reported as written survives a crash. A segment is flushed
+//! before the bundles it took in are deleted. Reading is strict: a line
+//! that does not read as a claim stops the reader rather than being quietly
+//! dropped.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -93,6 +92,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claim::{Claim, ClaimId};
 use crate::error::{Error, Result};
+use crate::recorder::Batch;
 
 /// The format generation this build writes, and the only one it reads.
 ///
@@ -389,9 +389,8 @@ pub struct Log {
     store: Store,
     root: PathBuf,
     written: Mutex<Option<Written>>,
-    /// When a bundle is flushed: as it is appended, or with
-    /// [`flush`](Log::flush).
-    bundles: Flush,
+    /// How a [`Recorder`](crate::Recorder) writing to this log batches.
+    batch: Batch,
 }
 
 /// What this process knows of the open segment it appends to, so that an
@@ -403,8 +402,7 @@ pub struct Log {
 #[derive(Debug)]
 struct Written {
     /// The bundles of the open segment as this process writes them, its
-    /// directory the store's root. Kept so that bundles not flushed yet
-    /// are flushed together.
+    /// directory the store's root.
     store: Store,
     bundles: usize,
     bytes: u64,
@@ -419,40 +417,19 @@ impl Log {
             store,
             root: root.into(),
             written: Mutex::default(),
-            bundles: Flush::Each,
+            batch: Batch::DEFAULT,
         }
     }
 
-    /// Flush bundles only at [`flush`](Log::flush), for a run that writes
-    /// many and can be repeated. A crash of the system before then can lose
-    /// them, or leave one that does not read. Sealing still flushes the
-    /// segment before it deletes the bundles it holds.
-    pub fn flush_at_end(&mut self) {
-        self.bundles = Flush::OnRequest;
+    /// Have recorders that write to this log use `batch`.
+    pub fn set_batch(&mut self, batch: Batch) {
+        self.batch = batch;
     }
 
-    /// Whether bundles are flushed only at [`flush`](Log::flush).
+    /// The batches a [`Recorder`](crate::Recorder) writes to this log in.
     #[must_use]
-    pub fn flushes_at_end(&self) -> bool {
-        self.bundles == Flush::OnRequest
-    }
-
-    /// Flush the bundles this process appended and did not flush yet.
-    /// Nothing to do unless [`flush_at_end`](Log::flush_at_end) was asked
-    /// for.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Store`] when a bundle cannot be flushed.
-    pub fn flush(&self) -> Result<()> {
-        let store = {
-            let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
-            written.as_ref().map(|written| written.store.clone())
-        };
-        match store {
-            Some(store) => Ok(store.flush()?),
-            None => Ok(()),
-        }
+    pub fn batch(&self) -> Batch {
+        self.batch
     }
 
     /// The archive root the open segment lies in.
@@ -618,7 +595,7 @@ impl Log {
     /// Begin counting for `dir`, which a listing showed to hold `bundles`.
     /// Answers the store this process writes its bundles there with.
     fn learn(&self, dir: &Path, bundles: usize) -> Store {
-        let store = self.bundle_store_flushing(dir, self.bundles);
+        let store = self.bundle_store(dir);
         let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
         *written = Some(Written {
             store: store.clone(),
@@ -1277,19 +1254,15 @@ impl Log {
     }
 
     /// The bundle store in `dir`: entries named by digest, `.jsonl`, never
-    /// compressed, and never making the directory.
+    /// compressed, never making the directory, and every bundle flushed as
+    /// it is written.
     fn bundle_store(&self, dir: &Path) -> Store {
-        self.bundle_store_flushing(dir, Flush::Each)
-    }
-
-    /// As [`bundle_store`](Log::bundle_store), flushing the way `flush` says.
-    fn bundle_store_flushing(&self, dir: &Path, flush: Flush) -> Store {
         Store::builder(dir)
             .suffix(BUNDLE_SUFFIX)
             .depth(0)
             .algorithm(self.store.algorithm())
             .create_root(false)
-            .flush(flush)
+            .flush(Flush::Each)
             .build()
             .expect("a bundle store of depth 0 builds")
     }

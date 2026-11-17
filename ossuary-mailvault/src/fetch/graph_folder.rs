@@ -218,7 +218,7 @@ impl Fetch<'_> {
                     break;
                 }
             }
-            self.commit_every(done + 1)?;
+            self.commit_every()?;
             progress.update(
                 done + 1,
                 &format!("{name}: {} of {} fetched", done + 1, pending.len()),

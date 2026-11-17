@@ -5,6 +5,29 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--lazy-flush`** flushes written files to the disk less often: a batch is 10,000 files or
+  1 GiB instead of 1,000 files, 256 MiB or 30 seconds. For a command that writes very many files,
+  such as `ossuary extract` over a whole archive. `ossuary mailvault` has the option too, written
+  after its name: `ossuary mailvault --lazy-flush fetch`
+
+### Changed
+
+- **Files are flushed to the disk in batches of 1,000 files, 256 MiB or 30 seconds**, whichever
+  comes first; a batch was 100 files before. Fewer flushes of the disk for a large run, and a
+  slow run, such as a fetch from a mail server, still saves its progress every 30 seconds. When
+  a command is stopped or the computer crashes, the last batch is not recorded, and the next run
+  does it again
+- **`ossuary mailvault fetch` saves its resume point with every batch** instead of every 100
+  messages
+
+### Removed
+
+- **`--flush-at-end`**: after a crash of the computer it could leave damaged files that a
+  repeated run did not replace. Use `--lazy-flush`, which flushes nearly as rarely and leaves the
+  archive intact
+
 ### Fixed
 
 - **A batch of files that could not be flushed was recorded anyway**: when the disk was full or a
@@ -15,11 +38,6 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again. Now the command stops with the error, writes no claims for the batch, and the next run
   does the batch again. `ossuary audit` reports files that are missing from an archive written
   with 0.25.0
-
-### Changed
-
-- **A batch of files is also flushed once it holds 64 MiB**, so that large files do not wait for
-  the hundredth file of their batch
 
 ## [0.25.0] - 2026-11-16
 

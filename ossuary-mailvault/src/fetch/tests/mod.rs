@@ -184,6 +184,7 @@ fn fetcher<'a>(bench: &'a Bench, options: &'a Options) -> Fetch<'a> {
     Fetch {
         archive: &bench.archive,
         recorder: std::cell::RefCell::new(ossuary_core::Recorder::for_archive(&bench.archive)),
+        written: std::cell::Cell::new(false),
         accounts_file: &bench.accounts_file,
         memo: &bench.memo,
         options,

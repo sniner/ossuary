@@ -46,7 +46,6 @@ pub fn retract(log: &Log, takings: &[(Subject, Attribute, Vec<ClaimId>)]) -> Res
         )?);
     }
     log.append_all(&claims)?;
-    log.flush()?;
     Ok(Written {
         claims: claims.len(),
         run,

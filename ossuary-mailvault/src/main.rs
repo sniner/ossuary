@@ -86,6 +86,16 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR", env = "OSSUARY_CACHE")]
     cache: Option<PathBuf>,
 
+    /// Flush written messages to the disk less often
+    ///
+    /// For a first fetch or an import of very many messages. By default
+    /// messages are flushed in batches of 1,000 messages, 256 MiB or 30
+    /// seconds; with this option a batch is 10,000 messages or 1 GiB.
+    /// When the command is stopped or the computer crashes, the last
+    /// batch is fetched again by the next run.
+    #[arg(long, global = true)]
+    lazy_flush: bool,
+
     /// Read the accounts from FILE instead of mailvault.toml in the
     /// archive
     // Not `accounts`: that id is the ACCOUNT positional of fetch and
@@ -243,6 +253,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         archive: root,
         cache,
+        lazy_flush,
         accounts_file: named,
         quiet,
         command,
@@ -267,7 +278,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             compare,
             dry_run,
         } => {
-            let (archive, source) = archive_and_accounts(&root, cache, named)?;
+            let (archive, source) = archive_and_accounts(&root, cache, lazy_flush, named)?;
             say.line(format_args!("archive {}", archive.root().display()));
             if !dry_run {
                 finish_interrupted_seal(&archive)?;
@@ -302,7 +313,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     path.display()
                 );
             }
-            let (archive, source) = archive_and_accounts(&root, cache, named)?;
+            let (archive, source) = archive_and_accounts(&root, cache, lazy_flush, named)?;
             say.line(format_args!("archive {}", archive.root().display()));
             if !dry_run {
                 finish_interrupted_seal(&archive)?;
@@ -336,7 +347,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             )?;
             Ok(finish(&tally, dry_run))
         }
-        Command::Add(args) => add(&root, cache, named.as_deref(), &args, say),
+        Command::Add(args) => add(&root, cache, lazy_flush, named.as_deref(), &args, say),
     }
 }
 
@@ -345,6 +356,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 fn add(
     root: &Path,
     cache: Option<PathBuf>,
+    lazy_flush: bool,
     named: Option<&Path>,
     args: &AddArgs,
     say: Say,
@@ -374,11 +386,7 @@ fn add(
             })
         })
         .transpose()?;
-    let archive = open(root)?;
-    let archive = match cache {
-        Some(dir) => archive.with_cache(dir),
-        None => archive,
-    };
+    let archive = placed(open(root)?, cache, lazy_flush);
     say.line(format_args!("archive {}", archive.root().display()));
     if !dry_run {
         finish_interrupted_seal(&archive)?;
@@ -411,16 +419,27 @@ fn accounts_alone(named: Option<PathBuf>, root: &Path) -> Result<Source> {
 }
 
 /// The archive a command fetches or imports into, and its accounts file.
-fn archive_and_accounts(
-    root: &Path,
-    cache: Option<PathBuf>,
-    named: Option<PathBuf>,
-) -> Result<(Archive, Source)> {
-    let archive = open(root)?;
+/// The archive with the caches where `--cache` put them, and written in
+/// larger batches under `--lazy-flush`.
+fn placed(archive: Archive, cache: Option<PathBuf>, lazy_flush: bool) -> Archive {
     let archive = match cache {
         Some(dir) => archive.with_cache(dir),
         None => archive,
     };
+    if lazy_flush {
+        archive.lazy_flush()
+    } else {
+        archive
+    }
+}
+
+fn archive_and_accounts(
+    root: &Path,
+    cache: Option<PathBuf>,
+    lazy_flush: bool,
+    named: Option<PathBuf>,
+) -> Result<(Archive, Source)> {
+    let archive = placed(open(root)?, cache, lazy_flush);
     let source = match named {
         Some(path) => Source::Named(path),
         None => Source::Archive(archive.root().to_path_buf()),

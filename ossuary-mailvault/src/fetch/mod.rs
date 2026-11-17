@@ -53,8 +53,7 @@
 //! only over what has landed or is on the pending list. The claims of
 //! the messages are written in batches, after the messages are flushed,
 //! and the memo is committed only after the claims it covers are on the
-//! device: also when the archive flushes only at the end, which it then
-//! does with every commit. It lives in
+//! device, once per batch. It lives in
 //! `cache/`: losing it costs one whole fetch of the folder, never a
 //! claim.
 //!
@@ -62,12 +61,12 @@
 //! a folder that will not open are named in the tally, and the run
 //! goes on to the next. The archive or the memo refusing ends the run.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 use ossuary_core::{
-    Archive, Attribute, BATCH, Claim, ClaimId, Index, Recorder, Scope, Sighting, Source, Subject,
+    Archive, Attribute, Claim, ClaimId, Index, Recorder, Scope, Sighting, Source, Subject,
     Timestamp, Value, admit, sighting_claims,
 };
 use serde_json::json;
@@ -120,10 +119,6 @@ impl<'a> Place<'a> {
     }
 }
 
-/// How many messages land between two commits of the resume point: one
-/// batch of claims.
-const COMMIT_EVERY: usize = BATCH;
-
 /// How many runs may fail to fetch a pending message before it is
 /// given up.
 const GIVE_UP_AFTER: u32 = 3;
@@ -167,6 +162,7 @@ pub fn run(
     let fetch = Fetch {
         archive,
         recorder: RefCell::new(Recorder::for_archive(archive)),
+        written: Cell::new(false),
         accounts_file,
         memo,
         options,
@@ -238,6 +234,9 @@ struct Fetch<'a> {
     /// The claims of the messages landed since the last commit of the
     /// memo, written in batches.
     recorder: RefCell<Recorder<'a>>,
+    /// Whether the recorder wrote a batch since the last commit of the
+    /// memo.
+    written: Cell<bool>,
     /// Where the accounts were read from, for a hint that names a
     /// command reading the same file.
     accounts_file: &'a config::Source,
@@ -587,11 +586,13 @@ impl Fetch<'_> {
         ));
     }
 
-    /// Commit the memo after every [`COMMIT_EVERY`]th message and open
-    /// the next batch: a run that dies repeats at most a batch, and the
-    /// bytes dedup.
-    fn commit_every(&self, done: usize) -> Result<()> {
-        if done.is_multiple_of(COMMIT_EVERY) {
+    /// Commit the memo when the recorder has written a batch of claims
+    /// since the last commit, and open the next batch: a run that dies
+    /// repeats at most a batch, and the bytes dedup. The recorder ends a
+    /// batch by count, by size or by time (see `ossuary_core::Batch`), so
+    /// the memo follows a slow server as regularly as a fast one.
+    fn commit_every(&self) -> Result<()> {
+        if self.written.get() {
             self.commit_memo()?;
             self.memo.begin()?;
         }
@@ -601,7 +602,9 @@ impl Fetch<'_> {
     /// Hand claims to the recorder, as one item that added `stored` bytes
     /// to the archive.
     fn hold(&self, claims: Vec<Claim>, stored: u64) -> Result<()> {
-        self.recorder.borrow_mut().push(claims, stored)?;
+        if self.recorder.borrow_mut().push(claims, stored)? {
+            self.written.set(true);
+        }
         Ok(())
     }
 
@@ -614,16 +617,10 @@ impl Fetch<'_> {
 
     /// Commit the memo, with the claims of the messages it covers written
     /// and on the device first: the resume point never passes a message a
-    /// crash of the system can still take. An archive that flushes only at
-    /// the end is flushed here all the same.
+    /// crash of the system can still take.
     fn commit_memo(&self) -> Result<()> {
-        {
-            let mut recorder = self.recorder.borrow_mut();
-            recorder.write()?;
-            if !recorder.durable() {
-                self.archive.flush()?;
-            }
-        }
+        self.recorder.borrow_mut().write()?;
+        self.written.set(false);
         self.memo.commit_for(self.archive)
     }
 }

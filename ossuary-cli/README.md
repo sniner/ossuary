@@ -31,15 +31,16 @@ and a repeated `ossuary ingest` reads every file again and records where
 it lies a second time. An archive seals by itself after 1000 appends,
 and `ossuary seal` does it at once.
 
-The files a command writes are flushed to the disk in batches of 100,
-and the claims about them are written after them, so a crash of the
-computer loses at most the last batch, and the next run does it again.
-`--flush-at-end` flushes only once, when the command ends: for a command
-that writes many files and can be run again, such as `ossuary extract`
-over a whole archive. A crash of the computer before the end can then
-leave damaged files and claims about them, which `ossuary audit` finds.
-Stopping the command any other way, with Ctrl-C for example, loses
-nothing. External commands do not take the option.
+The files a command writes are flushed to the disk in batches, and the
+claims about them are written after them. A batch ends after 1,000
+files, 256 MiB or 30 seconds, whichever comes first. When a command is
+stopped, with Ctrl-C for example, or the computer crashes, the last
+batch is not recorded, and the next run does it again; the archive
+itself stays intact. `--lazy-flush` makes a batch 10,000 files or 1 GiB,
+with no limit in time: for a command that writes very many files, such
+as `ossuary extract` over a whole archive. It flushes the disk less
+often, and an interrupted run repeats more. `ossuary mailvault` takes
+the option after its name (`ossuary mailvault --lazy-flush fetch`).
 
 Results go to stdout, progress messages to stderr, so `ossuary find --id
 … | …` pipes only the results. If the reading end of a pipe is closed
