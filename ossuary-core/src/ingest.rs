@@ -666,8 +666,10 @@ impl IngestMemory {
     /// be deleted.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open(path)?;
+        // In one transaction, or each table costs a commit of its own.
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS seen (
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS seen (
                  host  TEXT NOT NULL,
                  path  TEXT NOT NULL,
                  size  INTEGER NOT NULL,
@@ -677,7 +679,8 @@ impl IngestMemory {
              CREATE TABLE IF NOT EXISTS archive (
                  id      INTEGER PRIMARY KEY CHECK (id = 0),
                  segment TEXT NOT NULL
-             );",
+             );
+             COMMIT;",
         )?;
         Ok(IngestMemory { connection })
     }

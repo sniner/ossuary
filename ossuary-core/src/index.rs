@@ -481,6 +481,10 @@ impl Index {
         // migrated but emptied — it is a cache, and the next fold rebuilds
         // it from the log for the cost of one slow first answer.
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        // One transaction for the whole schema. Without it every statement
+        // commits on its own, and a new file costs a flush of the device
+        // per table, index and view.
+        let schema = connection.unchecked_transaction()?;
         if version != SCHEMA {
             connection.execute_batch(&format!(
                 "DROP VIEW IF EXISTS v_claims;
@@ -519,6 +523,7 @@ impl Index {
                 params![HEAD, HEAD_SEQ],
             )?;
         }
+        schema.commit()?;
         Ok(Index {
             connection,
             ids: Ids::default(),

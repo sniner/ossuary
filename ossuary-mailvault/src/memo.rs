@@ -211,8 +211,10 @@ impl Memo {
 
     /// The memo on `connection`, its tables made where they are missing.
     fn with(connection: Connection, path: Option<PathBuf>) -> Result<Self> {
+        // In one transaction, or each table costs a commit of its own.
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS resume (
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS resume (
                  account TEXT NOT NULL,
                  folder  TEXT NOT NULL,
                  state   TEXT NOT NULL,
@@ -241,7 +243,8 @@ impl Memo {
              CREATE TABLE IF NOT EXISTS archive (
                  id      INTEGER PRIMARY KEY CHECK (id = 0),
                  segment TEXT NOT NULL
-             );",
+             );
+             COMMIT;",
         )?;
         Ok(Self {
             connection,
