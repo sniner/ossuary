@@ -1,15 +1,15 @@
 //! `ossuary maintain`: `weed` removes copies in `derived/` that
 //! `content/` also has, `describe` records the size and type of files
-//! that lack them.
+//! that lack them, `tidy` removes temporary files of interrupted commands.
 
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use ossuary_core::{Fixity, Twin, Undescribing, Weeded};
+use ossuary_core::{Fixity, TEMP_MIN_AGE, Twin, Undescribing, Weeded};
 
 use crate::audit::listing;
-use crate::output::{errln, say};
+use crate::output::{errln, human_bytes, say};
 use crate::{Location, finish_interrupted_seal, open};
 
 /// The maintenance commands.
@@ -49,6 +49,22 @@ pub(crate) enum Maintenance {
         #[arg(long)]
         repair: bool,
     },
+    /// Remove temporary files that interrupted commands left behind
+    ///
+    /// A command that is stopped before it has recorded its last batch of
+    /// files, with Ctrl-C for example, leaves the files of that batch in
+    /// the tmp/ directories of the archive. They are not part of the
+    /// archive and only take space. tidy removes those older than 24
+    /// hours; a younger one may belong to a command that is still running.
+    Tidy {
+        /// Show how many files would be removed, remove nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Also remove temporary files younger than 24 hours; only when
+        /// no other command is writing to the archive
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 /// Run one maintenance task.
@@ -61,7 +77,38 @@ pub(crate) fn run(
     match task {
         Maintenance::Describe { dry_run } => describe(location, *dry_run, verbose, quiet),
         Maintenance::Weed { dry_run, repair } => weed(location, *dry_run, *repair, verbose, quiet),
+        Maintenance::Tidy { dry_run, all } => tidy(location, *dry_run, *all, quiet),
     }
+}
+
+/// `maintain tidy`: remove the temporary files of interrupted commands.
+fn tidy(location: &Location, dry_run: bool, all: bool, quiet: bool) -> Result<ExitCode> {
+    let archive = open(location)?;
+    if !quiet {
+        errln!("archive {}", archive.root().display());
+    }
+    let min_age = (!all).then_some(TEMP_MIN_AGE);
+    let tidied = ossuary_core::tidy(&archive, min_age, dry_run)?;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let size = human_bytes(tidied.bytes);
+    let verdict = match (tidied.removed, dry_run) {
+        (0, _) if tidied.young == 0 => "no temporary files in the archive".to_string(),
+        (0, _) => "no temporary files older than 24 hours".to_string(),
+        (count, true) => format!("would remove {count} temporary file(s), {size}; nothing removed"),
+        (count, false) => format!("{count} temporary file(s) removed, {size}"),
+    };
+    say(&mut out, &verdict)?;
+    if tidied.young > 0 {
+        say(
+            &mut out,
+            &format!(
+                "{} temporary file(s) younger than 24 hours kept; a running command may be writing them. If no command is writing to the archive, pass --all to remove them",
+                tidied.young
+            ),
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `maintain describe`: find the files recorded without size or type,

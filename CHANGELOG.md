@@ -12,6 +12,11 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   such as `ossuary extract` over a whole archive. `ossuary mailvault` has the option too, written
   after its name: `ossuary mailvault --lazy-flush fetch`
 
+- **`ossuary maintain tidy`** removes the temporary files that a command leaves in the `tmp/`
+  directories of the archive when it is stopped before it has recorded its last batch. It removes
+  files older than 24 hours, and younger ones too with `--all`, for when no other command is
+  writing to the archive; `--dry-run` shows how many it would remove
+
 ### Changed
 
 - **Files are flushed to the disk in batches of 1,000 files, 256 MiB or 30 seconds**, whichever
