@@ -43,7 +43,7 @@ mod recorder;
 mod retract;
 mod seal;
 mod tidy;
-mod vocabulary;
+pub mod vocabulary;
 mod weed;
 
 pub use accession::{Admitted, Sighting, admit, sighting_claims};
@@ -78,5 +78,4 @@ pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,
 };
 pub use tidy::{TEMP_MIN_AGE, Tidied, tidy};
-pub use vocabulary::EXAMINED;
 pub use weed::{Weeded, twins, weed};

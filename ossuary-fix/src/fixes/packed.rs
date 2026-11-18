@@ -12,6 +12,7 @@
 //! if the new words had always been used.
 
 use anyhow::{Result, anyhow};
+use ossuary_core::vocabulary::FILE_PATH;
 use ossuary_core::{Attribute, Claim, Log, Run, Value};
 
 use crate::plan::Plan;
@@ -19,7 +20,7 @@ use crate::record;
 
 /// The old words and the new, on the archive and on the entry.
 const ON_THE_ARCHIVE: (&str, &str) = ("zip:entry", "packed:path");
-const ON_THE_ENTRY: (&str, &str) = ("zip:path", "file:path");
+const ON_THE_ENTRY: (&str, &str) = ("zip:path", FILE_PATH);
 
 /// Every inner place standing under an old word and not, `@`-led,
 /// under the new one, as a plan to say it again.

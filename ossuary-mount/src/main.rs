@@ -24,6 +24,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
+use ossuary_core::vocabulary::{FILE_MODIFIED, FILE_PATH, FILE_SIZE};
 use ossuary_core::{Archive, ClaimId, Error, Index, Standing, Timestamp, Value};
 
 mod forest;
@@ -242,7 +243,7 @@ fn at(index: &Index, given: &str) -> Result<(Index, Timestamp)> {
 /// The view, grown from the record `index` holds.
 fn grown_view(index: &Index) -> Result<Forest> {
     let mut places = Vec::new();
-    for standing in index.standing_as_of("file:path", None)? {
+    for standing in index.standing_as_of(FILE_PATH, None)? {
         let Value::String(path) = standing.value else {
             continue;
         };
@@ -261,13 +262,13 @@ fn grown_view(index: &Index) -> Result<Forest> {
     }
 
     let mut sizes = BTreeMap::new();
-    for (subject, value) in newest(index.standing_as_of("file:size", None)?) {
+    for (subject, value) in newest(index.standing_as_of(FILE_SIZE, None)?) {
         if let Some(size) = value.as_u64() {
             sizes.insert(subject, size);
         }
     }
     let mut modified = BTreeMap::new();
-    for (subject, value) in newest(index.standing_as_of("file:modified", None)?) {
+    for (subject, value) in newest(index.standing_as_of(FILE_MODIFIED, None)?) {
         if let Value::String(moment) = value
             && let Some(seconds) = forest::clamped(forest::epoch(&moment))
         {

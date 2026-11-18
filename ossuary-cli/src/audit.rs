@@ -4,6 +4,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
+use ossuary_core::vocabulary::{FILE_MIME, FILE_SIZE};
 use ossuary_core::{Audit, Ends, Fixity, LogAudit, StoreAudit, Timestamp};
 
 use crate::output::{errln, say};
@@ -507,10 +508,10 @@ fn render_json(out: &mut impl Write, audit: &Audit) -> Result<()> {
     for file in &audit.undescribed {
         let mut lacks = Vec::new();
         if file.lacks_size {
-            lacks.push("file:size");
+            lacks.push(FILE_SIZE);
         }
         if file.lacks_mime {
-            lacks.push("file:mime");
+            lacks.push(FILE_MIME);
         }
         lines.push(json!({
             "observation": "undescribed",

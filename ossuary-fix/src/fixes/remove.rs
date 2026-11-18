@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use anyhow::{Context as _, Result, bail};
 use immure::Digest;
+use ossuary_core::vocabulary::{FILE_MIME, FILE_SIZE, PROV_ORIGIN};
 use ossuary_core::{Algorithm, Archive, Attribute, Claim, ClaimId, Run, Subject};
 use serde_json::Value;
 
@@ -37,10 +38,10 @@ use crate::record;
 use crate::rewrite::{Rewrite, Segment, Words};
 
 /// The attribute that links an extracted file to the file it came from.
-const ORIGIN: &str = "prov:origin";
+const ORIGIN: &str = PROV_ORIGIN;
 
 /// The attributes that describe a file's bytes, whoever recorded them.
-const OF_THE_BYTES: [&str; 2] = ["file:size", "file:mime"];
+const OF_THE_BYTES: [&str; 2] = [FILE_SIZE, FILE_MIME];
 
 /// One file to remove, and the file that replaces it, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]

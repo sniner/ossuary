@@ -4,7 +4,7 @@
 //! is `docs/extractors.md`. This module is the archive's side of it: what
 //! comes back is funnelled through the claim grammar, stamped with the
 //! subject, the moment and the extractor's source, and closed with one
-//! receipt — [`EXAMINED`], its value the source itself — so the next run
+//! receipt — [`PROV_EXAMINED`], its value the source itself — so the next run
 //! knows this file is done, whatever the findings were. A file whose whole harvest was
 //! nothing, or stood on a derived blob, is done all the same.
 //!
@@ -40,7 +40,7 @@ use crate::archive::Archive;
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::recorder::Recorder;
-use crate::vocabulary::{EXAMINED, FILE_MIME, FILE_SIZE, PROV_ORIGIN, known_attribute};
+use crate::vocabulary::{FILE_MIME, FILE_SIZE, PROV_EXAMINED, PROV_ORIGIN, known_attribute};
 
 /// One derived file, as the extractor announced it: the bare name and the
 /// MIME type in the extractor's own words, where the bytes wait, and
@@ -148,7 +148,7 @@ pub(crate) fn record_examination(
     }
     claims.push(claim(
         subject,
-        &known_attribute(EXAMINED),
+        &known_attribute(PROV_EXAMINED),
         &json!(source.as_str()),
         &time,
         source,
@@ -475,7 +475,7 @@ mod tests {
         retract(
             &archive,
             &jpeg,
-            EXAMINED,
+            PROV_EXAMINED,
             &serde_json::json!(source().as_str()),
         );
         index.fold(archive.log()).unwrap();
@@ -536,7 +536,7 @@ mod tests {
         );
         assert_eq!(
             ours[1].attribute().as_str(),
-            EXAMINED,
+            PROV_EXAMINED,
             "the receipt is last"
         );
     }
@@ -603,14 +603,18 @@ mod tests {
         );
         assert_eq!(
             index
-                .values(&mail, &Attribute::parse(EXAMINED).unwrap(), Scope::Held)
+                .values(
+                    &mail,
+                    &Attribute::parse(PROV_EXAMINED).unwrap(),
+                    Scope::Held
+                )
                 .unwrap(),
             [serde_json::json!(source().as_str())],
             "the receipt stands on the examined file, and names who looked"
         );
         assert!(
             index
-                .values(&pdf, &Attribute::parse(EXAMINED).unwrap(), Scope::Held)
+                .values(&pdf, &Attribute::parse(PROV_EXAMINED).unwrap(), Scope::Held)
                 .unwrap()
                 .is_empty(),
             "the derived file was not examined, only made"
@@ -800,7 +804,11 @@ mod tests {
         index.fold(archive.log()).unwrap();
         assert!(
             index
-                .values(&mail, &Attribute::parse(EXAMINED).unwrap(), Scope::Held)
+                .values(
+                    &mail,
+                    &Attribute::parse(PROV_EXAMINED).unwrap(),
+                    Scope::Held
+                )
                 .unwrap()
                 .is_empty(),
             "no receipt — the file will be offered again"

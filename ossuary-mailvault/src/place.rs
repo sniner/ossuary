@@ -15,8 +15,10 @@
 //! account renamed later is a new name in new sightings; the old ones
 //! stay true for their time.
 
+use ossuary_core::vocabulary::MAILBOX_PLACE;
+
 /// The attribute every place stands under.
-pub const ATTRIBUTE: &str = "mailbox:place";
+pub const ATTRIBUTE: &str = MAILBOX_PLACE;
 
 /// The marks the mailbox has on a message beside its place: Outlook's
 /// categories and the labels of Gmail and Proton Mail, by name. Not in

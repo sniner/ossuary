@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Parser, Subcommand};
+use ossuary_core::vocabulary::FILE_MIME;
 use ossuary_core::{
     Algorithm, Archive, Attribute, Digest, Error, Field, Index, Part, Scope, Subject, Sweep, Term,
     Value,
@@ -1847,7 +1848,7 @@ impl Answering<'_> {
     /// what the question shows.
     fn kind_first(&self) -> Result<Vec<Projection>> {
         Ok(
-            std::iter::once(Projection::Attribute(Attribute::parse("file:mime")?))
+            std::iter::once(Projection::Attribute(Attribute::parse(FILE_MIME)?))
                 .chain(self.projections.iter().cloned())
                 .collect(),
         )

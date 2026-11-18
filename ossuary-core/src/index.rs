@@ -65,7 +65,7 @@ use crate::error::{Error, Result};
 use crate::log::{Log, Open, sort_as_sealed};
 use crate::part::Part;
 use crate::vocabulary::{
-    EXAMINED, FILE_MIME, FILE_NAME, FILE_PATH, MAILBOX_PLACE, PROV_ORIGIN, known_attribute,
+    FILE_MIME, FILE_NAME, FILE_PATH, MAILBOX_PLACE, PROV_EXAMINED, PROV_ORIGIN, known_attribute,
 };
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
@@ -1764,7 +1764,7 @@ impl Index {
     }
 
     /// Every subject still waiting for an extractor: standing `file:mime`
-    /// among `mimes`, and no standing [`prov:examined`](crate::EXAMINED)
+    /// among `mimes`, and no standing [`prov:examined`](crate::vocabulary::PROV_EXAMINED)
     /// receipt naming `source` — as of the last [`fold`](Index::fold), the
     /// open head included. Sorted, so a run walks the same order twice.
     ///
@@ -1790,7 +1790,7 @@ impl Index {
                     AND value IN ({holes})
                  EXCEPT
                  SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{EXAMINED}')
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{PROV_EXAMINED}')
                     AND value = ?)
              ORDER BY digest"
         ))?;
@@ -1853,7 +1853,7 @@ impl Index {
     }
 
     /// Whether `source` has already examined `subject`: a standing
-    /// [`prov:examined`](crate::EXAMINED) receipt naming exactly this
+    /// [`prov:examined`](crate::vocabulary::PROV_EXAMINED) receipt naming exactly this
     /// source as its value. What the worklist subtracts wholesale, asked
     /// about one file — for a run that was handed names instead of a kind.
     ///
@@ -1864,7 +1864,7 @@ impl Index {
         let mut statement = self.connection.prepare_cached(&format!(
             "SELECT 1 FROM standing
               WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
-                AND attribute = (SELECT id FROM attributes WHERE name = '{EXAMINED}')
+                AND attribute = (SELECT id FROM attributes WHERE name = '{PROV_EXAMINED}')
                 AND value = ?2
               LIMIT 1"
         ))?;

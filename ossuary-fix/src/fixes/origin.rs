@@ -8,6 +8,7 @@
 //! if the new word had always been used.
 
 use anyhow::{Result, anyhow};
+use ossuary_core::vocabulary::PROV_ORIGIN;
 use ossuary_core::{Attribute, Claim, Log, Run};
 
 use crate::plan::Plan;
@@ -15,7 +16,7 @@ use crate::record;
 
 /// The old word, and the new one.
 const OLD: &str = "derive:derived-from";
-const NEW: &str = "prov:origin";
+const NEW: &str = PROV_ORIGIN;
 
 /// Every origin standing under the old word and not under the new one,
 /// as a plan to say it again under the new one.
