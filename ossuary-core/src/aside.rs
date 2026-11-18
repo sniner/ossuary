@@ -150,7 +150,8 @@ mod tests {
     use super::*;
     use crate::claim::{Attribute, Claim, Run, Source};
     use crate::config::Excludes;
-    use crate::ingest::{IngestMemory, Sweep, ingest};
+    use crate::ingest::{Sweep, ingest};
+    use crate::memory::IngestMemory;
 
     fn archive(dir: &TempDir) -> Archive {
         Archive::create(dir.path().join("archive"), Algorithm::Sha256).unwrap()

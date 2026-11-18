@@ -37,6 +37,7 @@ mod extract;
 mod index;
 mod ingest;
 mod log;
+mod memory;
 mod part;
 mod recorder;
 mod retract;
@@ -64,11 +65,12 @@ pub use export::{Placed, Placement, lay_out};
 pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::{Algorithm, Digest, Flush, Store};
 pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
-pub use ingest::{IngestMemory, Ingested, Previewed, Sweep, ingest, preview};
+pub use ingest::{Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{
     Contents, GENERATION, Log, OLD_HEAD, Open, SEAL_AT, SEAL_AT_BYTES, Segment, WalkBack, Writable,
     old_open_dirs,
 };
+pub use memory::IngestMemory;
 pub use part::Part;
 pub use recorder::{Batch, Recorder};
 pub use retract::retract;

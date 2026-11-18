@@ -33,8 +33,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::index::Index;
-use crate::ingest::IngestMemory;
 use crate::log::{GENERATION, Log};
+use crate::memory::IngestMemory;
 use crate::recorder::Batch;
 
 /// The mark's name in the archive root.
