@@ -42,8 +42,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ossuary_core::{
-    Admitted, Algorithm, Archive, Attribute, Recorder, Sighting, Source, Timestamp, admit,
-    sighting_claims,
+    Admitted, Algorithm, Archive, Attribute, Sighting, Source, Timestamp, admit, sighting_claims,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -183,7 +182,7 @@ pub fn run(
     // The bytes the messages of the batch added to the archive, and how
     // many a batch may add.
     let mut stored = 0u64;
-    let bytes = archive.log().batch().bytes;
+    let bytes = archive.batch().bytes;
     if let Some(memo) = takeover.memo {
         memo.begin()?;
     }
@@ -453,7 +452,7 @@ impl Takeover<'_> {
         }
         let log = self.archive.log();
         log.seal()?;
-        let mut recorder = Recorder::for_archive(self.archive);
+        let mut recorder = self.archive.recorder();
         let algorithm = log.store().algorithm();
         let now = Timestamp::now();
         let mut sightings: Vec<(Timestamp, usize, Vec<&String>)> = Vec::new();

@@ -295,7 +295,7 @@ mod tests {
         source: &Source,
         run: &Run,
     ) -> Result<Examined> {
-        let mut recorder = Recorder::for_archive(archive);
+        let mut recorder = archive.recorder();
         let examined = record_examination(
             archive,
             &mut recorder,
@@ -325,8 +325,7 @@ mod tests {
         let file = dir.path().join(name);
         std::fs::write(&file, bytes).unwrap();
         crate::ingest(
-            archive.content(),
-            archive.log(),
+            archive,
             [&file],
             &crate::Sweep {
                 host: "atlas.example.net",

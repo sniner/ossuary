@@ -550,7 +550,7 @@ fn run_one(
     // The examinations of the pass are written in batches, the last one
     // before the verdict and before the run stops at a file: what the
     // verdict counts and what the stop says is recorded is in the log.
-    let mut recorder = Recorder::for_archive(archive);
+    let mut recorder = archive.recorder();
     for subject in worklist {
         let attempted = attempt(
             invocation,

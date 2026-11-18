@@ -92,7 +92,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::claim::{Claim, ClaimId};
 use crate::error::{Error, Result};
-use crate::recorder::Batch;
 
 /// The format generation this build writes, and the only one it reads.
 ///
@@ -389,8 +388,6 @@ pub struct Log {
     store: Store,
     root: PathBuf,
     written: Mutex<Option<Written>>,
-    /// How a [`Recorder`](crate::Recorder) writing to this log batches.
-    batch: Batch,
 }
 
 /// What this process knows of the open segment it appends to, so that an
@@ -417,19 +414,7 @@ impl Log {
             store,
             root: root.into(),
             written: Mutex::default(),
-            batch: Batch::DEFAULT,
         }
-    }
-
-    /// Have recorders that write to this log use `batch`.
-    pub fn set_batch(&mut self, batch: Batch) {
-        self.batch = batch;
-    }
-
-    /// The batches a [`Recorder`](crate::Recorder) writes to this log in.
-    #[must_use]
-    pub fn batch(&self) -> Batch {
-        self.batch
     }
 
     /// The archive root the open segment lies in.

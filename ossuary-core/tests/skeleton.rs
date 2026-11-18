@@ -125,12 +125,11 @@ fn the_skeleton_walks() {
 #[test]
 fn the_skeleton_walks_from_disk() {
     let dir = TempDir::new().unwrap();
-    let (log, mut index) = archive(&dir);
-    let content = Store::builder(dir.path().join("content"))
-        .suffix("")
-        .depth(2)
-        .create()
-        .unwrap();
+    let archive =
+        ossuary_core::Archive::create(dir.path().join("archive"), immure::Algorithm::Sha256)
+            .unwrap();
+    let (content, log) = (archive.content(), archive.log());
+    let mut index = archive.index().unwrap();
 
     // A tree on disk, taken in whole.
     let tree = dir.path().join("in");
@@ -138,8 +137,7 @@ fn the_skeleton_walks_from_disk() {
     std::fs::write(tree.join("notes.txt"), b"hello world").unwrap();
     std::fs::write(tree.join("photo.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
     let run = ossuary_core::ingest(
-        &content,
-        &log,
+        &archive,
         [&tree],
         &ossuary_core::Sweep {
             host: "atlas.example.net",
@@ -155,7 +153,7 @@ fn the_skeleton_walks_from_disk() {
 
     // Sealed, folded, asked.
     log.seal().unwrap().unwrap();
-    index.fold(&log).unwrap();
+    index.fold(log).unwrap();
     let subject = Subject::parse(immure::Algorithm::Sha256.hash(b"hello world").as_str()).unwrap();
     let answer = index.about(&subject).unwrap();
     assert_eq!(answer.len(), 6, "the six day-one facts");

@@ -256,9 +256,9 @@ mod tests {
         let excludes = Excludes::default();
         let memory = archive.ingest_memory().unwrap();
         let sweep = sweeping(&memory, &excludes);
-        let first = ingest(archive.content(), archive.log(), [&source], &sweep).unwrap();
+        let first = ingest(&archive, [&source], &sweep).unwrap();
         assert_eq!(first.stored, 1);
-        let again = ingest(archive.content(), archive.log(), [&source], &sweep).unwrap();
+        let again = ingest(&archive, [&source], &sweep).unwrap();
         assert_eq!(again.unchanged, 1, "the memory passes the file by");
         let digest = archive
             .content()
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(done.files[0].paths.len(), 1);
         let memory = archive.ingest_memory().unwrap();
         let sweep = sweeping(&memory, &excludes);
-        let repaired = ingest(archive.content(), archive.log(), [&source], &sweep).unwrap();
+        let repaired = ingest(&archive, [&source], &sweep).unwrap();
 
         assert_eq!(repaired.stored, 1);
         assert_eq!(

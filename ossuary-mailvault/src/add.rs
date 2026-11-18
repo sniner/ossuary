@@ -27,9 +27,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use ossuary_core::{
-    Archive, Attribute, Recorder, Sighting, Source, Timestamp, admit, sighting_claims,
-};
+use ossuary_core::{Archive, Attribute, Sighting, Source, Timestamp, admit, sighting_claims};
 use ossuary_extract_mail::looks_like_mail;
 use serde_json::json;
 use unicode_normalization::UnicodeNormalization as _;
@@ -92,7 +90,7 @@ pub fn run(archive: &Archive, dir: &Path, options: &Options<'_>, say: Say) -> Re
     }
     let total = files.len();
     let mut progress = say.progress();
-    let mut recorder = Recorder::for_archive(archive);
+    let mut recorder = archive.recorder();
     for (index, found) in files.iter().enumerate() {
         let bytes = match read(&found.path, options.dry_run) {
             Ok(bytes) if looks_like_mail(&bytes) => bytes,

@@ -35,7 +35,7 @@ use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::log::{GENERATION, Log};
 use crate::memory::IngestMemory;
-use crate::recorder::Batch;
+use crate::recorder::{Batch, Recorder};
 
 /// The mark's name in the archive root.
 const MARK: &str = "FORMAT";
@@ -92,6 +92,8 @@ pub struct Archive {
     log: Log,
     /// Where the caches are kept when not in `cache/` in the root.
     cache: Option<PathBuf>,
+    /// The batches a [`Recorder`] of this archive writes in.
+    batch: Batch,
 }
 
 impl Archive {
@@ -176,6 +178,7 @@ impl Archive {
             derived,
             log,
             cache: None,
+            batch: Batch::DEFAULT,
         })
     }
 
@@ -265,6 +268,7 @@ impl Archive {
             derived,
             root,
             cache: None,
+            batch: Batch::DEFAULT,
         })
     }
 
@@ -300,7 +304,7 @@ impl Archive {
         let flush = Flush::Batch(NonZeroUsize::MAX);
         self.content = self.content.with_flush(flush);
         self.derived = self.derived.with_flush(flush);
-        self.log.set_batch(Batch::FLUSH);
+        self.batch = Batch::FLUSH;
         self
     }
 
@@ -416,6 +420,22 @@ impl Archive {
     #[must_use]
     pub fn log(&self) -> &Log {
         &self.log
+    }
+
+    /// The batches a [`Recorder`] of this archive writes in:
+    /// [`Batch::DEFAULT`], or [`Batch::FLUSH`] for an archive that
+    /// flushes its files.
+    #[must_use]
+    pub fn batch(&self) -> Batch {
+        self.batch
+    }
+
+    /// A recorder for a writer that stores files in this archive: it
+    /// writes to the archive's log, about files in its content and
+    /// derived stores, in batches of [`batch`](Archive::batch).
+    #[must_use]
+    pub fn recorder(&self) -> Recorder<'_> {
+        Recorder::new(&self.log, &[&self.content, &self.derived], self.batch)
     }
 
     /// The query index in `cache/`, opened — created, folded and thrown

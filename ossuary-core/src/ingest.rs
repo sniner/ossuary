@@ -36,13 +36,13 @@ use immure::Store;
 use serde_json::json;
 
 use crate::accession::{Sighting, admit, known_attribute, sighting_claims};
+use crate::archive::{Archive, is_archive};
 use crate::claim::{Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::config::Excludes;
 use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::log::Log;
 use crate::memory::IngestMemory;
-use crate::recorder::Recorder;
 
 /// What one ingest run did.
 #[derive(Debug)]
@@ -109,8 +109,8 @@ pub struct Sweep<'a> {
 }
 
 /// Take directory trees and single files — as many roots as named, in
-/// one run — into the archive: blobs into `content`, day-one claims
-/// into `log`. Every file's places are recorded, its bytes' size and
+/// one run — into the archive: blobs into its content store, day-one
+/// claims into its log. Every file's places are recorded, its bytes' size and
 /// kind on their first arrival, and the caller's tags on every file the
 /// run records. Then what is gone is noticed: every place the record
 /// stands by under a walked root, where the walk met no file, has its
@@ -130,11 +130,13 @@ pub struct Sweep<'a> {
 /// when a named root is an archive or lies inside one. Per-file trouble
 /// is not an error here, and neither is a root that will not resolve:
 /// both are collected in [`Ingested::failed`] while the walk goes on.
-pub fn ingest<I>(content: &Store, log: &Log, roots: I, sweep: &Sweep<'_>) -> Result<Ingested>
+pub fn ingest<I>(archive: &Archive, roots: I, sweep: &Sweep<'_>) -> Result<Ingested>
 where
     I: IntoIterator,
     I::Item: AsRef<Path>,
 {
+    let content = archive.content();
+    let log = archive.log();
     // The CLI asks first and says when a seal was finished; here it
     // only has to be done.
     let _ = log.writable()?;
@@ -165,7 +167,7 @@ where
     let mut remembering = sweep
         .memory
         .map(|memory| Remembering::new(memory, sweep.host, log));
-    let mut recorder = Recorder::new(log, &[content]);
+    let mut recorder = archive.recorder();
     for path in &gathered.files {
         // What the memory compares is what the last run wrote into it:
         // the size and mtime read just before the file was, so a change
@@ -229,7 +231,7 @@ where
     result.gone += retractions.len();
     recorder.push(retractions, 0)?;
     recorder.write()?;
-    content.flush()?;
+    archive.flush()?;
     if let Some(remembering) = remembering {
         remembering.finish(gone.iter().map(|(path, _, _)| path.as_path()))?;
     }
@@ -709,7 +711,7 @@ fn absent(given: &Path) -> Option<PathBuf> {
 
 fn enclosing_archive(path: &Path) -> Option<PathBuf> {
     path.ancestors()
-        .find(|dir| crate::archive::is_archive(dir))
+        .find(|dir| is_archive(dir))
         .map(Path::to_path_buf)
 }
 
@@ -762,7 +764,7 @@ impl Walk<'_> {
                 Ok(kind) if kind.is_symlink() => {}
                 // An archive met on the walk is left whole: an archive
                 // never takes in an archive.
-                Ok(kind) if kind.is_dir() && crate::archive::is_archive(&path) => {
+                Ok(kind) if kind.is_dir() && is_archive(&path) => {
                     self.archives.push(path);
                 }
                 Ok(kind) if kind.is_dir() => self.walk(&path),
@@ -790,18 +792,8 @@ mod tests {
 
     use super::*;
 
-    fn archive(dir: &TempDir) -> (Store, Log) {
-        let content = Store::builder(dir.path().join("content"))
-            .suffix("")
-            .depth(2)
-            .create()
-            .unwrap();
-        let claims = Store::builder(dir.path().join("claims"))
-            .suffix(".seg")
-            .depth(1)
-            .create()
-            .unwrap();
-        (content, crate::log::test_log(claims, dir.path()))
+    fn archive(dir: &TempDir) -> Archive {
+        Archive::create(dir.path().join("archive"), immure::Algorithm::Sha256).unwrap()
     }
 
     fn hello_subject() -> String {
@@ -818,7 +810,8 @@ mod tests {
     #[test]
     fn a_preview_measures_without_reading() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
@@ -861,8 +854,7 @@ mod tests {
         );
 
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -896,7 +888,7 @@ mod tests {
     #[test]
     fn an_archive_met_on_the_walk_is_left_whole() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("vault")).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
@@ -904,8 +896,7 @@ mod tests {
         fs::write(tree.join("vault").join("head.jsonl"), b"claims").unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -930,15 +921,15 @@ mod tests {
     #[test]
     fn an_archive_named_outright_refuses_the_call() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let vault = dir.path().join("vault");
         fs::create_dir_all(&vault).unwrap();
         fs::write(vault.join("FORMAT"), MARK_LINE).unwrap();
         fs::write(vault.join("notes.txt"), b"inside").unwrap();
 
         let named_whole = ingest(
-            &content,
-            &log,
+            &archive,
             [&vault],
             &Sweep {
                 host: "atlas.example.net",
@@ -952,8 +943,7 @@ mod tests {
         assert!(matches!(named_whole, Err(Error::IngestsArchive(_))));
 
         let named_inside = ingest(
-            &content,
-            &log,
+            &archive,
             [vault.join("notes.txt")],
             &Sweep {
                 host: "atlas.example.net",
@@ -981,7 +971,8 @@ mod tests {
     #[test]
     fn a_tree_goes_in_with_its_six_facts_each() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("sub")).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
@@ -992,8 +983,7 @@ mod tests {
         .unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1053,7 +1043,8 @@ mod tests {
     #[test]
     fn tags_ride_on_what_the_run_records_and_only_that() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("photo.jpg"), b"hello world").unwrap();
@@ -1061,8 +1052,7 @@ mod tests {
         let tags = ["holiday".to_string(), "beach".to_string()];
 
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1089,8 +1079,7 @@ mod tests {
 
         // The same tree again: the memory skips it whole, tags included.
         let again = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1112,8 +1101,7 @@ mod tests {
         // tag rides on it.
         fs::write(tree.join("copy.jpg"), b"hello world").unwrap();
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1139,15 +1127,15 @@ mod tests {
     #[test]
     fn known_bytes_still_get_their_provenance() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("first.txt"), b"hello world").unwrap();
         fs::write(tree.join("second.txt"), b"hello world").unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1179,15 +1167,14 @@ mod tests {
     #[test]
     fn symlinks_are_not_content() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("real.txt"), b"content").unwrap();
         std::os::unix::fs::symlink(tree.join("real.txt"), tree.join("alias.txt")).unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1207,14 +1194,14 @@ mod tests {
     #[test]
     fn the_recorded_path_is_the_real_one() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("sub")).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [tree.join("sub").join("..")],
             &Sweep {
                 host: "atlas.example.net",
@@ -1246,7 +1233,7 @@ mod tests {
     #[test]
     fn what_the_excludes_name_stays_out_and_is_counted() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("sub")).unwrap();
         fs::write(tree.join("a.txt"), b"content").unwrap();
@@ -1255,8 +1242,7 @@ mod tests {
         let excludes = Excludes::compile([".DS_Store"]).unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1277,7 +1263,7 @@ mod tests {
     #[test]
     fn an_excluded_directory_is_not_walked() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("node_modules").join("deep")).unwrap();
         fs::write(tree.join("a.txt"), b"content").unwrap();
@@ -1289,8 +1275,7 @@ mod tests {
         let excludes = Excludes::compile(["node_modules"]).unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1313,7 +1298,7 @@ mod tests {
     #[test]
     fn a_path_pattern_is_relative_to_the_ingested_tree() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("build")).unwrap();
         fs::create_dir_all(tree.join("src").join("build")).unwrap();
@@ -1322,8 +1307,7 @@ mod tests {
         let excludes = Excludes::compile(["build/**"]).unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1346,13 +1330,13 @@ mod tests {
     #[test]
     fn a_single_file_goes_in_with_its_facts() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let file = dir.path().join("solo.txt");
         fs::write(&file, b"hello world").unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&file],
             &Sweep {
                 host: "atlas.example.net",
@@ -1415,7 +1399,8 @@ mod tests {
     #[test]
     fn the_recorded_mtime_is_the_one_observed() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let file = dir.path().join("dated.txt");
         fs::write(&file, b"dated content").unwrap();
         let mtime = std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_000);
@@ -1427,8 +1412,7 @@ mod tests {
             .unwrap();
 
         ingest(
-            &content,
-            &log,
+            &archive,
             [&file],
             &Sweep {
                 host: "atlas.example.net",
@@ -1459,14 +1443,13 @@ mod tests {
     #[test]
     fn a_file_named_outright_beats_the_excludes() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let file = dir.path().join(".DS_Store");
         fs::write(&file, b"junk, but asked for").unwrap();
         let excludes = Excludes::compile([".DS_Store"]).unwrap();
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&file],
             &Sweep {
                 host: "atlas.example.net",
@@ -1489,7 +1472,7 @@ mod tests {
     #[test]
     fn a_second_sweep_leaves_unchanged_files_in_peace() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
@@ -1497,8 +1480,7 @@ mod tests {
         let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
 
         let first = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1517,8 +1499,7 @@ mod tests {
         drop(memory);
         let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
         let second = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1539,14 +1520,15 @@ mod tests {
     #[test]
     fn the_memory_is_written_in_steps_and_not_locked_in_between() {
         let dir = TempDir::new().unwrap();
-        let (_content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let path = dir.path().join("ingest.sqlite");
         let memory = IngestMemory::open(&path).unwrap();
         let other = IngestMemory::open(&path).unwrap();
         let file = |n: usize| PathBuf::from(format!("/tree/{n}.txt"));
 
         let step = 3;
-        let mut remembering = Remembering::new(&memory, "atlas.example.net", &log);
+        let mut remembering = Remembering::new(&memory, "atlas.example.net", log);
         for n in 0..step {
             remembering.note(&file(n), 1, 1);
         }
@@ -1599,8 +1581,7 @@ mod tests {
         let sweep = |archive: &Archive| {
             let memory = archive.ingest_memory().unwrap();
             ingest(
-                archive.content(),
-                archive.log(),
+                archive,
                 [&tree],
                 &Sweep {
                     host: "atlas.example.net",
@@ -1653,7 +1634,7 @@ mod tests {
     #[test]
     fn a_changed_file_is_observed_again() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
@@ -1661,8 +1642,7 @@ mod tests {
         let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
 
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1678,8 +1658,7 @@ mod tests {
         fs::write(tree.join("a.txt"), b"hello world, grown").unwrap();
 
         let second = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1700,15 +1679,14 @@ mod tests {
     #[test]
     fn another_host_is_another_sighting() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
         let memory = IngestMemory::open(dir.path().join("ingest.sqlite")).unwrap();
 
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "atlas.example.net",
@@ -1721,8 +1699,7 @@ mod tests {
         )
         .unwrap();
         let second = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &Sweep {
                 host: "rhea.example.net",
@@ -1742,7 +1719,8 @@ mod tests {
     #[test]
     fn several_roots_arrive_in_one_run() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("a.txt"), b"first").unwrap();
@@ -1751,8 +1729,7 @@ mod tests {
         let gone = dir.path().join("no-such-place");
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree, &single, &gone],
             &Sweep {
                 host: "atlas.example.net",
@@ -1787,11 +1764,10 @@ mod tests {
     #[test]
     fn a_root_that_is_not_there_is_a_named_failure_not_a_crash() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
 
         let result = ingest(
-            &content,
-            &log,
+            &archive,
             [dir.path().join("no-such-tree")],
             &Sweep {
                 host: "atlas",
@@ -1809,12 +1785,12 @@ mod tests {
     }
 
     fn recorded_mime(dir: &TempDir, bytes: &[u8]) -> serde_json::Value {
-        let (content, log) = archive(dir);
+        let archive = archive(dir);
+        let log = archive.log();
         let file = dir.path().join("specimen");
         fs::write(&file, bytes).unwrap();
         ingest(
-            &content,
-            &log,
+            &archive,
             [&file],
             &Sweep {
                 host: "atlas.example.net",
@@ -1889,7 +1865,8 @@ mod tests {
     #[test]
     fn a_file_gone_from_a_walked_tree_has_its_place_taken_back() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let (content, log) = (archive.content(), archive.log());
         // The walk resolves its roots; the test asks by the resolved name.
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
@@ -1900,8 +1877,7 @@ mod tests {
         let host = "atlas.example.net";
         let excludes = none();
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, Some(&memory), None),
         )
@@ -1911,13 +1887,12 @@ mod tests {
         let size = i64::try_from(metadata.len()).unwrap();
         let mtime = unix_nanos(metadata.modified().unwrap()).unwrap();
         assert!(memory.unchanged(host, &a, size, mtime).unwrap());
-        assert_eq!(places_under(&log, &tree).len(), 2);
+        assert_eq!(places_under(log, &tree).len(), 2);
 
         fs::remove_file(&a).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let second = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, Some(&memory), Some(&record)),
         )
@@ -1927,7 +1902,7 @@ mod tests {
         assert_eq!(second.claims, 1, "one retraction, nothing else");
         assert_eq!(second.unchanged, 1);
         assert_eq!(
-            places_under(&log, &tree),
+            places_under(log, &tree),
             vec![tree.join("b.txt").to_string_lossy().into_owned()],
             "the place is taken back; the bytes and the rest stay"
         );
@@ -1943,17 +1918,16 @@ mod tests {
 
         // Back where it was: observed anew, its place on the record again.
         fs::write(&a, b"hello world").unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let third = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, Some(&memory), Some(&record)),
         )
         .unwrap();
         assert_eq!(third.gone, 0);
         assert_eq!(third.known, 1);
-        assert_eq!(places_under(&log, &tree).len(), 2);
+        assert_eq!(places_under(log, &tree).len(), 2);
     }
 
     #[test]
@@ -1961,7 +1935,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("sub")).unwrap();
         let tree = tree.canonicalize().unwrap();
@@ -1969,7 +1944,7 @@ mod tests {
         fs::write(sub.join("a.txt"), b"hello world").unwrap();
         let host = "atlas.example.net";
         let excludes = none();
-        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+        ingest(&archive, [&tree], &sweep(host, &excludes, None, None)).unwrap();
 
         fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
         if fs::read_dir(&sub).is_ok() {
@@ -1977,10 +1952,9 @@ mod tests {
             fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
             return;
         }
-        let record = record_of(&log);
+        let record = record_of(log);
         let again = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, None, Some(&record)),
         );
@@ -1989,25 +1963,25 @@ mod tests {
 
         assert_eq!(again.failed.len(), 1, "the directory that would not open");
         assert_eq!(again.gone, 0, "not seen is not gone");
-        assert_eq!(places_under(&log, &tree).len(), 1);
+        assert_eq!(places_under(log, &tree).len(), 1);
     }
 
     #[test]
     fn a_place_the_excludes_leave_out_is_not_gone() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let tree = dir.path().join("tree");
         fs::create_dir_all(tree.join("skip")).unwrap();
         let tree = tree.canonicalize().unwrap();
         fs::write(tree.join("skip").join("a.txt"), b"hello world").unwrap();
         let host = "atlas.example.net";
-        ingest(&content, &log, [&tree], &sweep(host, &none(), None, None)).unwrap();
+        ingest(&archive, [&tree], &sweep(host, &none(), None, None)).unwrap();
 
         let excludes = Excludes::compile(["skip"]).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let again = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, None, Some(&record)),
         )
@@ -2015,13 +1989,14 @@ mod tests {
 
         assert_eq!(again.excluded, 1);
         assert_eq!(again.gone, 0, "left out is not looked at");
-        assert_eq!(places_under(&log, &tree).len(), 1);
+        assert_eq!(places_under(log, &tree).len(), 1);
     }
 
     #[test]
     fn a_place_on_another_host_is_not_gone() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         // The walk resolves its roots; the test asks by the resolved name.
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
@@ -2029,18 +2004,16 @@ mod tests {
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
         let excludes = none();
         ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep("atlas.example.net", &excludes, None, None),
         )
         .unwrap();
 
         fs::remove_file(tree.join("a.txt")).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let elsewhere = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep("borea.example.net", &excludes, None, Some(&record)),
         )
@@ -2050,13 +2023,14 @@ mod tests {
             elsewhere.gone, 0,
             "the same path on another machine is another place"
         );
-        assert_eq!(places_under(&log, &tree).len(), 1);
+        assert_eq!(places_under(log, &tree).len(), 1);
     }
 
     #[test]
     fn a_preview_names_what_would_be_gone_and_takes_nothing_back() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         // The walk resolves its roots; the test asks by the resolved name.
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
@@ -2065,21 +2039,22 @@ mod tests {
         fs::write(tree.join("b.txt"), b"more content").unwrap();
         let host = "atlas.example.net";
         let excludes = none();
-        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+        ingest(&archive, [&tree], &sweep(host, &excludes, None, None)).unwrap();
         fs::remove_file(tree.join("a.txt")).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
 
         let rehearsal = preview([&tree], &sweep(host, &excludes, None, Some(&record))).unwrap();
 
         assert_eq!(rehearsal.gone, vec![tree.join("a.txt")]);
         assert!(rehearsal.empty.is_empty());
-        assert_eq!(places_under(&log, &tree).len(), 2, "nothing written");
+        assert_eq!(places_under(log, &tree).len(), 2, "nothing written");
     }
 
     #[test]
     fn a_root_met_empty_judges_nothing() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         // The walk resolves its roots; the test asks by the resolved name.
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
@@ -2088,18 +2063,17 @@ mod tests {
         fs::write(tree.join("b.txt"), b"more content").unwrap();
         let host = "atlas.example.net";
         let excludes = none();
-        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+        ingest(&archive, [&tree], &sweep(host, &excludes, None, None)).unwrap();
 
         // What a mount point looks like with nothing mounted.
         fs::remove_file(tree.join("a.txt")).unwrap();
         fs::remove_file(tree.join("b.txt")).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let rehearsal = preview([&tree], &sweep(host, &excludes, None, Some(&record))).unwrap();
         assert!(rehearsal.gone.is_empty());
         assert_eq!(rehearsal.empty, vec![tree.clone()]);
         let again = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, None, Some(&record)),
         )
@@ -2107,27 +2081,27 @@ mod tests {
 
         assert_eq!(again.gone, 0, "not one file met: nothing judged");
         assert_eq!(again.empty, vec![tree.clone()]);
-        assert_eq!(places_under(&log, &tree).len(), 2);
+        assert_eq!(places_under(log, &tree).len(), 2);
 
         // One file back: the walk met something, and judges the rest.
         fs::write(tree.join("b.txt"), b"more content").unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let later = ingest(
-            &content,
-            &log,
+            &archive,
             [&tree],
             &sweep(host, &excludes, None, Some(&record)),
         )
         .unwrap();
         assert_eq!(later.gone, 1);
         assert!(later.empty.is_empty());
-        assert_eq!(places_under(&log, &tree).len(), 1);
+        assert_eq!(places_under(log, &tree).len(), 1);
     }
 
     #[test]
     fn the_word_emptied_takes_back_every_place_under_a_root_met_empty() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         // The walk resolves its roots; the test asks by the resolved name.
         let tree = dir.path().join("tree");
         fs::create_dir_all(&tree).unwrap();
@@ -2136,10 +2110,10 @@ mod tests {
         fs::write(tree.join("b.txt"), b"more content").unwrap();
         let host = "atlas.example.net";
         let excludes = none();
-        ingest(&content, &log, [&tree], &sweep(host, &excludes, None, None)).unwrap();
+        ingest(&archive, [&tree], &sweep(host, &excludes, None, None)).unwrap();
         fs::remove_file(tree.join("a.txt")).unwrap();
         fs::remove_file(tree.join("b.txt")).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
         let mut emptied = sweep(host, &excludes, None, Some(&record));
         emptied.emptied = true;
 
@@ -2147,17 +2121,18 @@ mod tests {
         assert_eq!(rehearsal.gone.len(), 2);
         assert!(rehearsal.empty.is_empty());
 
-        let run = ingest(&content, &log, [&tree], &emptied).unwrap();
+        let run = ingest(&archive, [&tree], &emptied).unwrap();
 
         assert_eq!(run.gone, 2);
         assert!(run.empty.is_empty());
-        assert!(places_under(&log, &tree).is_empty());
+        assert!(places_under(log, &tree).is_empty());
     }
 
     #[test]
     fn the_word_emptied_takes_back_every_place_under_a_root_that_is_gone() {
         let dir = TempDir::new().unwrap();
-        let (content, log) = archive(&dir);
+        let archive = archive(&dir);
+        let log = archive.log();
         let given = dir.path().join("inbox");
         fs::create_dir_all(&given).unwrap();
         // The record spells the resolved place; the call names the
@@ -2166,32 +2141,26 @@ mod tests {
         fs::write(tree.join("a.txt"), b"hello world").unwrap();
         let host = "atlas.example.net";
         let excludes = none();
-        ingest(
-            &content,
-            &log,
-            [&given],
-            &sweep(host, &excludes, None, None),
-        )
-        .unwrap();
+        ingest(&archive, [&given], &sweep(host, &excludes, None, None)).unwrap();
         fs::remove_dir_all(&given).unwrap();
-        let record = record_of(&log);
+        let record = record_of(log);
 
         let mut plain = sweep(host, &excludes, None, Some(&record));
-        let run = ingest(&content, &log, [&given], &plain).unwrap();
+        let run = ingest(&archive, [&given], &plain).unwrap();
         assert_eq!(
             run.gone, 0,
             "without the word, a directory that is no more is a failure"
         );
         assert_eq!(run.failed.len(), 1);
-        assert_eq!(places_under(&log, &tree).len(), 1);
+        assert_eq!(places_under(log, &tree).len(), 1);
 
         plain.emptied = true;
         let rehearsal = preview([&given], &plain).unwrap();
         assert_eq!(rehearsal.gone.len(), 1);
         assert!(rehearsal.failed.is_empty());
-        let run = ingest(&content, &log, [&given], &plain).unwrap();
+        let run = ingest(&archive, [&given], &plain).unwrap();
         assert_eq!(run.gone, 1);
         assert!(run.failed.is_empty(), "{:?}", run.failed);
-        assert!(places_under(&log, &tree).is_empty());
+        assert!(places_under(log, &tree).is_empty());
     }
 }

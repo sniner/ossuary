@@ -27,7 +27,6 @@ use std::time::{Duration, Instant};
 
 use immure::Store;
 
-use crate::archive::Archive;
 use crate::claim::Claim;
 use crate::error::{Error, Result};
 use crate::log::Log;
@@ -99,13 +98,13 @@ pub struct Recorder<'a> {
 
 impl<'a> Recorder<'a> {
     /// A recorder writing to `log`, about files in `stores`, in batches
-    /// as the log says ([`Log::batch`]).
-    #[must_use]
-    pub fn new(log: &'a Log, stores: &[&'a Store]) -> Self {
+    /// of `batch`. [`Archive::recorder`](crate::Archive::recorder) makes
+    /// the one that fits an archive.
+    pub(crate) fn new(log: &'a Log, stores: &[&'a Store], batch: Batch) -> Self {
         Recorder {
             log,
             stores: stores.to_vec(),
-            batch: log.batch(),
+            batch,
             claims: Vec::new(),
             lines: 0,
             items: 0,
@@ -113,13 +112,6 @@ impl<'a> Recorder<'a> {
             since: None,
             failed: false,
         }
-    }
-
-    /// A recorder writing to the archive's log, about files in its content
-    /// and derived stores.
-    #[must_use]
-    pub fn for_archive(archive: &'a Archive) -> Self {
-        Recorder::new(archive.log(), &[archive.content(), archive.derived()])
     }
 
     /// Hold one item's claims: a file's, an examination's, a message's.
@@ -202,6 +194,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::archive::Archive;
     use crate::claim::{Attribute, Run, Source, Subject, Timestamp};
 
     fn archive(dir: &TempDir) -> Archive {
@@ -232,7 +225,7 @@ mod tests {
     fn claims_wait_for_a_full_batch() {
         let dir = TempDir::new().unwrap();
         let archive = flushing(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
 
         let full = Batch::FLUSH.items;
         for n in 1..full {
@@ -257,7 +250,7 @@ mod tests {
     fn the_files_are_in_place_before_their_claims_are_written() {
         let dir = TempDir::new().unwrap();
         let archive = flushing(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
         let (path, claims) = item(&archive, b"named with its batch");
         assert!(!path.exists());
 
@@ -274,7 +267,7 @@ mod tests {
     fn large_items_are_written_before_the_batch_is_full() {
         let dir = TempDir::new().unwrap();
         let archive = flushing(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
 
         let (_, claims) = item(&archive, b"a large file");
         assert!(!recorder.push(claims, Batch::FLUSH.bytes - 1).unwrap());
@@ -313,7 +306,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let archive = flushing(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
         let (path, claims) = item(&archive, b"its shard refuses the rename");
         recorder.push(claims, 0).unwrap();
         let shard = path.parent().unwrap();
@@ -336,7 +329,7 @@ mod tests {
     fn a_batch_that_is_old_enough_is_written_with_the_next_item() {
         let dir = TempDir::new().unwrap();
         let archive = flushing(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
         recorder.batch.age = Some(Duration::from_millis(20));
 
         let (_, claims) = item(&archive, b"the first of a slow run");
@@ -353,7 +346,7 @@ mod tests {
     fn a_file_has_its_name_before_its_claims_are_written() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
 
         let (path, claims) = item(&archive, b"named at once");
         assert!(path.is_file());
@@ -368,7 +361,7 @@ mod tests {
     fn claims_are_written_once_their_lines_reach_the_limit() {
         let dir = TempDir::new().unwrap();
         let archive = archive(&dir);
-        let mut recorder = Recorder::for_archive(&archive);
+        let mut recorder = archive.recorder();
         let (_, claims) = item(&archive, b"one claim");
         let line = claims[0].to_line().len() as u64 + 1;
         recorder.batch.claims = 3 * line;

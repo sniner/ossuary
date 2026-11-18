@@ -1030,7 +1030,7 @@ fn ingest(
     if dry_run {
         return previewed(paths, &sweep, quiet);
     }
-    let run = ossuary_core::ingest(archive.content(), archive.log(), paths, &sweep)?;
+    let run = ossuary_core::ingest(&archive, paths, &sweep)?;
 
     // Each archive met is named where the run talks; the verdict keeps
     // the count. So is each root met empty.

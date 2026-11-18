@@ -161,7 +161,7 @@ pub fn run(
 ) -> Result<Tally> {
     let fetch = Fetch {
         archive,
-        recorder: RefCell::new(Recorder::for_archive(archive)),
+        recorder: RefCell::new(archive.recorder()),
         written: Cell::new(false),
         accounts_file,
         memo,
