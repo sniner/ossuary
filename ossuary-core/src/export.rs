@@ -13,23 +13,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::claim::Subject;
-
-/// Where a file stood, as far as the record tells: a full path some
-/// sighting recorded, a mailbox folder a message was fetched from, or a
-/// bare name (a derived file that never sat anywhere).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Placement {
-    /// A recorded `file:path` — absolute, in its host's own spelling,
-    /// or led by `@`: the path an unpacked entry had inside its
-    /// archive, which lays out like any other path with the `@` taken
-    /// off.
-    Path(String),
-    /// A recorded `file:name` — all a derived file without a path has.
-    Name(String),
-    /// A recorded `mailbox:place`, `account:folder`. A message has no
-    /// file name of its own, so it is exported as `<digest>.eml`.
-    Mailbox(String),
-}
+use crate::index::Placement;
 
 /// One file of an export: which content, and where it lands.
 #[derive(Debug, Clone, PartialEq, Eq)]

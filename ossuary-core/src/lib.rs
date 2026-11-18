@@ -61,10 +61,10 @@ pub use delta::{Delta, delta};
 pub use describe::{Described, Undescribing, describe, undescribed};
 pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
-pub use export::{Placed, Placement, lay_out};
+pub use export::{Placed, lay_out};
 pub use extract::{Derivation, EXAMINED, Examined, record_examination};
 pub use immure::{Algorithm, Digest, Flush, Store};
-pub use index::{Episode, Field, Folded, Index, Scope, Standing, Term};
+pub use index::{Episode, Field, Folded, Index, Placement, Scope, Standing, Term};
 pub use ingest::{Ingested, Previewed, Sweep, ingest, preview};
 pub use log::{
     Contents, GENERATION, Log, OLD_HEAD, Open, SEAL_AT, SEAL_AT_BYTES, Segment, WalkBack, Writable,

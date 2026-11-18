@@ -62,7 +62,6 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 
 use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
-use crate::export::Placement;
 use crate::log::{Log, Open, sort_as_sealed};
 use crate::part::Part;
 
@@ -340,6 +339,38 @@ pub enum Term {
     Part(Part, String),
     /// `field=pattern`.
     Field(Field, String),
+}
+
+/// Where a file stood, as far as the record tells: a full path some
+/// sighting recorded, a mailbox folder a message was fetched from, or a
+/// bare name (a derived file that never sat anywhere).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Placement {
+    /// A recorded `file:path` — absolute, in its host's own spelling,
+    /// or led by `@`: the path an unpacked entry had inside its
+    /// archive, which lays out like any other path with the `@` taken
+    /// off.
+    Path(String),
+    /// A recorded `file:name` — all a derived file without a path has.
+    Name(String),
+    /// A recorded `mailbox:place`, `account:folder`. A message has no
+    /// file name of its own, so it is exported as `<digest>.eml`.
+    Mailbox(String),
+}
+
+/// The attributes that record where a file stood, in the order a file
+/// answers with them: all values of the first kind it has.
+const PLACES: [&str; 3] = ["file:path", "mailbox:place", "file:name"];
+
+impl Placement {
+    /// A value of the attribute at `rank` in [`PLACES`].
+    fn ranked(rank: usize, spelled: String) -> Placement {
+        match rank {
+            0 => Placement::Path(spelled),
+            1 => Placement::Mailbox(spelled),
+            _ => Placement::Name(spelled),
+        }
+    }
 }
 
 /// One run as the record tells it: what one call wrote, from its first
@@ -1906,14 +1937,39 @@ impl Index {
                     subject
                 }
             };
-            let placement = match rank {
-                0 => Placement::Path(spelled),
-                1 => Placement::Mailbox(spelled),
-                _ => Placement::Name(spelled),
-            };
-            sightings.push((subject, placement));
+            sightings.push((subject, Placement::ranked(rank.into(), spelled)));
         }
         Ok(sightings)
+    }
+
+    /// Where one file stands now: its standing `file:path` values; without
+    /// any, its standing `mailbox:place` values; without those, its
+    /// standing `file:name` values. The same choice
+    /// [`run_sightings`](Index::run_sightings) makes for a run, here from
+    /// the standing set: a place that was retracted is not among them.
+    /// All values of the kind come back, sorted; which of several places
+    /// matters is the caller's to decide. Empty for a file with none of
+    /// the three.
+    ///
+    /// # Errors
+    ///
+    /// As [`values`](Index::values).
+    pub fn placements(&self, subject: &Subject) -> Result<Vec<Placement>> {
+        for (rank, name) in PLACES.into_iter().enumerate() {
+            let attribute = Attribute::parse(name)?;
+            let spelled: Vec<Placement> = self
+                .values(subject, &attribute, Scope::Held)?
+                .into_iter()
+                .filter_map(|value| match value {
+                    Value::String(text) => Some(Placement::ranked(rank, text)),
+                    _ => None,
+                })
+                .collect();
+            if !spelled.is_empty() {
+                return Ok(spelled);
+            }
+        }
+        Ok(Vec::new())
     }
 
     /// Every subject the log speaks about — as of the last
@@ -5249,6 +5305,64 @@ mod tests {
                 ),
             ],
             "a message answers with every folder the run saw it in, and its places win over a name"
+        );
+    }
+
+    #[test]
+    fn a_file_is_placed_by_the_first_kind_of_place_that_stands() {
+        let dir = TempDir::new().unwrap();
+        let log = log_in(&dir);
+        let mut index = index_in(&dir);
+        let time = Timestamp::parse("2026-09-01T10:00:00Z").unwrap();
+        let source = Source::parse("ingest").unwrap();
+        let said = |attribute: &str, value: &str| {
+            Claim::assert(
+                subject(),
+                Attribute::parse(attribute).unwrap(),
+                json!(value),
+                time.clone(),
+                source.clone(),
+                run_x('a'),
+            )
+            .unwrap()
+            .identified(immure::Algorithm::Sha256)
+        };
+        assert_eq!(index.placements(&subject()).unwrap(), []);
+
+        let path = said("file:path", "/home/s/a.txt");
+        log.append_all(&[
+            path.clone(),
+            said("mailbox:place", "example.org:INBOX"),
+            said("mailbox:place", "example.org:Archive"),
+            said("file:name", "a.txt"),
+        ])
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.placements(&subject()).unwrap(),
+            [Placement::Path("/home/s/a.txt".to_string())]
+        );
+
+        log.append(
+            &Claim::retract(
+                subject(),
+                Attribute::parse("file:path").unwrap(),
+                vec![path.id().unwrap().clone()],
+                Timestamp::parse("2026-09-02T10:00:00Z").unwrap(),
+                source.clone(),
+                run_x('b'),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        index.fold(&log).unwrap();
+        assert_eq!(
+            index.placements(&subject()).unwrap(),
+            [
+                Placement::Mailbox("example.org:Archive".to_string()),
+                Placement::Mailbox("example.org:INBOX".to_string()),
+            ],
+            "the path was retracted, and the mailbox places win over the name"
         );
     }
 
