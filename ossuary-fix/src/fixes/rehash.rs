@@ -127,10 +127,7 @@ pub fn rehash(
             target.display()
         );
     }
-    let renamed: Vec<Option<Claim>> = claims
-        .iter()
-        .map(|claim| rename(claim, &names))
-        .collect::<Result<_>>()?;
+    let renamed = rename_all(&claims, &names, algorithm)?;
     let dropped = renamed.iter().filter(|claim| claim.is_none()).count();
     if dropped > 0 && !force {
         bail!(
@@ -227,11 +224,52 @@ impl<R: Read> Read for Tee<R> {
     }
 }
 
+/// The claims under the new names, each in the place of the claim it
+/// was made from; `None` for a claim that cannot be given them.
+///
+/// Every claim gets another id: its line names the file by another name,
+/// and the id is hashed with `algorithm`. The assertions come first, so
+/// that the retractions can name them by their new ids, wherever in the
+/// log either was written.
+fn rename_all(
+    claims: &[Claim],
+    names: &BTreeMap<String, String>,
+    algorithm: Algorithm,
+) -> Result<Vec<Option<Claim>>> {
+    let mut renamed: Vec<Option<Claim>> = vec![None; claims.len()];
+    let mut ids = BTreeMap::new();
+    for retractions in [false, true] {
+        for (slot, claim) in renamed.iter_mut().zip(claims) {
+            if claim.is_retraction() != retractions {
+                continue;
+            }
+            let Some(new) = rename(claim, names, &ids)? else {
+                continue;
+            };
+            let new = new.identified(algorithm);
+            if let (Some(old), Some(id)) = (claim.id(), new.id()) {
+                ids.insert(old.as_str().to_string(), id.as_str().to_string());
+            }
+            *slot = Some(new);
+        }
+    }
+    Ok(renamed)
+}
+
 /// A claim with its subject, and its value where the attribute links
 /// to a file, under the new names; `None` when either has no new name.
-/// Rewritten as JSON so that everything else, a claim without a run
-/// included, stays exactly as it was.
-fn rename(claim: &Claim, names: &BTreeMap<String, String>) -> Result<Option<Claim>> {
+/// A retraction names the claims it retracts by the new ids in `ids`,
+/// old id to new; an id that is not among them named no claim of the old
+/// archive and is kept as it is.
+///
+/// Rewritten as JSON so that the fields that are not renamed keep their
+/// values, a claim without a run included. The line is written in this
+/// build's spelling: no line keeps its bytes when its subject changes.
+fn rename(
+    claim: &Claim,
+    names: &BTreeMap<String, String>,
+    ids: &BTreeMap<String, String>,
+) -> Result<Option<Claim>> {
     let mut line: Value = serde_json::from_str(&claim.to_line())?;
     let object = line
         .as_object_mut()
@@ -247,6 +285,20 @@ fn rename(claim: &Claim, names: &BTreeMap<String, String>) -> Result<Option<Clai
             return Ok(None);
         };
         object.insert("value".to_string(), Value::String(linked.clone()));
+    }
+    if claim.is_retraction() {
+        let retracts = claim
+            .retracts()
+            .iter()
+            .map(|old| {
+                Value::String(
+                    ids.get(old.as_str())
+                        .map_or(old.as_str(), String::as_str)
+                        .to_string(),
+                )
+            })
+            .collect();
+        object.insert("retracts".to_string(), Value::Array(retracts));
     }
     Ok(Some(Claim::parse_line(&line.to_string())?))
 }
@@ -327,6 +379,60 @@ mod tests {
             Algorithm::Sha256,
             "the archive is only read"
         );
+    }
+
+    /// Every claim gets another id in the new archive: its subject has
+    /// another name, and the id is hashed with the other algorithm. A
+    /// retraction has to name the new ids, or it retracts nothing there.
+    #[test]
+    fn a_retraction_still_retracts_in_the_new_archive() {
+        let dir = TempDir::new().unwrap();
+        let old = archive(&dir);
+        let mail = old.content().digest(b"a mail");
+        say(&old, mail.as_str(), "user:tag", json!("kept"));
+        say(&old, mail.as_str(), "user:tag", json!("gone"));
+        let tag = Attribute::parse("user:tag").unwrap();
+        let gone = old
+            .log()
+            .head()
+            .unwrap()
+            .into_iter()
+            .find(|claim| claim.value() == Some(&json!("gone")))
+            .unwrap();
+        // The retraction is sealed before the claim it names is: the two
+        // may be read in either order.
+        old.log()
+            .append(
+                &Claim::retract(
+                    gone.subject().clone(),
+                    tag.clone(),
+                    vec![gone.id().unwrap().clone()],
+                    Timestamp::parse("2026-09-02T00:00:00Z").unwrap(),
+                    Source::parse("user").unwrap(),
+                    Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let standing = |archive: &Archive, subject: &str| {
+            let mut index = archive.index().unwrap();
+            index.fold(archive.log()).unwrap();
+            index
+                .values(
+                    &Subject::parse(subject).unwrap(),
+                    &tag,
+                    ossuary_core::Scope::Held,
+                )
+                .unwrap()
+        };
+        assert_eq!(standing(&old, mail.as_str()), [json!("kept")]);
+        let target = dir.path().join("new");
+
+        rehash(&old, &target, Algorithm::Blake3, false, false).unwrap();
+
+        let new = Archive::open(&target).unwrap();
+        let mail = new.content().digest(b"a mail");
+        assert_eq!(standing(&new, mail.as_str()), [json!("kept")]);
     }
 
     #[test]

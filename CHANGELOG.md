@@ -15,6 +15,12 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it rewrote segments. A claim that another program had written in another spelling got a new id
   that way, and a retraction of it no longer applied. The claims are now kept byte for byte, as
   those in sealed segments already were
+- **`ossuary-fix rehash` wrote retractions that no longer applied.** A retraction names the claims
+  it retracts by their ids, and every claim gets a new id in the new archive, but the retractions
+  kept the old ones. In an archive made by `rehash`, everything that had been retracted was valid
+  again: a removed tag, and the path of a file that `ossuary ingest` had found gone. Retractions
+  are now written with the new ids. An archive made by an earlier `rehash` is not repaired; run
+  `rehash` again on the archive it was made from
 
 ## [0.27.0] - 2026-11-17
 
