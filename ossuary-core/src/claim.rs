@@ -590,9 +590,12 @@ pub struct Claim {
     /// built here and not yet written.
     #[serde(skip)]
     id: Option<ClaimId>,
-    /// The line this claim was read from, byte for byte; `None` on a claim
-    /// that was not read from the log. The id is the digest of these
-    /// bytes, so whatever copies the claim within the log copies them.
+    /// The bytes this claim has in the log: the line it was read from,
+    /// byte for byte, or the line it is written as, once that was made
+    /// ([`identified`](Claim::identified), `with_line`). `None` on a
+    /// claim built here whose line nobody has asked for yet. The id is
+    /// the digest of these bytes, so whatever writes or copies the claim
+    /// writes them, and no field of a claim changes once it is built.
     #[serde(skip)]
     line: Option<String>,
 }
@@ -745,9 +748,24 @@ impl Claim {
     /// This claim with the id its line has under `algorithm`: what a
     /// writer knows about a claim it just appended, so that a retraction
     /// in the same run can name it before the index has read it.
+    ///
+    /// The line the id was made from is kept, and appending the claim
+    /// writes that line.
     #[must_use]
-    pub fn identified(mut self, algorithm: Algorithm) -> Self {
-        self.id = Some(ClaimId::of(&self.to_line(), algorithm));
+    pub fn identified(self, algorithm: Algorithm) -> Self {
+        let mut claim = self.with_line();
+        claim.id = Some(ClaimId::of(&claim.line(), algorithm));
+        claim
+    }
+
+    /// This claim with its line made, when it has none yet: for a writer
+    /// that counts the line before it is written, so that the claim is
+    /// serialised once.
+    #[must_use]
+    pub(crate) fn with_line(mut self) -> Self {
+        if self.line.is_none() {
+            self.line = Some(self.to_line());
+        }
         self
     }
 
@@ -767,10 +785,11 @@ impl Claim {
     }
 
     /// The claim's line as the log holds it: the bytes it was read from
-    /// for a claim out of the log, [`to_line`](Claim::to_line) for any
-    /// other. The two differ for a line that another program wrote in
-    /// another spelling of the same JSON, and the id belongs to the bytes
-    /// read. A seal copies this, never `to_line`.
+    /// for a claim out of the log, the line kept for a claim built here,
+    /// and [`to_line`](Claim::to_line) where none was kept. A line read
+    /// differs from `to_line` when another program wrote it in another
+    /// spelling of the same JSON, and the id belongs to the bytes read.
+    /// An append and a seal write this, never `to_line`.
     pub(crate) fn line(&self) -> std::borrow::Cow<'_, str> {
         match &self.line {
             Some(line) => std::borrow::Cow::Borrowed(line),
@@ -972,6 +991,37 @@ mod tests {
 
     fn run() -> Run {
         Run::parse("315e360b-020e-48be-8f2d-f2002a2ea9b4").unwrap()
+    }
+
+    #[test]
+    fn a_claim_keeps_the_line_its_id_was_made_from() {
+        let claim = Claim::assert(
+            subject(),
+            Attribute::parse("user:tag").unwrap(),
+            json!("holiday"),
+            time(),
+            Source::parse("user").unwrap(),
+            run(),
+        )
+        .unwrap();
+        assert!(claim.line.is_none(), "not made until it is asked for");
+
+        let identified = claim.clone().identified(Algorithm::Sha256);
+        let line = identified.line.clone().unwrap();
+        assert_eq!(line, claim.to_line());
+        assert_eq!(
+            identified.id(),
+            Some(&ClaimId::of(&line, Algorithm::Sha256))
+        );
+
+        // A line read in another spelling stays as it was read.
+        let spaced = line.replace("\":", "\": ");
+        let read = Claim::read_line(&spaced, Algorithm::Sha256).unwrap();
+        assert_eq!(read.clone().with_line().line(), spaced);
+        assert_eq!(
+            read.identified(Algorithm::Sha256).id(),
+            Some(&ClaimId::of(&spaced, Algorithm::Sha256))
+        );
     }
 
     #[test]

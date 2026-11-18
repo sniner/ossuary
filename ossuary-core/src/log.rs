@@ -535,7 +535,7 @@ impl Log {
         }
         let mut text = String::new();
         for claim in claims {
-            text.push_str(&claim.to_line());
+            text.push_str(&claim.line());
             text.push('\n');
         }
         loop {

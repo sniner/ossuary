@@ -126,10 +126,12 @@ impl<'a> Recorder<'a> {
         if self.failed {
             return Err(Error::NotRecorded);
         }
-        for claim in &claims {
-            self.lines = self.lines.saturating_add(claim.to_line().len() as u64 + 1);
+        for claim in claims {
+            // Serialised here once; the log writes the same line.
+            let claim = claim.with_line();
+            self.lines = self.lines.saturating_add(claim.line().len() as u64 + 1);
+            self.claims.push(claim);
         }
-        self.claims.extend(claims);
         self.items += 1;
         self.stored = self.stored.saturating_add(stored);
         self.since.get_or_insert_with(Instant::now);
