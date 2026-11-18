@@ -693,8 +693,6 @@ impl<'a> Remembering<'a> {
     }
 }
 
-/// The archive root at or above a path, if any: the mark is looked for
-/// at the path itself first, then upward.
 /// Where a path that is no more would stand, resolved as far as it
 /// exists: the nearest ancestor that does, canonical, with the rest of
 /// the path beneath it — so the place it names is the one the record
@@ -709,6 +707,8 @@ fn absent(given: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The archive root at or above a path, if any: the mark is looked for
+/// at the path itself first, then upward.
 fn enclosing_archive(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .find(|dir| is_archive(dir))
