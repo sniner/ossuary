@@ -34,7 +34,7 @@ impl IngestMemory {
     ///
     /// # Errors
     ///
-    /// [`Error::Index`] when `SQLite` cannot open or prepare it — and like
+    /// [`Error::Index`](crate::Error::Index) when `SQLite` cannot open or prepare it — and like
     /// the index, a memory broken rather than merely refusing may simply
     /// be deleted.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -65,7 +65,7 @@ impl IngestMemory {
     ///
     /// # Errors
     ///
-    /// [`Error::Index`] from `SQLite`.
+    /// [`Error::Index`](crate::Error::Index) from `SQLite`.
     pub fn proof(&self) -> Result<Option<String>> {
         use rusqlite::OptionalExtension as _;
         let segment = self
@@ -82,7 +82,7 @@ impl IngestMemory {
     ///
     /// # Errors
     ///
-    /// [`Error::Index`] from `SQLite`.
+    /// [`Error::Index`](crate::Error::Index) from `SQLite`.
     pub fn clear(&self) -> Result<()> {
         self.connection
             .execute_batch("DELETE FROM seen; DELETE FROM archive;")?;
@@ -123,7 +123,7 @@ impl IngestMemory {
     ///
     /// # Errors
     ///
-    /// [`Error::Index`] from `SQLite`.
+    /// [`Error::Index`](crate::Error::Index) from `SQLite`.
     pub fn forget_paths(&self, paths: &[&str]) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         {
