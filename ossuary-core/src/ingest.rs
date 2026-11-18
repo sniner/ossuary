@@ -137,9 +137,7 @@ where
 {
     let content = archive.content();
     let log = archive.log();
-    // The CLI asks first and says when a seal was finished; here it
-    // only has to be done.
-    let _ = log.writable()?;
+    log.ready()?;
     let source = Source::parse("ingest")?;
     let mut result = Ingested {
         run: Run::new(),

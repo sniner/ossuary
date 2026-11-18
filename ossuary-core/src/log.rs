@@ -906,6 +906,18 @@ impl Log {
         }
     }
 
+    /// Ready the log as [`writable`](Log::writable) does, for the
+    /// operations of this crate that write. What readying did is not
+    /// answered: a program that wants to say that a seal was finished
+    /// asks `writable` itself, before it calls the operation.
+    ///
+    /// # Errors
+    ///
+    /// As [`writable`](Log::writable).
+    pub(crate) fn ready(&self) -> Result<()> {
+        self.writable().map(|_| ())
+    }
+
     /// Seal the open segment: its bundles' lines go into the store as
     /// one segment, and the directory becomes the open segment after it.
     ///

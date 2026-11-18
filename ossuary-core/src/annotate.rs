@@ -33,9 +33,7 @@ pub fn annotate(
     comments: &[String],
     tags: &[String],
 ) -> Result<Written> {
-    // The CLI asks first and says when a seal was finished; here it only
-    // has to be done.
-    let _ = log.writable()?;
+    log.ready()?;
     let word = Source::parse("user")?;
     let time = Timestamp::now();
     let run = Run::new();

@@ -231,9 +231,7 @@ pub fn examine(
         ));
     }
     if !dry_run {
-        // The CLI asks first and says when a seal was finished; here it
-        // only has to be done.
-        let _ = archive.log().writable()?;
+        archive.log().ready()?;
     }
     let names: Vec<String> = match name {
         Some(name) => vec![name.to_string()],

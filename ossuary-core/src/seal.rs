@@ -88,8 +88,8 @@ pub fn seal(archive: &Archive, dry_run: bool) -> Result<Sealing> {
     }
     if !dry_run {
         // A seal that stopped before its last step is finished before
-        // this one; a caller that wants to say so asks `writable` first.
-        let _ = log.writable()?;
+        // this one.
+        log.ready()?;
     }
     let mut tries = 0;
     let (segment, sealed_now) = loop {

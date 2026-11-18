@@ -80,9 +80,7 @@ pub fn undescribed(archive: &Archive) -> Result<Undescribing> {
 /// writes no claim.
 pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
     let log = archive.log();
-    // The CLI asks first and says when a seal was finished; here it only
-    // has to be done.
-    let _ = log.writable()?;
+    log.ready()?;
     let source = Source::parse(SOURCE)?;
     let time = Timestamp::now();
     let run = Run::new();
