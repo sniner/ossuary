@@ -62,7 +62,7 @@ pub use describe::{Described, Undescribing, describe, undescribed};
 pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
 pub use export::{Placed, lay_out};
-pub use extract::{Derivation, EXAMINED, Examined, record_examination};
+pub use extract::EXAMINED;
 pub use immure::{Algorithm, Digest, Flush, Store};
 pub use index::{Episode, Field, Folded, Index, Placement, Scope, Standing, Term};
 pub use ingest::{Ingested, Previewed, Sweep, ingest, preview};

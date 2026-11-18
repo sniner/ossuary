@@ -49,36 +49,36 @@ pub const EXAMINED: &str = "prov:examined";
 /// MIME type in the extractor's own words, where the bytes wait, and
 /// whatever else it said about this file rather than the examined one.
 #[derive(Debug)]
-pub struct Derivation {
+pub(crate) struct Derivation {
     /// The announced name: the file's handle in the scratch directory,
     /// for the lines that speak about it and for the tally. The record
     /// never learns it. A name the content was known by is a finding
     /// the extractor says as `file:name`, when there is one.
-    pub name: String,
+    pub(crate) name: String,
     /// The announced MIME type, recorded as `file:mime`. For bytes new
     /// to the archive, the type detected from the content is recorded
     /// beside it when the two differ.
-    pub mime: String,
+    pub(crate) mime: String,
     /// Where the bytes wait to be taken in. Read here, never removed:
     /// the directory is the caller's to clean up.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// Findings about this file, already through [`Attribute::parse`].
-    pub findings: Vec<(Attribute, Value)>,
+    pub(crate) findings: Vec<(Attribute, Value)>,
 }
 
 /// What one examination put on the record.
 #[derive(Debug)]
-pub struct Examined {
+pub(crate) struct Examined {
     /// Claims handed to the recorder, the receipt included.
-    pub claims: usize,
+    pub(crate) claims: usize,
     /// Derived files whose bytes were new to the derived store.
-    pub stored: usize,
+    pub(crate) stored: usize,
     /// Derived files whose bytes the archive already held — in the
     /// content store as something once taken in, or in the derived store
     /// from an earlier harvest. Their origin and name went on the record
     /// all the same — another mail carrying the same attachment is a new
     /// fact about old content.
-    pub known: usize,
+    pub(crate) known: usize,
 }
 
 /// One file's examination onto the record: each derived file into the
@@ -122,7 +122,7 @@ pub struct Examined {
 /// are handed over writes no claim, so the file has no receipt and is
 /// examined again. A failure writing the batch leaves every examination of
 /// the batch without its receipt.
-pub fn record_examination(
+pub(crate) fn record_examination(
     archive: &Archive,
     recorder: &mut Recorder<'_>,
     subject: &Subject,
