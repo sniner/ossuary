@@ -31,7 +31,6 @@
 //! anew.
 
 use std::fs;
-use std::path::PathBuf;
 
 use serde_json::json;
 
@@ -39,29 +38,9 @@ use crate::accession::{UNKNOWN_KIND, detect};
 use crate::archive::Archive;
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
+use crate::extractor::Derivation;
 use crate::recorder::Recorder;
 use crate::vocabulary::{FILE_MIME, FILE_SIZE, PROV_EXAMINED, PROV_ORIGIN, known_attribute};
-
-/// One derived file, as the extractor announced it: the bare name and the
-/// MIME type in the extractor's own words, where the bytes wait, and
-/// whatever else it said about this file rather than the examined one.
-#[derive(Debug)]
-pub(crate) struct Derivation {
-    /// The announced name: the file's handle in the scratch directory,
-    /// for the lines that speak about it and for the tally. The record
-    /// never learns it. A name the content was known by is a finding
-    /// the extractor says as `file:name`, when there is one.
-    pub(crate) name: String,
-    /// The announced MIME type, recorded as `file:mime`. For bytes new
-    /// to the archive, the type detected from the content is recorded
-    /// beside it when the two differ.
-    pub(crate) mime: String,
-    /// Where the bytes wait to be taken in. Read here, never removed:
-    /// the directory is the caller's to clean up.
-    pub(crate) path: PathBuf,
-    /// Findings about this file, already through [`Attribute::parse`].
-    pub(crate) findings: Vec<(Attribute, Value)>,
-}
 
 /// What one examination put on the record.
 #[derive(Debug)]

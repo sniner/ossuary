@@ -34,6 +34,7 @@ mod error;
 mod examine;
 mod export;
 mod extract;
+mod extractor;
 mod index;
 mod ingest;
 mod log;
