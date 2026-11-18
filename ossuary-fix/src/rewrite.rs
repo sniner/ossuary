@@ -271,9 +271,12 @@ impl Rewrite {
                 .first()
                 .map(|name| Digest::parse(name))
                 .transpose()?;
+            // Read with their lines, which the append writes as they
+            // are: a claim's id is the digest of its line.
+            let algorithm = log.store().algorithm();
             let mut claims = Vec::new();
             for line in &segment.lines {
-                claims.push(ossuary_core::Claim::parse_line(line)?);
+                claims.push(ossuary_core::Claim::read_line(line, algorithm)?);
             }
             // The open segment of 0.18 lay in the root; the one before the
             // first seal under the name `open/` now has. Out of the way
@@ -416,8 +419,9 @@ fn head_text(log: &Log) -> Result<Option<String>> {
         }
         None => format!("{{\"ossuary-segment\":{GENERATION}}}\n"),
     };
+    // The lines as the open segment holds them, not serialised anew.
     for claim in contents.claims() {
-        text.push_str(&claim.to_line());
+        text.push_str(&claim.line());
         text.push('\n');
     }
     Ok(Some(text))
@@ -597,6 +601,58 @@ mod tests {
             "nothing to do: every segment is in the current form"
         );
         assert_eq!(plan.seals(false), None);
+    }
+
+    /// A line that another program wrote in another spelling of the
+    /// same JSON has its id from its bytes. Rewriting the segments before
+    /// the open one must not serialise it anew, or a retraction that
+    /// names it would name nothing.
+    #[test]
+    fn a_line_of_the_open_segment_keeps_its_bytes_and_its_id() {
+        let dir = TempDir::new().unwrap();
+        let archive = archive(&dir);
+        let first = old_segment(
+            &archive,
+            &[],
+            &[claim(&archive, b"first", "2026-09-01T00:00:00Z")],
+        );
+        let second = old_segment(
+            &archive,
+            &[&first],
+            &[claim(&archive, b"second", "2026-09-02T00:00:00Z")],
+        );
+        let log = archive.log();
+        log.discard_open().unwrap();
+        log.begin(Some(&second)).unwrap();
+        let ours = claim(&archive, b"open", "2026-09-04T00:00:00Z").to_line();
+        let foreign = ours.replace("\":", "\": ");
+        assert_ne!(foreign, ours);
+        let bundle = format!("{foreign}\n");
+        let name = log.store().digest(bundle.as_bytes());
+        fs::write(
+            archive
+                .root()
+                .join("open")
+                .join(second.as_str())
+                .join(format!("{name}.jsonl")),
+            &bundle,
+        )
+        .unwrap();
+        let id = ossuary_core::ClaimId::of(&foreign, Algorithm::Sha256);
+        assert_eq!(log.head().unwrap()[0].id(), Some(&id));
+
+        let plan = Rewrite::plan(&archive, WORDS, |_, _| Ok(())).unwrap();
+        assert!(
+            plan.head.is_some(),
+            "the open segment follows a renamed one"
+        );
+        plan.apply(&archive).unwrap();
+
+        let head = log.head().unwrap();
+        assert_eq!(head.len(), 1);
+        assert_eq!(head[0].line(), foreign, "byte for byte");
+        assert_eq!(head[0].id(), Some(&id));
+        assert!(sound(&archive));
     }
 
     #[test]

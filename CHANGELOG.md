@@ -11,6 +11,10 @@ is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   temporary files, which is often held in memory; a large file could use up the memory or fail.
   The copy is now made in the cache directory of the archive, and only for a file whose type is
   missing
+- **`ossuary-fix`** wrote the claims of the open segment anew, in its own JSON spelling, whenever
+  it rewrote segments. A claim that another program had written in another spelling got a new id
+  that way, and a retraction of it no longer applied. The claims are now kept byte for byte, as
+  those in sealed segments already were
 
 ## [0.27.0] - 2026-11-17
 

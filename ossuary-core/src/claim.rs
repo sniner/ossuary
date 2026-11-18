@@ -789,8 +789,10 @@ impl Claim {
     /// and [`to_line`](Claim::to_line) where none was kept. A line read
     /// differs from `to_line` when another program wrote it in another
     /// spelling of the same JSON, and the id belongs to the bytes read.
-    /// An append and a seal write this, never `to_line`.
-    pub(crate) fn line(&self) -> std::borrow::Cow<'_, str> {
+    /// An append and a seal write this, never `to_line`, and so does
+    /// whatever else writes a claim it has read back into a log.
+    #[must_use]
+    pub fn line(&self) -> std::borrow::Cow<'_, str> {
         match &self.line {
             Some(line) => std::borrow::Cow::Borrowed(line),
             None => std::borrow::Cow::Owned(self.to_line()),
