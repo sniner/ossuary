@@ -10,6 +10,8 @@
 //! The claims carry the source `maintain`. No run that took the file in
 //! recorded them, and the source says so.
 
+use std::path::PathBuf;
+
 use serde_json::json;
 
 use crate::accession::{detect, known_attribute};
@@ -96,21 +98,27 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
             gone.push(file.digest.as_str().to_string());
             continue;
         };
-        // The store answers with a stream, decompressed where the store
-        // compresses; detection has to seek, so the bytes are spooled
-        // into a temporary file first.
         let io = |context: &str| {
             let context = format!("{}: {context}", file.digest);
             move |source| Error::Io { context, source }
         };
         let mut reader = reader;
-        let mut spool = tempfile::tempfile().map_err(io("creating a temporary file"))?;
-        let length =
-            std::io::copy(&mut reader, &mut spool).map_err(io("reading the stored file"))?;
-        let kind = if file.lacks_mime {
-            Some(detect(&mut spool).map_err(io("detecting the file type"))?)
+        let (length, kind) = if file.lacks_mime {
+            // The store answers with a stream, decompressed where the
+            // store compresses; detection has to seek, so the bytes are
+            // spooled into a temporary file first. It lies in the cache
+            // directory, on a disk sized for content: the system's
+            // directory for temporary files may be a small ramdisk.
+            let mut spool = tempfile::tempfile_in(spool_dir(archive)?)
+                .map_err(io("creating a temporary file"))?;
+            let length =
+                std::io::copy(&mut reader, &mut spool).map_err(io("reading the stored file"))?;
+            let kind = detect(&mut spool).map_err(io("detecting the file type"))?;
+            (length, Some(kind))
         } else {
-            None
+            let length = std::io::copy(&mut reader, &mut std::io::sink())
+                .map_err(io("reading the stored file"))?;
+            (length, None)
         };
         let subject = Subject::parse(file.digest.as_str())?;
         let say = |attribute: &'static str, value| {
@@ -138,6 +146,17 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
         run,
         gone,
     })
+}
+
+/// Where a stored file is spooled to have its type detected: `tmp` in
+/// the archive's cache directory, made if it is not there.
+fn spool_dir(archive: &Archive) -> Result<PathBuf> {
+    let dir = archive.cache_dir()?.join("tmp");
+    std::fs::create_dir_all(&dir).map_err(|source| Error::Io {
+        context: format!("{}: creating the directory", dir.display()),
+        source,
+    })?;
+    Ok(dir)
 }
 
 #[cfg(test)]

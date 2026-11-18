@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ossuary maintain describe`** copied every file it described to the system's directory for
+  temporary files, which is often held in memory; a large file could use up the memory or fail.
+  The copy is now made in the cache directory of the archive, and only for a file whose type is
+  missing
+
 ## [0.27.0] - 2026-11-17
 
 ### Added
