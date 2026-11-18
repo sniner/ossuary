@@ -9,9 +9,10 @@
 
 use serde_json::json;
 
-use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Written};
+use crate::claim::{Claim, Run, Source, Subject, Timestamp, Written};
 use crate::error::Result;
 use crate::log::Log;
+use crate::vocabulary::{USER_COMMENT, USER_TAG, known_attribute};
 
 /// The user's word onto the record: every comment as a `user:comment`
 /// claim and every tag as a `user:tag` claim, on every named subject,
@@ -37,8 +38,8 @@ pub fn annotate(
     let word = Source::parse("user")?;
     let time = Timestamp::now();
     let run = Run::new();
-    let comment = Attribute::parse("user:comment")?;
-    let tag = Attribute::parse("user:tag")?;
+    let comment = known_attribute(USER_COMMENT);
+    let tag = known_attribute(USER_TAG);
     let mut claims = Vec::new();
     for subject in subjects {
         for text in comments {

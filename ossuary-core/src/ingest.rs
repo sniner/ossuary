@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use immure::Store;
 use serde_json::json;
 
-use crate::accession::{Sighting, admit, known_attribute, sighting_claims};
+use crate::accession::{Sighting, admit, sighting_claims};
 use crate::archive::{Archive, is_archive};
 use crate::claim::{Claim, ClaimId, Run, Source, Subject, Timestamp, Value};
 use crate::config::Excludes;
@@ -43,6 +43,7 @@ use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::log::Log;
 use crate::memory::IngestMemory;
+use crate::vocabulary::{FILE_MODIFIED, FILE_NAME, FILE_PATH, PROV_HOST, known_attribute};
 
 /// What one ingest run did.
 #[derive(Debug)]
@@ -218,7 +219,7 @@ where
     for (_, subject, ids) in &gone {
         retractions.push(Claim::retract(
             subject.clone(),
-            known_attribute("file:path"),
+            known_attribute(FILE_PATH),
             ids.clone(),
             time.clone(),
             source.clone(),
@@ -296,7 +297,7 @@ fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judge
             if !record
                 .values(
                     &subject,
-                    &known_attribute("prov:host"),
+                    &known_attribute(PROV_HOST),
                     crate::index::Scope::Held,
                 )?
                 .contains(&host)
@@ -305,7 +306,7 @@ fn judge(record: &Index, gathered: &Gathered, sweep: &Sweep<'_>) -> Result<Judge
             }
             let ids = record.standing_ids(
                 &subject,
-                &known_attribute("file:path"),
+                &known_attribute(FILE_PATH),
                 Some(&Value::String(path.to_string_lossy().into_owned())),
             )?;
             judged.gone.push((path, subject, ids));
@@ -557,15 +558,15 @@ fn take(
         .ok()
         .and_then(modified_value);
 
-    let mut facts = vec![(known_attribute("file:path"), json!(path.to_string_lossy()))];
+    let mut facts = vec![(known_attribute(FILE_PATH), json!(path.to_string_lossy()))];
     // A canonicalized file path always ends in a name; asking spares the
     // unwrap, not a real case.
     if let Some(name) = path.file_name() {
-        facts.push((known_attribute("file:name"), json!(name.to_string_lossy())));
+        facts.push((known_attribute(FILE_NAME), json!(name.to_string_lossy())));
     }
-    facts.push((known_attribute("prov:host"), json!(host)));
+    facts.push((known_attribute(PROV_HOST), json!(host)));
     if let Some(modified) = modified {
-        facts.push((known_attribute("file:modified"), json!(modified)));
+        facts.push((known_attribute(FILE_MODIFIED), json!(modified)));
     }
     let admitted = admit(content, file)?;
     let claims = sighting_claims(

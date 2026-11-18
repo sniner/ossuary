@@ -64,6 +64,9 @@ use crate::claim::{Attribute, Claim, ClaimId, Run, Source, Subject, Timestamp, V
 use crate::error::{Error, Result};
 use crate::log::{Log, Open, sort_as_sealed};
 use crate::part::Part;
+use crate::vocabulary::{
+    EXAMINED, FILE_MIME, FILE_NAME, FILE_PATH, MAILBOX_PLACE, PROV_ORIGIN, known_attribute,
+};
 
 /// The cache schema's generation, kept in `PRAGMA user_version`: a file
 /// carrying any other number is emptied instead of half-understood.
@@ -75,7 +78,9 @@ const HEAD: i64 = 0;
 const HEAD_SEQ: i64 = i64::MAX;
 
 /// The tables, indexes and views, created where missing.
-const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
+fn ddl() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS subjects (
          id     INTEGER PRIMARY KEY,
          digest TEXT NOT NULL UNIQUE
      );
@@ -162,7 +167,7 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
          SELECT su.digest AS subject, json_extract(st.value, '$') AS path, st.time
          FROM standing st
          JOIN subjects su ON su.id = st.subject
-         WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'file:path')
+         WHERE st.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
            AND json_type(st.value) = 'text';
      CREATE VIEW IF NOT EXISTS v_runs AS
          SELECT r.name AS run, MIN(c.time) AS first, MAX(c.time) AS last,
@@ -170,7 +175,9 @@ const DDL: &str = "CREATE TABLE IF NOT EXISTS subjects (
                 SUM(c.retract) AS retractions
          FROM claims c
          JOIN runs r ON r.id = c.run
-         GROUP BY c.run;";
+         GROUP BY c.run;"
+    )
+}
 
 /// What one fold did: how much was new.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -360,7 +367,7 @@ pub enum Placement {
 
 /// The attributes that record where a file stood, in the order a file
 /// answers with them: all values of the first kind it has.
-const PLACES: [&str; 3] = ["file:path", "mailbox:place", "file:name"];
+const PLACES: [&str; 3] = [FILE_PATH, MAILBOX_PLACE, FILE_NAME];
 
 impl Placement {
     /// A value of the attribute at `rank` in [`PLACES`].
@@ -410,17 +417,21 @@ pub struct Episode {
 /// up under `prov:origin` through `standing_lookup`. Joining the
 /// other way round, on the value unquoted, has no index to use and reads
 /// every derivation once per placed subject.
-const PLACED: &str = "WITH RECURSIVE placed(subject) AS (
+fn placed() -> String {
+    format!(
+        "WITH RECURSIVE placed(subject) AS (
         SELECT subject FROM standing
-         WHERE (attribute = (SELECT id FROM attributes WHERE name = 'file:path')
+         WHERE (attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
                 AND value NOT LIKE '\"@%')
-            OR attribute = (SELECT id FROM attributes WHERE name = 'mailbox:place')
+            OR attribute = (SELECT id FROM attributes WHERE name = '{MAILBOX_PLACE}')
         UNION
         SELECT st.subject FROM placed
           JOIN subjects su ON su.id = placed.subject
-          JOIN standing st ON st.attribute = (SELECT id FROM attributes WHERE name = 'prov:origin')
+          JOIN standing st ON st.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
                           AND st.value = json_quote(su.digest)
-    ) ";
+    ) "
+    )
+}
 
 /// A disposable query index over a claim log.
 #[derive(Debug)]
@@ -540,7 +551,7 @@ impl Index {
         // it is declared a foreign key. `open_read` is a single row, the
         // segment the open segment followed when it was last read;
         // `bundles` the bundles of it read so far (see the module notes).
-        connection.execute_batch(DDL)?;
+        connection.execute_batch(&ddl())?;
         // Asked first: an insert that is ignored still needs write access,
         // and a current index on a read-only archive is to be read.
         let head_row: bool = connection.query_row(
@@ -1114,7 +1125,7 @@ impl Index {
             // to grandchildren is the caller's, one step at a time.
             "SELECT DISTINCT su.digest
              FROM {} st JOIN subjects su ON su.id = st.subject
-             WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'prov:origin')
+             WHERE st.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
                AND st.value = json_quote(?1)
              ORDER BY su.digest",
             rows_of(scope)
@@ -1139,7 +1150,7 @@ impl Index {
     /// [`Error::Index`] from `SQLite`.
     pub fn origins(&self, subject: &Subject, scope: Scope) -> Result<Vec<Subject>> {
         let mut origins: Vec<Subject> = self
-            .values(subject, &Attribute::parse("prov:origin")?, scope)?
+            .values(subject, &known_attribute(PROV_ORIGIN), scope)?
             .iter()
             .filter_map(Value::as_str)
             .filter_map(|digest| Subject::parse(digest).ok())
@@ -1191,7 +1202,7 @@ impl Index {
     pub fn subjects(&self, scope: Scope) -> Result<Vec<Subject>> {
         let mut sql = String::new();
         if scope == Scope::Present {
-            sql.push_str(PLACED);
+            sql.push_str(&placed());
         }
         let _ = write!(
             sql,
@@ -1279,11 +1290,11 @@ impl Index {
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
     pub fn under(&self, place: &str) -> Result<Vec<(String, Subject)>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare(&format!(
             "SELECT st.value, su.digest
              FROM standing st JOIN subjects su ON su.id = st.subject
-             WHERE st.attribute = (SELECT id FROM attributes WHERE name = 'file:path')",
-        )?;
+             WHERE st.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')"
+        ))?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -1566,7 +1577,7 @@ impl Index {
         // The terms meet as sets of subject ids; the names come last.
         let mut sql = String::new();
         if scope == Scope::Present {
-            sql.push_str(PLACED);
+            sql.push_str(&placed());
         }
         sql.push_str("SELECT digest FROM subjects WHERE id IN (");
         let mut params: Vec<Sql> = Vec::new();
@@ -1775,11 +1786,11 @@ impl Index {
         let mut statement = self.connection.prepare(&format!(
             "SELECT digest FROM subjects WHERE id IN (
                  SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = 'file:mime')
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{FILE_MIME}')
                     AND value IN ({holes})
                  EXCEPT
                  SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = 'prov:examined')
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{EXAMINED}')
                     AND value = ?)
              ORDER BY digest"
         ))?;
@@ -1821,7 +1832,7 @@ impl Index {
         let mut statement = self.connection.prepare(&format!(
             "SELECT digest FROM subjects WHERE id IN (
                  SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = 'file:mime')
+                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{FILE_MIME}')
                     AND value IN ({holes}))
              ORDER BY digest"
         ))?;
@@ -1850,13 +1861,13 @@ impl Index {
     ///
     /// [`Error::Index`] from `SQLite`.
     pub fn examined(&self, subject: &Subject, source: &Source) -> Result<bool> {
-        let mut statement = self.connection.prepare_cached(
+        let mut statement = self.connection.prepare_cached(&format!(
             "SELECT 1 FROM standing
               WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
-                AND attribute = (SELECT id FROM attributes WHERE name = 'prov:examined')
+                AND attribute = (SELECT id FROM attributes WHERE name = '{EXAMINED}')
                 AND value = ?2
-              LIMIT 1",
-        )?;
+              LIMIT 1"
+        ))?;
         let receipt = Value::String(source.as_str().to_string()).to_string();
         let found = statement.exists(rusqlite::params![subject.as_str(), receipt])?;
         Ok(found)
@@ -1898,19 +1909,19 @@ impl Index {
     /// happen for rows a fold wrote, but are propagated rather than
     /// sworn away.
     pub fn run_sightings(&self, run: &Run) -> Result<Vec<(Subject, Placement)>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare(&format!(
             "SELECT DISTINCT su.digest,
-                    CASE a.name WHEN 'file:path' THEN 0 WHEN 'mailbox:place' THEN 1 ELSE 2 END,
+                    CASE a.name WHEN '{FILE_PATH}' THEN 0 WHEN '{MAILBOX_PLACE}' THEN 1 ELSE 2 END,
                     json_extract(c.value, '$')
              FROM claims c
              JOIN subjects su ON su.id = c.subject
              JOIN attributes a ON a.id = c.attribute
              WHERE c.run = (SELECT id FROM runs WHERE name = ?1)
                AND c.retract = 0
-               AND a.name IN ('file:path', 'mailbox:place', 'file:name')
+               AND a.name IN ('{FILE_PATH}', '{MAILBOX_PLACE}', '{FILE_NAME}')
                AND json_type(c.value) = 'text'
-             ORDER BY su.digest, 2, c.value",
-        )?;
+             ORDER BY su.digest, 2, c.value"
+        ))?;
         let rows = statement.query_map(params![run.as_str()], |row| {
             Ok((
                 row.get::<_, String>(0)?,

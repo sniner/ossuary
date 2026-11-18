@@ -27,6 +27,7 @@ use crate::audit::{StoreAudit, audit_store, audit_store_since};
 use crate::claim::{Subject, Timestamp, Value};
 use crate::error::Result;
 use crate::index::Index;
+use crate::vocabulary::{FILE_PATH, MAILBOX_PLACE};
 
 /// One damaged file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,8 +124,8 @@ fn origin(index: &Index, name: &str) -> Result<(Vec<String>, bool)> {
     let mut mail = false;
     for (attribute, value) in index.standing(&Subject::parse(name)?)? {
         match (attribute.as_str(), value) {
-            ("file:path", Value::String(path)) => paths.push(path),
-            ("mailbox:place", _) => mail = true,
+            (FILE_PATH, Value::String(path)) => paths.push(path),
+            (MAILBOX_PLACE, _) => mail = true,
             _ => {}
         }
     }

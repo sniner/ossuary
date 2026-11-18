@@ -43,6 +43,7 @@ mod recorder;
 mod retract;
 mod seal;
 mod tidy;
+mod vocabulary;
 mod weed;
 
 pub use accession::{Admitted, Sighting, admit, sighting_claims};
@@ -62,7 +63,6 @@ pub use describe::{Described, Undescribing, describe, undescribed};
 pub use error::{Error, Result};
 pub use examine::{Event, Observer, Settlement, Tally, examine};
 pub use export::{Placed, lay_out};
-pub use extract::EXAMINED;
 pub use immure::{Algorithm, Digest, Flush, Store};
 pub use index::{Episode, Field, Folded, Index, Placement, Scope, Standing, Term};
 pub use ingest::{Ingested, Previewed, Sweep, ingest, preview};
@@ -78,4 +78,5 @@ pub use seal::{
     Continued, Cover, Files, Seal, SealCheck, Sealing, Since, cover, files, parse_id, seal, since,
 };
 pub use tidy::{TEMP_MIN_AGE, Tidied, tidy};
+pub use vocabulary::EXAMINED;
 pub use weed::{Weeded, twins, weed};

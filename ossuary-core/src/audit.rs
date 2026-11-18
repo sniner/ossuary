@@ -70,12 +70,13 @@ use immure::{Digest, Store};
 use crate::claim::{Claim, Subject, Timestamp, Value};
 use crate::error::Result;
 use crate::log::Log;
+use crate::vocabulary::{FILE_MIME, FILE_SIZE, PROV_ORIGIN};
 
 /// Attributes whose values name other subjects. A reference in a value
 /// is a reference like the claim's own subject, and the audit follows
 /// both — a derived file's origin must be held no less than the derived
 /// file itself.
-pub const LINKS: [&str; 1] = ["prov:origin"];
+pub const LINKS: [&str; 1] = [PROV_ORIGIN];
 
 /// One blob store's fixity: every entry read whole, its bytes re-hashed
 /// against the name they are filed under, or, in a quick audit, only
@@ -357,10 +358,10 @@ impl LogAudit {
                 continue;
             }
             match claim.attribute().as_str() {
-                "file:size" => {
+                FILE_SIZE => {
                     self.sized.insert(subject.to_string());
                 }
-                "file:mime" => {
+                FILE_MIME => {
                     self.typed.insert(subject.to_string());
                 }
                 _ => {}

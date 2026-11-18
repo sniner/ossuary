@@ -40,10 +40,7 @@ use crate::archive::Archive;
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
 use crate::recorder::Recorder;
-
-/// The receipt attribute: this blob was examined by the claim's source,
-/// which the value names again.
-pub const EXAMINED: &str = "prov:examined";
+use crate::vocabulary::{EXAMINED, FILE_MIME, FILE_SIZE, PROV_ORIGIN, known_attribute};
 
 /// One derived file, as the extractor announced it: the bare name and the
 /// MIME type in the extractor's own words, where the bytes wait, and
@@ -214,7 +211,7 @@ fn take(
         // another extractor, another mail may know the same bytes under
         // other words, and every word stands in the set.
         if status.is_new() {
-            let attribute = known_attribute("file:size");
+            let attribute = known_attribute(FILE_SIZE);
             claims.push(claim(
                 &subject,
                 &attribute,
@@ -233,7 +230,7 @@ fn take(
             if detected != UNKNOWN_KIND && detected != derivation.mime {
                 claims.push(claim(
                     &subject,
-                    &known_attribute("file:mime"),
+                    &known_attribute(FILE_MIME),
                     &json!(detected),
                     time,
                     source,
@@ -244,8 +241,8 @@ fn take(
         }
     }
     let told = [
-        (known_attribute("file:mime"), json!(derivation.mime)),
-        (known_attribute("prov:origin"), json!(origin.as_str())),
+        (known_attribute(FILE_MIME), json!(derivation.mime)),
+        (known_attribute(PROV_ORIGIN), json!(origin.as_str())),
     ];
     for (attribute, value) in told.iter().chain(&derivation.findings) {
         claims.push(claim(&subject, attribute, value, time, source, run)?);
@@ -270,11 +267,6 @@ fn claim(
         source.clone(),
         run.clone(),
     )
-}
-
-/// An attribute this module spells itself.
-fn known_attribute(attribute: &'static str) -> Attribute {
-    Attribute::parse(attribute).expect("a known attribute")
 }
 
 #[cfg(test)]

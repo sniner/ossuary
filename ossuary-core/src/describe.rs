@@ -14,11 +14,12 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::accession::{detect, known_attribute};
+use crate::accession::detect;
 use crate::archive::Archive;
 use crate::audit::{Audit, LogAudit, Undescribed, audit_log, audit_store};
 use crate::claim::{Claim, Run, Source, Subject, Timestamp};
 use crate::error::{Error, Result};
+use crate::vocabulary::{FILE_MIME, FILE_SIZE, known_attribute};
 
 /// The source of the claims [`describe`] writes.
 const SOURCE: &str = "maintain";
@@ -130,10 +131,10 @@ pub fn describe(archive: &Archive, files: &[Undescribed]) -> Result<Described> {
             )
         };
         if file.lacks_size {
-            claims.push(say("file:size", json!(length))?);
+            claims.push(say(FILE_SIZE, json!(length))?);
         }
         if let Some(kind) = kind {
-            claims.push(say("file:mime", json!(kind))?);
+            claims.push(say(FILE_MIME, json!(kind))?);
         }
         described += 1;
     }

@@ -42,6 +42,7 @@ use crate::error::{Error, Result};
 use crate::extract::{Derivation, Examined, record_examination};
 use crate::index::{Index, Scope};
 use crate::recorder::Recorder;
+use crate::vocabulary::{FILE_NAME, known_attribute};
 
 /// One thing the orchestration did or found, told as it happens. The
 /// observer decides what becomes of it; the variants only say what is.
@@ -712,7 +713,7 @@ fn stopped(subject: &Subject, name: Option<&str>, error: &Error, dry_run: bool) 
 
 /// The file's standing `file:name`, when the record has one.
 fn name_of(index: &Index, subject: &Subject) -> Result<Option<String>> {
-    let names = index.values(subject, &Attribute::parse("file:name")?, Scope::Held)?;
+    let names = index.values(subject, &known_attribute(FILE_NAME), Scope::Held)?;
     Ok(names.iter().find_map(Value::as_str).map(str::to_string))
 }
 

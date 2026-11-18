@@ -40,6 +40,7 @@ use serde_json::json;
 
 use crate::claim::{Attribute, Claim, Run, Source, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
+use crate::vocabulary::{FILE_MIME, FILE_SIZE, USER_TAG, known_attribute};
 
 /// What [`admit`] answers: the bytes are in, and this is what was seen
 /// of them on the way.
@@ -208,7 +209,7 @@ pub fn sighting_claims(
     for tag in said.tags {
         claims.push(claim(
             subject,
-            known_attribute("user:tag"),
+            known_attribute(USER_TAG),
             json!(tag),
             &time,
             &word,
@@ -222,7 +223,7 @@ pub fn sighting_claims(
     if admitted.new {
         claims.push(claim(
             subject,
-            known_attribute("file:size"),
+            known_attribute(FILE_SIZE),
             json!(admitted.size),
             &time,
             said.source,
@@ -237,7 +238,7 @@ pub fn sighting_claims(
     if let Some(kind) = kind {
         claims.push(claim(
             subject,
-            known_attribute("file:mime"),
+            known_attribute(FILE_MIME),
             json!(kind),
             &time,
             said.source,
@@ -267,11 +268,6 @@ fn claim(
         source.clone(),
         run.clone(),
     )
-}
-
-/// An attribute the crate spells itself.
-pub(crate) fn known_attribute(attribute: &'static str) -> Attribute {
-    Attribute::parse(attribute).expect("a known attribute")
 }
 
 /// A reader that counts the bytes on their way into the store.
