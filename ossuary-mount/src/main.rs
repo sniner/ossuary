@@ -10,8 +10,9 @@
 //! The view is grown here and answered by [`record`]; the door it is
 //! served through is the platform's own. On macOS an NFS server
 //! answers on 127.0.0.1 and the operating system's own client mounts
-//! it ([`nfs`]); on Linux the view is a FUSE filesystem mounted through
-//! `fusermount3` ([`fuse`]). Neither installs anything kernel-side or
+//! it (module `nfs`); on Linux the view is a FUSE filesystem mounted
+//! through `fusermount3` (module `fuse`). Each of the two modules is
+//! built on its platform only. Neither installs anything kernel-side or
 //! asks for root. Where the record says more than a filesystem can —
 //! several files at one name, a name that is file and folder at once —
 //! the view narrows by declared policy; the narrowing lives in
