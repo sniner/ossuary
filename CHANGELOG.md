@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`ossuary find` took minutes on a large archive with its cache on a network share,** even when
+  only a few files matched. To return only files that still exist somewhere, it checked every file
+  in the archive first; it now checks only the matching files. On an archive of 178 000 files, a
+  query with 47 matches took 163 s and now takes 4 s. A query that matches most of the archive is
+  as slow as before
+
 ## [0.27.1] - 2026-11-18
 
 ### Fixed

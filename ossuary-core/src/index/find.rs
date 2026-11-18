@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use rusqlite::params;
 
-use super::query::{placed, rows_of};
+use super::query::{placed_hits, rows_of};
 use super::{Field, Index, Scope, Term};
 use crate::claim::{Attribute, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
@@ -87,27 +87,28 @@ impl Index {
                 Term::Attribute(..) | Term::Part(..) => None,
             })
             .collect();
-        // Under the standing scopes a row is a standing value with the
-        // claim that stands for it alongside; under the record it is the
-        // claim itself. Either way `c` is the claim a field term asks
-        // about and `st` the row an attribute term asks about.
-        let rows = match scope {
-            Scope::Record => "claims c",
-            Scope::Present | Scope::Held => "standing st JOIN claims c ON c.id = st.claim",
+        // Under the standing scopes a row is a standing value, with the
+        // claim that stands for it alongside when a field term asks about
+        // that claim; under the record it is the claim itself. `c` is the
+        // claim a field term asks about and `st` the row an attribute
+        // term asks about. Without a field term the claim is not joined:
+        // `standing` has the subject itself, and the join costs one
+        // random read in `claims` per candidate value.
+        let rows = match (scope, fields.is_empty()) {
+            (Scope::Record, _) => "claims c",
+            (Scope::Present | Scope::Held, true) => "standing st",
+            (Scope::Present | Scope::Held, false) => "standing st JOIN claims c ON c.id = st.claim",
         };
         let row = match scope {
             Scope::Record => "c",
             Scope::Present | Scope::Held => "st",
         };
-        // The terms meet as sets of subject ids; the names come last.
-        let mut sql = String::new();
-        if scope == Scope::Present {
-            sql.push_str(&placed());
-        }
-        sql.push_str("SELECT digest FROM subjects WHERE id IN (");
+        // The terms meet as sets of subject ids in `hits`; the names come
+        // last.
+        let mut sql = String::from("WITH RECURSIVE hits(subject) AS (");
         let mut params: Vec<Sql> = Vec::new();
         if attributes.is_empty() && parts.is_empty() {
-            let _ = write!(sql, "SELECT c.subject FROM {rows} WHERE 1");
+            let _ = write!(sql, "SELECT {row}.subject FROM {rows} WHERE 1");
             for (field, pattern) in &fields {
                 field_clause(&mut sql, &mut params, *field, pattern)?;
             }
@@ -120,7 +121,7 @@ impl Index {
             arms += 1;
             let _ = write!(
                 sql,
-                "SELECT c.subject FROM {rows}
+                "SELECT {row}.subject FROM {rows}
                  WHERE {row}.attribute = (SELECT id FROM attributes WHERE name = ?)"
             );
             params.push(Sql::Text(attribute.as_str().to_string()));
@@ -140,10 +141,17 @@ impl Index {
             }
         }
         lacking(&mut sql, &mut params, missing, rows_of(scope))?;
+        sql.push(')');
         if scope == Scope::Present {
-            sql.push_str(" INTERSECT SELECT subject FROM placed");
+            sql.push_str(", ");
+            sql.push_str(&placed_hits());
+            sql.push_str(
+                "SELECT digest FROM subjects WHERE id IN (SELECT subject FROM placed_hits)",
+            );
+        } else {
+            sql.push_str(" SELECT digest FROM subjects WHERE id IN (SELECT subject FROM hits)");
         }
-        sql.push_str(") ORDER BY digest");
+        sql.push_str(" ORDER BY digest");
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             row.get::<_, String>(0)
@@ -248,7 +256,7 @@ pub(super) fn part_arm(
     let columns: Vec<String> = (0..asked.len()).map(|i| format!("? AS p{i}")).collect();
     let _ = write!(
         sql,
-        "SELECT c.subject FROM {rows} CROSS JOIN (SELECT {}) AS part
+        "SELECT {row}.subject FROM {rows} CROSS JOIN (SELECT {}) AS part
          WHERE {row}.attribute = (SELECT id FROM attributes WHERE name = ?)",
         columns.join(", ")
     );

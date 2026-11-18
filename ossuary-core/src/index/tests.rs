@@ -3057,6 +3057,93 @@ fn a_derived_file_is_placed_while_its_origin_is() {
 }
 
 #[test]
+fn a_file_two_derivations_down_is_placed_through_both() {
+    let dir = TempDir::new().unwrap();
+    let log = log_in(&dir);
+    let mut index = index_in(&dir);
+    let mail = subject();
+    let bundle = other();
+    let entry =
+        Subject::parse("bb2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e").unwrap();
+    let at = "2026-09-01T10:00:00Z";
+    log.append(&said(mail.clone(), "file:path", json!("/x/mail.eml"), at))
+        .unwrap();
+    log.append(&said(
+        bundle.clone(),
+        "prov:origin",
+        json!(mail.as_str()),
+        at,
+    ))
+    .unwrap();
+    log.append(&said(bundle.clone(), "file:path", json!("@bundle.zip"), at))
+        .unwrap();
+    log.append(&said(
+        entry.clone(),
+        "prov:origin",
+        json!(bundle.as_str()),
+        at,
+    ))
+    .unwrap();
+    log.append(&said(entry.clone(), "file:path", json!("@dir/a.txt"), at))
+        .unwrap();
+    log.append(&tag_about(entry.clone(), "deep", at)).unwrap();
+    index.fold(&log).unwrap();
+
+    let deep = [term("user:tag", "deep")];
+    assert_eq!(
+        index.find(&deep, &[], Scope::Present).unwrap(),
+        vec![entry.clone()],
+        "the entry is placed through the attachment and the mail"
+    );
+
+    log.append(&taken_back(
+        &log,
+        &mail,
+        "file:path",
+        &json!("/x/mail.eml"),
+        "2026-09-02T10:00:00Z",
+    ))
+    .unwrap();
+    index.fold(&log).unwrap();
+    assert!(
+        index.find(&deep, &[], Scope::Present).unwrap().is_empty(),
+        "without the mail's place nothing below it is placed"
+    );
+    assert_eq!(index.find(&deep, &[], Scope::Held).unwrap(), vec![entry]);
+}
+
+#[test]
+fn a_cycle_of_origins_ends_and_places_nothing_by_itself() {
+    let dir = TempDir::new().unwrap();
+    let log = log_in(&dir);
+    let mut index = index_in(&dir);
+    let one = subject();
+    let two = other();
+    let at = "2026-09-01T10:00:00Z";
+    log.append(&said(one.clone(), "prov:origin", json!(two.as_str()), at))
+        .unwrap();
+    log.append(&said(two.clone(), "prov:origin", json!(one.as_str()), at))
+        .unwrap();
+    log.append(&tag_about(one.clone(), "loop", at)).unwrap();
+    index.fold(&log).unwrap();
+
+    let looped = [term("user:tag", "loop")];
+    assert!(
+        index.find(&looped, &[], Scope::Present).unwrap().is_empty(),
+        "no subject in the cycle has a place"
+    );
+
+    log.append(&said(two.clone(), "file:path", json!("/x/two"), at))
+        .unwrap();
+    index.fold(&log).unwrap();
+    assert_eq!(
+        index.find(&looped, &[], Scope::Present).unwrap(),
+        vec![one],
+        "placed through the other end of the cycle"
+    );
+}
+
+#[test]
 fn an_inner_place_places_nothing_by_itself() {
     let dir = TempDir::new().unwrap();
     let log = log_in(&dir);

@@ -83,6 +83,50 @@ pub(super) fn placed() -> String {
     )
 }
 
+/// The placed subjects among `hits(subject)`, as the table
+/// `placed_hits(subject)`, for a query that has opened `hits` in a
+/// `WITH RECURSIVE` list and appends this behind a comma. A hit is
+/// placed when it or one of its origins has a place of its own: the
+/// same subjects that [`placed`] would keep of the hits.
+///
+/// [`placed`] builds the set for the whole archive, at two index
+/// lookups per subject, before a single hit is compared with it. This
+/// walk goes from each hit up `prov:origin`, at two lookups per hit and
+/// level, and does not go above an origin that has a place. On the
+/// share, with 178 000 subjects and 55 hits, that is 73 s against 1 s.
+pub(super) fn placed_hits() -> String {
+    format!(
+        "climb(start, subject) AS (
+        SELECT subject, subject FROM hits
+        UNION
+        SELECT climb.start, o.id FROM climb
+          CROSS JOIN standing st
+                  ON st.subject = climb.subject
+                 AND st.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
+          CROSS JOIN subjects o ON o.digest = json_extract(st.value, '$')
+         WHERE NOT {}
+    ),
+    placed_hits(subject) AS (
+        SELECT start FROM climb WHERE {}
+    ) ",
+        has_place("climb.subject"),
+        has_place("climb.subject"),
+    )
+}
+
+/// The condition that `subject`, an id column, has a place of its own:
+/// a `file:path` not led by `@`, or a `mailbox:place`. Why an `@` path
+/// does not count is at [`placed`].
+fn has_place(subject: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM standing p
+          WHERE p.subject = {subject}
+            AND ((p.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
+                  AND p.value NOT LIKE '\"@%')
+                 OR p.attribute = (SELECT id FROM attributes WHERE name = '{MAILBOX_PLACE}')))"
+    )
+}
+
 impl Index {
     /// Everything the log says about one subject, in log order: along
     /// the chain, the head last.
