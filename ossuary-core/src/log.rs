@@ -959,18 +959,16 @@ impl Log {
         let Some(open) = self.open()? else {
             return Ok(None);
         };
-        let mut lines = Vec::new();
+        let mut claims = Vec::new();
         for digest in &open.bundles {
             if let Some(bundle) = self.bundle(&open, digest)? {
-                for claim in bundle {
-                    lines.push((claim.time().as_str().to_string(), claim.line().into_owned()));
-                }
+                claims.extend(bundle);
             }
         }
-        if lines.is_empty() {
+        if claims.is_empty() {
             return Ok(None);
         }
-        let text = segment_text(open.previous.as_ref(), lines);
+        let text = segment_text(open.previous.as_ref(), claims);
         Ok(Some(self.store.digest(text.as_bytes())))
     }
 
@@ -1009,7 +1007,7 @@ impl Log {
             Err(immure::Error::RootMissing(_)) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let mut lines = Vec::new();
+        let mut claims = Vec::new();
         for name in &names {
             let bytes = match bundles.read(name) {
                 Ok(Some(bytes)) => bytes,
@@ -1018,11 +1016,7 @@ impl Log {
                 Err(error) => return Err(error.into()),
             };
             let text = String::from_utf8(bytes).map_err(|_| Error::NotText)?;
-            // The lines as they stand in the bundle, not as this build
-            // would write them: a claim's id is the digest of its line.
-            for claim in parse_bundle(&text, self.store.algorithm())? {
-                lines.push((claim.time().as_str().to_string(), claim.line().into_owned()));
-            }
+            claims.extend(parse_bundle(&text, self.store.algorithm())?);
         }
         if names.is_empty() {
             // A threshold seen in a stale listing: nothing to seal, and
@@ -1033,7 +1027,7 @@ impl Log {
             )?;
             return Ok(None);
         }
-        let text = segment_text(previous.as_ref(), lines);
+        let text = segment_text(previous.as_ref(), claims);
         let digest = self.store.digest(text.as_bytes());
         if !write_segment_file(sealing, &text)? {
             return Ok(None);
@@ -1539,20 +1533,23 @@ fn rename_dir(from: &Path, to: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// Claims in the order a seal gives them: by time, then by the line.
+/// Claims in the order a seal gives them: by time, then by the line. A
+/// total order, so that the same set of bundles always gives the same
+/// segment, and the one place that defines it.
 pub fn sort_as_sealed(claims: &mut [Claim]) {
     claims
         .sort_by_cached_key(|claim| (claim.time().as_str().to_string(), claim.line().into_owned()));
 }
 
-/// The segment's bytes from its lines: the header, then the lines sorted
-/// by time and then by the line itself, a total order so that the same set
-/// of bundles always gives the same digest.
-fn segment_text(previous: Option<&Digest>, mut lines: Vec<(String, String)>) -> String {
-    lines.sort();
+/// The segment's bytes from the claims of its bundles: the header, then
+/// the lines in the order of [`sort_as_sealed`]. The lines are those the
+/// bundles hold, not as this build would write them: a claim's id is the
+/// digest of its line.
+fn segment_text(previous: Option<&Digest>, mut claims: Vec<Claim>) -> String {
+    sort_as_sealed(&mut claims);
     let mut text = header_line(previous);
-    for (_, line) in lines {
-        text.push_str(&line);
+    for claim in &claims {
+        text.push_str(&claim.line());
         text.push('\n');
     }
     text
@@ -1686,14 +1683,12 @@ pub(crate) enum StoppedAfter {
 #[cfg(test)]
 pub(crate) fn stop_seal(log: &Log, after: StoppedAfter) -> Digest {
     let open = log.open().unwrap().unwrap();
-    let mut lines = Vec::new();
+    let mut claims = Vec::new();
     for bundle in open.bundles() {
-        for claim in log.bundle(&open, bundle).unwrap().unwrap() {
-            lines.push((claim.time().as_str().to_string(), claim.line().into_owned()));
-        }
+        claims.extend(log.bundle(&open, bundle).unwrap().unwrap());
     }
     let previous = open.previous().cloned();
-    let text = segment_text(previous.as_ref(), lines);
+    let text = segment_text(previous.as_ref(), claims);
     let digest = log.store.digest(text.as_bytes());
     let sealing = log.open_root().join(sealing_name(previous.as_ref()));
     fs::rename(&open.dir, &sealing).unwrap();
@@ -1765,13 +1760,6 @@ mod tests {
     /// `open/<name>`.
     fn under_open(dir: &TempDir, name: &str) -> PathBuf {
         dir.path().join("open").join(name)
-    }
-
-    fn lines_of(claims: &[Claim]) -> Vec<(String, String)> {
-        claims
-            .iter()
-            .map(|claim| (claim.time().as_str().to_string(), claim.to_line()))
-            .collect()
     }
 
     #[test]
@@ -2018,7 +2006,7 @@ mod tests {
         let listed = log
             .bundle_store(&sealing)
             .digest(format!("{}\n", first.to_line()).as_bytes());
-        let text = segment_text(None, lines_of(&[first]));
+        let text = segment_text(None, vec![first.clone()]);
         let digest = log.store.digest(text.as_bytes());
         write_segment_file(&sealing, &text).unwrap();
         let sealed = under_open(&dir, &format!("first.sealed-{digest}"));
@@ -2062,7 +2050,7 @@ mod tests {
         log.append(&claim("first", "2026-09-05T12:00:00Z")).unwrap();
         log.append(&claim("second", "2026-09-05T12:00:00Z"))
             .unwrap();
-        let text = segment_text(None, lines_of(&log.head().unwrap()));
+        let text = segment_text(None, log.head().unwrap());
         let digest = log.store.digest(text.as_bytes());
         fs::rename(under_open(&dir, "first"), under_open(&dir, "first.sealing")).unwrap();
         write_segment_file(&under_open(&dir, "first.sealing"), &text).unwrap();
@@ -2134,7 +2122,10 @@ mod tests {
         log.bundle_store(&under_open(&dir, "first"))
             .add(format!("{line}\n").as_bytes())
             .unwrap();
-        let text = segment_text(None, vec![("2026-09-05T12:00:00Z".to_string(), line)]);
+        let text = segment_text(
+            None,
+            vec![Claim::read_line(&line, log.store.algorithm()).unwrap()],
+        );
         let digest = log.store.digest(text.as_bytes());
         let sealing = under_open(&dir, "first.sealing");
         fs::rename(under_open(&dir, "first"), &sealing).unwrap();
