@@ -13,8 +13,15 @@ pub(super) const HEAD_SEQ: i64 = i64::MAX;
 
 /// The tables, indexes and views, created where missing.
 pub(super) fn ddl() -> String {
-    format!(
-        "CREATE TABLE IF NOT EXISTS subjects (
+    format!("{TABLES}{}", views())
+}
+
+/// The tables and their indexes.
+///
+/// `claims_value` has every column a `find` on attribute values
+/// compares, the two retraction flags included, so such a term reads
+/// the index and no table row.
+const TABLES: &str = "CREATE TABLE IF NOT EXISTS subjects (
          id     INTEGER PRIMARY KEY,
          digest TEXT NOT NULL UNIQUE
      );
@@ -66,23 +73,21 @@ pub(super) fn ddl() -> String {
          ON retractions (target);
      CREATE INDEX IF NOT EXISTS retractions_claim
          ON retractions (claim);
-     CREATE INDEX IF NOT EXISTS claims_attribute
-         ON claims (attribute, time);
+     CREATE INDEX IF NOT EXISTS claims_value
+         ON claims (attribute, value, subject, retract, retracted);
+     CREATE INDEX IF NOT EXISTS claims_time
+         ON claims (time);
+     CREATE INDEX IF NOT EXISTS claims_source
+         ON claims (source, attribute);
      CREATE INDEX IF NOT EXISTS claims_segment
          ON claims (segment, position);
      CREATE INDEX IF NOT EXISTS claims_run
-         ON claims (run);
-     CREATE TABLE IF NOT EXISTS standing (
-         subject   INTEGER NOT NULL,
-         attribute INTEGER NOT NULL,
-         value     TEXT NOT NULL,
-         time      TEXT NOT NULL,
-         claim     INTEGER NOT NULL,
-         PRIMARY KEY (subject, attribute, value)
-     ) WITHOUT ROWID;
-     CREATE INDEX IF NOT EXISTS standing_lookup
-         ON standing (attribute, value);
-     CREATE VIEW IF NOT EXISTS v_claims AS
+         ON claims (run, attribute);";
+
+/// The views, for a look at the file with `sqlite3`.
+fn views() -> String {
+    format!(
+        "CREATE VIEW IF NOT EXISTS v_claims AS
          SELECT c.id, c.cid, su.digest AS subject, a.name AS attribute, c.value, c.time,
                 so.name AS source, r.name AS run, c.retract, c.retracted,
                 s.digest AS segment, s.seq, c.position
@@ -93,16 +98,18 @@ pub(super) fn ddl() -> String {
          LEFT JOIN runs r ON r.id = c.run
          JOIN segments s ON s.id = c.segment;
      CREATE VIEW IF NOT EXISTS v_standing AS
-         SELECT su.digest AS subject, a.name AS attribute, st.value, st.time, st.claim
-         FROM standing st
-         JOIN subjects su ON su.id = st.subject
-         JOIN attributes a ON a.id = st.attribute;
+         SELECT DISTINCT su.digest AS subject, a.name AS attribute, c.value
+         FROM claims c
+         JOIN subjects su ON su.id = c.subject
+         JOIN attributes a ON a.id = c.attribute
+         WHERE c.retract = 0 AND c.retracted = 0;
      CREATE VIEW IF NOT EXISTS v_places AS
-         SELECT su.digest AS subject, json_extract(st.value, '$') AS path, st.time
-         FROM standing st
-         JOIN subjects su ON su.id = st.subject
-         WHERE st.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
-           AND json_type(st.value) = 'text';
+         SELECT DISTINCT su.digest AS subject, json_extract(c.value, '$') AS path
+         FROM claims c
+         JOIN subjects su ON su.id = c.subject
+         WHERE c.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
+           AND c.retract = 0 AND c.retracted = 0
+           AND json_type(c.value) = 'text';
      CREATE VIEW IF NOT EXISTS v_runs AS
          SELECT r.name AS run, MIN(c.time) AS first, MAX(c.time) AS last,
                 COUNT(DISTINCT c.subject) AS files, COUNT(*) AS claims,

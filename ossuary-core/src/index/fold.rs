@@ -234,7 +234,7 @@ impl Index {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(
-            "DELETE FROM claims; DELETE FROM retractions; DELETE FROM standing;
+            "DELETE FROM claims; DELETE FROM retractions;
              DELETE FROM open_read; DELETE FROM bundles;",
         )?;
         transaction.execute("DELETE FROM segments WHERE id != ?1", params![HEAD])?;
@@ -244,8 +244,7 @@ impl Index {
 }
 
 /// Claims of one segment into the tables, in their order, the first of
-/// them at position `first`: every claim a history row, and each one
-/// folded into `standing` as [`replay`] describes.
+/// them at position `first`, each as [`replay`] describes.
 pub(super) fn insert(
     transaction: &rusqlite::Transaction<'_>,
     ids: &mut Ids,
@@ -340,15 +339,14 @@ pub(super) fn holds_claims(connection: &Connection) -> Result<bool> {
     Ok(held)
 }
 
-/// One claim into the tables: into the history as it is, onto the
-/// standing what it asserts or retracts.
+/// One claim into `claims`, with the claims it retracts marked.
 ///
-/// A claim is known by its id, so one that is already in the tables, read
+/// A claim is known by its id, so one that is already in the table, read
 /// from the open segment before it was sealed, only gets its segment and
-/// position; the history row and the standing stay. An assertion stands
-/// unless a retraction names it, whichever of the two the fold met first:
-/// a retraction marks the claims it names as retracted, and an assertion
-/// arriving after its retraction is marked on arrival.
+/// position. An assertion is retracted when a retraction names it,
+/// whichever of the two the fold met first: a retraction marks the
+/// claims it names, and an assertion arriving after its retraction is
+/// marked on arrival.
 pub(super) fn replay(
     transaction: &rusqlite::Transaction<'_>,
     ids: &mut Ids,
@@ -405,91 +403,19 @@ pub(super) fn replay(
         segment,
         position,
     ])?;
-    if known.is_some() {
+    if known.is_some() || !claim.is_retraction() {
         return Ok(());
     }
     let id = transaction.last_insert_rowid();
-    if let Some(value) = value {
-        if !retracted {
-            // Asserted again, the value stands as before, and the newest
-            // assertion answers for it: the later time, and in the same
-            // second the larger id. The row id says when this index read
-            // a claim, which differs between an index folded on and one
-            // built anew, so it does not decide.
-            let mut put = transaction.prepare_cached(
-                "INSERT INTO standing (subject, attribute, value, time, claim)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (subject, attribute, value)
-                 DO UPDATE SET time = excluded.time, claim = excluded.claim
-                 WHERE excluded.time > standing.time
-                    OR (excluded.time = standing.time
-                        AND ?6 > (SELECT cid FROM claims WHERE id = standing.claim))",
-            )?;
-            put.execute(params![
-                subject,
-                attribute,
-                value,
-                claim.time().as_str(),
-                id,
-                cid
-            ])?;
-        }
-        return Ok(());
-    }
     let mut name =
         transaction.prepare_cached("INSERT INTO retractions (target, claim) VALUES (?1, ?2)")?;
     let mut mark = transaction.prepare_cached(
         "UPDATE claims SET retracted = 1
-         WHERE cid = ?1 AND subject = ?2 AND attribute = ?3 AND retract = 0 AND retracted = 0
-         RETURNING subject, attribute, value",
+         WHERE cid = ?1 AND subject = ?2 AND attribute = ?3 AND retract = 0",
     )?;
     for target in claim.retracts() {
         name.execute(params![target.as_str(), id])?;
-        let taken: Option<(i64, i64, Option<String>)> = mark
-            .query_row(params![target.as_str(), subject, attribute], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .optional()?;
-        if let Some((subject, attribute, Some(value))) = taken {
-            restand(transaction, subject, attribute, &value)?;
-        }
-    }
-    Ok(())
-}
-
-/// The standing row of one value after an assertion of it was retracted:
-/// the newest assertion of it that still stands answers for it, or the row
-/// goes.
-pub(super) fn restand(
-    transaction: &rusqlite::Transaction<'_>,
-    subject: i64,
-    attribute: i64,
-    value: &str,
-) -> Result<()> {
-    let newest: Option<(i64, String)> = transaction
-        .query_row(
-            "SELECT id, time FROM claims
-             WHERE subject = ?1 AND attribute = ?2 AND value = ?3
-               AND retract = 0 AND retracted = 0
-             ORDER BY time DESC, cid DESC LIMIT 1",
-            params![subject, attribute, value],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    match newest {
-        Some((claim, time)) => {
-            transaction.execute(
-                "INSERT OR REPLACE INTO standing (subject, attribute, value, time, claim)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![subject, attribute, value, time, claim],
-            )?;
-        }
-        None => {
-            transaction.execute(
-                "DELETE FROM standing WHERE subject = ?1 AND attribute = ?2 AND value = ?3",
-                params![subject, attribute, value],
-            )?;
-        }
+        mark.execute(params![target.as_str(), subject, attribute])?;
     }
     Ok(())
 }

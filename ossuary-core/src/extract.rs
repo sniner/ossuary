@@ -84,11 +84,9 @@ pub(crate) struct Examined {
 /// `run` is the invocation's own — one [`Run`] per `ossuary extract`
 /// call — and every claim written here carries it, findings, receipt
 /// and derived files' sightings alike. The receipt's
-/// value is the source itself, said again: the standing set keeps one
-/// element per subject, attribute and value and knows nothing of who
-/// said it, so the value is what tells one extractor's receipt from
-/// another's there — and what lets a retraction take back exactly one
-/// extractor's receipt.
+/// value is the source itself, said again: the worklist finds one
+/// extractor's receipts by attribute and value, which is one range of
+/// the index.
 ///
 /// # Errors
 ///

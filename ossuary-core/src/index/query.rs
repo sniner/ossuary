@@ -51,9 +51,30 @@ pub(super) fn claim_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClaimRow> {
     ))
 }
 
+/// The condition that the claim `alias` is standing: an assertion that
+/// no retraction names. The standing claims are a set; a value recorded
+/// twice is two claims in it.
+///
+/// A query about one subject names its index, `INDEXED BY
+/// claims_subject`. Where it also names an attribute, SQLite otherwise
+/// reads `claims_value`, which needs no table row, and compares the
+/// subject on every claim of that attribute.
+pub(super) fn standing(alias: &str) -> String {
+    format!("{alias}.retract = 0 AND {alias}.retracted = 0")
+}
+
+/// The condition that the claim `alias` is one `scope` reads: a
+/// [`standing`] claim, or under the record any claim.
+pub(super) fn read_by(scope: Scope, alias: &str) -> String {
+    match scope {
+        Scope::Present | Scope::Held => standing(alias),
+        Scope::Record => "1".to_string(),
+    }
+}
+
 /// The recursive table of placed subjects, for a query to open with:
-/// every subject a place stands on, and every subject derived from one
-/// of those.
+/// every subject with a standing place, and every subject derived from
+/// one of those.
 ///
 /// A `file:path` led by `@` is a place inside another content — an
 /// entry's path in its archive — and places nothing by itself: the
@@ -63,23 +84,27 @@ pub(super) fn claim_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClaimRow> {
 /// opens the recursion.
 ///
 /// The step walks from a placed subject to what was derived from it:
-/// its digest, spelled as the JSON string a standing value is, looked
-/// up under `prov:origin` through `standing_lookup`. Joining the
-/// other way round, on the value unquoted, has no index to use and reads
-/// every derivation once per placed subject.
+/// its digest, spelled as the JSON string a value is, looked up under
+/// `prov:origin` through `claims_value`. Joining the other way round,
+/// on the value unquoted, has no index to use and reads every
+/// derivation once per placed subject.
 pub(super) fn placed() -> String {
     format!(
         "WITH RECURSIVE placed(subject) AS (
-        SELECT subject FROM standing
-         WHERE (attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
-                AND value NOT LIKE '\"@%')
-            OR attribute = (SELECT id FROM attributes WHERE name = '{MAILBOX_PLACE}')
+        SELECT c.subject FROM claims c
+         WHERE {}
+           AND ((c.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
+                 AND c.value NOT LIKE '\"@%')
+                OR c.attribute = (SELECT id FROM attributes WHERE name = '{MAILBOX_PLACE}'))
         UNION
-        SELECT st.subject FROM placed
+        SELECT c.subject FROM placed
           JOIN subjects su ON su.id = placed.subject
-          JOIN standing st ON st.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
-                          AND st.value = json_quote(su.digest)
-    ) "
+          JOIN claims c ON c.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
+                       AND c.value = json_quote(su.digest)
+                       AND {}
+    ) ",
+        standing("c"),
+        standing("c"),
     )
 }
 
@@ -89,41 +114,45 @@ pub(super) fn placed() -> String {
 /// placed when it or one of its origins has a place of its own: the
 /// same subjects that [`placed`] would keep of the hits.
 ///
-/// [`placed`] builds the set for the whole archive, at two index
-/// lookups per subject, before a single hit is compared with it. This
-/// walk goes from each hit up `prov:origin`, at two lookups per hit and
-/// level, and does not go above an origin that has a place. On the
-/// share, with 178 000 subjects and 55 hits, that is 73 s against 1 s.
+/// [`placed`] builds the set for the whole archive before a single hit
+/// is compared with it. This walk goes from each hit up `prov:origin`
+/// and does not go above an origin that has a place, so it costs a few
+/// lookups per hit and level.
 pub(super) fn placed_hits() -> String {
     format!(
         "climb(start, subject) AS (
         SELECT subject, subject FROM hits
         UNION
         SELECT climb.start, o.id FROM climb
-          CROSS JOIN standing st
-                  ON st.subject = climb.subject
-                 AND st.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
-          CROSS JOIN subjects o ON o.digest = json_extract(st.value, '$')
+          CROSS JOIN claims c INDEXED BY claims_subject
+                  ON c.subject = climb.subject
+                 AND c.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
+                 AND {}
+          CROSS JOIN subjects o ON o.digest = json_extract(c.value, '$')
          WHERE NOT {}
     ),
     placed_hits(subject) AS (
         SELECT start FROM climb WHERE {}
     ) ",
+        standing("c"),
         has_place("climb.subject"),
         has_place("climb.subject"),
     )
 }
 
 /// The condition that `subject`, an id column, has a place of its own:
-/// a `file:path` not led by `@`, or a `mailbox:place`. Why an `@` path
-/// does not count is at [`placed`].
+/// a standing `file:path` not led by `@`, or a standing `mailbox:place`.
+/// Why an `@` path does not count is at [`placed`].
 fn has_place(subject: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM standing p
+        "EXISTS (SELECT 1 FROM claims p INDEXED BY claims_subject
           WHERE p.subject = {subject}
-            AND ((p.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
-                  AND p.value NOT LIKE '\"@%')
-                 OR p.attribute = (SELECT id FROM attributes WHERE name = '{MAILBOX_PLACE}')))"
+            AND p.attribute IN ((SELECT id FROM attributes WHERE name = '{FILE_PATH}'),
+                                (SELECT id FROM attributes WHERE name = '{MAILBOX_PLACE}'))
+            AND {}
+            AND NOT (p.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
+                     AND p.value LIKE '\"@%'))",
+        standing("p"),
     )
 }
 
@@ -170,7 +199,7 @@ impl Index {
         value: Option<&Value>,
     ) -> Result<Vec<ClaimId>> {
         let mut statement = self.connection.prepare(
-            "SELECT c.cid FROM claims c
+            "SELECT c.cid FROM claims c INDEXED BY claims_subject
              WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
                AND c.attribute = (SELECT id FROM attributes WHERE name = ?2)
                AND c.retract = 0 AND c.retracted = 0
@@ -196,13 +225,11 @@ impl Index {
     /// spelling — as of the last [`fold`](Index::fold), the open head
     /// included.
     ///
-    /// Under [`Scope::Present`] and [`Scope::Held`] the standing values:
-    /// where [`about`](Index::about) answers with the history, this
-    /// answers with the outcome, retractions already applied, repeats
-    /// already collapsed. Which of several standing values a reader
-    /// prefers stays query-time policy, so they all come back. Under
-    /// [`Scope::Record`] every value ever said, asserted or taken back,
-    /// each once.
+    /// Under [`Scope::Present`] and [`Scope::Held`] the values of the
+    /// standing claims, each once. Which of several standing values a
+    /// reader prefers stays query-time policy, so they all come back.
+    /// Under [`Scope::Record`] every value ever said, asserted or taken
+    /// back, each once.
     ///
     /// # Errors
     ///
@@ -216,12 +243,13 @@ impl Index {
         scope: Scope,
     ) -> Result<Vec<Value>> {
         let mut statement = self.connection.prepare(&format!(
-            "SELECT DISTINCT value FROM {}
-             WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
-               AND attribute = (SELECT id FROM attributes WHERE name = ?2)
-               AND value IS NOT NULL
-             ORDER BY value",
-            rows_of(scope)
+            "SELECT DISTINCT c.value FROM claims c INDEXED BY claims_subject
+             WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
+               AND c.attribute = (SELECT id FROM attributes WHERE name = ?2)
+               AND c.value IS NOT NULL
+               AND {}
+             ORDER BY c.value",
+            read_by(scope, "c")
         ))?;
         let rows = statement.query_map(params![subject.as_str(), attribute.as_str()], |row| {
             row.get::<_, String>(0)
@@ -254,13 +282,15 @@ impl Index {
         let mut statement = self.connection.prepare(&format!(
             // ';' is the character after ':', and no attribute contains
             // one: the half-open range is the namespace.
-            "SELECT DISTINCT a.name, st.value
-             FROM {} st JOIN attributes a ON a.id = st.attribute
-             WHERE st.subject = (SELECT id FROM subjects WHERE digest = ?1)
+            "SELECT DISTINCT a.name, c.value
+             FROM claims c INDEXED BY claims_subject
+             JOIN attributes a ON a.id = c.attribute
+             WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
                AND a.name >= ?2 AND a.name < ?3
-               AND st.value IS NOT NULL
-             ORDER BY a.name, st.value",
-            rows_of(scope)
+               AND c.value IS NOT NULL
+               AND {}
+             ORDER BY a.name, c.value",
+            read_by(scope, "c")
         ))?;
         let rows = statement.query_map(
             params![
@@ -295,11 +325,12 @@ impl Index {
             // finds its derivations through the lookup index; the walk
             // to grandchildren is the caller's, one step at a time.
             "SELECT DISTINCT su.digest
-             FROM {} st JOIN subjects su ON su.id = st.subject
-             WHERE st.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
-               AND st.value = json_quote(?1)
+             FROM claims c JOIN subjects su ON su.id = c.subject
+             WHERE c.attribute = (SELECT id FROM attributes WHERE name = '{PROV_ORIGIN}')
+               AND c.value = json_quote(?1)
+               AND {}
              ORDER BY su.digest",
-            rows_of(scope)
+            read_by(scope, "c")
         ))?;
         let rows = statement.query_map(params![subject.as_str()], |row| row.get::<_, String>(0))?;
         let mut subjects = Vec::new();
@@ -343,12 +374,15 @@ impl Index {
     /// cannot happen for rows a fold wrote, but is propagated rather than
     /// sworn away.
     pub fn standing(&self, subject: &Subject) -> Result<Vec<(Attribute, Value)>> {
-        let mut statement = self.connection.prepare(
-            "SELECT a.name, st.value
-             FROM standing st JOIN attributes a ON a.id = st.attribute
-             WHERE st.subject = (SELECT id FROM subjects WHERE digest = ?1)
-             ORDER BY a.name, st.value",
-        )?;
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT DISTINCT a.name, c.value
+             FROM claims c INDEXED BY claims_subject
+             JOIN attributes a ON a.id = c.attribute
+             WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
+               AND {}
+             ORDER BY a.name, c.value",
+            standing("c")
+        ))?;
         let rows = statement.query_map(params![subject.as_str()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -378,8 +412,9 @@ impl Index {
         let _ = write!(
             sql,
             "SELECT digest FROM subjects su
-             WHERE EXISTS (SELECT 1 FROM {} st WHERE st.subject = su.id)",
-            rows_of(scope)
+             WHERE EXISTS (SELECT 1 FROM claims c INDEXED BY claims_subject
+                           WHERE c.subject = su.id AND {})",
+            read_by(scope, "c")
         );
         if scope == Scope::Present {
             sql.push_str(" AND su.id IN (SELECT subject FROM placed)");
@@ -424,11 +459,12 @@ impl Index {
     /// [`Error::Index`] from `SQLite`; the row-to-attribute errors cannot
     /// happen for rows a fold wrote, but are propagated.
     pub fn attribute_counts(&self) -> Result<Vec<(Attribute, u64)>> {
-        let mut statement = self.connection.prepare(
-            "SELECT a.name, COUNT(DISTINCT st.subject)
-             FROM attributes a LEFT JOIN standing st ON st.attribute = a.id
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT a.name, COUNT(DISTINCT c.subject)
+             FROM attributes a LEFT JOIN claims c ON c.attribute = a.id AND {}
              GROUP BY a.id ORDER BY a.name",
-        )?;
+            standing("c")
+        ))?;
         let rows = statement.query_map([], |row| {
             // A COUNT is never negative; the conversion is the type's
             // formality, and its failure would be SQLite's own error.
@@ -462,9 +498,11 @@ impl Index {
     /// sworn away.
     pub fn under(&self, place: &str) -> Result<Vec<(String, Subject)>> {
         let mut statement = self.connection.prepare(&format!(
-            "SELECT st.value, su.digest
-             FROM standing st JOIN subjects su ON su.id = st.subject
-             WHERE st.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')"
+            "SELECT DISTINCT c.value, su.digest
+             FROM claims c JOIN subjects su ON su.id = c.subject
+             WHERE c.attribute = (SELECT id FROM attributes WHERE name = '{FILE_PATH}')
+               AND {}",
+            standing("c")
         ))?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -492,22 +530,18 @@ impl Index {
         Ok(pairs)
     }
 
-    /// One attribute's standing values across the whole record as it
-    /// stood at `cutoff` — each with the moment of its newest surviving
-    /// assertion.
+    /// The standing claims of one attribute across the whole record as
+    /// it was at `cutoff`: every assertion that no retraction names, a
+    /// value recorded twice as two claims, ordered by subject, value,
+    /// time and claim id.
     ///
-    /// With a cutoff this is the fold run once more with a closing time:
-    /// every claim of `attribute` up to and including `cutoff` —
-    /// assertions and retractions alike, in log order — and what stands
-    /// when the replay ends is the answer. `None` closes nowhere and
-    /// answers for today, straight from the standing set, which carries
-    /// each row's newest moment already. The cutoff compares in claim
-    /// time's own spelling, RFC 3339 UTC whole seconds.
+    /// With a cutoff, the claims of `attribute` up to and including
+    /// `cutoff` are applied in log order, assertions and retractions
+    /// alike. `None` reads the index as it is. The cutoff compares in
+    /// claim time's own spelling, RFC 3339 UTC whole seconds.
     ///
-    /// The answer carries every standing value, times attached; a
-    /// reader narrowing them to one — a mounted view's newest-wins —
-    /// decides by those times, and the narrowing stays the reader's
-    /// policy, as everywhere.
+    /// Which of several claims a reader prefers, for example the newest
+    /// in a mounted view, is the reader's policy.
     ///
     /// # Errors
     ///
@@ -521,17 +555,17 @@ impl Index {
         }
     }
 
-    /// [`standing_as_of`](Index::standing_as_of) without a cutoff: the
-    /// standing set as it is.
+    /// [`standing_as_of`](Index::standing_as_of) without a cutoff.
     fn standing_now(&self, attribute: &str) -> Result<Vec<Standing>> {
-        let mut statement = self.connection.prepare(
-            "SELECT su.digest, st.value, st.time, c.cid
-             FROM standing st
-             JOIN subjects su ON su.id = st.subject
-             JOIN claims c ON c.id = st.claim
-             WHERE st.attribute = (SELECT id FROM attributes WHERE name = ?1)
-             ORDER BY su.digest, st.value",
-        )?;
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT su.digest, c.value, c.time, c.cid
+             FROM claims c
+             JOIN subjects su ON su.id = c.subject
+             WHERE c.attribute = (SELECT id FROM attributes WHERE name = ?1)
+               AND {}
+             ORDER BY su.digest, c.value, c.time, c.cid",
+            standing("c")
+        ))?;
         let rows = statement.query_map(params![attribute], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -622,37 +656,21 @@ impl Index {
                 }
             }
         }
-        // The newest assertion of each value, by time and then by id.
-        let folded: BTreeMap<String, BTreeMap<String, (String, String)>> = held
-            .into_iter()
-            .map(|(subject, values)| {
-                let values = values
-                    .into_iter()
-                    .filter_map(|(value, claims)| {
-                        claims
-                            .into_iter()
-                            .map(|(cid, time)| (time, cid))
-                            .max()
-                            .map(|newest| (value, newest))
-                    })
-                    .collect();
-                (subject, values)
-            })
-            .collect();
-
         let mut standing = Vec::new();
-        for (subject, values) in folded {
-            if values.is_empty() {
-                continue;
-            }
+        for (subject, values) in held {
             let subject = Subject::parse(&subject)?;
-            for (value, (asserted, claim)) in values {
-                standing.push(Standing {
-                    subject: subject.clone(),
-                    value: serde_json::from_str(&value)?,
-                    asserted,
-                    claim: ClaimId::parse(&claim)?,
-                });
+            for (value, claims) in values {
+                let mut claims: Vec<(String, String)> =
+                    claims.into_iter().map(|(cid, time)| (time, cid)).collect();
+                claims.sort();
+                for (asserted, claim) in claims {
+                    standing.push(Standing {
+                        subject: subject.clone(),
+                        value: serde_json::from_str(&value)?,
+                        asserted,
+                        claim: ClaimId::parse(&claim)?,
+                    });
+                }
             }
         }
         Ok(standing)
@@ -758,14 +776,17 @@ impl Index {
         let holes = vec!["?"; mimes.len()].join(", ");
         let mut statement = self.connection.prepare(&format!(
             "SELECT digest FROM subjects WHERE id IN (
-                 SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{FILE_MIME}')
-                    AND value IN ({holes})
+                 SELECT c.subject FROM claims c
+                  WHERE c.attribute = (SELECT id FROM attributes WHERE name = '{FILE_MIME}')
+                    AND c.value IN ({holes})
+                    AND {standing}
                  EXCEPT
-                 SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{PROV_EXAMINED}')
-                    AND value = ?)
-             ORDER BY digest"
+                 SELECT c.subject FROM claims c
+                  WHERE c.attribute = (SELECT id FROM attributes WHERE name = '{PROV_EXAMINED}')
+                    AND c.value = ?
+                    AND {standing})
+             ORDER BY digest",
+            standing = standing("c")
         ))?;
         // The value column holds values as JSON, so a MIME type and the
         // receipt's source are compared in their stored spelling: quoted.
@@ -804,10 +825,12 @@ impl Index {
         let holes = vec!["?"; mimes.len()].join(", ");
         let mut statement = self.connection.prepare(&format!(
             "SELECT digest FROM subjects WHERE id IN (
-                 SELECT subject FROM standing
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = '{FILE_MIME}')
-                    AND value IN ({holes}))
-             ORDER BY digest"
+                 SELECT c.subject FROM claims c
+                  WHERE c.attribute = (SELECT id FROM attributes WHERE name = '{FILE_MIME}')
+                    AND c.value IN ({holes})
+                    AND {})
+             ORDER BY digest",
+            standing("c")
         ))?;
         // The value column holds values as JSON, so a MIME type is
         // compared in its stored spelling: quoted.
@@ -835,11 +858,13 @@ impl Index {
     /// [`Error::Index`] from `SQLite`.
     pub fn examined(&self, subject: &Subject, source: &Source) -> Result<bool> {
         let mut statement = self.connection.prepare_cached(&format!(
-            "SELECT 1 FROM standing
-              WHERE subject = (SELECT id FROM subjects WHERE digest = ?1)
-                AND attribute = (SELECT id FROM attributes WHERE name = '{PROV_EXAMINED}')
-                AND value = ?2
-              LIMIT 1"
+            "SELECT 1 FROM claims c INDEXED BY claims_subject
+              WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
+                AND c.attribute = (SELECT id FROM attributes WHERE name = '{PROV_EXAMINED}')
+                AND c.value = ?2
+                AND {}
+              LIMIT 1",
+            standing("c")
         ))?;
         let receipt = Value::String(source.as_str().to_string()).to_string();
         let found = statement.exists(rusqlite::params![subject.as_str(), receipt])?;
@@ -1036,14 +1061,6 @@ pub(super) fn claim(
         .collect::<Result<Vec<_>>>()?;
     let id = ClaimId::parse(&cid)?;
     Ok(Claim::recorded(subject, attribute, value, time, source, run, retracts)?.with_id(id))
-}
-
-/// The rows a [`Scope`] reads: the standing set, or the claims.
-pub(super) fn rows_of(scope: Scope) -> &'static str {
-    match scope {
-        Scope::Present | Scope::Held => "standing",
-        Scope::Record => "claims",
-    }
 }
 
 /// A count out of `SQLite` as the unsigned number it is.

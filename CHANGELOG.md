@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The query index has a new layout: delete `cache/index.sqlite`** before the first command, in
+  the archive or in the directory given with `--cache`. The next command builds it anew. The file
+  is about a tenth smaller than before
+- **`ossuary find`: a field term matches every claim that recorded a value.**
+  `find run=RUN file:name=a.txt` finds the file when RUN recorded that name and the claim is not
+  retracted. Before, it found the file only while no later run had recorded the same name again.
+  The same holds for `source=` and `time=`, and a bare field name such as `run` shows the field of
+  every such claim
+
+### Fixed
+
+- **`ossuary find` with a term on a claim field (`run=`, `source=`, `time=`, `subject=`,
+  `attribute=`, `value=`) took minutes on a large archive with its cache on a network share,** even
+  when only a few files matched. It read every recorded value of the archive and the claim behind
+  each one. On an archive of 287 000 files, `find run=ID` with 94 matches took 214 s. A term on
+  `run`, `source`, `time`, `subject` or `attribute` now reads only what it matches, alone or
+  together with other terms, also with `--all`. A `value=` term without an attribute still reads
+  every recorded value once
+- **`ossuary find` that shows a claim field,** as in `find file:name=a.txt run`, read every
+  recorded value of the archive once for each matching file. It now reads the claims of that file
+
 ## [0.27.2] - 2026-11-18
 
 ### Fixed

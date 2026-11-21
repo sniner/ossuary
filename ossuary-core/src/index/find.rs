@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use rusqlite::params;
 
-use super::query::{placed_hits, rows_of};
+use super::query::{placed_hits, read_by};
 use super::{Field, Index, Scope, Term};
 use crate::claim::{Attribute, Subject, Timestamp, Value};
 use crate::error::{Error, Result};
@@ -53,13 +53,15 @@ impl Index {
     /// that none of the attribute's values has. With no terms at all,
     /// `missing` is asked of every subject the log speaks about.
     ///
-    /// Under [`Scope::Present`] and [`Scope::Held`] only *standing*
-    /// values answer, and a field term speaks about the claim that
-    /// stands for the value — the newest one to say it: a retracted
-    /// value finds nothing, however long its claim stays in the log,
-    /// and a value said again answers for its latest run only. Under
-    /// [`Scope::Record`] every claim ever written answers, retractions
-    /// included, which is the one way to `retract=true`.
+    /// Under [`Scope::Present`] and [`Scope::Held`] only standing claims
+    /// are read: assertions that no retraction names. A retracted claim
+    /// finds nothing, however long it stays in the log. A value recorded
+    /// by several claims matches a field term through any of them:
+    /// `run=X file:name=abc` finds the file when run X recorded the name
+    /// and that claim is not retracted, whether or not another run
+    /// recorded the name as well. Under [`Scope::Record`] every claim
+    /// ever written is read, retractions included, which is the one way
+    /// to `retract=true`.
     ///
     /// # Errors
     ///
@@ -68,90 +70,10 @@ impl Index {
     /// grammar's own error; [`Error::Retract`] for a `retract` pattern
     /// that is neither true nor false.
     pub fn find(&self, terms: &[Term], missing: &[String], scope: Scope) -> Result<Vec<Subject>> {
-        use rusqlite::types::Value as Sql;
         if terms.is_empty() && missing.is_empty() {
             return Ok(Vec::new());
         }
-        let attributes: Vec<(&Attribute, &str)> = terms
-            .iter()
-            .filter_map(|term| match term {
-                Term::Attribute(attribute, pattern) => Some((attribute, pattern.as_str())),
-                Term::Part(..) | Term::Field(..) => None,
-            })
-            .collect();
-        let parts = parts_by_attribute(terms);
-        let fields: Vec<(Field, &str)> = terms
-            .iter()
-            .filter_map(|term| match term {
-                Term::Field(field, pattern) => Some((*field, pattern.as_str())),
-                Term::Attribute(..) | Term::Part(..) => None,
-            })
-            .collect();
-        // Under the standing scopes a row is a standing value, with the
-        // claim that stands for it alongside when a field term asks about
-        // that claim; under the record it is the claim itself. `c` is the
-        // claim a field term asks about and `st` the row an attribute
-        // term asks about. Without a field term the claim is not joined:
-        // `standing` has the subject itself, and the join costs one
-        // random read in `claims` per candidate value.
-        let rows = match (scope, fields.is_empty()) {
-            (Scope::Record, _) => "claims c",
-            (Scope::Present | Scope::Held, true) => "standing st",
-            (Scope::Present | Scope::Held, false) => "standing st JOIN claims c ON c.id = st.claim",
-        };
-        let row = match scope {
-            Scope::Record => "c",
-            Scope::Present | Scope::Held => "st",
-        };
-        // The terms meet as sets of subject ids in `hits`; the names come
-        // last.
-        let mut sql = String::from("WITH RECURSIVE hits(subject) AS (");
-        let mut params: Vec<Sql> = Vec::new();
-        if attributes.is_empty() && parts.is_empty() {
-            let _ = write!(sql, "SELECT {row}.subject FROM {rows} WHERE 1");
-            for (field, pattern) in &fields {
-                field_clause(&mut sql, &mut params, *field, pattern)?;
-            }
-        }
-        let mut arms = 0;
-        for (attribute, pattern) in &attributes {
-            if arms > 0 {
-                sql.push_str(" INTERSECT ");
-            }
-            arms += 1;
-            let _ = write!(
-                sql,
-                "SELECT {row}.subject FROM {rows}
-                 WHERE {row}.attribute = (SELECT id FROM attributes WHERE name = ?)"
-            );
-            params.push(Sql::Text(attribute.as_str().to_string()));
-            value_clause(&mut sql, &mut params, &format!("{row}.value"), pattern);
-            for (field, pattern) in &fields {
-                field_clause(&mut sql, &mut params, *field, pattern)?;
-            }
-        }
-        for (attribute, asked) in &parts {
-            if arms > 0 {
-                sql.push_str(" INTERSECT ");
-            }
-            arms += 1;
-            part_arm(&mut sql, &mut params, (rows, row), attribute, asked);
-            for (field, pattern) in &fields {
-                field_clause(&mut sql, &mut params, *field, pattern)?;
-            }
-        }
-        lacking(&mut sql, &mut params, missing, rows_of(scope))?;
-        sql.push(')');
-        if scope == Scope::Present {
-            sql.push_str(", ");
-            sql.push_str(&placed_hits());
-            sql.push_str(
-                "SELECT digest FROM subjects WHERE id IN (SELECT subject FROM placed_hits)",
-            );
-        } else {
-            sql.push_str(" SELECT digest FROM subjects WHERE id IN (SELECT subject FROM hits)");
-        }
-        sql.push_str(" ORDER BY digest");
+        let (sql, params) = find_statement(terms, missing, scope)?;
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             row.get::<_, String>(0)
@@ -165,9 +87,8 @@ impl Index {
 
     /// The distinct values one field takes over one subject's claims,
     /// sorted — as of the last [`fold`](Index::fold), the open head
-    /// included. Under the standing scopes the claims that stand for
-    /// the subject's standing values; under [`Scope::Record`] every
-    /// claim about it. A string field answers strings, `value` the
+    /// included. Under the standing scopes the subject's standing
+    /// claims; under [`Scope::Record`] every claim about it. A string field answers strings, `value` the
     /// values themselves, `retract` booleans; a claim from before runs
     /// contributes nothing to `run`.
     ///
@@ -182,25 +103,9 @@ impl Index {
         field: Field,
         scope: Scope,
     ) -> Result<Vec<Value>> {
-        let rows = match scope {
-            Scope::Record => "claims c",
-            Scope::Present | Scope::Held => "claims c JOIN standing st ON st.claim = c.id",
-        };
-        let (expression, join) = match field {
-            Field::Subject => ("su.digest", " JOIN subjects su ON su.id = c.subject"),
-            Field::Attribute => ("a.name", " JOIN attributes a ON a.id = c.attribute"),
-            Field::Value => ("c.value", ""),
-            Field::Time => ("c.time", ""),
-            Field::Source => ("so.name", " JOIN sources so ON so.id = c.source"),
-            Field::Run => ("r.name", " JOIN runs r ON r.id = c.run"),
-            Field::Retract => ("c.retract", ""),
-        };
-        let mut statement = self.connection.prepare(&format!(
-            "SELECT DISTINCT {expression} FROM {rows}{join}
-             WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
-               AND {expression} IS NOT NULL
-             ORDER BY 1"
-        ))?;
+        let mut statement = self
+            .connection
+            .prepare(&field_values_statement(field, scope))?;
         let rows = statement.query_map(params![subject.as_str()], |row| {
             row.get::<_, rusqlite::types::Value>(0)
         })?;
@@ -217,6 +122,105 @@ impl Index {
         }
         Ok(values)
     }
+}
+
+/// The statement of a [`field_values`](Index::field_values): one column,
+/// the distinct values of `field`, with the subject's digest as its one
+/// parameter.
+pub(super) fn field_values_statement(field: Field, scope: Scope) -> String {
+    let named = |name: &str, table: &str, alias: &str, column: &str| {
+        (
+            format!("{alias}.{name}"),
+            format!(" JOIN {table} {alias} ON {alias}.id = c.{column}"),
+        )
+    };
+    let (expression, join) = match field {
+        Field::Subject => named("digest", "subjects", "su", "subject"),
+        Field::Attribute => named("name", "attributes", "a", "attribute"),
+        Field::Source => named("name", "sources", "so", "source"),
+        Field::Run => named("name", "runs", "r", "run"),
+        Field::Value => ("c.value".to_string(), String::new()),
+        Field::Time => ("c.time".to_string(), String::new()),
+        Field::Retract => ("c.retract".to_string(), String::new()),
+    };
+    format!(
+        "SELECT DISTINCT {expression} FROM claims c INDEXED BY claims_subject{join}
+         WHERE c.subject = (SELECT id FROM subjects WHERE digest = ?1)
+           AND {expression} IS NOT NULL
+           AND {}
+         ORDER BY 1",
+        read_by(scope, "c")
+    )
+}
+
+/// The statement of a [`find`](Index::find) with its parameters: one
+/// column, the digests of the matching subjects in order.
+pub(super) fn find_statement(
+    terms: &[Term],
+    missing: &[String],
+    scope: Scope,
+) -> Result<(String, Vec<rusqlite::types::Value>)> {
+    use rusqlite::types::Value as Sql;
+    let attributes: Vec<(&Attribute, &str)> = terms
+        .iter()
+        .filter_map(|term| match term {
+            Term::Attribute(attribute, pattern) => Some((attribute, pattern.as_str())),
+            Term::Part(..) | Term::Field(..) => None,
+        })
+        .collect();
+    let parts = parts_by_attribute(terms);
+    let fields: Vec<(Field, &str)> = terms
+        .iter()
+        .filter_map(|term| match term {
+            Term::Field(field, pattern) => Some((*field, pattern.as_str())),
+            Term::Attribute(..) | Term::Part(..) => None,
+        })
+        .collect();
+    // Every term is a condition on one claim `c`, among the claims the
+    // scope reads.
+    let read = read_by(scope, "c");
+    // The terms meet as sets of subject ids in `hits`; the names come
+    // last.
+    let mut sql = String::from("WITH RECURSIVE hits(subject) AS (");
+    let mut params: Vec<Sql> = Vec::new();
+    if attributes.is_empty() && parts.is_empty() {
+        let _ = write!(sql, "SELECT c.subject FROM claims c WHERE {read}");
+        field_clauses(&mut sql, &mut params, &fields, None)?;
+    }
+    let mut arms = 0;
+    for (attribute, pattern) in &attributes {
+        if arms > 0 {
+            sql.push_str(" INTERSECT ");
+        }
+        arms += 1;
+        let _ = write!(
+            sql,
+            "SELECT c.subject FROM claims c
+             WHERE {read} AND c.attribute = (SELECT id FROM attributes WHERE name = ?)"
+        );
+        params.push(Sql::Text(attribute.as_str().to_string()));
+        value_clause(&mut sql, &mut params, "c.value", pattern);
+        field_clauses(&mut sql, &mut params, &fields, Some(attribute))?;
+    }
+    for (attribute, asked) in &parts {
+        if arms > 0 {
+            sql.push_str(" INTERSECT ");
+        }
+        arms += 1;
+        part_arm(&mut sql, &mut params, &read, attribute, asked);
+        field_clauses(&mut sql, &mut params, &fields, Some(attribute))?;
+    }
+    lacking(&mut sql, &mut params, missing, &read)?;
+    sql.push(')');
+    if scope == Scope::Present {
+        sql.push_str(", ");
+        sql.push_str(&placed_hits());
+        sql.push_str("SELECT digest FROM subjects WHERE id IN (SELECT subject FROM placed_hits)");
+    } else {
+        sql.push_str(" SELECT digest FROM subjects WHERE id IN (SELECT subject FROM hits)");
+    }
+    sql.push_str(" ORDER BY digest");
+    Ok((sql, params))
 }
 
 /// The part terms among `terms`, gathered by attribute in the order
@@ -239,13 +243,13 @@ pub(super) fn parts_by_attribute(terms: &[Term]) -> Vec<(&Attribute, Vec<(&Part,
 }
 
 /// One arm of a `find`, appended to `sql`: the subjects with a value of
-/// `attribute` that matches every part term in `asked`. `rows` is the
-/// row source of [`Index::find`] and `row` the alias of the row in it;
-/// the caller appends the field conditions.
+/// `attribute` that matches every part term in `asked`, among the
+/// claims `c` for which `read` holds. The caller appends the field
+/// conditions.
 pub(super) fn part_arm(
     sql: &mut String,
     params: &mut Vec<rusqlite::types::Value>,
-    (rows, row): (&str, &str),
+    read: &str,
     attribute: &Attribute,
     asked: &[(&Part, &str)],
 ) {
@@ -256,8 +260,8 @@ pub(super) fn part_arm(
     let columns: Vec<String> = (0..asked.len()).map(|i| format!("? AS p{i}")).collect();
     let _ = write!(
         sql,
-        "SELECT {row}.subject FROM {rows} CROSS JOIN (SELECT {}) AS part
-         WHERE {row}.attribute = (SELECT id FROM attributes WHERE name = ?)",
+        "SELECT c.subject FROM claims c CROSS JOIN (SELECT {}) AS part
+         WHERE {read} AND c.attribute = (SELECT id FROM attributes WHERE name = ?)",
         columns.join(", ")
     );
     for (part, _) in asked {
@@ -265,7 +269,7 @@ pub(super) fn part_arm(
     }
     params.push(Sql::Text(attribute.as_str().to_string()));
     for (i, (_, pattern)) in asked.iter().enumerate() {
-        value_clause(sql, params, &format!("({row}.value -> part.p{i})"), pattern);
+        value_clause(sql, params, &format!("(c.value -> part.p{i})"), pattern);
     }
 }
 
@@ -392,69 +396,154 @@ pub(super) fn text_clause(
 }
 
 /// The pattern of a time term, appended to `sql` as a condition on
-/// `c.time`: in claim time's friendlier spellings, the ones `--as-of`
+/// `column`: in claim time's friendlier spellings, the ones `--as-of`
 /// takes. A date alone is the whole day, a range from a date opens with
 /// the day, one up to a date closes with it, and a moment without its
 /// `Z` is the moment. A quoted literal and a glob read as written.
 pub(super) fn time_clause(
     sql: &mut String,
     params: &mut Vec<rusqlite::types::Value>,
+    column: &str,
     pattern: &str,
 ) -> Result<()> {
     use rusqlite::types::Value as Sql;
     let quoted = pattern.starts_with('"') && pattern.ends_with('"') && pattern.len() >= 2;
     if quoted || pattern.contains('*') || pattern.contains('?') {
-        text_clause(sql, params, "c.time", pattern);
+        text_clause(sql, params, column, pattern);
     } else if let Some((low, high)) = pattern.split_once("..") {
         if !low.is_empty() {
-            sql.push_str(" AND c.time >= ?");
+            let _ = write!(sql, " AND {column} >= ?");
             params.push(Sql::Text(Timestamp::opening(low)?.as_str().to_string()));
         }
         if !high.is_empty() {
-            sql.push_str(" AND c.time <= ?");
+            let _ = write!(sql, " AND {column} <= ?");
             params.push(Sql::Text(Timestamp::closing(high)?.as_str().to_string()));
         }
     } else if Timestamp::is_date(pattern) {
-        sql.push_str(" AND c.time BETWEEN ? AND ?");
+        let _ = write!(sql, " AND {column} BETWEEN ? AND ?");
         params.push(Sql::Text(Timestamp::opening(pattern)?.as_str().to_string()));
         params.push(Sql::Text(Timestamp::closing(pattern)?.as_str().to_string()));
     } else {
-        sql.push_str(" AND c.time = ?");
+        let _ = write!(sql, " AND {column} = ?");
         params.push(Sql::Text(Timestamp::closing(pattern)?.as_str().to_string()));
     }
     Ok(())
 }
 
+/// How a term on `run`, `source` or `time` is written into one arm of a
+/// `find`. The three are in no index together with a value, so read
+/// carelessly they cost one table row per candidate claim: 64 s for a
+/// run of 15 000 claims beside a value that 280 000 claims have, with
+/// the cache on a network share.
+#[derive(Debug, Clone, Copy)]
+enum Check<'a> {
+    /// A plain condition. It may choose the index the arm is read by.
+    Leading,
+    /// A condition on a row that is read anyway. It chooses no index.
+    Row,
+    /// A set of claim ids read from the field's own index, here those of
+    /// one attribute. The arm compares the ids while it reads its own
+    /// index, before it reads a table row.
+    Ids(Option<&'a Attribute>),
+}
+
+/// The field terms of one arm, appended to `sql`. `attribute` is the
+/// attribute of the arm's attribute or part term.
+///
+/// An arm reads one index and checks the other terms against it. With a
+/// `subject` term that is the few claims of the subject, and every other
+/// term is checked on their rows. With an attribute it is `claims_value`,
+/// which has no run, source or time, so those are checked as sets of
+/// ids. Without either, the first term on run, time or source is the
+/// index, and the others are sets of ids.
+fn field_clauses(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    fields: &[(Field, &str)],
+    attribute: Option<&Attribute>,
+) -> Result<()> {
+    let has = |wanted: Field| fields.iter().any(|(field, _)| *field == wanted);
+    let mut leading = [Field::Run, Field::Time, Field::Source]
+        .into_iter()
+        .find(|field| has(*field));
+    for (field, pattern) in fields {
+        let check = if has(Field::Subject) {
+            Check::Row
+        } else if attribute.is_some() || has(Field::Attribute) {
+            Check::Ids(attribute)
+        } else if leading == Some(*field) {
+            leading = None;
+            Check::Leading
+        } else {
+            Check::Ids(None)
+        };
+        field_clause(sql, params, *field, pattern, check)?;
+    }
+    Ok(())
+}
+
 /// One field term as a condition on the claim `c`, appended to `sql`.
-pub(super) fn field_clause(
+/// `check` is how a term on `run`, `source` or `time` is written; the
+/// other fields are plain conditions.
+fn field_clause(
     sql: &mut String,
     params: &mut Vec<rusqlite::types::Value>,
     field: Field,
     pattern: &str,
+    check: Check<'_>,
 ) -> Result<()> {
     use rusqlite::types::Value as Sql;
+    let named = |sql: &mut String, params: &mut Vec<Sql>, column: &str, table: &str, name: &str| {
+        let _ = write!(sql, " AND {column} IN (SELECT id FROM {table} WHERE 1");
+        text_clause(sql, params, name, pattern);
+        sql.push(')');
+    };
+    // A set of ids is read from the index led by the field. The index
+    // is named, because with the attribute in the condition SQLite
+    // would read `claims_value` and a table row per claim.
+    let ids = |sql: &mut String, index: Option<&str>| {
+        sql.push_str(" AND +c.id IN (SELECT x.id FROM claims x");
+        if let Some(index) = index {
+            let _ = write!(sql, " INDEXED BY {index}");
+        }
+        sql.push_str(" WHERE 1");
+    };
+    let of_attribute = |sql: &mut String, params: &mut Vec<Sql>, attribute: Option<&Attribute>| {
+        if let Some(attribute) = attribute {
+            sql.push_str(" AND x.attribute = (SELECT id FROM attributes WHERE name = ?)");
+            params.push(Sql::Text(attribute.as_str().to_string()));
+        }
+        sql.push(')');
+    };
     match field {
-        Field::Subject => {
-            sql.push_str(" AND c.subject IN (SELECT id FROM subjects WHERE 1");
-            text_clause(sql, params, "digest", pattern);
-            sql.push(')');
+        Field::Subject => named(sql, params, "c.subject", "subjects", "digest"),
+        Field::Attribute => named(sql, params, "c.attribute", "attributes", "name"),
+        Field::Run | Field::Source => {
+            let (column, table, index) = match field {
+                Field::Run => ("run", "runs", "claims_run"),
+                _ => ("source", "sources", "claims_source"),
+            };
+            match check {
+                Check::Leading => named(sql, params, &format!("c.{column}"), table, "name"),
+                Check::Row => named(sql, params, &format!("+c.{column}"), table, "name"),
+                Check::Ids(attribute) => {
+                    ids(sql, Some(index));
+                    named(sql, params, &format!("x.{column}"), table, "name");
+                    of_attribute(sql, params, attribute);
+                }
+            }
         }
-        Field::Attribute => {
-            sql.push_str(" AND c.attribute IN (SELECT id FROM attributes WHERE 1");
-            text_clause(sql, params, "name", pattern);
-            sql.push(')');
-        }
-        Field::Source => {
-            sql.push_str(" AND c.source IN (SELECT id FROM sources WHERE 1");
-            text_clause(sql, params, "name", pattern);
-            sql.push(')');
-        }
-        Field::Run => {
-            sql.push_str(" AND c.run IN (SELECT id FROM runs WHERE 1");
-            text_clause(sql, params, "name", pattern);
-            sql.push(')');
-        }
-        Field::Time => time_clause(sql, params, pattern)?,
+        Field::Time => match check {
+            Check::Leading => time_clause(sql, params, "c.time", pattern)?,
+            Check::Row => time_clause(sql, params, "+c.time", pattern)?,
+            Check::Ids(_) => {
+                // `claims_time` has no attribute, and the time is the
+                // only condition, so the index needs no naming.
+                ids(sql, None);
+                time_clause(sql, params, "x.time", pattern)?;
+                sql.push(')');
+            }
+        },
         Field::Value => value_clause(sql, params, "c.value", pattern),
         Field::Retract => {
             let flag = match pattern.trim_matches('"') {
@@ -471,13 +560,13 @@ pub(super) fn field_clause(
 
 /// The clause that takes every subject lacking nothing of `missing` out
 /// of a `find`: one `EXCEPT` per entry, an attribute by name or, ending
-/// in `:`, a whole namespace — asked of `rows`, the standing set or the
-/// claims.
+/// in `:`, a whole namespace, among the claims `c` for which `read`
+/// holds.
 pub(super) fn lacking(
     sql: &mut String,
     params: &mut Vec<rusqlite::types::Value>,
     missing: &[String],
-    rows: &str,
+    read: &str,
 ) -> Result<()> {
     use rusqlite::types::Value as Sql;
     let text = |s: &str| Sql::Text(s.to_string());
@@ -487,9 +576,9 @@ pub(super) fn lacking(
             let part = Part::parse(absent)?;
             let _ = write!(
                 sql,
-                " EXCEPT SELECT subject FROM {rows} CROSS JOIN (SELECT ? AS path) AS part
-                  WHERE attribute = (SELECT id FROM attributes WHERE name = ?)
-                    AND (value -> part.path) IS NOT NULL"
+                " EXCEPT SELECT c.subject FROM claims c CROSS JOIN (SELECT ? AS path) AS part
+                  WHERE {read} AND c.attribute = (SELECT id FROM attributes WHERE name = ?)
+                    AND (c.value -> part.path) IS NOT NULL"
             );
             params.push(text(&part.json_path()));
             params.push(text(part.attribute().as_str()));
@@ -497,7 +586,8 @@ pub(super) fn lacking(
         }
         let _ = write!(
             sql,
-            " EXCEPT SELECT subject FROM {rows} WHERE attribute IN (SELECT id FROM attributes WHERE "
+            " EXCEPT SELECT c.subject FROM claims c
+              WHERE {read} AND c.attribute IN (SELECT id FROM attributes WHERE "
         );
         if let Some(namespace) = absent.strip_suffix(':') {
             // The grammar is defined only in Attribute::parse, so a

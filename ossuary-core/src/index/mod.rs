@@ -20,30 +20,37 @@
 //! read from the head before the seal, only gets its new segment and
 //! position. Then the bundles of the new head are read. The fold reads
 //! the log in its order, and what it arrives at does not depend on that
-//! order: a retraction names its claims by id, and of several assertions
-//! of one value the newest by claim time answers for it, the one with the
-//! larger id when they share a second. An index built anew therefore
-//! answers as one that was folded on.
+//! order: a retraction names its claims by id, and marks them whether it
+//! is read before or after them. An index built anew therefore answers
+//! as one that was folded on.
 //!
-//! The fold keeps two tables of substance and five of names. `claims` is
-//! the history, verbatim: every claim a row, retractions included, what
-//! [`about`](Index::about) reads. `standing` is the folded answer: one
-//! row per standing (subject, attribute, value), the set semantics as a
-//! primary key. An assertion that no retraction names puts its value
-//! there; a retraction marks the claims it names, and a value goes when
-//! its last assertion is marked. It is what
-//! [`find`](Index::find) reads. Subjects, attributes, sources, runs and
-//! segments stand in tables of their own and appear in the two big
-//! tables as integer ids: a digest is 64 bytes and a segment name the
-//! same, and either repeated a quarter of a million times is most of a
-//! file. Four views are for a look with `sqlite3`, and nothing here
-//! reads them: `v_claims` and `v_standing` show both tables with the
-//! names in place of the ids, `v_places` every standing `file:path`
-//! unquoted, `v_runs` what each run wrote. What stays deliberately
-//! un-baked is *narrowing*: which of several standing values a reader
-//! prefers is query-time policy, and the sets carry them all.
+//! The fold keeps one table of substance and five of names. `claims` has
+//! every claim as a row, retractions included, and a retraction marks
+//! the claims it names as `retracted`. The standing claims are the
+//! assertions without that mark, `retract = 0 AND retracted = 0`. They
+//! are a set: a value recorded twice is two claims in it, and none of
+//! them is preferred. [`about`](Index::about) reads every row,
+//! [`find`](Index::find) the standing ones unless it is asked for the
+//! record. There is no table of the standing values beside `claims`: it
+//! would repeat nearly every claim.
 //!
-//! Standing follows the log forward, the only direction a log moves. A
+//! With the cache on a network share every page read is a round trip,
+//! so the indexes are made for `find` to read few pages. `claims_value`
+//! has every column a term on an attribute compares. A term on run,
+//! source or time has an index of its own, and beside another term it is
+//! read from that index as a set of claim ids, not from the table rows.
+//!
+//! Subjects, attributes, sources, runs and segments stand in tables of
+//! their own and appear in `claims` as integer ids: a digest is 64 bytes
+//! and a segment name the same, and either repeated a quarter of a
+//! million times is most of a file. Four views are for a look with
+//! `sqlite3`, and nothing here reads them: `v_claims` shows the claims
+//! with the names in place of the ids, `v_standing` the standing values,
+//! `v_places` every standing `file:path` unquoted, `v_runs` what each
+//! run wrote. Which of several standing values a reader prefers is the
+//! reader's policy at query time.
+//!
+//! The index follows the log forward, the only direction a log moves. A
 //! log changed in any other way is found where it shows: claims in the
 //! index but no head in the log, claims but no record of what was read
 //! of the head, a chain that does not lead back to the segment the index
@@ -92,30 +99,25 @@ pub struct Folded {
     pub rebuilt: bool,
 }
 
-/// One value standing at a closing time: whose record it is on, what
-/// stands, and the assertion that answers for it: the newest one that
-/// is not retracted.
+/// One standing claim: an assertion that no retraction names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Standing {
-    /// The file the value stands on.
+    /// The file the claim is about.
     pub subject: Subject,
-    /// The value itself.
+    /// The value it asserts.
     pub value: Value,
-    /// When the newest assertion still standing was made, in claim
-    /// time's own spelling.
+    /// When it was made, in claim time's own spelling.
     pub asserted: String,
-    /// That assertion's id. Of several made in the same second it is the
-    /// largest, and `(asserted, claim)` orders the assertions of
-    /// different values the same way: an order that follows from the log
-    /// alone, whatever order an index read it in.
+    /// Its id. `(asserted, claim)` is an order of the claims that
+    /// follows from the log alone, whatever order an index read it in.
     pub claim: ClaimId,
 }
 
 /// What a question reads: the present, the standing set whole, or the
 /// record.
 ///
-/// The standing set is the outcome — retractions applied, repeats
-/// collapsed. A file is *placed* while a place stands on it — a
+/// The standing set is the claims that no retraction names. A file is
+/// *placed* while a place stands on it — a
 /// `file:path` from a walk, a `mailbox:place` from a fetch — or, for
 /// what a tool won out of another file, while its origin is placed,
 /// along `prov:origin` as far as it goes. A `file:path` led by `@`
@@ -358,7 +360,6 @@ impl Index {
                  DROP VIEW IF EXISTS v_standing;
                  DROP VIEW IF EXISTS v_places;
                  DROP VIEW IF EXISTS v_runs;
-                 DROP TABLE IF EXISTS standing;
                  DROP TABLE IF EXISTS retractions;
                  DROP TABLE IF EXISTS claims;
                  DROP TABLE IF EXISTS segments;
@@ -371,9 +372,8 @@ impl Index {
                  PRAGMA user_version = {SCHEMA};"
             ))?;
         }
-        // The integer columns of `claims` and `standing` are ids into the
-        // five name tables; `standing.claim` is a row of `claims`. None of
-        // it is declared a foreign key. `open_read` is a single row, the
+        // The integer columns of `claims` are ids into the five name
+        // tables. None of them is declared a foreign key. `open_read` is a single row, the
         // segment the open segment followed when it was last read;
         // `bundles` the bundles of it read so far (see the module notes).
         connection.execute_batch(&ddl())?;

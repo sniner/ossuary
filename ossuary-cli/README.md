@@ -154,8 +154,10 @@ nothing itself; a bare field name shows the field. `--all` searches
 every claim ever written instead of the standing values, retractions
 included, and is required for the `retract` field.
 
-For each value, a field term uses the claim that recorded the value
-last. Claims written before runs were recorded have no run. Two range
+A value that several claims recorded matches a field term through any
+of them that is not retracted: `find run=RUN file:name=a.txt` finds the
+file when RUN recorded that name, also when a later run recorded it
+again. Claims written before runs were recorded have no run. Two range
 terms on the same attribute may be matched by two different values; a
 single `low..high` term must be matched by one value.
 

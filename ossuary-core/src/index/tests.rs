@@ -661,58 +661,86 @@ fn a_field_term_asks_about_the_claim_behind_a_value() {
 }
 
 #[test]
-fn a_value_said_again_answers_for_the_run_that_said_it_last() {
+fn a_value_recorded_by_two_runs_is_found_under_both_until_one_is_retracted() {
     let dir = TempDir::new().unwrap();
     let log = log_in(&dir);
     let mut index = index_in(&dir);
-    log.append(&said_in(
+    let first = said_in(
         &subject(),
         "file:name",
         json!("abc"),
         "2026-09-01T10:00:00Z",
         &run_x('a'),
-    ))
-    .unwrap();
-    log.append(&said_in(
+    );
+    let second = said_in(
         &subject(),
         "file:name",
         json!("abc"),
         "2026-09-02T10:00:00Z",
         &run_x('b'),
-    ))
-    .unwrap();
+    )
+    .identified(immure::Algorithm::Sha256);
+    log.append_all(&[first, second.clone()]).unwrap();
     index.fold(&log).unwrap();
 
-    let name = term("file:name", "abc");
-    assert_eq!(
+    let found = |index: &Index, run: char, scope: Scope| {
         index
             .find(
-                &[field(Field::Run, run_x('a').as_str()), name.clone()],
+                &[
+                    field(Field::Run, run_x(run).as_str()),
+                    term("file:name", "abc"),
+                ],
                 &[],
+                scope,
+            )
+            .unwrap()
+    };
+    let runs = |index: &Index| {
+        index
+            .field_values(&subject(), Field::Run, Scope::Held)
+            .unwrap()
+    };
+    assert_eq!(found(&index, 'a', Scope::Held), [subject()]);
+    assert_eq!(found(&index, 'b', Scope::Held), [subject()]);
+    assert_eq!(
+        runs(&index),
+        [json!(run_x('a').as_str()), json!(run_x('b').as_str())],
+        "both claims are standing"
+    );
+    assert_eq!(
+        index
+            .values(
+                &subject(),
+                &Attribute::parse("file:name").unwrap(),
                 Scope::Held
             )
             .unwrap(),
-        [],
-        "the standing row points at the newest sayer"
+        [json!("abc")],
+        "and they are one value"
     );
+
+    log.append(&retraction_of(&second, "2026-09-03T10:00:00Z", &run_x('c')))
+        .unwrap();
+    index.fold(&log).unwrap();
+    assert_eq!(found(&index, 'a', Scope::Held), [subject()]);
     assert_eq!(
-        index
-            .find(
-                &[field(Field::Run, run_x('a').as_str()), name],
-                &[],
-                Scope::Record
-            )
-            .unwrap(),
+        found(&index, 'b', Scope::Held),
+        [],
+        "the claim of run b is retracted"
+    );
+    assert_eq!(runs(&index), [json!(run_x('a').as_str())]);
+    assert_eq!(
+        found(&index, 'b', Scope::Record),
         [subject()],
-        "the record still knows who said it first"
+        "the record still has it"
     );
 }
 
-/// Of two assertions in one second the one with the larger id
-/// answers, whichever the index read first, so an index folded on
-/// and one built anew name the same claim.
+/// Two assertions made in one second are read in the order of their
+/// ids, whichever the index read first, so an index folded on and one
+/// built anew answer alike.
 #[test]
-fn two_assertions_in_one_second_answer_alike_however_the_index_read_them() {
+fn two_assertions_in_one_second_are_ordered_alike_however_the_index_read_them() {
     let moment = "2026-09-01T10:00:00Z";
     let name = Attribute::parse("file:name").unwrap();
     for (first, second) in [('a', 'b'), ('b', 'a')] {
@@ -736,24 +764,20 @@ fn two_assertions_in_one_second_answer_alike_however_the_index_read_them() {
         let mut fresh = index_in(&fresh_dir);
         fresh.fold(&log).unwrap();
 
-        let answering = |index: &Index| {
-            index.standing_as_of("file:name", None).unwrap()[0]
-                .claim
-                .clone()
+        let claims = |index: &Index, cutoff: Option<&str>| -> Vec<ClaimId> {
+            index
+                .standing_as_of("file:name", cutoff)
+                .unwrap()
+                .into_iter()
+                .map(|standing| standing.claim)
+                .collect()
         };
-        let largest = index
-            .standing_ids(&subject(), &name, None)
-            .unwrap()
-            .into_iter()
-            .max()
-            .unwrap();
-        assert_eq!(answering(&index), largest, "run {first} read first");
-        assert_eq!(answering(&fresh), largest, "and in an index built anew");
-        assert_eq!(
-            index.standing_as_of("file:name", Some(moment)).unwrap()[0].claim,
-            largest,
-            "and in a replay"
-        );
+        let mut sorted = index.standing_ids(&subject(), &name, None).unwrap();
+        sorted.sort();
+        assert_eq!(sorted.len(), 2);
+        assert_eq!(claims(&index, None), sorted, "run {first} read first");
+        assert_eq!(claims(&fresh, None), sorted, "and in an index built anew");
+        assert_eq!(claims(&index, Some(moment)), sorted, "and in a replay");
     }
 }
 
@@ -2445,7 +2469,7 @@ fn standing_as_of_replays_to_a_closing_time() {
 }
 
 #[test]
-fn standing_as_of_renews_the_moment_and_empties_whole_attributes() {
+fn standing_as_of_has_every_claim_and_none_of_a_retracted_attribute() {
     let dir = TempDir::new().unwrap();
     let log = log_in(&dir);
     let mut index = index_in(&dir);
@@ -2474,9 +2498,10 @@ fn standing_as_of_renews_the_moment_and_empties_whole_attributes() {
             .collect::<Vec<_>>(),
         [
             (json!("beach"), "2026-01-02T00:00:00Z"),
+            (json!("holiday"), "2026-01-01T00:00:00Z"),
             (json!("holiday"), "2026-01-03T00:00:00Z"),
         ],
-        "a repeated assertion collapses in the set but renews its moment"
+        "a value recorded twice is two standing claims"
     );
     assert_eq!(
         index.standing_as_of("user:tag", None).unwrap(),
@@ -3237,4 +3262,202 @@ fn a_message_at_a_mailbox_place_is_placed() {
             .unwrap(),
         vec![message]
     );
+}
+
+/// A retraction of the claim `target`.
+fn retraction_of(target: &Claim, time: &str, run: &Run) -> Claim {
+    Claim::retract(
+        target.subject().clone(),
+        target.attribute().clone(),
+        vec![target.id().unwrap().clone()],
+        Timestamp::parse(time).unwrap(),
+        Source::parse("user").unwrap(),
+        run.clone(),
+    )
+    .unwrap()
+}
+
+/// The steps of the query plan `SQLite` chooses for `sql`.
+fn plan(index: &Index, sql: &str, params: &[rusqlite::types::Value]) -> Vec<String> {
+    let mut statement = index
+        .connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap();
+    statement
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, String>(3)
+        })
+        .unwrap()
+        .map(|step| step.unwrap())
+        .collect()
+}
+
+/// The index a plan step reads `claims` by, and whether the step reads
+/// the index alone: `("claims_value", true)` for
+/// `SEARCH c USING COVERING INDEX claims_value (attribute=?)`.
+fn read_by_index(step: &str) -> Option<(&str, bool)> {
+    let (_, index) = step.split_once(" INDEX ")?;
+    let name = index.split(' ').next()?;
+    name.starts_with("claims_")
+        .then(|| (name, step.contains("COVERING")))
+}
+
+/// Every index a query reads `claims` by, in the order of its plan.
+fn indexes(index: &Index, terms: &[Term], missing: &[String], scope: Scope) -> Vec<(String, bool)> {
+    let (sql, params) = super::find::find_statement(terms, missing, scope).unwrap();
+    let steps = plan(index, &sql, &params);
+    assert!(
+        !steps.iter().any(|step| step.contains("AUTOMATIC")),
+        "{terms:?}: {steps:?}"
+    );
+    steps
+        .iter()
+        .filter_map(|step| read_by_index(step))
+        .map(|(name, covering)| (name.to_string(), covering))
+        .collect()
+}
+
+/// An index a `find` reads `claims` by, and whether it reads the index
+/// alone.
+type Read = (&'static str, bool);
+
+const VALUE: Read = ("claims_value", true);
+const DIGEST: &str = "bb2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e9f2ac41e";
+
+fn part_term(path: &str, pattern: &str) -> Term {
+    Term::Part(Part::parse(path).unwrap(), pattern.to_string())
+}
+
+/// A `find` took 214 s with the cache on a network share, where every
+/// page read is a round trip: it read a table row for each of 2.6
+/// million candidates. Every kind of term alone is read by the index
+/// led by what it compares.
+#[test]
+fn a_term_alone_reads_the_index_led_by_it() {
+    let dir = TempDir::new().unwrap();
+    let index = index_in(&dir);
+    let run = run_x('a');
+    let alone = [
+        (term("file:name", "abc"), "claims_value"),
+        (term("file:name", "\"a*\""), "claims_value"),
+        (term("file:name", "*abc*"), "claims_value"),
+        (term("file:name", ".."), "claims_value"),
+        (term("file:modified", "2026-01..2026-02"), "claims_value"),
+        (term("file:size", "100..200"), "claims_value"),
+        (term("file:size", "100"), "claims_value"),
+        (
+            part_term("geo:position.latitude", "48.1..48.2"),
+            "claims_value",
+        ),
+        (field(Field::Attribute, "file:name"), "claims_value"),
+        (field(Field::Attribute, "file:*"), "claims_value"),
+        (field(Field::Value, "abc"), "claims_value"),
+        (field(Field::Subject, DIGEST), "claims_subject"),
+        (field(Field::Subject, "bb2*"), "claims_subject"),
+        (field(Field::Run, run.as_str()), "claims_run"),
+        (field(Field::Run, "315e*"), "claims_run"),
+        (field(Field::Time, "2026-11-20"), "claims_time"),
+        (field(Field::Time, "2026-11-01.."), "claims_time"),
+        (field(Field::Source, "user"), "claims_source"),
+        (field(Field::Source, "extractor:*"), "claims_source"),
+    ];
+    for scope in [Scope::Held, Scope::Record] {
+        for (one, expected) in &alone {
+            let read = indexes(&index, std::slice::from_ref(one), &[], scope);
+            let read: Vec<&str> = read.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(read, [*expected], "{scope:?} {one:?}");
+        }
+    }
+    // With `--missing`, each entry reads the value index alone.
+    let read = indexes(
+        &index,
+        &[term("file:mime", "text/plain")],
+        &["prov:examined".to_string(), "mail:".to_string()],
+        Scope::Held,
+    );
+    assert_eq!(read, vec![("claims_value".to_string(), true); 3]);
+}
+
+/// A term on run, time or source beside another term: the arm reads the
+/// index of the term that leads, and the ids of the other terms from
+/// their own indexes, each alone. A table row is read only behind the
+/// index that leads.
+#[test]
+fn a_field_term_beside_another_term_is_read_as_ids_from_its_own_index() {
+    let dir = TempDir::new().unwrap();
+    let index = index_in(&dir);
+    let run = field(Field::Run, run_x('a').as_str());
+    let time = field(Field::Time, "2026-11-20");
+    let source = field(Field::Source, "user");
+    let name = term("file:name", "*abc*");
+    let latitude = part_term("geo:position.latitude", "48.1..48.2");
+    let (by_run, by_time) = (("claims_run", false), ("claims_time", false));
+    let (run_ids, time_ids, source_ids): (Read, Read, Read) = (
+        ("claims_run", true),
+        ("claims_time", true),
+        ("claims_source", true),
+    );
+    let pairs: Vec<(Vec<&Term>, Vec<Read>)> = vec![
+        (vec![&run, &name], vec![VALUE, run_ids]),
+        (vec![&time, &name], vec![VALUE, time_ids]),
+        (vec![&source, &name], vec![VALUE, source_ids]),
+        (vec![&run, &latitude], vec![VALUE, run_ids]),
+        (vec![&run, &time], vec![by_run, time_ids]),
+        (vec![&run, &source], vec![by_run, source_ids]),
+        (vec![&time, &source], vec![by_time, source_ids]),
+        (
+            vec![&run, &time, &source, &name],
+            vec![VALUE, run_ids, time_ids, source_ids],
+        ),
+    ];
+    let subject = field(Field::Subject, DIGEST);
+    for scope in [Scope::Held, Scope::Record] {
+        for (terms, expected) in &pairs {
+            let terms: Vec<Term> = terms.iter().map(|one| (*one).clone()).collect();
+            let read = indexes(&index, &terms, &[], scope);
+            let expected: Vec<(String, bool)> = expected
+                .iter()
+                .map(|(name, alone)| ((*name).to_string(), *alone))
+                .collect();
+            assert_eq!(read, expected, "{scope:?} {terms:?}");
+        }
+        // Beside a subject every term is compared on the claims of the
+        // subject.
+        let terms = [subject.clone(), run.clone(), time.clone()];
+        let read = indexes(&index, &terms, &[], scope);
+        let read: Vec<&str> = read.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(read, ["claims_subject"], "{scope:?}");
+    }
+}
+
+/// The values of a field of one subject are read from the claims of
+/// that subject.
+#[test]
+fn the_fields_of_one_subject_are_read_by_the_subject() {
+    let dir = TempDir::new().unwrap();
+    let index = index_in(&dir);
+    for scope in [Scope::Held, Scope::Record] {
+        for field in [
+            Field::Subject,
+            Field::Attribute,
+            Field::Value,
+            Field::Time,
+            Field::Source,
+            Field::Run,
+            Field::Retract,
+        ] {
+            let sql = super::find::field_values_statement(field, scope);
+            let steps = plan(
+                &index,
+                &sql,
+                &[rusqlite::types::Value::Text(DIGEST.to_string())],
+            );
+            let read: Vec<&str> = steps
+                .iter()
+                .filter_map(|step| read_by_index(step))
+                .map(|(name, _)| name)
+                .collect();
+            assert_eq!(read, ["claims_subject"], "{scope:?} {field:?}: {steps:?}");
+        }
+    }
 }
